@@ -71,6 +71,15 @@ type EventBusOptions = {
 
 export class EventBus {
   static instances: Set<EventBus> = new Set();
+  static findEventById(event_id: string): BaseEvent | null {
+    for (const bus of EventBus.instances) {
+      const event = bus.event_history_by_id.get(event_id);
+      if (event) {
+        return event;
+      }
+    }
+    return null;
+  }
 
   name: string;
   max_history_size: number | null;
@@ -83,6 +92,7 @@ export class EventBus {
   find_waiters: Set<FindWaiter>;
   handler_stack: EventResult[];
   handler_file_paths: Map<EventHandler, string>;
+  handler_ids: Map<EventHandler, string>;
   run_now_depth: number;
   run_now_waiters: Array<() => void>;
   inside_handler_depth: number;
@@ -100,6 +110,7 @@ export class EventBus {
     this.find_waiters = new Set();
     this.handler_stack = [];
     this.handler_file_paths = new Map();
+    this.handler_ids = new Map();
     this.run_now_depth = 0;
     this.run_now_waiters = [];
     this.inside_handler_depth = 0;
@@ -131,6 +142,16 @@ export class EventBus {
     handler_set.delete(handler as EventHandler);
   }
 
+  private getHandlerId(handler: EventHandler): string {
+    const existing = this.handler_ids.get(handler);
+    if (existing) {
+      return existing;
+    }
+    const handler_id = uuidv7();
+    this.handler_ids.set(handler, handler_id);
+    return handler_id;
+  }
+
   dispatch<T extends BaseEvent>(event: T, event_key?: EventKey<T>): T {
     const original_event = event._original_event ?? event;
     if (!original_event.bus) {
@@ -155,15 +176,21 @@ export class EventBus {
     const current_handler = this.handler_stack[this.handler_stack.length - 1];
     if (current_handler) {
       const parent_event = this.event_history_by_id.get(current_handler.event_id);
-      if (parent_event && !original_event.event_parent_id) {
-        original_event.event_parent_id = parent_event.event_id;
-        this.recordChildEvent(parent_event.event_id, original_event);
+      if (parent_event) {
+        if (!original_event.event_parent_id) {
+          original_event.event_parent_id = parent_event.event_id;
+        }
+        if (original_event.event_parent_id === parent_event.event_id) {
+          this.recordChildEvent(parent_event.event_id, original_event);
+        }
       }
     }
 
     this.event_history.push(original_event);
     this.event_history_by_id.set(original_event.event_id, original_event);
     this.trimHistory();
+
+    this.createPendingHandlerResults(original_event);
 
     original_event.event_pending_buses += 1;
     this.pending_queue.push(original_event);
@@ -316,12 +343,16 @@ export class EventBus {
     const original_child = child_event._original_event ?? child_event;
     const parent_event = this.event_history_by_id.get(parent_event_id);
     if (parent_event) {
-      parent_event.event_children.push(original_child);
+      if (!parent_event.event_children.some((child) => child.event_id === original_child.event_id)) {
+        parent_event.event_children.push(original_child);
+      }
     }
 
     const current_result = this.handler_stack[this.handler_stack.length - 1];
     if (current_result) {
-      current_result.event_children.push(original_child);
+      if (!current_result.event_children.some((child) => child.event_id === original_child.event_id)) {
+        current_result.event_children.push(original_child);
+      }
       original_child.event_emitted_by_handler_id = current_result.handler_id;
     }
   }
@@ -517,15 +548,20 @@ export class EventBus {
     const handlers = this.collectHandlers(event);
     const handler_results = handlers.map((handler) => {
       const handler_name = handler.name || "anonymous";
-      const handler_id = uuidv7();
-      const result = new EventResult({
-        event_id: event.event_id,
-        handler_id,
-        handler_name,
-        handler_file_path: this.handler_file_paths.get(handler) ?? undefined,
-        eventbus_name: this.name
-      });
-      event.event_results.set(handler_id, result);
+      const handler_id = this.getHandlerId(handler);
+      const existing = event.event_results.get(handler_id);
+      const result =
+        existing ??
+        new EventResult({
+          event_id: event.event_id,
+          handler_id,
+          handler_name,
+          handler_file_path: this.handler_file_paths.get(handler) ?? undefined,
+          eventbus_name: this.name
+        });
+      if (!existing) {
+        event.event_results.set(handler_id, result);
+      }
       return { handler, result };
     });
 
@@ -578,10 +614,10 @@ export class EventBus {
       }
     }
 
-    event.event_pending_buses -= 1;
-    if (event.event_pending_buses <= 0) {
-      event.event_pending_buses = 0;
-      event.markCompleted();
+    event.event_pending_buses = Math.max(0, event.event_pending_buses - 1);
+    event.tryFinalizeCompletion();
+    if (event.event_status === "completed") {
+      this.notifyParentsFor(event);
     }
   }
 
@@ -648,6 +684,23 @@ export class EventBus {
     );
   }
 
+  private notifyParentsFor(event: BaseEvent): void {
+    const visited = new Set<string>();
+    let parent_id = event.event_parent_id;
+    while (parent_id && !visited.has(parent_id)) {
+      visited.add(parent_id);
+      const parent = EventBus.findEventById(parent_id);
+      if (!parent) {
+        break;
+      }
+      parent.tryFinalizeCompletion();
+      if (parent.event_status !== "completed") {
+        break;
+      }
+      parent_id = parent.event_parent_id;
+    }
+  }
+
   _getBusScopedEvent<T extends BaseEvent>(event: T): T {
     const original_event = event._original_event ?? event;
     const bus = this;
@@ -659,10 +712,6 @@ export class EventBus {
             const original_child = child_event._original_event ?? child_event;
             if (!original_child.event_parent_id) {
               original_child.event_parent_id = parent_event_id;
-            }
-            const current_handler = bus.handler_stack[bus.handler_stack.length - 1];
-            if (!current_handler || current_handler.event_id !== parent_event_id) {
-              bus.recordChildEvent(parent_event_id, original_child);
             }
             const dispatcher = Reflect.get(target, prop, receiver) as (
               event: BaseEvent,
@@ -864,8 +913,16 @@ export class EventBus {
     const emitted_children = parent_children.filter(
       (child) => child.event_emitted_by_handler_id === result.handler_id
     );
-    const combined_children = [...direct_children, ...emitted_children];
-    const children_to_print = combined_children.filter(
+    const children_by_id = new Map<string, BaseEvent>();
+    direct_children.forEach((child) => {
+      children_by_id.set(child.event_id, child);
+    });
+    emitted_children.forEach((child) => {
+      if (!children_by_id.has(child.event_id)) {
+        children_by_id.set(child.event_id, child);
+      }
+    });
+    const children_to_print = Array.from(children_by_id.values()).filter(
       (child) => !visited.has(child.event_id)
     );
 
@@ -956,6 +1013,25 @@ export class EventBus {
       this.find_waiters.delete(waiter);
       waiter.resolve(event);
     }
+  }
+
+  private createPendingHandlerResults(event: BaseEvent): void {
+    const handlers = this.collectHandlers(event);
+    handlers.forEach((handler) => {
+      const handler_id = this.getHandlerId(handler);
+      if (event.event_results.has(handler_id)) {
+        return;
+      }
+      const handler_name = handler.name || "anonymous";
+      const result = new EventResult({
+        event_id: event.event_id,
+        handler_id,
+        handler_name,
+        handler_file_path: this.handler_file_paths.get(handler) ?? undefined,
+        eventbus_name: this.name
+      });
+      event.event_results.set(handler_id, result);
+    });
   }
 
   private collectHandlers(event: BaseEvent): EventHandler[] {

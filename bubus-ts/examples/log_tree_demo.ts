@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   async function root_fast_handler(event: InstanceType<typeof RootEvent>): Promise<string> {
     await delay(10);
     const child = event.bus?.emit(
-      ChildEvent({ tab_id: "tab-123", event_timeout: 0.05 })
+      ChildEvent({ tab_id: "tab-123", event_timeout: 0.1 })
     );
     if (child) {
       await child.done();
@@ -48,8 +48,11 @@ async function main(): Promise<void> {
     return "root_fast_handler_ok";
   }
 
-  async function root_slow_handler(): Promise<string> {
-    await delay(120);
+  async function root_slow_handler(event: InstanceType<typeof RootEvent>): Promise<string> {
+    event.bus?.emit(
+      ChildEvent({ tab_id: "tab-timeout", event_timeout: 0.1 })
+    );
+    await delay(400);
     return "root_slow_handler_timeout";
   }
 
@@ -57,15 +60,18 @@ async function main(): Promise<void> {
   bus_a.on(RootEvent, root_slow_handler);
 
   async function child_slow_handler(_event: InstanceType<typeof ChildEvent>): Promise<string> {
-    await delay(200);
+    await delay(150);
     return "child_slow_handler_done";
   }
 
   async function child_fast_handler(event: InstanceType<typeof ChildEvent>): Promise<string> {
     await delay(10);
-    event.bus?.emit(
+    const grandchild = event.bus?.emit(
       GrandchildEvent({ status: "ok", event_timeout: 0.05 })
     );
+    if (grandchild) {
+      await grandchild.done();
+    }
     return "child_handler_ok";
   }
 
@@ -75,7 +81,7 @@ async function main(): Promise<void> {
   }
 
   async function grandchild_slow_handler(): Promise<string> {
-    await delay(80);
+    await delay(60);
     return "grandchild_slow_handler_timeout";
   }
 
@@ -85,7 +91,7 @@ async function main(): Promise<void> {
   bus_b.on(GrandchildEvent, grandchild_slow_handler);
 
   const root_event = bus_a.dispatch(
-    RootEvent({ url: "https://example.com", event_timeout: 0.05 })
+    RootEvent({ url: "https://example.com", event_timeout: 0.25 })
   );
 
   await root_event.done();

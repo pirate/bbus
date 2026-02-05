@@ -236,6 +236,32 @@ export class BaseEvent {
     }
   }
 
+  eventAreAllChildrenComplete(visited: Set<string> = new Set()): boolean {
+    if (visited.has(this.event_id)) {
+      return true;
+    }
+    visited.add(this.event_id);
+    for (const child of this.event_children) {
+      if (child.event_status !== "completed") {
+        return false;
+      }
+      if (!child.eventAreAllChildrenComplete(visited)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  tryFinalizeCompletion(): void {
+    if (this.event_pending_buses > 0) {
+      return;
+    }
+    if (!this.eventAreAllChildrenComplete()) {
+      return;
+    }
+    this.markCompleted();
+  }
+
   ensureDonePromise(): void {
     if (this._done_promise) {
       return;
