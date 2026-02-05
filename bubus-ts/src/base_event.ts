@@ -50,6 +50,7 @@ export type EventExtendOptions = {
 };
 
 export class BaseEvent {
+  static _last_timestamp_ms = 0;
   event_id: string;
   event_created_at: string;
   event_type: string;
@@ -129,6 +130,13 @@ export class BaseEvent {
     return 300;
   }
 
+  static nextIsoTimestamp(): string {
+    const now_ms = Date.now();
+    const next_ms = Math.max(now_ms, BaseEvent._last_timestamp_ms + 1);
+    BaseEvent._last_timestamp_ms = next_ms;
+    return new Date(next_ms).toISOString();
+  }
+
   static extend<TShape extends z.ZodRawShape>(
     shape: TShape,
     options?: EventExtendOptions
@@ -198,7 +206,7 @@ export class BaseEvent {
       return;
     }
     this.event_status = "started";
-    this.event_started_at = new Date().toISOString();
+    this.event_started_at = BaseEvent.nextIsoTimestamp();
   }
 
   markCompleted(): void {
@@ -206,7 +214,7 @@ export class BaseEvent {
       return;
     }
     this.event_status = "completed";
-    this.event_completed_at = new Date().toISOString();
+    this.event_completed_at = BaseEvent.nextIsoTimestamp();
     this.ensureDonePromise();
     if (this._done_resolve) {
       this._done_resolve(this as this);

@@ -133,6 +133,9 @@ export class EventBus {
 
   dispatch<T extends BaseEvent>(event: T, event_key?: EventKey<T>): T {
     const original_event = event._original_event ?? event;
+    if (!original_event.bus) {
+      original_event.bus = this;
+    }
     if (!Array.isArray(original_event.event_path)) {
       original_event.event_path = [];
     }
@@ -648,10 +651,33 @@ export class EventBus {
   _getBusScopedEvent<T extends BaseEvent>(event: T): T {
     const original_event = event._original_event ?? event;
     const bus = this;
+    const parent_event_id = original_event.event_id;
+    const bus_proxy = new Proxy(bus, {
+      get(target, prop, receiver) {
+        if (prop === "dispatch" || prop === "emit") {
+          return (child_event: BaseEvent, event_key?: EventKey) => {
+            const original_child = child_event._original_event ?? child_event;
+            if (!original_child.event_parent_id) {
+              original_child.event_parent_id = parent_event_id;
+            }
+            const current_handler = bus.handler_stack[bus.handler_stack.length - 1];
+            if (!current_handler || current_handler.event_id !== parent_event_id) {
+              bus.recordChildEvent(parent_event_id, original_child);
+            }
+            const dispatcher = Reflect.get(target, prop, receiver) as (
+              event: BaseEvent,
+              event_key?: EventKey
+            ) => BaseEvent;
+            return dispatcher.call(target, original_child, event_key);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      }
+    });
     const scoped = new Proxy(original_event, {
       get(target, prop, receiver) {
         if (prop === "bus") {
-          return bus;
+          return bus_proxy;
         }
         if (prop === "_original_event") {
           return target;
