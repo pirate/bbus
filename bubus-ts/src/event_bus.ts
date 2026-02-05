@@ -1,5 +1,6 @@
 import { BaseEvent } from "./base_event.js";
 import { EventResult } from "./event_result.js";
+import { capture_async_context, run_with_async_context } from "./async_context.js";
 import { v7 as uuidv7 } from "uuid";
 
 
@@ -159,6 +160,9 @@ export class EventBus {
     }
     if (!Array.isArray(original_event.event_path)) {
       original_event.event_path = [];
+    }
+    if (original_event._dispatch_context === undefined) {
+      original_event._dispatch_context = capture_async_context();
     }
 
     if (typeof event_key === "symbol") {
@@ -629,7 +633,7 @@ export class EventBus {
     handler_event: BaseEvent = event
   ): Promise<unknown> {
     if (event.event_timeout === null) {
-      return handler(handler_event);
+      return run_with_async_context(event._dispatch_context ?? null, () => handler(handler_event));
     }
 
     const timeout_seconds = event.event_timeout;
@@ -656,7 +660,7 @@ export class EventBus {
     }, timeout_ms);
 
     Promise.resolve()
-      .then(() => handler(handler_event))
+      .then(() => run_with_async_context(event._dispatch_context ?? null, () => handler(handler_event)))
       .then((value) => {
         if (settled) {
           return;

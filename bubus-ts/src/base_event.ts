@@ -73,6 +73,7 @@ export class BaseEvent {
   event_key_symbol?: symbol;
   bus?: EventBus;
   _original_event?: BaseEvent;
+  _dispatch_context?: unknown | null;
 
   static schema = BaseEventSchema;
   static event_type?: string;
@@ -124,6 +125,7 @@ export class BaseEvent {
     this._done_promise = null;
     this._done_resolve = null;
     this._done_reject = null;
+    this._dispatch_context = undefined;
   }
 
   static defaultTimeout(): number {
