@@ -20,6 +20,7 @@ CLAUDE.local.md
 
 # Build files
 dist/
+node_modules/
 
 # Coverage files
 .coverage
