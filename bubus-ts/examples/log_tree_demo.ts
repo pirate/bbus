@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   bus_a.on(RootEvent, root_fast_handler);
   bus_a.on(RootEvent, root_slow_handler);
 
-  async function child_slow_handler(event: InstanceType<typeof ChildEvent>): Promise<string> {
+  async function child_slow_handler(_event: InstanceType<typeof ChildEvent>): Promise<string> {
     await delay(200);
     return "child_slow_handler_done";
   }

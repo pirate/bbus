@@ -242,7 +242,7 @@ export class EventBus {
       return null;
     }
 
-    return new Promise<T | null>((resolve, reject) => {
+    return new Promise<T | null>((resolve, _reject) => {
       const waiter: FindWaiter = {
         event_key,
         matches,

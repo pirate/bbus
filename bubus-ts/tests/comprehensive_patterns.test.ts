@@ -4,7 +4,6 @@ import { test } from "node:test";
 import { BaseEvent, EventBus } from "../src/index.js";
 
 const ParentEvent = BaseEvent.extend("ParentEvent", {});
-const ChildEvent = BaseEvent.extend("ChildEvent", {});
 const ImmediateChildEvent = BaseEvent.extend("ImmediateChildEvent", {});
 const QueuedChildEvent = BaseEvent.extend("QueuedChildEvent", {});
 
@@ -260,13 +259,13 @@ test("dispatch multiple, await one skips others until after handler completes", 
   const event1_handler = async (event: BaseEvent): Promise<string> => {
     execution_order.push("Event1_start");
 
-    const child_a = event.bus?.emit(ChildA({}))!;
+    event.bus?.emit(ChildA({}));
     execution_order.push("ChildA_dispatched");
 
     const child_b = event.bus?.emit(ChildB({}))!;
     execution_order.push("ChildB_dispatched");
 
-    const child_c = event.bus?.emit(ChildC({}))!;
+    event.bus?.emit(ChildC({}));
     execution_order.push("ChildC_dispatched");
 
     await child_b.done();

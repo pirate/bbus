@@ -10,7 +10,7 @@ export type EventHandler<T extends BaseEvent = BaseEvent> = (event: T) => void |
 
 export type FindWindow = boolean | number;
 
-export type FindOptions<T extends BaseEvent = BaseEvent> = {
+export type FindOptions = {
   past?: FindWindow;
   future?: FindWindow;
   child_of?: BaseEvent | null;
