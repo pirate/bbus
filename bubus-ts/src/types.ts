@@ -1,24 +1,22 @@
-import type { BaseEvent } from "./base_event.js";
-import type { ConcurrencyMode } from "./semaphores.js";
+import type { BaseEvent } from './base_event.js'
+import type { ConcurrencyMode } from './semaphores.js'
 
-export type EventStatus = "pending" | "started" | "completed";
+export type EventStatus = 'pending' | 'started' | 'completed'
 
-export type EventClass<T extends BaseEvent = BaseEvent> = { event_type?: string } & (new (
-  ...args: any[]
-) => T);
+export type EventClass<T extends BaseEvent = BaseEvent> = { event_type?: string } & (new (...args: any[]) => T)
 
-export type EventKey<T extends BaseEvent = BaseEvent> = string | EventClass<T>;
+export type EventKey<T extends BaseEvent = BaseEvent> = string | EventClass<T>
 
-export type EventHandler<T extends BaseEvent = BaseEvent> = (event: T) => void | Promise<void>;
+export type EventHandler<T extends BaseEvent = BaseEvent> = (event: T) => void | Promise<void>
 
 export type HandlerOptions = {
-  handler_concurrency?: ConcurrencyMode;
-};
+  handler_concurrency?: ConcurrencyMode
+}
 
-export type FindWindow = boolean | number;
+export type FindWindow = boolean | number
 
 export type FindOptions = {
-  past?: FindWindow;
-  future?: FindWindow;
-  child_of?: BaseEvent | null;
-};
+  past?: FindWindow
+  future?: FindWindow
+  child_of?: BaseEvent | null
+}

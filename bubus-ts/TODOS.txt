@@ -1,0 +1,296 @@
+Coordination Refactoring Plan
+=============================
+(Updated after timeout/limiter fixes and data-model cleanup landed)
+
+Code Quality Goals
+------------------
+- Minimum unique abstractions
+- Minimum fields that are directly mutated
+- Fewest flags, state variables, stacks, sets, counters, callbacks, and signals
+- Unified interfaces for concurrency decisions at handler, event, and bus level
+- All locking-related logic in semaphores.ts and gates.ts, encapsulated from main flow
+- Derive everything possible from event_results, event, bus.event_history, bus.handlers
+  (use getters rather than adding state variables)
+- Clear, descriptive naming
+
+Files touched
+-------------
+- NEW: `src/gates.ts`
+- EDIT: `src/semaphores.ts` (add HandlerLimiterLease)
+- EDIT: `src/event_result.ts`
+- EDIT: `src/base_event.ts`
+- EDIT: `src/event_bus.ts`
+- EDIT: `tests/comprehensive_patterns.test.ts`
+- EDIT: `tests/timeout.test.ts` (limiter leak regression tests)
+
+No new exports from `index.ts` (all helpers remain internal).
+
+================================================================================
+COMPLETED
+================================================================================
+
+Done: Deferred<T> migration
+  - `Deferred<T>` type + `withResolvers<T>()` live in `semaphores.ts`
+  - BaseEvent uses `_done: Deferred<this> | null`
+  - `ensureDonePromise()` uses `withResolvers<this>()`
+  - No separate `src/deferred.ts` needed
+
+Done: Limiter leak mitigation (partial)
+  - `runHandlerEntry` manually manages limiter acquire/release (no `runWithLimiter`)
+  - `handler_still_owns_limiter` check prevents double-release when limiter was yielded
+  - `_runImmediately` guards reacquire with `effective_result.status === "started"`
+  - IMPORTANT: race still exists and is NOT fully fixed yet
+    - window: `_runImmediately` checks `status === "started"` and then awaits
+      `limiter.acquire()`; handler may finish during that await, causing a leaked
+      reacquire token
+    - do not treat this as solved until Step 1 gate-based lease state machine is implemented
+
+Done: BaseEvent data-model cleanup
+  - Removed `event_created_at_ms` (redundant; use `Date.parse(event_created_at)`)
+  - Removed mutable `event_errors: unknown[]` array and `markFailed()` method
+  - `event_errors` is now a getter derived from `event_results`
+  - `event_children` is now a getter derived from `event_results`
+
+Done: Handler map consolidation
+  - `handlers_by_key` + `handlers_by_id` → single `handlers: Map<string, HandlerEntry>`
+  - `collectHandlers` uses two-pass ordering (exact-match first, wildcards second)
+
+Done: Event history consolidation
+  - `event_history: BaseEvent[]` + `event_history_by_id` → single `event_history: Map`
+
+================================================================================
+REMAINING WORK
+================================================================================
+
+================================================================================
+0. Define gate namespaces and ownership boundaries (required design step)
+================================================================================
+
+Adopt a single naming model:
+- `event_result.gate.*` for handler-execution transitions
+- `event.gate.*` for event lifecycle transitions
+- `event_bus.gate.*` for bus-level queue/idle/limiter coordination
+
+Required method names (locked):
+- `event_result.gate`:
+  - `enterHandlerRun`
+  - `yieldPermitForChildRun`
+  - `reclaimPermitIfRunning`
+  - `exitHandlerRun`
+  - `getExecutionState`
+  - `runQueueJump`
+- `event.gate`:
+  - `enterEventStarted`
+  - `completeIfDoneHandling`
+  - `waitForCompletion`
+  - `cancelPendingDescendants`
+- `event_bus.gate`:
+  - `requestPause`
+  - `waitUntilResumed`
+  - `isPaused`
+  - `waitForIdle`
+  - `notifyIdleListeners`
+  - `getLimiterForEvent`
+  - `getLimiterForHandler`
+
+Important: do not re-introduce scattered fields like
+`_runloop_hold_release`, `queue_jump_hold`, `_held_handler_limiter`,
+`idle_waiters`, `idle_check_pending`, `idle_check_streak`,
+`immediate_processing_stack_depth`, `immediate_processing_waiters`.
+
+================================================================================
+1. Implement `event_result.gate` and race-safe limiter ownership (required correctness work)
+================================================================================
+
+The current manual tracking (`handler_still_owns_limiter` + `status === "started"`)
+still has a race and can leak permits. This is mandatory to fix first.
+
+Implementation shape:
+- Add internal lease state machine in `src/semaphores.ts`
+  (or in `src/gates.ts` if colocated with other gate internals):
+  - state: `"held" | "yielded" | "closed"`
+  - race-safe reacquire behavior: if state becomes closed while awaiting acquire,
+    immediately release to avoid leaking a permit.
+- `event_result.gate.enterHandlerRun(limiter)` claims execution ownership
+- `event_result.gate.yieldPermitForChildRun()` releases permit only when currently held
+- `event_result.gate.reclaimPermitIfRunning()` reacquires only when still running
+- `event_result.gate.exitHandlerRun()` idempotently closes and releases if held
+- `event_result.gate.runQueueJump(fn)` wraps yield → run → reclaim as one transition API
+- `event_result.gate.getExecutionState()` is read-only debug/inspection
+
+Storage rule:
+- keep gate-private mutable state off public EventResult fields
+- use private state managed by gate internals (closure/private class/WeakMap)
+
+================================================================================
+2. Implement flat `event_bus.gate.*` coordination methods
+================================================================================
+
+Create `src/gates.ts` and move bus coordination internals behind `event_bus.gate`.
+
+`event_bus.gate.requestPause()`:
+- increments pause depth
+- returns idempotent release closure
+
+`event_bus.gate.waitUntilResumed()`:
+- fast path if pause depth is 0
+- otherwise await waiter queue
+
+`event_bus.gate.isPaused()`:
+- true while pause depth > 0
+
+`event_bus.gate.waitForIdle()` + `event_bus.gate.notifyIdleListeners()`:
+- encapsulate the existing two-snapshot idle confirmation pattern
+- keep idle check scheduling private to the gate
+
+`event_bus.gate.getLimiterForEvent(event)` and
+`event_bus.gate.getLimiterForHandler(event, options)`:
+- move effective limiter resolution behind gate accessor methods
+- preserve current precedence behavior
+
+Storage rule:
+- bus coordination state (pause depth/waiters, idle waiters/check flags) is private to gate
+
+================================================================================
+3. Wire `event_bus.gate` into EventBus call sites
+================================================================================
+
+`src/event_bus.ts` call-site migration:
+- `_runImmediately()`:
+  - replace direct queue-jump flag/field mutation with `result.gate.runQueueJump(...)`
+  - pause via `bus.gate.requestPause()` on each participating bus
+- `runImmediatelyAcrossBuses()`:
+  - use `requestPause()` releases in `finally`
+- `runloop()`:
+  - `if (this.gate.isPaused()) await this.gate.waitUntilResumed()`
+- `waitUntilIdle()`:
+  - delegate to `this.gate.waitForIdle()`
+- `scheduleEventProcessing().finally` and runloop exit path:
+  - call `this.gate.notifyIdleListeners()`
+- `resolveEventLimiter` and `resolveHandlerLimiter`:
+  - fold into `this.gate.getLimiterForEvent(...)` and
+    `this.gate.getLimiterForHandler(...)`
+
+After migration remove old EventBus fields/methods:
+- `idle_waiters`, `idle_check_pending`, `idle_check_streak`
+- `immediate_processing_stack_depth`, `immediate_processing_waiters`
+- `scheduleIdleCheck`, `resolveIdleWaitersIfDone`,
+  `releaseImmediateProcessingWaiters`,
+  `resolveEventLimiter`, `resolveHandlerLimiter`
+
+================================================================================
+4. Add `event.gate.*` lifecycle facade
+================================================================================
+
+In `src/base_event.ts`:
+- add `event.gate.enterEventStarted()` as lifecycle transition wrapper
+- add `event.gate.completeIfDoneHandling()` wrapper for completion checks
+- add `event.gate.waitForCompletion()` wrapper around done promise
+- add `event.gate.cancelPendingDescendants(reason)` lifecycle entry point
+
+Keep these as normal top-level getters on event (not gate methods):
+- `event.event_children` (derived getter)
+- `event.event_errors` (derived getter)
+
+Migration call sites:
+- EventBus `processEvent()` uses `event.gate.enterEventStarted()` and
+  `event.gate.completeIfDoneHandling()`
+- completion and parent notification paths use gate wrappers
+- timeout cancellation paths call `event.gate.cancelPendingDescendants(reason)`
+
+================================================================================
+5. Tests and invariants update
+================================================================================
+
+Update queue-jump depth tests away from direct field access:
+- remove assertions tied to `immediate_processing_stack_depth`
+- assert pause semantics via `bus.gate.isPaused()` at equivalent checkpoints
+
+Add explicit limiter-race regressions:
+- timeout during awaited `child.done()` does not leak permit
+- next event still runs on same bus after timeout path
+- nested queue-jump under timeout/cancellation remains permit-safe
+
+Keep/expand coverage for:
+- cross-bus queue-jump ordering
+- idle wait semantics
+- forwarding + `event.bus` scoped behavior
+
+================================================================================
+6. Verification
+================================================================================
+
+Focused first:
+- `node --expose-gc --test --import tsx tests/locking.test.ts`
+- `node --expose-gc --test --import tsx tests/comprehensive_patterns.test.ts`
+- `node --expose-gc --test --import tsx tests/timeout.test.ts`
+- `node --expose-gc --test --import tsx tests/event_bus_proxy.test.ts`
+- `node --expose-gc --test --import tsx tests/forwarding.test.ts`
+
+Then full suite:
+- `pnpm test`
+
+================================================================================
+7. Implementation sequence (execution order)
+================================================================================
+
+1) Add gate surfaces first (no behavior change):
+- Add `gate` accessors on EventBus/EventResult/BaseEvent.
+- Keep internals on current logic temporarily so call sites can migrate safely.
+
+2) Implement `event_result.gate` with private execution state:
+- Move permit ownership to gate-private state (`held/yielded/closed`).
+- Route `_runImmediately` + `runHandlerEntry` permit transitions through:
+  `enterHandlerRun`, `yieldPermitForChildRun`, `reclaimPermitIfRunning`,
+  `exitHandlerRun`, `runQueueJump`.
+
+3) Migrate runloop pause to `event_bus.gate`:
+- Replace queue-jump pause/depth fields with `requestPause`,
+  `waitUntilResumed`, `isPaused`.
+- Keep release callbacks gate-internal; no public flag fields on EventResult.
+
+4) Migrate idle waiting to `event_bus.gate`:
+- Replace idle waiters/check flags + scheduling methods with:
+  `waitForIdle`, `notifyIdleListeners`.
+- Preserve two-snapshot confirmation semantics.
+
+5) Move limiter resolution behind `event_bus.gate`:
+- Replace direct resolver call sites with:
+  `getLimiterForEvent`, `getLimiterForHandler`.
+- Keep existing concurrency precedence behavior unchanged.
+
+6) Add `event.gate` lifecycle wrappers and switch call sites:
+- Use `enterEventStarted`, `completeIfDoneHandling`, `waitForCompletion`,
+  `cancelPendingDescendants`.
+- Keep `event.event_children` + `event.event_errors` as non-gate getters.
+
+7) Remove old scattered fields/methods:
+- Delete queue-jump/idle/permit legacy fields and helper methods only after
+  all call sites use gates.
+
+8) Update tests in two passes:
+- First migrate assertions from raw internal fields to gate semantics.
+- Then add explicit limiter-race regressions (timeout + queue-jump leak checks).
+
+9) Verify after each phase:
+- Run focused suites after each migration phase.
+- Run full `pnpm test` after legacy field/method removal lands.
+
+================================================================================
+Net effect
+================================================================================
+
+API shape becomes explicit and namespaced:
+- `event_result.gate.*` owns handler execution/permit transitions
+- `event.gate.*` owns lifecycle transitions
+- `event_bus.gate.*` owns runloop pause, idle waiting, and limiter resolution
+
+State ownership becomes centralized:
+- no scattered coordination flags on EventResult/EventBus
+- private mutable coordination state lives inside gate internals
+
+Correctness target after Step 1:
+- impossible to double-release or leak handler permits on timeout + queue-jump races
+
+No new public package exports required:
+- gate internals remain project-internal (`src/gates.ts`, `src/semaphores.ts`)

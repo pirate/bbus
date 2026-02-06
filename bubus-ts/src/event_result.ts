@@ -1,23 +1,23 @@
-import { v7 as uuidv7 } from "uuid";
+import { v7 as uuidv7 } from 'uuid'
 
-import type { BaseEvent } from "./base_event.js";
-import type { AsyncLimiter } from "./semaphores.js";
+import type { BaseEvent } from './base_event.js'
+import type { AsyncLimiter } from './semaphores.js'
 
-export type EventResultStatus = "pending" | "started" | "completed" | "error";
+export type EventResultStatus = 'pending' | 'started' | 'completed' | 'error'
 
 export class EventResult {
-  id: string;
-  status: EventResultStatus;
-  event_id: string;
-  handler_id: string;
-  handler_name: string;
-  handler_file_path?: string;
-  eventbus_name: string;
-  started_at?: string;
-  completed_at?: string;
-  result?: unknown;
-  error?: unknown;
-  event_children: BaseEvent[];
+  id: string
+  status: EventResultStatus
+  event_id: string
+  handler_id: string
+  handler_name: string
+  handler_file_path?: string
+  eventbus_name: string
+  started_at?: string
+  completed_at?: string
+  result?: unknown
+  error?: unknown
+  event_children: BaseEvent[]
   // Tracks whether this handler's execution has triggered a queue-jump via done().
   //
   // Lifecycle:
@@ -34,46 +34,40 @@ export class EventResult {
   //      finishes — without this hold, the runloop would resume prematurely
   //      while the handler is still executing after `await child.done()`.
   //   4. Reset to `false` in the same finally block after decrementing.
-  queue_jump_hold: boolean;
+  queue_jump_hold: boolean
   // The handler concurrency limiter currently held by this handler execution.
   // Set by runHandlerEntry so that _runImmediately can temporarily release it
   // (yield-and-reacquire) to let child event handlers use the same limiter
   // without deadlocking.
-  _held_handler_limiter: AsyncLimiter | null;
+  _held_handler_limiter: AsyncLimiter | null
 
-  constructor(params: {
-    event_id: string;
-    handler_id: string;
-    handler_name: string;
-    handler_file_path?: string;
-    eventbus_name: string;
-  }) {
-    this.id = uuidv7();
-    this.status = "pending";
-    this.event_id = params.event_id;
-    this.handler_id = params.handler_id;
-    this.handler_name = params.handler_name;
-    this.handler_file_path = params.handler_file_path;
-    this.eventbus_name = params.eventbus_name;
-    this.event_children = [];
-    this.queue_jump_hold = false;
-    this._held_handler_limiter = null;
+  constructor(params: { event_id: string; handler_id: string; handler_name: string; handler_file_path?: string; eventbus_name: string }) {
+    this.id = uuidv7()
+    this.status = 'pending'
+    this.event_id = params.event_id
+    this.handler_id = params.handler_id
+    this.handler_name = params.handler_name
+    this.handler_file_path = params.handler_file_path
+    this.eventbus_name = params.eventbus_name
+    this.event_children = []
+    this.queue_jump_hold = false
+    this._held_handler_limiter = null
   }
 
   markStarted(): void {
-    this.status = "started";
-    this.started_at = new Date().toISOString();
+    this.status = 'started'
+    this.started_at = new Date().toISOString()
   }
 
   markCompleted(result: unknown): void {
-    this.status = "completed";
-    this.result = result;
-    this.completed_at = new Date().toISOString();
+    this.status = 'completed'
+    this.result = result
+    this.completed_at = new Date().toISOString()
   }
 
   markError(error: unknown): void {
-    this.status = "error";
-    this.error = error;
-    this.completed_at = new Date().toISOString();
+    this.status = 'error'
+    this.error = error
+    this.completed_at = new Date().toISOString()
   }
 }
