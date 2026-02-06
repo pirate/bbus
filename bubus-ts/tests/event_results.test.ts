@@ -5,17 +5,14 @@ import { z } from "zod";
 
 import { BaseEvent, EventBus } from "../src/index.js";
 
-const StringResultEvent = BaseEvent.extend(
-  "StringResultEvent",
-  {},
-  { event_result_schema: z.string(), event_result_type: "string" }
-);
+const StringResultEvent = BaseEvent.extend("StringResultEvent", {
+  event_result_schema: z.string(),
+  event_result_type: "string"
+});
 
-const ObjectResultEvent = BaseEvent.extend(
-  "ObjectResultEvent",
-  {},
-  { event_result_schema: z.object({ value: z.string(), count: z.number() }) }
-);
+const ObjectResultEvent = BaseEvent.extend("ObjectResultEvent", {
+  event_result_schema: z.object({ value: z.string(), count: z.number() })
+});
 
 const NoResultSchemaEvent = BaseEvent.extend("NoResultSchemaEvent", {});
 

@@ -2,23 +2,23 @@ import { z } from "zod";
 
 import { BaseEvent, EventBus } from "../src/index.js";
 
-const RootEvent = BaseEvent.extend(
-  "RootEvent",
-  { url: z.string() },
-  { event_result_schema: z.string(), event_result_type: "string" }
-);
+const RootEvent = BaseEvent.extend("RootEvent", {
+  url: z.string(),
+  event_result_schema: z.string(),
+  event_result_type: "string"
+});
 
-const ChildEvent = BaseEvent.extend(
-  "ChildEvent",
-  { tab_id: z.string() },
-  { event_result_schema: z.string(), event_result_type: "string" }
-);
+const ChildEvent = BaseEvent.extend("ChildEvent", {
+  tab_id: z.string(),
+  event_result_schema: z.string(),
+  event_result_type: "string"
+});
 
-const GrandchildEvent = BaseEvent.extend(
-  "GrandchildEvent",
-  { status: z.string() },
-  { event_result_schema: z.string(), event_result_type: "string" }
-);
+const GrandchildEvent = BaseEvent.extend("GrandchildEvent", {
+  status: z.string(),
+  event_result_schema: z.string(),
+  event_result_type: "string"
+});
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => {

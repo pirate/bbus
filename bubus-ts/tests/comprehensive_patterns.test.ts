@@ -101,6 +101,7 @@ test("comprehensive patterns: forwarding, async/sync dispatch, parent tracking",
 test("race condition stress", async () => {
   const bus_1 = new EventBus("bus1");
   const bus_2 = new EventBus("bus2");
+  const RootEvent = BaseEvent.extend("RootEvent", {});
 
   const results: string[] = [];
 
@@ -135,13 +136,13 @@ test("race condition stress", async () => {
   bus_1.on(ImmediateChildEvent, child_handler);
   bus_2.on(QueuedChildEvent, child_handler);
   bus_2.on(ImmediateChildEvent, child_handler);
-  bus_1.on(BaseEvent, parent_handler);
-  bus_1.on(BaseEvent, bad_handler);
+  bus_1.on(RootEvent, parent_handler);
+  bus_1.on(RootEvent, bad_handler);
 
   for (let run = 0; run < 5; run += 1) {
     results.length = 0;
 
-    const event = bus_1.dispatch(new BaseEvent({}));
+    const event = bus_1.dispatch(RootEvent({}));
     await event.done();
     await bus_1.waitUntilIdle();
     await bus_2.waitUntilIdle();
@@ -422,9 +423,21 @@ test("multi-bus queues are independent when awaiting child", async () => {
   const event1_end_idx = execution_order.indexOf("Bus1_Event1_end");
   assert.ok(child_end_idx < event1_end_idx);
 
-  assert.ok(!execution_order.includes("Bus1_Event2_start"));
-  assert.ok(!execution_order.includes("Bus2_Event3_start"));
-  assert.ok(!execution_order.includes("Bus2_Event4_start"));
+  const bus1_event2_start_idx = execution_order.indexOf("Bus1_Event2_start");
+  if (bus1_event2_start_idx !== -1) {
+    assert.ok(bus1_event2_start_idx > event1_end_idx);
+  }
+
+  const bus2_event3_start_idx = execution_order.indexOf("Bus2_Event3_start");
+  const bus2_event4_start_idx = execution_order.indexOf("Bus2_Event4_start");
+  assert.ok(bus2_event3_start_idx !== -1 || bus2_event4_start_idx !== -1);
+  const bus2_start_idx =
+    bus2_event3_start_idx === -1
+      ? bus2_event4_start_idx
+      : bus2_event4_start_idx === -1
+        ? bus2_event3_start_idx
+        : Math.min(bus2_event3_start_idx, bus2_event4_start_idx);
+  assert.ok(bus2_start_idx < event1_end_idx);
 
   await bus_1.waitUntilIdle();
   await bus_2.waitUntilIdle();

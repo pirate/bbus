@@ -49,3 +49,86 @@ test("advanced debounce prefers history, then waits for future, then dispatches"
   assert.ok(resolved_event);
   assert.equal(resolved_event.event_type, "SyncEvent");
 });
+
+test("debounce returns existing fresh event", async () => {
+  const bus = new EventBus("DebounceFreshBus");
+
+  const original = await bus.dispatch(ScreenshotEvent({ target_id: "tab1" })).done();
+
+  const is_fresh = (event: typeof original): boolean => {
+    const completed_at = event.event_completed_at ? Date.parse(event.event_completed_at) : 0;
+    return Date.now() - completed_at < 5000;
+  };
+
+  const result =
+    (await bus.find(
+      ScreenshotEvent,
+      (event) => event.target_id === "tab1" && is_fresh(event),
+      { past: true, future: false }
+    )) ?? (await bus.dispatch(ScreenshotEvent({ target_id: "tab1" })).done());
+
+  assert.equal(result.event_id, original.event_id);
+});
+
+test("debounce dispatches new when no match", async () => {
+  const bus = new EventBus("DebounceNoMatchBus");
+
+  const result =
+    (await bus.find(
+      ScreenshotEvent,
+      (event) => event.target_id === "tab1",
+      { past: true, future: false }
+    )) ?? (await bus.dispatch(ScreenshotEvent({ target_id: "tab1" })).done());
+
+  assert.ok(result);
+  assert.equal(result.target_id, "tab1");
+  assert.equal(result.event_status, "completed");
+});
+
+test("debounce dispatches new when existing is stale", async () => {
+  const bus = new EventBus("DebounceStaleBus");
+
+  await bus.dispatch(ScreenshotEvent({ target_id: "tab1" })).done();
+
+  const result =
+    (await bus.find(
+      ScreenshotEvent,
+      (event) => event.target_id === "tab1" && false,
+      { past: true, future: false }
+    )) ?? (await bus.dispatch(ScreenshotEvent({ target_id: "tab1" })).done());
+
+  assert.ok(result);
+  const screenshots = bus.event_history.filter(
+    (event) => event.event_type === "ScreenshotEvent"
+  );
+  assert.equal(screenshots.length, 2);
+});
+
+test("debounce or-chain handles sequential lookups without blocking", async () => {
+  const bus = new EventBus("DebounceSequentialBus");
+
+  const result1 =
+    (await bus.find(
+      ScreenshotEvent,
+      (event) => event.target_id === "tab1",
+      { past: true, future: false }
+    )) ?? (await bus.dispatch(ScreenshotEvent({ target_id: "tab1" })).done());
+
+  const result2 =
+    (await bus.find(
+      ScreenshotEvent,
+      (event) => event.target_id === "tab1",
+      { past: true, future: false }
+    )) ?? (await bus.dispatch(ScreenshotEvent({ target_id: "tab1" })).done());
+
+  const result3 =
+    (await bus.find(
+      ScreenshotEvent,
+      (event) => event.target_id === "tab2",
+      { past: true, future: false }
+    )) ?? (await bus.dispatch(ScreenshotEvent({ target_id: "tab2" })).done());
+
+  assert.equal(result1.event_id, result2.event_id);
+  assert.notEqual(result1.event_id, result3.event_id);
+  assert.equal(result3.target_id, "tab2");
+});

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { BaseEvent, EventBus } from "../src/index.js";
-import { async_local_storage, has_async_local_storage } from "../src/async_context.js";
+import { async_local_storage, hasAsyncLocalStorage } from "../src/async_context.js";
 
 type ContextStore = {
   request_id?: string;
@@ -13,7 +13,7 @@ type ContextStore = {
 const SimpleEvent = BaseEvent.extend("SimpleEvent", {});
 const ChildEvent = BaseEvent.extend("ChildEvent", {});
 
-const skip_if_no_async_local_storage = !has_async_local_storage();
+const skip_if_no_async_local_storage = !hasAsyncLocalStorage();
 
 const require_async_local_storage = () => {
   assert.ok(async_local_storage, "AsyncLocalStorage not available");

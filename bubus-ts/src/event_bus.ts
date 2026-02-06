@@ -1,7 +1,14 @@
 import { BaseEvent } from "./base_event.js";
 import { EventResult } from "./event_result.js";
-import { capture_async_context, run_with_async_context } from "./async_context.js";
-import { v7 as uuidv7 } from "uuid";
+import { captureAsyncContext, runWithAsyncContext } from "./async_context.js";
+import { v5 as uuidv5, v7 as uuidv7 } from "uuid";
+import {
+  AsyncLimiter,
+  type ConcurrencyMode,
+  limiterForMode,
+  resolveConcurrencyMode,
+  runWithLimiter
+} from "./semaphores.js";
 
 
 export class EventHandlerTimeoutError extends Error {
@@ -38,7 +45,7 @@ export class EventHandlerCancelledError extends Error {
   }
 }
 
-const with_resolvers = <T>() => {
+const withResolvers = <T>() => {
   if (typeof Promise.withResolvers === "function") {
     return Promise.withResolvers<T>();
   }
@@ -52,12 +59,7 @@ const with_resolvers = <T>() => {
 
   return { promise, resolve, reject };
 };
-import type {
-  EventClass,
-  EventHandler,
-  EventKey,
-  FindOptions
-} from "./types.js";
+import type { EventHandler, EventKey, FindOptions, HandlerOptions } from "./types.js";
 
 type FindWaiter = {
   event_key: EventKey;
@@ -66,12 +68,30 @@ type FindWaiter = {
   timeout_id?: ReturnType<typeof setTimeout>;
 };
 
+type HandlerEntry = {
+  id: string;
+  handler: EventHandler;
+  handler_name: string;
+  handler_file_path?: string;
+  handler_registered_at: string;
+  options?: HandlerOptions;
+  event_key: string | "*";
+};
+
+const HANDLER_ID_NAMESPACE = uuidv5("bubus-handler", uuidv5.DNS);
+
 type EventBusOptions = {
   max_history_size?: number | null;
+  event_concurrency?: ConcurrencyMode;
+  handler_concurrency?: ConcurrencyMode;
+  event_timeout?: number | null;
 };
 
 export class EventBus {
   static instances: Set<EventBus> = new Set();
+  static global_event_limiter = new AsyncLimiter(1);
+  static global_handler_limiter = new AsyncLimiter(1);
+  static global_inside_handler_depth = 0;
   static findEventById(event_id: string): BaseEvent | null {
     for (const bus of EventBus.instances) {
       const event = bus.event_history_by_id.get(event_id);
@@ -84,37 +104,55 @@ export class EventBus {
 
   name: string;
   max_history_size: number | null;
-  handlers_by_key: Map<EventKey | "*", Set<EventHandler>>;
+  event_concurrency_default: ConcurrencyMode;
+  handler_concurrency_default: ConcurrencyMode;
+  event_timeout_default: number | null;
+  bus_event_limiter: AsyncLimiter;
+  bus_handler_limiter: AsyncLimiter;
+  handlers_by_key: Map<string | "*", Set<string>>;
+  handlers_by_id: Map<string, HandlerEntry>;
   event_history: BaseEvent[];
   event_history_by_id: Map<string, BaseEvent>;
-  pending_queue: BaseEvent[];
-  is_running: boolean;
+  pending_event_queue: BaseEvent[];
+  in_flight_event_ids: Set<string>;
+  runloop_running: boolean;
+  // Resolves for callers of waitUntilIdle(); only drained when idle is confirmed twice.
   idle_waiters: Array<() => void>;
+  // True while an idle check timeout is scheduled.
+  idle_check_pending: boolean;
+  // Number of consecutive idle snapshots seen; must reach 2 to resolve waiters.
+  idle_check_streak: number;
+  // Pending find() callers waiting for a matching future event.
   find_waiters: Set<FindWaiter>;
-  handler_stack: EventResult[];
-  handler_file_paths: Map<EventHandler, string>;
-  handler_ids: Map<EventHandler, string>;
-  run_now_depth: number;
-  run_now_waiters: Array<() => void>;
-  inside_handler_depth: number;
+  // Depth counter for "immediate processing" (queue-jump) inside handlers.
+  // While > 0, the runloop pauses to avoid processing unrelated events.
+  immediate_processing_stack_depth: number;
+  // Runloop waiters that resume once immediate_processing_stack_depth returns to 0.
+  immediate_processing_waiters: Array<() => void>;
 
   constructor(name: string = "EventBus", options: EventBusOptions = {}) {
     this.name = name;
     this.max_history_size =
       options.max_history_size === undefined ? 100 : options.max_history_size;
+    this.event_concurrency_default = options.event_concurrency ?? "bus-serial";
+    this.handler_concurrency_default = options.handler_concurrency ?? "bus-serial";
+    this.event_timeout_default =
+      options.event_timeout === undefined ? 60 : options.event_timeout;
+    this.bus_event_limiter = new AsyncLimiter(1);
+    this.bus_handler_limiter = new AsyncLimiter(1);
     this.handlers_by_key = new Map();
+    this.handlers_by_id = new Map();
     this.event_history = [];
     this.event_history_by_id = new Map();
-    this.pending_queue = [];
-    this.is_running = false;
+    this.pending_event_queue = [];
+    this.in_flight_event_ids = new Set();
+    this.runloop_running = false;
     this.idle_waiters = [];
+    this.idle_check_pending = false;
+    this.idle_check_streak = 0;
     this.find_waiters = new Set();
-    this.handler_stack = [];
-    this.handler_file_paths = new Map();
-    this.handler_ids = new Map();
-    this.run_now_depth = 0;
-    this.run_now_waiters = [];
-    this.inside_handler_depth = 0;
+    this.immediate_processing_stack_depth = 0;
+    this.immediate_processing_waiters = [];
 
     EventBus.instances.add(this);
 
@@ -122,35 +160,71 @@ export class EventBus {
     this.emit = this.emit.bind(this);
   }
 
-  on<T extends BaseEvent>(event_key: EventKey<T> | "*", handler: EventHandler<T>): void {
-    const handler_set = this.handlers_by_key.get(event_key) ?? new Set();
-    handler_set.add(handler as EventHandler);
-    this.handlers_by_key.set(event_key, handler_set);
+  on<T extends BaseEvent>(
+    event_key: EventKey<T> | "*",
+    handler: EventHandler<T>,
+    options: HandlerOptions = {}
+  ): void {
+    const normalized_key = this.normalizeEventKey(event_key);
+    const handler_name = handler.name || "anonymous";
+    const handler_file_path = this.inferHandlerFilePath() ?? undefined;
+    const handler_registered_at = BaseEvent.nextIsoTimestamp();
+    const handler_id = this.computeHandlerId(
+      normalized_key,
+      handler_name,
+      handler_file_path,
+      handler_registered_at
+    );
 
-    if (!this.handler_file_paths.has(handler as EventHandler)) {
-      const file_path = this.inferHandlerFilePath();
-      if (file_path) {
-        this.handler_file_paths.set(handler as EventHandler, file_path);
-      }
+    let handler_ids = this.handlers_by_key.get(normalized_key);
+    if (!handler_ids) {
+      handler_ids = new Set();
+      this.handlers_by_key.set(normalized_key, handler_ids);
     }
+    handler_ids.add(handler_id);
+
+    this.handlers_by_id.set(handler_id, {
+      id: handler_id,
+      handler: handler as EventHandler,
+      handler_name,
+      handler_file_path,
+      handler_registered_at,
+      options: Object.keys(options).length > 0 ? options : undefined,
+      event_key: normalized_key
+    });
   }
 
   off<T extends BaseEvent>(event_key: EventKey<T> | "*", handler: EventHandler<T>): void {
-    const handler_set = this.handlers_by_key.get(event_key);
-    if (!handler_set) {
+    const normalized_key = this.normalizeEventKey(event_key);
+    const handler_ids = this.handlers_by_key.get(normalized_key);
+    if (!handler_ids || handler_ids.size === 0) {
       return;
     }
-    handler_set.delete(handler as EventHandler);
+    for (const handler_id of Array.from(handler_ids)) {
+      const entry = this.handlers_by_id.get(handler_id);
+      if (!entry) {
+        handler_ids.delete(handler_id);
+        continue;
+      }
+      if (entry.handler === (handler as EventHandler)) {
+        handler_ids.delete(handler_id);
+        this.handlers_by_id.delete(handler_id);
+      }
+    }
+    if (handler_ids.size === 0) {
+      this.handlers_by_key.delete(normalized_key);
+    }
   }
 
-  private getHandlerId(handler: EventHandler): string {
-    const existing = this.handler_ids.get(handler);
-    if (existing) {
-      return existing;
-    }
-    const handler_id = uuidv7();
-    this.handler_ids.set(handler, handler_id);
-    return handler_id;
+  private computeHandlerId(
+    event_key: string | "*",
+    handler_name: string,
+    handler_file_path: string | undefined,
+    handler_registered_at: string
+  ): string {
+    const file_path = handler_file_path ?? "unknown";
+    const seed = `${this.name}|${event_key}|${handler_name}|${file_path}|${handler_registered_at}`;
+    return uuidv5(seed, HANDLER_ID_NAMESPACE);
   }
 
   dispatch<T extends BaseEvent>(event: T, event_key?: EventKey<T>): T {
@@ -162,12 +236,12 @@ export class EventBus {
       original_event.event_path = [];
     }
     if (original_event._dispatch_context === undefined) {
-      original_event._dispatch_context = capture_async_context();
+      original_event._dispatch_context = captureAsyncContext();
+    }
+    if (original_event.event_timeout === null) {
+      original_event.event_timeout = this.event_timeout_default;
     }
 
-    if (typeof event_key === "symbol") {
-      original_event.event_key_symbol = event_key;
-    }
 
     if (original_event.event_path.includes(this.name) || this.eventHasVisited(original_event)) {
       return this._getBusScopedEvent(original_event) as T;
@@ -177,16 +251,14 @@ export class EventBus {
       original_event.event_path.push(this.name);
     }
 
-    const current_handler = this.handler_stack[this.handler_stack.length - 1];
-    if (current_handler) {
-      const parent_event = this.event_history_by_id.get(current_handler.event_id);
+    if (original_event.event_parent_id) {
+      const parent_event = this.event_history_by_id.get(original_event.event_parent_id);
       if (parent_event) {
-        if (!original_event.event_parent_id) {
-          original_event.event_parent_id = parent_event.event_id;
-        }
-        if (original_event.event_parent_id === parent_event.event_id) {
-          this.recordChildEvent(parent_event.event_id, original_event);
-        }
+        this.recordChildEvent(
+          parent_event.event_id,
+          original_event,
+          original_event.event_emitted_by_handler_id
+        );
       }
     }
 
@@ -194,10 +266,8 @@ export class EventBus {
     this.event_history_by_id.set(original_event.event_id, original_event);
     this.trimHistory();
 
-    this.createPendingHandlerResults(original_event);
-
     original_event.event_pending_buses += 1;
-    this.pending_queue.push(original_event);
+    this.pending_event_queue.push(original_event);
     this.startRunloop();
 
     return this._getBusScopedEvent(original_event) as T;
@@ -250,21 +320,27 @@ export class EventBus {
       return true;
     };
 
-    if (past !== false) {
+    if (past !== false || future !== false) {
       const now_ms = Date.now();
       const cutoff_ms =
         past === true ? null : now_ms - Math.max(0, Number(past)) * 1000;
 
       for (let i = this.event_history.length - 1; i >= 0; i -= 1) {
         const event = this.event_history[i];
-        if (event.event_status !== "completed") {
+        if (!matches(event)) {
           continue;
         }
-        if (cutoff_ms !== null && event.event_created_at_ms < cutoff_ms) {
-          continue;
+        if (event.event_status === "completed") {
+          if (past === false) {
+            continue;
+          }
+          if (cutoff_ms !== null && event.event_created_at_ms < cutoff_ms) {
+            continue;
+          }
+          return this._getBusScopedEvent(event) as T;
         }
-        if (matches(event)) {
-          return event as T;
+        if (future !== false) {
+          return this._getBusScopedEvent(event) as T;
         }
       }
     }
@@ -277,7 +353,7 @@ export class EventBus {
       const waiter: FindWaiter = {
         event_key,
         matches,
-        resolve: (event) => resolve(event as T)
+        resolve: (event) => resolve(this._getBusScopedEvent(event) as T)
       };
 
       if (future !== true) {
@@ -302,9 +378,9 @@ export class EventBus {
       return event;
     }
 
-    const index = this.pending_queue.indexOf(original_event);
+    const index = this.pending_event_queue.indexOf(original_event);
     if (index >= 0) {
-      this.pending_queue.splice(index, 1);
+      this.pending_event_queue.splice(index, 1);
     }
 
     await this.runImmediatelyAcrossBuses(original_event);
@@ -312,12 +388,70 @@ export class EventBus {
   }
 
   async waitUntilIdle(): Promise<void> {
-    if (!this.is_running && this.pending_queue.length === 0) {
+    if (this.isIdleSnapshot()) {
       return;
     }
     return new Promise((resolve) => {
       this.idle_waiters.push(resolve);
+      this.scheduleIdleCheck();
     });
+  }
+
+  private scheduleIdleCheck(): void {
+    if (this.idle_check_pending) {
+      return;
+    }
+    this.idle_check_pending = true;
+    setTimeout(() => {
+      this.idle_check_pending = false;
+      this.resolveIdleWaitersIfDone();
+    }, 0);
+  }
+
+  private isIdleSnapshot(): boolean {
+    return (
+      this.pending_event_queue.length === 0 &&
+      this.in_flight_event_ids.size === 0 &&
+      !this.hasPendingResults() &&
+      !this.runloop_running
+    );
+  }
+
+  private resolveIdleWaitersIfDone(): void {
+    if (!this.isIdleSnapshot()) {
+      this.idle_check_streak = 0;
+      if (this.idle_waiters.length > 0) {
+        this.scheduleIdleCheck();
+      }
+      return;
+    }
+    this.idle_check_streak += 1;
+    if (this.idle_check_streak < 2) {
+      if (this.idle_waiters.length > 0) {
+        this.scheduleIdleCheck();
+      }
+      return;
+    }
+    this.idle_check_streak = 0;
+    const idle_waiters = this.idle_waiters;
+    this.idle_waiters = [];
+    for (const resolve of idle_waiters) {
+      resolve();
+    }
+  }
+
+  private hasPendingResults(): boolean {
+    for (const event of this.event_history) {
+      for (const result of event.event_results.values()) {
+        if (result.eventbus_name !== this.name) {
+          continue;
+        }
+        if (result.status === "pending") {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   eventIsChildOf(event: BaseEvent, ancestor: BaseEvent): boolean {
@@ -343,7 +477,11 @@ export class EventBus {
     return this.eventIsChildOf(descendant, event);
   }
 
-  recordChildEvent(parent_event_id: string, child_event: BaseEvent): void {
+  recordChildEvent(
+    parent_event_id: string,
+    child_event: BaseEvent,
+    handler_id?: string
+  ): void {
     const original_child = child_event._original_event ?? child_event;
     const parent_event = this.event_history_by_id.get(parent_event_id);
     if (parent_event) {
@@ -352,12 +490,16 @@ export class EventBus {
       }
     }
 
-    const current_result = this.handler_stack[this.handler_stack.length - 1];
-    if (current_result) {
-      if (!current_result.event_children.some((child) => child.event_id === original_child.event_id)) {
-        current_result.event_children.push(original_child);
+    const target_handler_id =
+      handler_id ?? original_child.event_emitted_by_handler_id ?? undefined;
+    if (target_handler_id) {
+      const current_result = parent_event?.event_results.get(target_handler_id);
+      if (current_result) {
+        if (!current_result.event_children.some((child) => child.event_id === original_child.event_id)) {
+          current_result.event_children.push(original_child);
+        }
       }
-      original_child.event_emitted_by_handler_id = current_result.handler_id;
+      original_child.event_emitted_by_handler_id = target_handler_id;
     }
   }
 
@@ -419,7 +561,7 @@ export class EventBus {
   }
 
   isInsideHandler(): boolean {
-    return this.inside_handler_depth > 0;
+    return EventBus.global_inside_handler_depth > 0;
   }
 
   private async runImmediatelyAcrossBuses(event: BaseEvent): Promise<void> {
@@ -430,18 +572,26 @@ export class EventBus {
     }
 
     for (const bus of buses) {
-      bus.run_now_depth += 1;
+      bus.immediate_processing_stack_depth += 1;
     }
 
     try {
       for (const bus of buses) {
-        const index = bus.pending_queue.indexOf(event);
+        const index = bus.pending_event_queue.indexOf(event);
         if (index >= 0) {
-          bus.pending_queue.splice(index, 1);
+          bus.pending_event_queue.splice(index, 1);
         }
-        if (!event.event_processed_path.includes(bus.name)) {
-          await bus.processEvent(event);
+        if (bus.eventHasVisited(event)) {
+          continue;
         }
+        if (bus.in_flight_event_ids.has(event.event_id)) {
+          continue;
+        }
+        bus.in_flight_event_ids.add(event.event_id);
+        await bus.scheduleEventProcessing(event, {
+          bypass_event_limiters: true,
+          bypass_handler_limiters: true
+        });
       }
 
       if (event.event_status !== "completed") {
@@ -449,7 +599,10 @@ export class EventBus {
       }
     } finally {
       for (const bus of buses) {
-        bus.run_now_depth = Math.max(0, bus.run_now_depth - 1);
+        bus.immediate_processing_stack_depth = Math.max(
+          0,
+          bus.immediate_processing_stack_depth - 1
+        );
         bus.releaseRunNowWaiters();
       }
     }
@@ -468,7 +621,7 @@ export class EventBus {
         if (!bus.event_history_by_id.has(event.event_id)) {
           continue;
         }
-        if (event.event_processed_path.includes(bus.name)) {
+        if (bus.eventHasVisited(event)) {
           continue;
         }
         if (!seen.has(bus)) {
@@ -486,98 +639,210 @@ export class EventBus {
   }
 
   private releaseRunNowWaiters(): void {
-    if (this.run_now_depth !== 0 || this.run_now_waiters.length === 0) {
+    if (
+      this.immediate_processing_stack_depth !== 0 ||
+      this.immediate_processing_waiters.length === 0
+    ) {
       return;
     }
-    const waiters = this.run_now_waiters;
-    this.run_now_waiters = [];
+    const waiters = this.immediate_processing_waiters;
+    this.immediate_processing_waiters = [];
     for (const resolve of waiters) {
-      resolve();
+      try {
+        // Each waiter is a Promise resolver created by runloop() while it was paused.
+        // Resolving it resumes that runloop tick so it can continue draining the queue.
+        resolve();
+      } catch (error) {
+        // Should never happen: these are internal Promise resolve callbacks.
+        console.error("[bubus] immediate processing waiter threw", error);
+      }
     }
   }
 
 
   private startRunloop(): void {
-    if (this.is_running) {
+    if (this.runloop_running) {
       return;
     }
-    this.is_running = true;
-    setTimeout(() => {
-      setTimeout(() => {
-        void this.runloop();
-      }, 0);
-    }, 0);
+    this.runloop_running = true;
+    queueMicrotask(() => {
+      void this.runloop();
+    });
+  }
+
+  private async scheduleEventProcessing(
+    event: BaseEvent,
+    options: {
+      bypass_event_limiters?: boolean;
+      bypass_handler_limiters?: boolean;
+      pre_acquired_limiter?: AsyncLimiter | null;
+    } = {}
+  ): Promise<void> {
+    try {
+      const limiter = options.bypass_event_limiters ? null : this.resolveEventLimiter(event);
+      const pre_acquired_limiter = options.pre_acquired_limiter ?? null;
+      if (pre_acquired_limiter) {
+        await this.processEvent(event, { bypass_handler_limiters: options.bypass_handler_limiters });
+      } else {
+        await runWithLimiter(limiter, async () => {
+          await this.processEvent(event, { bypass_handler_limiters: options.bypass_handler_limiters });
+        });
+      }
+    } finally {
+      if (options.pre_acquired_limiter) {
+        options.pre_acquired_limiter.release();
+      }
+      this.in_flight_event_ids.delete(event.event_id);
+      this.resolveIdleWaitersIfDone();
+    }
   }
 
   private async runloop(): Promise<void> {
-    while (this.pending_queue.length > 0) {
-      await Promise.resolve();
-      if (this.run_now_depth > 0) {
-        await new Promise<void>((resolve) => {
-          this.run_now_waiters.push(resolve);
+    for (;;) {
+      while (this.pending_event_queue.length > 0) {
+        await Promise.resolve();
+        if (this.immediate_processing_stack_depth > 0) {
+          await new Promise<void>((resolve) => {
+            this.immediate_processing_waiters.push(resolve);
+          });
+          continue;
+        }
+        const next_event = this.pending_event_queue[0];
+        if (!next_event) {
+          continue;
+        }
+        const original_event = next_event._original_event ?? next_event;
+        if (this.eventHasVisited(original_event)) {
+          this.pending_event_queue.shift();
+          continue;
+        }
+        let pre_acquired_limiter: AsyncLimiter | null = null;
+        const event_limiter = this.resolveEventLimiter(original_event);
+        if (event_limiter) {
+          await event_limiter.acquire();
+          pre_acquired_limiter = event_limiter;
+        }
+        this.pending_event_queue.shift();
+        if (this.in_flight_event_ids.has(original_event.event_id)) {
+          if (pre_acquired_limiter) {
+            pre_acquired_limiter.release();
+          }
+          continue;
+        }
+        this.in_flight_event_ids.add(original_event.event_id);
+        void this.scheduleEventProcessing(original_event, {
+          bypass_event_limiters: true,
+          pre_acquired_limiter
         });
-        continue;
+        await Promise.resolve();
       }
-      const next_event = this.pending_queue.shift();
-      if (!next_event) {
-        continue;
+      this.runloop_running = false;
+      if (this.pending_event_queue.length > 0) {
+        this.startRunloop();
+        return;
       }
-      if (this.eventHasVisited(next_event)) {
-        continue;
-      }
-      await this.processEvent(next_event);
-      await Promise.resolve();
-    }
-    this.is_running = false;
-    const idle_waiters = this.idle_waiters;
-    this.idle_waiters = [];
-    for (const resolve of idle_waiters) {
-      resolve();
+      this.resolveIdleWaitersIfDone();
+      return;
     }
   }
 
-  private async processEvent(event: BaseEvent): Promise<void> {
+  private async processEvent(
+    event: BaseEvent,
+    options: { bypass_handler_limiters?: boolean } = {}
+  ): Promise<void> {
     if (this.eventHasVisited(event)) {
       return;
-    }
-    if (!Array.isArray(event.event_processed_path)) {
-      event.event_processed_path = [];
-    }
-    if (!event.event_processed_path.includes(this.name)) {
-      event.event_processed_path.push(this.name);
     }
     event.markStarted();
     this.notifyFinders(event);
 
-    const handlers = this.collectHandlers(event);
-    const handler_results = handlers.map((handler) => {
-      const handler_name = handler.name || "anonymous";
-      const handler_id = this.getHandlerId(handler);
-      const existing = event.event_results.get(handler_id);
-      const result =
-        existing ??
-        new EventResult({
-          event_id: event.event_id,
-          handler_id,
-          handler_name,
-          handler_file_path: this.handler_file_paths.get(handler) ?? undefined,
-          eventbus_name: this.name
-        });
-      if (!existing) {
-        event.event_results.set(handler_id, result);
+    const deadlock_timer =
+      event.event_timeout === null
+        ? null
+        : setTimeout(() => {
+            if (event.event_status === "completed") {
+              return;
+            }
+            const started_at = event.event_started_at ?? event.event_created_at;
+            const elapsed_ms = Date.now() - Date.parse(started_at);
+            const elapsed_seconds = (elapsed_ms / 1000).toFixed(1);
+            console.warn(
+              `[bubus] Possible deadlock: ${event.event_type}#${event.event_id} still ${event.event_status} on ${this.name} after ${elapsed_seconds}s (timeout ${event.event_timeout}s)`
+            );
+          }, event.event_timeout * 1000);
+
+    try {
+    const handler_entries = this.createPendingHandlerResults(event);
+
+      const handler_promises = handler_entries.map((entry) =>
+        this.runHandlerEntry(event, entry.handler, entry.result, entry.options, {
+          bypass_handler_limiters: options.bypass_handler_limiters
+        })
+      );
+      await Promise.all(handler_promises);
+
+      event.event_pending_buses = Math.max(0, event.event_pending_buses - 1);
+      event.tryFinalizeCompletion();
+      if (event.event_status === "completed") {
+        this.notifyParentsFor(event);
       }
-      return { handler, result };
-    });
+    } finally {
+      if (deadlock_timer) {
+        clearTimeout(deadlock_timer);
+      }
+    }
+  }
 
-    const handler_event = this._getBusScopedEvent(event);
+  private resolveEventLimiter(event: BaseEvent): AsyncLimiter | null {
+    const resolved = resolveConcurrencyMode(
+      event.event_concurrency,
+      this.event_concurrency_default
+    );
+    return limiterForMode(resolved, EventBus.global_event_limiter, this.bus_event_limiter);
+  }
 
-    for (const { handler, result } of handler_results) {
+  private resolveHandlerLimiter(
+    event: BaseEvent,
+    options?: HandlerOptions
+  ): AsyncLimiter | null {
+    const event_override =
+      event.handler_concurrency && event.handler_concurrency !== "auto"
+        ? event.handler_concurrency
+        : undefined;
+    const handler_override =
+      options?.handler_concurrency && options.handler_concurrency !== "auto"
+        ? options.handler_concurrency
+        : undefined;
+    const fallback = this.handler_concurrency_default;
+    const resolved = resolveConcurrencyMode(
+      event_override ?? handler_override ?? fallback,
+      fallback
+    );
+    return limiterForMode(resolved, EventBus.global_handler_limiter, this.bus_handler_limiter);
+  }
+
+  private async runHandlerEntry(
+    event: BaseEvent,
+    handler: EventHandler,
+    result: EventResult,
+    options?: HandlerOptions,
+    run_options: { bypass_handler_limiters?: boolean } = {}
+  ): Promise<void> {
+    if (result.status === "error" && result.error instanceof EventHandlerCancelledError) {
+      return;
+    }
+
+    const handler_event = this._getBusScopedEvent(event, result);
+    const limiter = run_options.bypass_handler_limiters
+      ? null
+      : this.resolveHandlerLimiter(event, options);
+
+    await runWithLimiter(limiter, async () => {
       if (result.status === "error" && result.error instanceof EventHandlerCancelledError) {
-        continue;
+        return;
       }
-      this.inside_handler_depth += 1;
-      this.handler_stack.push(result);
 
+      EventBus.global_inside_handler_depth += 1;
       try {
         result.markStarted();
         const handler_result = await this.runHandlerWithTimeout(event, handler, handler_event);
@@ -607,22 +872,18 @@ export class EventBus {
               parent_error: error
             }
           );
-          event.cancelPendingChildProcessing(cancelled_error);
+          this.cancelPendingChildProcessing(event, cancelled_error);
         } else {
           result.markError(error);
           event.markFailed(error);
         }
       } finally {
-        this.handler_stack.pop();
-        this.inside_handler_depth = Math.max(0, this.inside_handler_depth - 1);
+        EventBus.global_inside_handler_depth = Math.max(
+          0,
+          EventBus.global_inside_handler_depth - 1
+        );
       }
-    }
-
-    event.event_pending_buses = Math.max(0, event.event_pending_buses - 1);
-    event.tryFinalizeCompletion();
-    if (event.event_status === "completed") {
-      this.notifyParentsFor(event);
-    }
+    });
   }
 
   
@@ -632,59 +893,79 @@ export class EventBus {
     handler: EventHandler,
     handler_event: BaseEvent = event
   ): Promise<unknown> {
+    const handler_name = handler.name || "anonymous";
+    const warn_ms = 15000;
+    const started_at_ms = Date.now();
+    const should_warn =
+      event.event_timeout === null || event.event_timeout * 1000 > warn_ms;
+    const warn_timer = should_warn
+      ? setTimeout(() => {
+          const elapsed_ms = Date.now() - started_at_ms;
+          const elapsed_seconds = (elapsed_ms / 1000).toFixed(1);
+          console.warn(
+            `[bubus] Slow handler: ${event.event_type}.${handler_name} running ${elapsed_seconds}s on ${this.name}`
+          );
+        }, warn_ms)
+      : null;
+    const clear_warn = () => {
+      if (warn_timer) {
+        clearTimeout(warn_timer);
+      }
+    };
+    const run_handler = () =>
+      Promise.resolve().then(() =>
+        runWithAsyncContext(event._dispatch_context ?? null, () => handler(handler_event))
+      );
+
     if (event.event_timeout === null) {
-      return run_with_async_context(event._dispatch_context ?? null, () => handler(handler_event));
+      return run_handler().finally(clear_warn);
     }
 
     const timeout_seconds = event.event_timeout;
     const timeout_ms = timeout_seconds * 1000;
 
-    const { promise, resolve, reject } = with_resolvers<unknown>();
+    const { promise, resolve, reject } = withResolvers<unknown>();
     let settled = false;
 
+    const finalize = (fn: (value?: unknown) => void) => {
+      return (value?: unknown) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        clear_warn();
+        fn(value);
+      };
+    };
+
     const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      reject(
+      finalize(reject)(
         new EventHandlerTimeoutError(
-          `handler ${handler.name || "anonymous"} timed out after ${timeout_seconds}s`,
+          `handler ${handler_name} timed out after ${timeout_seconds}s`,
           {
             event_type: event.event_type,
-            handler_name: handler.name || "anonymous",
+            handler_name,
             timeout_seconds
           }
         )
       );
     }, timeout_ms);
 
-    Promise.resolve()
-      .then(() => run_with_async_context(event._dispatch_context ?? null, () => handler(handler_event)))
-      .then((value) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        resolve(value);
-      })
-      .catch((error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      });
+    run_handler().then(finalize(resolve)).catch(finalize(reject));
 
     return promise;
   }
 
   private eventHasVisited(event: BaseEvent): boolean {
-    return (
-      Array.isArray(event.event_processed_path) &&
-      event.event_processed_path.includes(this.name)
+    const results = Array.from(event.event_results.values()).filter(
+      (result) => result.eventbus_name === this.name
+    );
+    if (results.length === 0) {
+      return false;
+    }
+    return results.every(
+      (result) => result.status === "completed" || result.status === "error"
     );
   }
 
@@ -705,10 +986,11 @@ export class EventBus {
     }
   }
 
-  _getBusScopedEvent<T extends BaseEvent>(event: T): T {
+  _getBusScopedEvent<T extends BaseEvent>(event: T, handler_result?: EventResult): T {
     const original_event = event._original_event ?? event;
     const bus = this;
     const parent_event_id = original_event.event_id;
+    const handler_id = handler_result?.handler_id;
     const bus_proxy = new Proxy(bus, {
       get(target, prop, receiver) {
         if (prop === "dispatch" || prop === "emit") {
@@ -716,6 +998,9 @@ export class EventBus {
             const original_child = child_event._original_event ?? child_event;
             if (!original_child.event_parent_id) {
               original_child.event_parent_id = parent_event_id;
+            }
+            if (handler_id && !original_child.event_emitted_by_handler_id) {
+              original_child.event_emitted_by_handler_id = handler_id;
             }
             const dispatcher = Reflect.get(target, prop, receiver) as (
               event: BaseEvent,
@@ -755,6 +1040,71 @@ export class EventBus {
     });
 
     return scoped as T;
+  }
+
+  private cancelPendingChildProcessing(
+    event: BaseEvent,
+    error: EventHandlerCancelledError
+  ): void {
+    const visited = new Set<string>();
+    const cancel_child = (child: BaseEvent): void => {
+      const original_child = child._original_event ?? child;
+      if (visited.has(original_child.event_id)) {
+        return;
+      }
+      visited.add(original_child.event_id);
+
+      const path = Array.isArray(original_child.event_path)
+        ? original_child.event_path
+        : [];
+      const buses_to_cancel = new Set<string>(path);
+      for (const bus of EventBus.instances) {
+        if (!buses_to_cancel.has(bus.name)) {
+          continue;
+        }
+        bus.cancelEventOnBus(original_child, error);
+      }
+
+      for (const grandchild of original_child.event_children) {
+        cancel_child(grandchild);
+      }
+    };
+
+    for (const child of event.event_children) {
+      cancel_child(child);
+    }
+  }
+
+  private cancelEventOnBus(event: BaseEvent, error: EventHandlerCancelledError): void {
+    const original_event = event._original_event ?? event;
+    const handler_entries = this.createPendingHandlerResults(original_event);
+    let updated = false;
+    for (const entry of handler_entries) {
+      if (entry.result.status === "pending") {
+        entry.result.markError(error);
+        updated = true;
+      }
+    }
+
+    let removed = 0;
+    if (this.pending_event_queue.length > 0) {
+      const before_len = this.pending_event_queue.length;
+      this.pending_event_queue = this.pending_event_queue.filter(
+        (queued) => (queued._original_event ?? queued).event_id !== original_event.event_id
+      );
+      removed = before_len - this.pending_event_queue.length;
+    }
+
+    if (removed > 0 && !this.in_flight_event_ids.has(original_event.event_id)) {
+      original_event.event_pending_buses = Math.max(0, original_event.event_pending_buses - 1);
+    }
+
+    if (updated || removed > 0) {
+      original_event.tryFinalizeCompletion();
+      if (original_event.event_status === "completed") {
+        this.notifyParentsFor(original_event);
+      }
+    }
   }
 
   private buildTreeLine(
@@ -1019,55 +1369,81 @@ export class EventBus {
     }
   }
 
-  private createPendingHandlerResults(event: BaseEvent): void {
+  private createPendingHandlerResults(
+    event: BaseEvent
+  ): Array<{
+    handler: EventHandler;
+    result: EventResult;
+    options?: HandlerOptions;
+  }> {
     const handlers = this.collectHandlers(event);
-    handlers.forEach((handler) => {
-      const handler_id = this.getHandlerId(handler);
-      if (event.event_results.has(handler_id)) {
-        return;
+    return handlers.map(({ handler_id, handler, handler_name, handler_file_path, options }) => {
+      const existing = event.event_results.get(handler_id);
+      const result =
+        existing ??
+        new EventResult({
+          event_id: event.event_id,
+          handler_id,
+          handler_name,
+          handler_file_path,
+          eventbus_name: this.name
+        });
+      if (!existing) {
+        event.event_results.set(handler_id, result);
       }
-      const handler_name = handler.name || "anonymous";
-      const result = new EventResult({
-        event_id: event.event_id,
-        handler_id,
-        handler_name,
-        handler_file_path: this.handler_file_paths.get(handler) ?? undefined,
-        eventbus_name: this.name
-      });
-      event.event_results.set(handler_id, result);
+      return { handler, result, options };
     });
   }
 
-  private collectHandlers(event: BaseEvent): EventHandler[] {
-    const handlers: EventHandler[] = [];
+  private collectHandlers(
+    event: BaseEvent
+  ): Array<{
+    handler_id: string;
+    handler: EventHandler;
+    handler_name: string;
+    handler_file_path?: string;
+    options?: HandlerOptions;
+  }> {
+    const handlers: Array<{
+      handler_id: string;
+      handler: EventHandler;
+      handler_name: string;
+      handler_file_path?: string;
+      options?: HandlerOptions;
+    }> = [];
 
-    const string_handlers = this.handlers_by_key.get(event.event_type);
-    if (string_handlers) {
-      handlers.push(...string_handlers);
-    }
-
-    const class_handlers = this.handlers_by_key.get(event.constructor as EventClass);
-    if (class_handlers) {
-      handlers.push(...class_handlers);
-    }
-
-    if (event.event_factory) {
-      const factory_handlers = this.handlers_by_key.get(event.event_factory as EventKey);
-      if (factory_handlers) {
-        handlers.push(...factory_handlers);
-      }
-    }
-
-    if (event.event_key_symbol) {
-      const symbol_handlers = this.handlers_by_key.get(event.event_key_symbol);
-      if (symbol_handlers) {
-        handlers.push(...symbol_handlers);
+    const keyed_handlers = this.handlers_by_key.get(event.event_type);
+    if (keyed_handlers) {
+      for (const handler_id of keyed_handlers.values()) {
+        const entry = this.handlers_by_id.get(handler_id);
+        if (!entry) {
+          continue;
+        }
+        handlers.push({
+          handler_id,
+          handler: entry.handler,
+          handler_name: entry.handler_name,
+          handler_file_path: entry.handler_file_path,
+          options: entry.options
+        });
       }
     }
 
     const wildcard_handlers = this.handlers_by_key.get("*");
     if (wildcard_handlers) {
-      handlers.push(...wildcard_handlers);
+      for (const handler_id of wildcard_handlers.values()) {
+        const entry = this.handlers_by_id.get(handler_id);
+        if (!entry) {
+          continue;
+        }
+        handlers.push({
+          handler_id,
+          handler: entry.handler,
+          handler_name: entry.handler_name,
+          handler_file_path: entry.handler_file_path,
+          options: entry.options
+        });
+      }
     }
 
     return handlers;
@@ -1077,20 +1453,27 @@ export class EventBus {
     if (event_key === "*") {
       return true;
     }
+    const normalized = this.normalizeEventKey(event_key);
+    if (normalized === "*") {
+      return true;
+    }
+    return event.event_type === normalized;
+  }
+
+  private normalizeEventKey(event_key: EventKey | "*"): string | "*" {
+    if (event_key === "*") {
+      return "*";
+    }
     if (typeof event_key === "string") {
-      return event.event_type === event_key;
+      return event_key;
     }
-    if (typeof event_key === "symbol") {
-      return event.event_key_symbol === event_key;
+    const event_type = (event_key as { event_type?: unknown }).event_type;
+    if (typeof event_type === "string" && event_type.length > 0 && event_type !== "BaseEvent") {
+      return event_type;
     }
-    if (event.event_factory && event_key === event.event_factory) {
-      return true;
-    }
-    const ctor = event.constructor as EventClass & { factory?: Function };
-    if (ctor.factory && event_key === ctor.factory) {
-      return true;
-    }
-    return event.constructor === event_key;
+    throw new Error(
+      "event_key must be a string or an event class with a static event_type (not BaseEvent)"
+    );
   }
 
   private trimHistory(): void {

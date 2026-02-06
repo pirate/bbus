@@ -14,7 +14,7 @@ gotchas we uncovered while matching behavior. It intentionally does **not** re-d
 ### 2) Cross-bus queue jump (forwarding)
 - Python uses a global re-entrant lock to let awaited events process immediately on every bus where they appear.
 - TS does **not** use AsyncLocalStorage or a global lock (browser support).
-- Instead, `EventBus.instances` + `run_now_depth` pauses each runloop and processes the same event immediately across buses.
+- Instead, `EventBus.instances` + `immediate_processing_stack_depth` pauses each runloop and processes the same event immediately across buses.
 
 ### 3) `event.bus` is a BusScopedEvent view
 - In Python, `event.event_bus` is dynamic (contextvars).
@@ -28,22 +28,182 @@ gotchas we uncovered while matching behavior. It intentionally does **not** re-d
 ### 5) No middleware, no WAL, no SQLite mirrors
 - Those Python features were intentionally dropped for the JS version.
 
+### 6) Default timeouts come from the EventBus
+- `BaseEvent.event_timeout` defaults to `null`.
+- When dispatched, `EventBus` applies its default `event_timeout` (60s unless configured).
+- You can set `{ event_timeout: null }` on the bus to disable timeouts entirely.
+- Handlers that exceed 15s emit a warning (deadlock detection signal); the event still continues unless a timeout is hit.
+
+## EventBus Options
+All options are passed to `new EventBus(name, options)`.
+
+- `max_history_size?: number | null` (default: `100`)
+  - Max number of events kept in history. Set to `null` for unlimited history.
+- `event_concurrency?: "global-serial" | "bus-serial" | "parallel" | "auto"` (default: `"bus-serial"`)
+  - Controls how many **events** can be processed at a time.
+  - `"global-serial"` enforces FIFO across all buses.
+  - `"bus-serial"` enforces FIFO per bus, allows cross-bus overlap.
+  - `"parallel"` allows events to process concurrently.
+  - `"auto"` uses the bus default (mostly useful for overrides).
+- `handler_concurrency?: "global-serial" | "bus-serial" | "parallel" | "auto"` (default: `"bus-serial"`)
+  - Controls how many **handlers** run at once for each event.
+  - Same semantics as `event_concurrency`, but applied to handler execution.
+- `event_timeout?: number | null` (default: `60`)
+  - Default handler timeout in seconds, applied when `event.event_timeout` is `null`.
+  - Set to `null` to disable timeouts globally for the bus.
+
+## Concurrency Overrides and Precedence
+
+You can override concurrency per event and per handler:
+
+```ts
+const FastEvent = BaseEvent.extend("FastEvent", {
+  payload: z.string()
+});
+
+// Per-event override (highest precedence)
+const event = FastEvent({
+  payload: "x",
+  event_concurrency: "parallel",
+  handler_concurrency: "parallel"
+});
+
+// Per-handler override (lower precedence)
+bus.on(FastEvent, handler, { handler_concurrency: "parallel" });
+```
+
+Precedence order (highest → lowest):
+1. Event instance overrides (`event_concurrency`, `handler_concurrency`)
+2. Handler options (`handler_concurrency`)
+3. Bus defaults (`event_concurrency`, `handler_concurrency`)
+
+`"auto"` resolves to the bus default.
+
+## Handler Options
+
+Handlers can be configured with `HandlerOptions`:
+
+```ts
+bus.on(SomeEvent, handler, {
+  order: -10, // serial ordering (lower runs earlier)
+  handler_concurrency: "parallel"
+});
+```
+
+- `order: number` runs handlers in ascending order (serial).
+- `order: null` puts the handler into the parallel bucket.
+- `handler_concurrency` allows per-handler overrides.
+
+If an event sets `handler_concurrency: "parallel"`, that wins even if a handler is ordered.
+
+## Limiters (how concurrency is enforced)
+
+We use four limiters:
+
+- `EventBus.global_event_limiter`
+- `EventBus.global_handler_limiter`
+- `bus.bus_event_limiter`
+- `bus.bus_handler_limiter`
+
+They are applied centrally when scheduling events and handlers, so concurrency is controlled without scattering
+mutex checks throughout the code.
+
+## Full lifecycle across concurrency modes
+
+Below is the complete execution flow for nested events, including forwarding across buses, and how it behaves
+under different `event_concurrency` / `handler_concurrency` configurations.
+
+### 1) Base execution flow (applies to all modes)
+
+**Dispatch (non-awaited):**
+1. `dispatch()` normalizes to `original_event`, sets `bus` if missing.
+2. Captures `_dispatch_context` (AsyncLocalStorage if available).
+3. Applies `event_timeout_default` if `event.event_timeout === null`.
+4. If this bus is already in `event_path` (or `eventHasVisited()`), return a BusScopedEvent without queueing.
+5. Append bus name to `event_path`, record child relationship (if `event_parent_id` is set).
+6. Add to `event_history` + `event_history_by_id`.
+7. Increment `event_pending_buses`.
+8. Push to `pending_event_queue` and `startRunloop()`.
+
+**Runloop + processing:**
+1. `runloop()` drains `pending_event_queue`.
+2. Adds event id to `in_flight_event_ids`.
+3. Calls `scheduleEventProcessing()` (async).
+4. `scheduleEventProcessing()` selects the event limiter and runs `processEvent()`.
+5. `processEvent()`:
+   - `event.markStarted()`
+   - `notifyFinders(event)`
+   - creates handler results (`event_results`)
+   - runs handlers (respecting handler limiter)
+   - decrements `event_pending_buses` and calls `event.tryFinalizeCompletion()`
+
+### 2) Event concurrency modes (`event_concurrency`)
+
+- **`global-serial`**: events are serialized across *all* buses using the global event limiter.
+- **`bus-serial`**: events are serialized per bus; different buses can overlap.
+- **`parallel`**: no event limiter; events can run concurrently on the same bus.
+- **`auto`**: resolves to the bus default.
+
+**Mixed buses:** each bus enforces its own event mode. Forwarding to another bus does not inherit the source bus’s mode.
+
+### 3) Handler concurrency modes (`handler_concurrency`)
+
+`handler_concurrency` controls how handlers run **for a single event**:
+
+- **`global-serial`**: only one handler at a time across all buses using the global handler limiter.
+- **`bus-serial`**: handlers serialize per bus.
+- **`parallel`**: handlers run concurrently for the event.
+- **`auto`**: resolves to the bus default.
+
+**Interaction with event concurrency:**
+Even if events are parallel, handlers can still be serialized:
+`event_concurrency: "parallel"` + `handler_concurrency: "bus-serial"` means events start concurrently but handler execution on a bus is serialized.
+
+### 4) Forwarding across buses (non-awaited)
+
+When a handler on Bus A calls `bus_b.dispatch(event)` without awaiting:
+- Bus A continues running its handler.
+- Bus B queues and processes the event according to **Bus B’s** concurrency settings.
+- No coupling unless both buses use the global limiters.
+
+### 5) Queue-jump (`await event.done()` inside handlers)
+
+When `event.done()` is awaited inside a handler, **queue-jump** happens:
+
+1. `BaseEvent.done()` detects it’s inside a handler and calls `_runImmediately()`.
+2. `_runImmediately()` removes the event from the pending queue (if present).
+3. `runImmediatelyAcrossBuses()` processes the event immediately on all buses where it is queued.
+4. While immediate processing is active, each affected bus increments `immediate_processing_stack_depth`,
+   and its `runloop()` pauses to prevent unrelated events from running.
+5. Once immediate processing completes, `immediate_processing_waiters` resume the paused runloops.
+
+**Important:** queue-jump bypasses all event and handler limiters to guarantee correctness and FIFO semantics.
+
+### 6) Precedence recap
+
+Highest → lowest:
+1. Event instance fields (`event_concurrency`, `handler_concurrency`)
+2. Handler options (`handler_concurrency`)
+3. Bus defaults
+
+`"auto"` always resolves to the bus default.
+
 ## Gotchas and Design Choices (What surprised us)
 
-### A) Why we keep a handler stack (context without AsyncLocalStorage)
-We need to know **which handler is currently executing** to correctly assign:
+### A) Handler attribution without AsyncLocalStorage
+We need to know **which handler emitted a child** to correctly assign:
 - `event_parent_id`
 - `event_emitted_by_handler_id`
 - and to attach child events under the correct handler in the tree.
 
-Looking at `EventResult.status` alone is not enough because multiple handlers can be `started` at the same time
-(nested awaits). The stack gives us deterministic, correct parentage without AsyncLocalStorage.
+In TS we do this by injecting a **BusScopedEvent** into handlers, which captures the active handler id and
+propagates it via `event_emitted_by_handler_id`. This keeps parentage deterministic even with nested awaits.
 
-### B) Why `run_now_depth` exists
+### B) Why `immediate_processing_stack_depth` exists
 When an event is awaited inside a handler, the event must **jump the queue**. If the runloop continues normally,
 it could process unrelated events ("overshoot"), breaking FIFO guarantees.
 
-`run_now_depth` pauses the runloop while we run the awaited event immediately. Once the queue-jump completes,
+`immediate_processing_stack_depth` pauses the runloop while we run the awaited event immediately. Once the queue-jump completes,
 the runloop resumes in FIFO order. This matches the Python behavior.
 
 ### C) BusScopedEvent: why it exists and how it works

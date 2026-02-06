@@ -1,10 +1,12 @@
-export { BaseEvent, BaseEventSchema, extendEvent } from "./base_event.js";
+export { BaseEvent, BaseEventSchema } from "./base_event.js";
 export { EventResult } from "./event_result.js";
 export { EventBus, EventHandlerTimeoutError, EventHandlerCancelledError } from "./event_bus.js";
+export type { ConcurrencyMode } from "./semaphores.js";
 export type {
   EventClass,
   EventHandler,
   EventKey,
+  HandlerOptions,
   EventStatus,
   FindOptions,
   FindWindow

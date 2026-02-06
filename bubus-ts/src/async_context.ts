@@ -26,18 +26,18 @@ if (is_node) {
   }
 }
 
-export const capture_async_context = (): unknown | null => {
+export const captureAsyncContext = (): unknown | null => {
   if (!async_local_storage) {
     return null;
   }
   return async_local_storage.getStore() ?? null;
 };
 
-export const run_with_async_context = <T>(context: unknown | null, fn: () => T): T => {
+export const runWithAsyncContext = <T>(context: unknown | null, fn: () => T): T => {
   if (!async_local_storage) {
     return fn();
   }
   return async_local_storage.run(context ?? undefined, fn);
 };
 
-export const has_async_local_storage = (): boolean => async_local_storage !== null;
+export const hasAsyncLocalStorage = (): boolean => async_local_storage !== null;
