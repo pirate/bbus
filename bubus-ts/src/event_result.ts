@@ -1,6 +1,6 @@
 import { v7 as uuidv7 } from 'uuid'
 
-import type { BaseEvent } from './base_event.js'
+import { BaseEvent } from './base_event.js'
 import { HandlerLock, withResolvers } from './lock_manager.js'
 import type { Deferred } from './lock_manager.js'
 
@@ -9,13 +9,16 @@ export type EventResultStatus = 'pending' | 'started' | 'completed' | 'error'
 export class EventResult {
   id: string
   status: EventResultStatus
+  event?: BaseEvent
   event_id: string
   handler_id: string
   handler_name: string
   handler_file_path?: string
   eventbus_name: string
   started_at?: string
+  started_ts?: number
   completed_at?: string
+  completed_ts?: number
   result?: unknown
   error?: unknown
   event_children: BaseEvent[]
@@ -27,9 +30,17 @@ export class EventResult {
   // _runImmediately for yield-and-reacquire during queue-jumps.
   _lock: HandlerLock | null
 
-  constructor(params: { event_id: string; handler_id: string; handler_name: string; handler_file_path?: string; eventbus_name: string }) {
+  constructor(params: {
+    event_id: string
+    handler_id: string
+    handler_name: string
+    handler_file_path?: string
+    eventbus_name: string
+    event?: BaseEvent
+  }) {
     this.id = uuidv7()
     this.status = 'pending'
+    this.event = params.event
     this.event_id = params.event_id
     this.handler_id = params.handler_id
     this.handler_name = params.handler_name
@@ -59,20 +70,26 @@ export class EventResult {
 
   markStarted(): void {
     this.status = 'started'
-    this.started_at = new Date().toISOString()
+    const { isostring: started_at, ts: started_ts } = BaseEvent.nextTimestamp()
+    this.started_at = started_at
+    this.started_ts = started_ts
   }
 
   markCompleted(result: unknown): void {
     if (this.status === 'completed' || this.status === 'error') return
     this.status = 'completed'
     this.result = result
-    this.completed_at = new Date().toISOString()
+    const { isostring: completed_at, ts: completed_ts } = BaseEvent.nextTimestamp()
+    this.completed_at = completed_at
+    this.completed_ts = completed_ts
   }
 
   markError(error: unknown): void {
     if (this.status === 'completed' || this.status === 'error') return
     this.status = 'error'
     this.error = error
-    this.completed_at = new Date().toISOString()
+    const { isostring: completed_at, ts: completed_ts } = BaseEvent.nextTimestamp()
+    this.completed_at = completed_at
+    this.completed_ts = completed_ts
   }
 }

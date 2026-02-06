@@ -83,7 +83,7 @@ test('await event.done waits for handlers on forwarded buses', async () => {
   await event.done()
 
   assert.deepEqual(completion_log.sort(), ['A', 'B', 'C'])
-  assert.equal(event.event_pending_buses, 0)
+  assert.equal(event.event_pending_bus_count, 0)
 })
 
 test('circular forwarding A->B->C->A does not loop', async () => {
@@ -181,6 +181,6 @@ test('await event.done waits when forwarding handler is async-delayed', async ()
 
   assert.equal(bus_a_done, true)
   assert.equal(bus_b_done, true)
-  assert.equal(event.event_pending_buses, 0)
+  assert.equal(event.event_pending_bus_count, 0)
   assert.deepEqual(event.event_path, ['BusA', 'BusB'])
 })

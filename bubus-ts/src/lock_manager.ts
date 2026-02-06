@@ -168,42 +168,36 @@ export class HandlerLock {
 
 // ─── LockManager ─────────────────────────────────────────────────────────────
 
-type LockManagerOptions = {
-  get_idle_snapshot: () => boolean
-  get_event_concurrency_default: () => ConcurrencyMode
-  get_handler_concurrency_default: () => ConcurrencyMode
-  get_bus_event_semaphore: () => AsyncSemaphore
-  get_bus_handler_semaphore: () => AsyncSemaphore
-  get_global_event_semaphore: () => AsyncSemaphore
-  get_global_handler_semaphore: () => AsyncSemaphore
+export type EventBusInterfaceForLockManager = {
+  pending_event_queue: BaseEvent[]
+  in_flight_event_ids: Set<string>
+  runloop_running: boolean
+  hasPendingResults: () => boolean
+  event_concurrency_default: ConcurrencyMode
+  handler_concurrency_default: ConcurrencyMode
 }
 
 export class LockManager {
-  private get_idle_snapshot: () => boolean
-  private get_event_concurrency_default: () => ConcurrencyMode
-  private get_handler_concurrency_default: () => ConcurrencyMode
-  private get_bus_event_semaphore: () => AsyncSemaphore
-  private get_bus_handler_semaphore: () => AsyncSemaphore
-  private get_global_event_semaphore: () => AsyncSemaphore
-  private get_global_handler_semaphore: () => AsyncSemaphore
+  static global_event_semaphore = new AsyncSemaphore(1)
+  static global_handler_semaphore = new AsyncSemaphore(1)
 
-  private pause_depth: number
-  private pause_waiters: Array<() => void>
-  private queue_jump_pause_releases: WeakMap<EventResult, () => void>
-  private active_handler_results: EventResult[]
+  private bus: EventBusInterfaceForLockManager // Live bus reference; used to read defaults and idle state.
+  readonly bus_event_semaphore: AsyncSemaphore // Per-bus event semaphore; created with LockManager and never swapped.
+  readonly bus_handler_semaphore: AsyncSemaphore // Per-bus handler semaphore; created with LockManager and never swapped.
 
-  private idle_waiters: Array<() => void>
-  private idle_check_pending: boolean
-  private idle_check_streak: number
+  private pause_depth: number // Re-entrant pause counter; increments on requestPause, decrements on release.
+  private pause_waiters: Array<() => void> // Resolvers for waitUntilResumed; drained when pause_depth hits 0.
+  private queue_jump_pause_releases: WeakMap<EventResult, () => void> // Per-handler pause release for queue-jump; cleared on handler exit.
+  private active_handler_results: EventResult[] // Stack of active handler results for "inside handler" detection.
 
-  constructor(options: LockManagerOptions) {
-    this.get_idle_snapshot = options.get_idle_snapshot
-    this.get_event_concurrency_default = options.get_event_concurrency_default
-    this.get_handler_concurrency_default = options.get_handler_concurrency_default
-    this.get_bus_event_semaphore = options.get_bus_event_semaphore
-    this.get_bus_handler_semaphore = options.get_bus_handler_semaphore
-    this.get_global_event_semaphore = options.get_global_event_semaphore
-    this.get_global_handler_semaphore = options.get_global_handler_semaphore
+  private idle_waiters: Array<() => void> // Resolvers waiting for stable idle; cleared when idle confirmed.
+  private idle_check_pending: boolean // Debounce flag to avoid scheduling redundant idle checks.
+  private idle_check_streak: number // Counts consecutive idle checks; used to require two ticks of idle.
+
+  constructor(bus: EventBusInterfaceForLockManager) {
+    this.bus = bus
+    this.bus_event_semaphore = new AsyncSemaphore(1)
+    this.bus_handler_semaphore = new AsyncSemaphore(1)
 
     this.pause_depth = 0
     this.pause_waiters = []
@@ -284,7 +278,7 @@ export class LockManager {
   }
 
   waitForIdle(): Promise<void> {
-    if (this.get_idle_snapshot()) {
+    if (this.getIdleSnapshot()) {
       return Promise.resolve()
     }
     return new Promise((resolve) => {
@@ -294,7 +288,7 @@ export class LockManager {
   }
 
   notifyIdleListeners(): void {
-    if (!this.get_idle_snapshot()) {
+    if (!this.getIdleSnapshot()) {
       this.idle_check_streak = 0
       if (this.idle_waiters.length > 0) {
         this.scheduleIdleCheck()
@@ -319,17 +313,18 @@ export class LockManager {
   }
 
   getSemaphoreForEvent(event: BaseEvent): AsyncSemaphore | null {
-    const resolved = resolveConcurrencyMode(event.event_concurrency, this.get_event_concurrency_default())
-    return semaphoreForMode(resolved, this.get_global_event_semaphore(), this.get_bus_event_semaphore())
+    const resolved = resolveConcurrencyMode(event.event_concurrency, this.bus.event_concurrency_default)
+    return semaphoreForMode(resolved, LockManager.global_event_semaphore, this.bus_event_semaphore)
   }
 
   getSemaphoreForHandler(event: BaseEvent, options?: HandlerOptions): AsyncSemaphore | null {
-    const event_override = event.handler_concurrency && event.handler_concurrency !== 'auto' ? event.handler_concurrency : undefined
+    const event_override =
+      event.handler_concurrency && event.handler_concurrency !== 'auto' ? event.handler_concurrency : undefined
     const handler_override =
       options?.handler_concurrency && options.handler_concurrency !== 'auto' ? options.handler_concurrency : undefined
-    const fallback = this.get_handler_concurrency_default()
+    const fallback = this.bus.handler_concurrency_default
     const resolved = resolveConcurrencyMode(event_override ?? handler_override ?? fallback, fallback)
-    return semaphoreForMode(resolved, this.get_global_handler_semaphore(), this.get_bus_handler_semaphore())
+    return semaphoreForMode(resolved, LockManager.global_handler_semaphore, this.bus_handler_semaphore)
   }
 
   clear(): void {
@@ -351,5 +346,15 @@ export class LockManager {
       this.idle_check_pending = false
       this.notifyIdleListeners()
     }, 0)
+  }
+
+  // Compute instantaneous idle snapshot from live bus state; used to gate waiters.
+  private getIdleSnapshot(): boolean {
+    return (
+      this.bus.pending_event_queue.length === 0 &&
+      this.bus.in_flight_event_ids.size === 0 &&
+      !this.bus.hasPendingResults() &&
+      !this.bus.runloop_running
+    )
   }
 }

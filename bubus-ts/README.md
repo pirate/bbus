@@ -16,7 +16,7 @@ gotchas we uncovered while matching behavior. It intentionally does **not** re-d
 
 - Python uses a global re-entrant lock to let awaited events process immediately on every bus where they appear.
 - TS optionally uses `AsyncLocalStorage` on Node.js (auto-detected) to capture dispatch context, but falls back gracefully in browsers.
-- `EventBus.instances` + the `LockManager` pause mechanism pauses each runloop and processes the same event immediately across buses.
+- `EventBus._all_instances` + the `LockManager` pause mechanism pauses each runloop and processes the same event immediately across buses.
 
 ### 3) `event.bus` is a BusScopedEvent view
 
@@ -108,10 +108,10 @@ If an event sets `handler_concurrency: "parallel"`, that wins even if a handler 
 
 We use four semaphores:
 
-- `EventBus.global_event_semaphore`
-- `EventBus.global_handler_semaphore`
-- `bus.bus_event_semaphore`
-- `bus.bus_handler_semaphore`
+- `LockManager.global_event_semaphore`
+- `LockManager.global_handler_semaphore`
+- `bus.locks.bus_event_semaphore`
+- `bus.locks.bus_handler_semaphore`
 
 They are applied centrally when scheduling events and handlers, so concurrency is controlled without scattering
 mutex checks throughout the code.
@@ -131,7 +131,7 @@ under different `event_concurrency` / `handler_concurrency` configurations.
 4. If this bus is already in `event_path` (or `eventHasVisited()`), return a BusScopedEvent without queueing.
 5. Append bus name to `event_path`, record child relationship (if `event_parent_id` is set).
 6. Add to `event_history` (a `Map<string, BaseEvent>` keyed by event id).
-7. Increment `event_pending_buses`.
+7. Increment `event_pending_bus_count`.
 8. Push to `pending_event_queue` and `startRunloop()`.
 
 **Runloop + processing:**
@@ -145,11 +145,11 @@ under different `event_concurrency` / `handler_concurrency` configurations.
    - `notifyFinders(event)`
    - creates handler results (`event_results`)
    - runs handlers (respecting handler semaphore)
-   - decrements `event_pending_buses` and calls `event.tryFinalizeCompletion()`
+   - decrements `event_pending_bus_count` and calls `event.tryFinalizeCompletion()`
 
 ### 2) Event concurrency modes (`event_concurrency`)
 
-- **`global-serial`**: events are serialized across _all_ buses using the global event semaphore.
+- **`global-serial`**: events are serialized across _all_ buses using `LockManager.global_event_semaphore`.
 - **`bus-serial`**: events are serialized per bus; different buses can overlap.
 - **`parallel`**: no event semaphore; events can run concurrently on the same bus.
 - **`auto`**: resolves to the bus default.
@@ -160,7 +160,7 @@ under different `event_concurrency` / `handler_concurrency` configurations.
 
 `handler_concurrency` controls how handlers run **for a single event**:
 
-- **`global-serial`**: only one handler at a time across all buses using the global handler semaphore.
+- **`global-serial`**: only one handler at a time across all buses using `LockManager.global_handler_semaphore`.
 - **`bus-serial`**: handlers serialize per bus.
 - **`parallel`**: handlers run concurrently for the event.
 - **`auto`**: resolves to the bus default.
@@ -240,7 +240,7 @@ To prevent that:
 
 When you `await event.done()` inside a handler:
 
-- the system finds all buses that have this event queued (using `EventBus.instances` + `event_path`)
+- the system finds all buses that have this event queued (using `EventBus._all_instances` + `event_path`)
 - pauses their runloops
 - processes the event immediately on each bus
 - then resumes the runloops

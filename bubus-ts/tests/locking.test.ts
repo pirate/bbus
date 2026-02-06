@@ -44,7 +44,7 @@ F) Forwarding & bus context
 G) Parent/child tracking
 - Child events not correctly linked to the parent handler when emitted via event.bus.
 - event_children missing under concurrency due to async timing.
-- event_pending_buses not decremented properly, leaving events stuck.
+- event_pending_bus_count not decremented properly, leaving events stuck.
 
 H) Find semantics under concurrency
 - find(past) returns event not yet completed.
@@ -944,7 +944,7 @@ test('edge-case: event with no handlers completes immediately', async () => {
   await bus.waitUntilIdle()
 
   assert.equal(event.event_status, 'completed')
-  assert.equal(event.event_pending_buses, 0)
+  assert.equal(event.event_pending_bus_count, 0)
 })
 
 test('fifo: forwarded events preserve order on target bus (bus-serial)', async () => {

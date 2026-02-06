@@ -4,74 +4,141 @@ import { captureAsyncContext, runWithAsyncContext } from './async_context.js'
 import { v5 as uuidv5 } from 'uuid'
 import { AsyncSemaphore, type ConcurrencyMode, HandlerLock, LockManager, runWithSemaphore, withResolvers } from './lock_manager.js'
 
-const monotonicNowMs = (): number => {
-  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
-    return performance.now()
-  }
-  return Date.now()
-}
-
-export class EventHandlerTimeoutError extends Error {
-  event_type: string
-  handler_name: string
-  timeout_seconds: number
-
-  constructor(message: string, params: { event_type: string; handler_name: string; timeout_seconds: number }) {
+export class TimeoutError extends Error {
+  constructor(message: string) {
     super(message)
-    this.name = 'EventHandlerTimeoutError'
-    this.event_type = params.event_type
-    this.handler_name = params.handler_name
-    this.timeout_seconds = params.timeout_seconds
+    this.name = 'TimeoutError'
   }
 }
 
-export class EventHandlerCancelledError extends Error {
-  event_type: string
-  handler_name: string
-  parent_error: Error
-
-  constructor(message: string, params: { event_type: string; handler_name: string; parent_error: Error }) {
-    super(message)
-    this.name = 'EventHandlerCancelledError'
-    this.event_type = params.event_type
-    this.handler_name = params.handler_name
-    this.parent_error = params.parent_error
-  }
-}
-
-export class EventHandlerAbortedError extends Error {
-  event_type: string
-  handler_name: string
-  parent_error: Error
+export class EventHandlerError extends Error {
   event_result: EventResult
+  timeout_seconds: number | null
+  cause: Error
 
-  constructor(message: string, params: { event_type: string; handler_name: string; parent_error: Error; event_result: EventResult }) {
+  constructor(message: string, params: { event_result: EventResult; timeout_seconds?: number | null; cause: Error }) {
     super(message)
-    this.name = 'EventHandlerAbortedError'
-    this.event_type = params.event_type
-    this.handler_name = params.handler_name
-    this.parent_error = params.parent_error
+    this.name = 'EventHandlerError'
     this.event_result = params.event_result
+    this.cause = params.cause
+    this.timeout_seconds = params.timeout_seconds ?? this.event_result.event?.event_timeout ?? null
+  }
+
+  get event(): BaseEvent {
+    return this.event_result.event!
+  }
+
+  get event_type(): string {
+    return this.event.event_type
+  }
+
+  get handler_name(): string {
+    return this.event_result.handler_name
+  }
+
+  get handler_id(): string {
+    return this.event_result.handler_id
+  }
+
+  get event_timeout(): number | null {
+    return this.event.event_timeout
+  }
+}
+
+// EventHandlerTimeoutError: when the handler itself timed out while executing (due to event.event_timeout being exceeded)
+export class EventHandlerTimeoutError extends EventHandlerError {
+  constructor(message: string, params: { event_result: EventResult; timeout_seconds?: number | null; cause?: Error }) {
+    super(message, {
+      event_result: params.event_result,
+      timeout_seconds: params.timeout_seconds,
+      cause: params.cause ?? new TimeoutError(message),
+    })
+    this.name = 'EventHandlerTimeoutError'
+  }
+}
+
+// EventHandlerCancelledError: when a pending handler was cancelled and never run due to an error (e.g. timeout) in a parent scope
+export class EventHandlerCancelledError extends EventHandlerError {
+  constructor(message: string, params: { event_result: EventResult; timeout_seconds?: number | null; cause: Error }) {
+    super(message, params)
+    this.name = 'EventHandlerCancelledError'
+  }
+}
+
+// EventHandlerAbortedError: when a handler that was already running was aborted due to an error in the parent scope, not due to an error in its own logic / exceeding its own timeout
+export class EventHandlerAbortedError extends EventHandlerError {
+  constructor(message: string, params: { event_result: EventResult; timeout_seconds?: number | null; cause: Error }) {
+    super(message, params)
+    this.name = 'EventHandlerAbortedError'
   }
 }
 
 import type { EventHandler, EventKey, FindOptions, HandlerOptions } from './types.js'
 
 type FindWaiter = {
+  // similar to a handler, except its for .find() calls
+  // needs to be different because it's resolved on dispatch not event processing time
+  // also is ephemeral, gets unregistered the moment it resolves and 
+  // doesnt show up in event processing tree, doesn't block runloop, etc.
   event_key: EventKey
   matches: (event: BaseEvent) => boolean
   resolve: (event: BaseEvent) => void
   timeout_id?: ReturnType<typeof setTimeout>
 }
 
-type HandlerEntry = {
-  id: string
+class HandlerEntry {
+  // an entry in the list of handlers that are registered on a bus
+  id: string // unique uuidv5 based on hash of bus name, handler name, handler file path:lineno, registered at timestamp, and event key
   handler: EventHandler
   handler_name: string
   handler_file_path?: string
   handler_registered_at: string
+  handler_registered_ts: number
   options?: HandlerOptions
   event_key: string | '*'
+
+  constructor(params: {
+    id: string
+    handler: EventHandler
+    handler_name: string
+    handler_file_path?: string
+    handler_registered_at: string
+    handler_registered_ts: number
+    options?: HandlerOptions
+    event_key: string | '*'
+  }) {
+    this.id = params.id
+    this.handler = params.handler
+    this.handler_name = params.handler_name
+    this.handler_file_path = params.handler_file_path
+    this.handler_registered_at = params.handler_registered_at
+    this.handler_registered_ts = params.handler_registered_ts
+    this.options = params.options
+    this.event_key = params.event_key
+  }
+
+  static computeHandlerId(params: {
+    bus_name: string
+    handler_name: string
+    handler_file_path?: string
+    handler_registered_at: string
+    event_key: string | '*'
+  }): string {
+    const file_path = HandlerEntry.normalizeHandlerFilePath(params.handler_file_path)
+    const seed = `${params.bus_name}|${params.handler_name}|${file_path}|${params.handler_registered_at}|${params.event_key}`
+    return uuidv5(seed, HANDLER_ID_NAMESPACE)
+  }
+
+  private static normalizeHandlerFilePath(file_path?: string): string {
+    if (!file_path) {
+      return 'unknown'
+    }
+    const match = file_path.match(/^(.*?):(\d+)(?::\d+)?$/)
+    if (match) {
+      return `${match[1]}:${match[2]}`
+    }
+    return file_path
+  }
 }
 
 const HANDLER_ID_NAMESPACE = uuidv5('bubus-handler', uuidv5.DNS)
@@ -83,7 +150,7 @@ type EventBusOptions = {
   event_timeout?: number | null
 }
 
-class EventBusInstanceRegistry {
+class GlobalEventBusInstanceRegistry {
   private _refs = new Set<WeakRef<EventBus>>()
   private _lookup = new WeakMap<EventBus, WeakRef<EventBus>>()
   private _gc =
@@ -128,11 +195,9 @@ class EventBusInstanceRegistry {
 }
 
 export class EventBus {
-  static instances = new EventBusInstanceRegistry()
-  static global_event_semaphore = new AsyncSemaphore(1)
-  static global_handler_semaphore = new AsyncSemaphore(1)
+  static _all_instances = new GlobalEventBusInstanceRegistry()
   static findEventById(event_id: string): BaseEvent | null {
-    for (const bus of EventBus.instances) {
+    for (const bus of EventBus._all_instances) {
       const event = bus.event_history.get(event_id)
       if (event) {
         return event
@@ -146,8 +211,6 @@ export class EventBus {
   event_concurrency_default: ConcurrencyMode
   handler_concurrency_default: ConcurrencyMode
   event_timeout_default: number | null
-  bus_event_semaphore: AsyncSemaphore
-  bus_handler_semaphore: AsyncSemaphore
   handlers: Map<string, HandlerEntry>
   event_history: Map<string, BaseEvent>
   pending_event_queue: BaseEvent[]
@@ -163,33 +226,22 @@ export class EventBus {
     this.event_concurrency_default = options.event_concurrency ?? 'bus-serial'
     this.handler_concurrency_default = options.handler_concurrency ?? 'bus-serial'
     this.event_timeout_default = options.event_timeout === undefined ? 60 : options.event_timeout
-    this.bus_event_semaphore = new AsyncSemaphore(1)
-    this.bus_handler_semaphore = new AsyncSemaphore(1)
     this.handlers = new Map()
     this.event_history = new Map()
     this.pending_event_queue = []
     this.in_flight_event_ids = new Set()
     this.runloop_running = false
-    this.locks = new LockManager({
-      get_idle_snapshot: () =>
-        this.pending_event_queue.length === 0 && this.in_flight_event_ids.size === 0 && !this.hasPendingResults() && !this.runloop_running,
-      get_event_concurrency_default: () => this.event_concurrency_default,
-      get_handler_concurrency_default: () => this.handler_concurrency_default,
-      get_bus_event_semaphore: () => this.bus_event_semaphore,
-      get_bus_handler_semaphore: () => this.bus_handler_semaphore,
-      get_global_event_semaphore: () => EventBus.global_event_semaphore,
-      get_global_handler_semaphore: () => EventBus.global_handler_semaphore,
-    })
+    this.locks = new LockManager(this)
     this.find_waiters = new Set()
 
-    EventBus.instances.add(this)
+    EventBus._all_instances.add(this)
 
     this.dispatch = this.dispatch.bind(this)
     this.emit = this.emit.bind(this)
   }
 
   destroy(): void {
-    EventBus.instances.delete(this)
+    EventBus._all_instances.delete(this)
     this.handlers.clear()
     for (const event of this.event_history.values()) {
       event._gc()
@@ -205,18 +257,28 @@ export class EventBus {
     const normalized_key = this.normalizeEventKey(event_key)
     const handler_name = handler.name || 'anonymous'
     const handler_file_path = this.inferHandlerFilePath() ?? undefined
-    const handler_registered_at = BaseEvent.nextIsoTimestamp()
-    const handler_id = this.computeHandlerId(normalized_key, handler_name, handler_file_path, handler_registered_at)
-
-    this.handlers.set(handler_id, {
-      id: handler_id,
-      handler: handler as EventHandler,
+    const { isostring: handler_registered_at, ts: handler_registered_ts } = BaseEvent.nextTimestamp()
+    const handler_id = HandlerEntry.computeHandlerId({
+      bus_name: this.name,
       handler_name,
       handler_file_path,
       handler_registered_at,
-      options: Object.keys(options).length > 0 ? options : undefined,
       event_key: normalized_key,
     })
+
+    this.handlers.set(
+      handler_id,
+      new HandlerEntry({
+        id: handler_id,
+        handler: handler as EventHandler,
+        handler_name,
+        handler_file_path,
+        handler_registered_at,
+        handler_registered_ts,
+        options: Object.keys(options).length > 0 ? options : undefined,
+        event_key: normalized_key,
+      })
+    )
   }
 
   off<T extends BaseEvent>(event_key: EventKey<T> | '*', handler?: EventHandler<T> | string): void {
@@ -232,26 +294,19 @@ export class EventBus {
     }
   }
 
-  private computeHandlerId(
-    event_key: string | '*',
-    handler_name: string,
-    handler_file_path: string | undefined,
-    handler_registered_at: string
-  ): string {
-    const file_path = handler_file_path ?? 'unknown'
-    const seed = `${this.name}|${event_key}|${handler_name}|${file_path}|${handler_registered_at}`
-    return uuidv5(seed, HANDLER_ID_NAMESPACE)
-  }
-
   dispatch<T extends BaseEvent>(event: T, _event_key?: EventKey<T>): T {
-    const original_event = event._original_event ?? event
+    const original_event = event._original_event ?? event   // if event is a bus-scoped proxy already, get the original underlying event object
     if (!original_event.bus) {
+      // if we are the first bus to dispatch this event, set the bus property on the original event object
       original_event.bus = this
     }
     if (!Array.isArray(original_event.event_path)) {
       original_event.event_path = []
     }
     if (original_event._dispatch_context === undefined) {
+      // when used in fastify/nextjs/other contexts with tracing based on AsyncLocalStorage in node
+      // we want to capture the context at the dispatch site and use it when running handlers
+      // because events may be handled async in a separate context than the dispatch site
       original_event._dispatch_context = captureAsyncContext()
     }
     if (original_event.event_timeout === null) {
@@ -276,7 +331,7 @@ export class EventBus {
     this.event_history.set(original_event.event_id, original_event)
     this.trimHistory()
 
-    original_event.event_pending_buses += 1
+    original_event.event_pending_bus_count += 1
     this.pending_event_queue.push(original_event)
     this.startRunloop()
 
@@ -327,7 +382,7 @@ export class EventBus {
     }
 
     if (past !== false || future !== false) {
-      const now_ms = Date.now()
+      const now_ms = performance.timeOrigin + performance.now()
       const cutoff_ms = past === true ? null : now_ms - Math.max(0, Number(past)) * 1000
 
       const history_values = Array.from(this.event_history.values())
@@ -426,7 +481,7 @@ export class EventBus {
     await this.locks.waitForIdle()
   }
 
-  private hasPendingResults(): boolean {
+  hasPendingResults(): boolean {
     for (const event of this.event_history.values()) {
       for (const result of event.event_results.values()) {
         if (result.eventbus_name !== this.name) {
@@ -480,20 +535,12 @@ export class EventBus {
   }
 
   logTree(): string {
-    const parent_to_children = new Map<string | null, BaseEvent[]>()
+    const parent_to_children = new Map<string, BaseEvent[]>()
 
-    const add_child = (parent_id: string | null, child: BaseEvent): void => {
+    const add_child = (parent_id: string, child: BaseEvent): void => {
       const existing = parent_to_children.get(parent_id) ?? []
       existing.push(child)
       parent_to_children.set(parent_id, existing)
-    }
-
-    for (const event of this.event_history.values()) {
-      add_child(event.event_parent_id ?? null, event)
-    }
-
-    for (const children of parent_to_children.values()) {
-      children.sort((a, b) => (a.event_created_at < b.event_created_at ? -1 : a.event_created_at > b.event_created_at ? 1 : 0))
     }
 
     const root_events: BaseEvent[] = []
@@ -511,6 +558,31 @@ export class EventBus {
 
     if (root_events.length === 0) {
       return '(No events in history)'
+    }
+
+    const nodes_by_id = new Map<string, BaseEvent>()
+    for (const root of root_events) {
+      nodes_by_id.set(root.event_id, root)
+      for (const descendant of root.event_descendants) {
+        nodes_by_id.set(descendant.event_id, descendant)
+      }
+    }
+
+    for (const node of nodes_by_id.values()) {
+      const parent_id = node.event_parent_id
+      if (!parent_id || parent_id === node.event_id) {
+        continue
+      }
+      if (!nodes_by_id.has(parent_id)) {
+        continue
+      }
+      add_child(parent_id, node)
+    }
+
+    for (const children of parent_to_children.values()) {
+      children.sort((a, b) =>
+        a.event_created_at < b.event_created_at ? -1 : a.event_created_at > b.event_created_at ? 1 : 0
+      )
     }
 
     const lines: string[] = []
@@ -560,7 +632,7 @@ export class EventBus {
   // Event semaphore bypass: the initiating bus (this) always bypasses its event semaphore
   // since we're inside a handler that already holds it. Other buses only bypass if
   // they resolve to the same semaphore instance (i.e. global-serial mode where all
-  // buses share EventBus.global_event_semaphore).
+  // buses share LockManager.global_event_semaphore).
   //
   // Handler semaphores are NOT bypassed — child handlers must acquire the handler
   // semaphore normally. This works because _runImmediately already released the
@@ -594,7 +666,7 @@ export class EventBus {
 
         // Bypass event semaphore on the initiating bus (we're already inside a handler
         // that acquired it). For other buses, only bypass if they resolve to the same
-        // semaphore instance (global-serial shares one semaphore across all buses).
+  // semaphore instance (global-serial shares one semaphore across all buses).
         const bus_event_semaphore = bus.locks.getSemaphoreForEvent(event)
         const should_bypass_event_semaphore =
           bus === this || (initiating_event_semaphore !== null && bus_event_semaphore === initiating_event_semaphore)
@@ -620,7 +692,7 @@ export class EventBus {
 
     const event_path = Array.isArray(event.event_path) ? event.event_path : []
     for (const name of event_path) {
-      for (const bus of EventBus.instances) {
+      for (const bus of EventBus._all_instances) {
         if (bus.name !== name) {
           continue
         }
@@ -741,8 +813,8 @@ export class EventBus {
             if (event.event_status === 'completed') {
               return
             }
-            const started_at_ts = event._event_started_at_ts ?? event._event_created_at_ts ?? monotonicNowMs()
-            const elapsed_ms = Math.max(0, monotonicNowMs() - started_at_ts)
+            const started_ts = event.event_started_ts ?? event.event_created_ts ?? performance.now()
+            const elapsed_ms = Math.max(0, performance.now() - started_ts)
             const elapsed_seconds = (elapsed_ms / 1000).toFixed(1)
             console.warn(
               `[bubus] Possible deadlock: ${event.event_type}#${event.event_id} still ${event.event_status} on ${this.name} after ${elapsed_seconds}s (timeout ${event.event_timeout}s)`
@@ -755,7 +827,7 @@ export class EventBus {
       const handler_promises = handler_entries.map((entry) => this.runHandlerEntry(event, entry.handler, entry.result, entry.options))
       await Promise.all(handler_promises)
 
-      event.event_pending_buses = Math.max(0, event.event_pending_buses - 1)
+      event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
       event.tryFinalizeCompletion()
       if (event.event_status === 'completed') {
         this.notifyParentsFor(event)
@@ -793,7 +865,7 @@ export class EventBus {
       result.markStarted()
       const abort_promise = result.ensureAbortSignal()
       const handler_result = await Promise.race([
-        this.runHandlerWithTimeout(event, handler, handler_event),
+        this.runHandlerWithTimeout(event, handler, handler_event, result),
         abort_promise,
       ])
       if (event.event_result_schema) {
@@ -810,12 +882,7 @@ export class EventBus {
     } catch (error) {
       if (error instanceof EventHandlerTimeoutError) {
         result.markError(error)
-        const cancelled_error = new EventHandlerCancelledError(`Cancelled pending handler due to parent timeout: ${error.message}`, {
-          event_type: event.event_type,
-          handler_name: result.handler_name,
-          parent_error: error,
-        })
-        this.cancelPendingDescendants(event, cancelled_error)
+        this.cancelPendingDescendants(event, error)
       } else {
         result.markError(error)
       }
@@ -827,14 +894,19 @@ export class EventBus {
     }
   }
 
-  private async runHandlerWithTimeout(event: BaseEvent, handler: EventHandler, handler_event: BaseEvent = event): Promise<unknown> {
+  private async runHandlerWithTimeout(
+    event: BaseEvent,
+    handler: EventHandler,
+    handler_event: BaseEvent = event,
+    result: EventResult
+  ): Promise<unknown> {
     const handler_name = handler.name || 'anonymous'
     const warn_ms = 15000
-    const started_at_ms = Date.now()
+    const started_at_ms = performance.now()
     const should_warn = event.event_timeout === null || event.event_timeout * 1000 > warn_ms
     const warn_timer = should_warn
       ? setTimeout(() => {
-          const elapsed_ms = Date.now() - started_at_ms
+          const elapsed_ms = performance.now() - started_at_ms
           const elapsed_seconds = (elapsed_ms / 1000).toFixed(1)
           console.warn(`[bubus] Slow handler: ${event.event_type}.${handler_name} running ${elapsed_seconds}s on ${this.name}`)
         }, warn_ms)
@@ -872,8 +944,7 @@ export class EventBus {
     const timer = setTimeout(() => {
       finalize(reject)(
         new EventHandlerTimeoutError(`handler ${handler_name} timed out after ${timeout_seconds}s`, {
-          event_type: event.event_type,
-          handler_name,
+          event_result: result,
           timeout_seconds,
         })
       )
@@ -970,7 +1041,7 @@ export class EventBus {
   }
 
   cancelPendingDescendants(event: BaseEvent, reason: unknown): void {
-    const cancellation_error = this.normalizeCancellationError(event, reason)
+    const cancellation_cause = this.normalizeCancellationCause(reason)
     const visited = new Set<string>()
     const cancel_child = (child: BaseEvent): void => {
       const original_child = child._original_event ?? child
@@ -987,11 +1058,11 @@ export class EventBus {
 
       const path = Array.isArray(original_child.event_path) ? original_child.event_path : []
       const buses_to_cancel = new Set<string>(path)
-      for (const bus of EventBus.instances) {
+      for (const bus of EventBus._all_instances) {
         if (!buses_to_cancel.has(bus.name)) {
           continue
         }
-        bus.cancelEventOnBus(original_child, cancellation_error)
+        bus.cancelEventOnBus(original_child, cancellation_cause)
       }
 
       // Force-complete the child event. In JS we can't stop running async
@@ -1008,26 +1079,27 @@ export class EventBus {
     }
   }
 
-  private normalizeCancellationError(event: BaseEvent, reason: unknown): EventHandlerCancelledError {
-    if (reason instanceof EventHandlerCancelledError) {
+  private normalizeCancellationCause(reason: unknown): Error {
+    if (reason instanceof EventHandlerCancelledError || reason instanceof EventHandlerAbortedError) {
+      return reason.cause instanceof Error ? reason.cause : reason
+    }
+    if (reason instanceof EventHandlerTimeoutError) {
       return reason
     }
-
-    const parent_error = reason instanceof Error ? reason : new Error(String(reason))
-    return new EventHandlerCancelledError(`Cancelled pending handler due to ancestor cancellation: ${parent_error.message}`, {
-      event_type: event.event_type,
-      handler_name: 'unknown',
-      parent_error,
-    })
+    return reason instanceof Error ? reason : new Error(String(reason))
   }
 
-  private cancelEventOnBus(event: BaseEvent, error: EventHandlerCancelledError): void {
+  private cancelEventOnBus(event: BaseEvent, cause: Error): void {
     const original_event = event._original_event ?? event
     const handler_entries = this.createPendingHandlerResults(original_event)
     let updated = false
     for (const entry of handler_entries) {
       if (entry.result.status === 'pending') {
-        entry.result.markError(error)
+        const cancelled_error = new EventHandlerCancelledError(`Cancelled pending handler due to parent error: ${cause.message}`, {
+          event_result: entry.result,
+          cause,
+        })
+        entry.result.markError(cancelled_error)
         updated = true
       } else if (entry.result.status === 'started') {
         // Abort running handlers. In JS we can't actually stop a running async
@@ -1040,15 +1112,10 @@ export class EventBus {
         // reacquire path auto-releases when it wakes.
         entry.result._lock?.exitHandlerRun()
 
-        const aborted_error = new EventHandlerAbortedError(
-          `Aborted running handler due to parent timeout: ${error.message}`,
-          {
-            event_type: original_event.event_type,
-            handler_name: entry.result.handler_name,
-            parent_error: error.parent_error,
-            event_result: entry.result,
-          }
-        )
+        const aborted_error = new EventHandlerAbortedError(`Aborted running handler due to parent error: ${cause.message}`, {
+          event_result: entry.result,
+          cause,
+        })
         entry.result.markError(aborted_error)
         entry.result.signalAbort(aborted_error)
         updated = true
@@ -1065,7 +1132,7 @@ export class EventBus {
     }
 
     if (removed > 0 && !this.in_flight_event_ids.has(original_event.event_id)) {
-      original_event.event_pending_buses = Math.max(0, original_event.event_pending_buses - 1)
+      original_event.event_pending_bus_count = Math.max(0, original_event.event_pending_bus_count - 1)
     }
 
     if (updated || removed > 0) {
@@ -1080,7 +1147,7 @@ export class EventBus {
     event: BaseEvent,
     indent: string,
     is_last: boolean,
-    parent_to_children: Map<string | null, BaseEvent[]>,
+    parent_to_children: Map<string, BaseEvent[]>,
     visited: Set<string>
   ): string {
     const connector = is_last ? '└── ' : '├── '
@@ -1152,7 +1219,7 @@ export class EventBus {
     result: EventResult,
     indent: string,
     is_last: boolean,
-    parent_to_children: Map<string | null, BaseEvent[]>,
+    parent_to_children: Map<string, BaseEvent[]>,
     visited: Set<string>
   ): string {
     const connector = is_last ? '└── ' : '├── '
@@ -1301,6 +1368,9 @@ export class EventBus {
     const handlers = this.collectHandlers(event)
     return handlers.map(({ handler_id, handler, handler_name, handler_file_path, options }) => {
       const existing = event.event_results.get(handler_id)
+      if (existing && !existing.event) {
+        existing.event = event
+      }
       const result =
         existing ??
         new EventResult({
@@ -1309,6 +1379,7 @@ export class EventBus {
           handler_name,
           handler_file_path,
           eventbus_name: this.name,
+          event,
         })
       if (!existing) {
         event.event_results.set(handler_id, result)

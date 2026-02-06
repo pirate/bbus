@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { BaseEvent, EventBus } from '../src/index.js'
+import { LockManager } from '../src/lock_manager.js'
 import { z } from 'zod'
 
 const delay = (ms: number): Promise<void> =>
@@ -20,7 +21,7 @@ test('EventBus initializes with correct defaults', async () => {
   assert.equal(bus.handler_concurrency_default, 'bus-serial')
   assert.equal(bus.event_timeout_default, 60)
   assert.equal(bus.event_history.size, 0)
-  assert.ok(EventBus.instances.has(bus))
+  assert.ok(EventBus._all_instances.has(bus))
   await bus.waitUntilIdle()
 })
 
@@ -91,8 +92,8 @@ test('EventBus locks methods are callable and preserve semaphore resolution beha
     event_concurrency: 'global-serial',
     handler_concurrency: 'global-serial',
   })
-  assert.equal(bus.locks.getSemaphoreForEvent(event_with_global), EventBus.global_event_semaphore)
-  assert.equal(bus.locks.getSemaphoreForHandler(event_with_global), EventBus.global_handler_semaphore)
+  assert.equal(bus.locks.getSemaphoreForEvent(event_with_global), LockManager.global_event_semaphore)
+  assert.equal(bus.locks.getSemaphoreForHandler(event_with_global), LockManager.global_handler_semaphore)
 
   const event_with_parallel = GateEvent({
     event_concurrency: 'parallel',
@@ -417,16 +418,16 @@ test('event with explicit timeout is not overridden by bus default', async () =>
   await bus.waitUntilIdle()
 })
 
-// ─── EventBus.instances tracking ─────────────────────────────────────────────
+// ─── EventBus._all_instances tracking ─────────────────────────────────────────────
 
-test('EventBus.instances tracks all created buses', () => {
-  const initial_count = EventBus.instances.size
+test('EventBus._all_instances tracks all created buses', () => {
+  const initial_count = EventBus._all_instances.size
   const bus_a = new EventBus('TrackA')
   const bus_b = new EventBus('TrackB')
 
-  assert.ok(EventBus.instances.has(bus_a))
-  assert.ok(EventBus.instances.has(bus_b))
-  assert.equal(EventBus.instances.size, initial_count + 2)
+  assert.ok(EventBus._all_instances.has(bus_a))
+  assert.ok(EventBus._all_instances.has(bus_b))
+  assert.equal(EventBus._all_instances.size, initial_count + 2)
 })
 
 // ─── Circular forwarding prevention ──────────────────────────────────────────
@@ -478,7 +479,7 @@ test('circular forwarding does not cause infinite loop', async () => {
 
 // ─── EventBus GC / memory leak ───────────────────────────────────────────────
 
-test('unreferenced EventBus can be garbage collected (not retained by instances)', async () => {
+test('unreferenced EventBus can be garbage collected (not retained by _all_instances)', async () => {
   // This test requires --expose-gc to force garbage collection
   const gc = globalThis.gc as (() => void) | undefined
   if (typeof gc !== 'function') {
@@ -499,14 +500,14 @@ test('unreferenced EventBus can be garbage collected (not retained by instances)
   await delay(50)
   gc()
 
-  // If EventBus.instances holds a strong reference (Set<EventBus>),
+  // If EventBus._all_instances holds a strong reference (Set<EventBus>),
   // the bus will NOT be collected — proving the memory leak.
   // After the fix (WeakRef-based storage), the bus should be collected.
   assert.equal(
     weak_ref!.deref(),
     undefined,
     'bus should be garbage collected when no external references remain — ' +
-      'EventBus.instances is holding a strong reference (memory leak)'
+      'EventBus._all_instances is holding a strong reference (memory leak)'
   )
 })
 

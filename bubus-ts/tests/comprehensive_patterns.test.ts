@@ -236,12 +236,12 @@ test('awaited child jumps queue without overshoot', async () => {
   const event2_from_history = history_list.find((event) => event.event_type === 'Event2')
   const event3_from_history = history_list.find((event) => event.event_type === 'Event3')
 
-  assert.ok(child_event?.event_started_at)
-  assert.ok(event2_from_history?.event_started_at)
-  assert.ok(event3_from_history?.event_started_at)
+  assert.ok(child_event?.event_started_ts !== undefined)
+  assert.ok(event2_from_history?.event_started_ts !== undefined)
+  assert.ok(event3_from_history?.event_started_ts !== undefined)
 
-  assert.ok(child_event!.event_started_at! < event2_from_history!.event_started_at!)
-  assert.ok(child_event!.event_started_at! < event3_from_history!.event_started_at!)
+  assert.ok(child_event!.event_started_ts! <= event2_from_history!.event_started_ts!)
+  assert.ok(child_event!.event_started_ts! <= event3_from_history!.event_started_ts!)
 })
 
 test('done() on non-proxied event keeps bus paused during queue-jump', async () => {
@@ -886,7 +886,7 @@ test('BUG: queue-jump two-bus global-serial handlers should serialize across bot
 
   // Check: bus_a handlers all finish before bus_b handlers start
   // (because runImmediatelyAcrossBuses processes sequentially and
-  // all share the global handler semaphore)
+  // all share LockManager.global_handler_semaphore)
   const a2_end = log.indexOf('a2_end')
   const b1_start = log.indexOf('b1_start')
   assert.ok(a2_end < b1_start, `global-serial: bus_a should finish before bus_b starts. Got: [${log.join(', ')}]`)

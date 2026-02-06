@@ -1,5 +1,5 @@
 export { BaseEvent, BaseEventSchema } from './base_event.js'
 export { EventResult } from './event_result.js'
 export { EventBus, EventHandlerTimeoutError, EventHandlerCancelledError, EventHandlerAbortedError } from './event_bus.js'
-export type { ConcurrencyMode } from './lock_manager.js'
+export type { ConcurrencyMode, EventBusInterfaceForLockManager } from './lock_manager.js'
 export type { EventClass, EventHandler, EventKey, HandlerOptions, EventStatus, FindOptions, FindWindow } from './types.js'

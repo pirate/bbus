@@ -102,13 +102,13 @@ test('500 ephemeral buses with 100 events each', { timeout: 30_000 }, async () =
     `\n  perf: ${total_buses} buses × ${events_per_bus} events = ${total_events} total in ${total_ms}ms (${Math.round(total_events / (total_ms / 1000))}/s)` +
       `\n    memory: before=${mb(mem_before.heapUsed)}MB → done=${mb(mem_done.heapUsed)}MB → gc=${mb(mem_gc.heapUsed)}MB` +
       `\n    rss: before=${mb(mem_before.rss)}MB → done=${mb(mem_done.rss)}MB → gc=${mb(mem_gc.rss)}MB` +
-      `\n    live bus instances: ${EventBus.instances.size}`
+      `\n    live bus instances: ${EventBus._all_instances.size}`
   )
 
   assert.equal(processed_count, total_events)
   assert.ok(total_ms < 30_000, `Processing took ${total_ms}ms`)
   // All buses should have been cleaned up from the registry
-  assert.equal(EventBus.instances.size, 0, 'All buses should be destroyed')
+  assert.equal(EventBus._all_instances.size, 0, 'All buses should be destroyed')
 })
 
 // Simulates per-request handler registration pattern: a shared bus where each
@@ -318,7 +318,7 @@ test(
         `\n    rss: before=${mb(mem_before.rss)}MB → done=${mb(mem_done.rss)}MB → gc=${mb(mem_gc.rss)}MB` +
         `\n    history: a=${bus_a.event_history.size} b=${bus_b.event_history.size} c=${bus_c.event_history.size}` +
         `\n    handlers: a=${bus_a.handlers.size} b=${bus_b.handlers.size} c=${bus_c.handlers.size}` +
-        `\n    instances: ${EventBus.instances.size}`
+        `\n    instances: ${EventBus._all_instances.size}`
     )
 
     // All iterations processed
@@ -343,6 +343,6 @@ test(
     bus_b.destroy()
     bus_c.destroy()
 
-    assert.equal(EventBus.instances.size, 0, 'All buses destroyed')
+    assert.equal(EventBus._all_instances.size, 0, 'All buses destroyed')
   }
 )
