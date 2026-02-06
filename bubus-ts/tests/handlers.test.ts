@@ -61,8 +61,10 @@ test("handlers can be sync or async", async () => {
   bus.on("TestEvent", sync_handler);
   bus.on("TestEvent", async_handler);
 
-  const handlers = bus.handlers_by_key.get("TestEvent");
-  assert.equal(handlers?.size ?? 0, 2);
+  const handler_count = Array.from(bus.handlers.values()).filter(
+    (entry) => entry.event_key === "TestEvent"
+  ).length;
+  assert.equal(handler_count, 2);
 
   const event = bus.dispatch(BaseEvent.extend("TestEvent", {})({}));
   await event.done();

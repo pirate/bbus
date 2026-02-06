@@ -98,7 +98,7 @@ test("debounce dispatches new when existing is stale", async () => {
     )) ?? (await bus.dispatch(ScreenshotEvent({ target_id: "tab1" })).done());
 
   assert.ok(result);
-  const screenshots = bus.event_history.filter(
+  const screenshots = Array.from(bus.event_history.values()).filter(
     (event) => event.event_type === "ScreenshotEvent"
   );
   assert.equal(screenshots.length, 2);

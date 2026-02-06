@@ -1,3 +1,22 @@
+export type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+};
+
+export const withResolvers = <T>(): Deferred<T> => {
+  if (typeof Promise.withResolvers === "function") {
+    return Promise.withResolvers<T>();
+  }
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolve_fn, reject_fn) => {
+    resolve = resolve_fn;
+    reject = reject_fn;
+  });
+  return { promise, resolve, reject };
+};
+
 export const CONCURRENCY_MODES = ["global-serial", "bus-serial", "parallel", "auto"] as const;
 export type ConcurrencyMode = (typeof CONCURRENCY_MODES)[number];
 

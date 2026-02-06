@@ -155,7 +155,10 @@ test("global-serial: awaited child jumps ahead of queued events across buses", a
   bus_a.on(ParentEvent, async (event) => {
     order.push("parent_start");
     bus_b.emit(QueuedEvent({}));
-    const child = bus_b.emit(ChildEvent({}));
+    // Emit through the scoped proxy so parent tracking is set up,
+    // then also dispatch to bus_b for cross-bus processing.
+    const child = event.bus?.emit(ChildEvent({}))!;
+    bus_b.dispatch(child);
     order.push("child_dispatched");
     await child.done();
     order.push("child_awaited");
@@ -920,19 +923,19 @@ test("fifo: forwarded events preserve order on target bus (bus-serial)", async (
 
   await Promise.all([bus_a.waitUntilIdle(), bus_b.waitUntilIdle()]);
 
-  const history_orders = bus_b.event_history.map((event) => (event as { order?: number }).order);
-  const results_sizes = bus_b.event_history.map((event) => event.event_results.size);
-  const bus_b_result_counts = bus_b.event_history.map((event) =>
+  const history_orders = Array.from(bus_b.event_history.values()).map((event) => (event as { order?: number }).order);
+  const results_sizes = Array.from(bus_b.event_history.values()).map((event) => event.event_results.size);
+  const bus_b_result_counts = Array.from(bus_b.event_history.values()).map((event) =>
     Array.from(event.event_results.values()).filter(
       (result) => result.eventbus_name === "ForwardOrderB"
     ).length
   );
-  const processed_flags = bus_b.event_history.map((event) =>
+  const processed_flags = Array.from(bus_b.event_history.values()).map((event) =>
     Array.from(event.event_results.values())
       .filter((result) => result.eventbus_name === "ForwardOrderB")
       .every((result) => result.status === "completed" || result.status === "error")
   );
-  const pending_counts = bus_b.event_history.map(
+  const pending_counts = Array.from(bus_b.event_history.values()).map(
     (event) => Array.from(event.event_results.values()).filter((result) => result.status === "pending").length
   );
   assert.deepEqual(order_a, [0, 1, 2, 3, 4]);

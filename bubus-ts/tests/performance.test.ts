@@ -31,6 +31,6 @@ test(
 
     assert.equal(processed_count, total_events);
     assert.ok(duration_ms < 120_000, `Processing took ${duration_ms}ms`);
-    assert.ok(bus.event_history.length <= bus.max_history_size);
+    assert.ok(bus.event_history.size <= bus.max_history_size);
   }
 );

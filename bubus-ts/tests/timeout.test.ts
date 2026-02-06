@@ -514,3 +514,501 @@ test("multi-level timeout cascade with mixed cancellations", async () => {
   );
   assert.ok(queued_cancelled.length >= 2);
 });
+
+// =============================================================================
+// Three-level timeout cascade (mirrors Python test_handler_timeout.py)
+//
+// This test creates a deep event hierarchy:
+//   TopEvent (250ms timeout)
+//     ├── ChildEvent (80ms timeout) — awaited by top_handler_main
+//     │     ├── GrandchildEvent (35ms timeout) — awaited by child_handler
+//     │     │     └── 5 handlers (parallel): 3 slow (timeout), 2 fast (complete)
+//     │     └── QueuedGrandchildEvent — emitted but NOT awaited, stays in queue
+//     │           └── 1 handler: never runs, CANCELLED when child_handler times out
+//     └── SiblingEvent — emitted but NOT awaited, stays in queue
+//           └── 1 handler: never runs, CANCELLED when top_handler_main times out
+//
+// KEY MECHANIC: When a child event is awaited via event.done() inside a handler,
+// it triggers "queue-jumping" via _runImmediately → runImmediatelyAcrossBuses.
+// Queue-jumped events bypass the handler limiter (bypass_handler_limiters: true),
+// so all handlers for that event run in PARALLEL, even on a bus-serial bus.
+// Non-awaited child events stay in the pending_event_queue and are blocked by
+// immediate_processing_stack_depth > 0 (runloop is paused during queue-jump).
+//
+// TIMEOUT BEHAVIOR: Each handler gets its OWN timeout window starting from when
+// that handler begins execution — NOT from when the event was dispatched.
+// So with parallel handlers, all timeouts start at roughly the same time.
+// With serial handlers, each timeout starts when the handler acquires the limiter.
+//
+// CANCELLATION CASCADE: When a handler times out, cancelPendingChildProcessing()
+// walks the event's children tree and marks any "pending" handler results as
+// EventHandlerCancelledError. Only "pending" results are cancelled — handlers
+// that already started ("started" status) continue running in the background.
+// =============================================================================
+
+test("three-level timeout cascade with per-level timeouts and cascading cancellation", async () => {
+  const TopEvent = BaseEvent.extend("Cascade3LTop", {});
+  const ChildEvent = BaseEvent.extend("Cascade3LChild", {});
+  const GrandchildEvent = BaseEvent.extend("Cascade3LGrandchild", {});
+  const QueuedGrandchildEvent = BaseEvent.extend("Cascade3LQueuedGC", {});
+  const SiblingEvent = BaseEvent.extend("Cascade3LSibling", {});
+
+  const bus = new EventBus("Cascade3LevelBus", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial"
+  });
+
+  const execution_log: string[] = [];
+  let child_ref: InstanceType<typeof ChildEvent> | null = null;
+  let grandchild_ref: InstanceType<typeof GrandchildEvent> | null = null;
+  let queued_grandchild_ref: InstanceType<typeof QueuedGrandchildEvent> | null = null;
+  let sibling_ref: InstanceType<typeof SiblingEvent> | null = null;
+
+  // ── GrandchildEvent handlers ──────────────────────────────────────────
+  // These run in PARALLEL because GrandchildEvent is queue-jumped
+  // (bypass_handler_limiters: true). Each handler gets its own 35ms timeout
+  // window starting from approximately the same moment.
+  //
+  // Handlers a, c, e sleep 200ms → each times out individually at 35ms
+  // Handler b is synchronous → completes immediately
+  // Handler d sleeps 10ms → completes within its 35ms window
+
+  const gc_handler_a = async () => {
+    execution_log.push("gc_a_start");
+    await delay(200); // will be interrupted by 35ms timeout
+    execution_log.push("gc_a_end"); // should never reach here
+    return "gc_a_done";
+  };
+
+  const gc_handler_b = () => {
+    execution_log.push("gc_b_complete");
+    return "gc_b_done";
+  };
+
+  const gc_handler_c = async () => {
+    execution_log.push("gc_c_start");
+    await delay(200); // will be interrupted by 35ms timeout
+    execution_log.push("gc_c_end"); // should never reach here
+    return "gc_c_done";
+  };
+
+  const gc_handler_d = async () => {
+    execution_log.push("gc_d_start");
+    await delay(10); // fast enough to complete within 35ms
+    execution_log.push("gc_d_complete");
+    return "gc_d_done";
+  };
+
+  const gc_handler_e = async () => {
+    execution_log.push("gc_e_start");
+    await delay(200); // will be interrupted by 35ms timeout
+    execution_log.push("gc_e_end"); // should never reach here
+    return "gc_e_done";
+  };
+
+  // ── QueuedGrandchildEvent handler ─────────────────────────────────────
+  // This event is emitted by child_handler but NOT awaited, so it sits in
+  // pending_event_queue. When child_handler times out at 80ms,
+  // cancelPendingChildProcessing walks ChildEvent.event_children and finds
+  // this event still pending → its handler results are marked as cancelled.
+  const queued_gc_handler = () => {
+    execution_log.push("queued_gc_start"); // should never reach here
+    return "queued_gc_done";
+  };
+
+  // ── ChildEvent handler ────────────────────────────────────────────────
+  // Emits GrandchildEvent (awaited → queue-jump, ~35ms to complete)
+  // Emits QueuedGrandchildEvent (NOT awaited → stays in queue)
+  // After grandchild completes, sleeps 300ms → times out at 80ms total
+  const child_handler = async (event: InstanceType<typeof ChildEvent>) => {
+    execution_log.push("child_start");
+    grandchild_ref = event.bus?.emit(GrandchildEvent({ event_timeout: 0.035 }))!;
+    queued_grandchild_ref = event.bus?.emit(QueuedGrandchildEvent({ event_timeout: 0.5 }))!;
+    // Queue-jump: processes GrandchildEvent immediately, bypassing handler limiter.
+    // All 5 GC handlers run in parallel. Completes in ~35ms.
+    await grandchild_ref.done();
+    execution_log.push("child_after_grandchild");
+    await delay(300); // will be interrupted: child started at ~t=0, timeout at 80ms
+    execution_log.push("child_end"); // should never reach here
+    return "child_done";
+  };
+
+  // ── SiblingEvent handler ──────────────────────────────────────────────
+  // This event is emitted by top_handler_main but NOT awaited. Stays in
+  // pending_event_queue until top_handler_main times out at 250ms →
+  // cancelled by cancelPendingChildProcessing.
+  const sibling_handler = () => {
+    execution_log.push("sibling_start"); // should never reach here
+    return "sibling_done";
+  };
+
+  // ── TopEvent handlers ─────────────────────────────────────────────────
+  // These run SERIALLY (via bus handler limiter) because TopEvent is
+  // processed by the normal runloop (not queue-jumped). top_handler_fast
+  // goes first, completes quickly, then top_handler_main starts.
+
+  const top_handler_fast = async () => {
+    execution_log.push("top_fast_start");
+    await delay(2);
+    execution_log.push("top_fast_complete");
+    return "top_fast_done";
+  };
+
+  const top_handler_main = async (event: InstanceType<typeof TopEvent>) => {
+    execution_log.push("top_main_start");
+    child_ref = event.bus?.emit(ChildEvent({ event_timeout: 0.08 }))!;
+    sibling_ref = event.bus?.emit(SiblingEvent({ event_timeout: 0.5 }))!;
+    // Queue-jump: processes ChildEvent immediately (which in turn queue-jumps
+    // GrandchildEvent). This entire subtree resolves in ~80ms (child timeout).
+    await child_ref.done();
+    execution_log.push("top_main_after_child");
+    await delay(300); // will be interrupted: top_handler_main started at ~t=2, timeout at 250ms
+    execution_log.push("top_main_end"); // should never reach here
+    return "top_main_done";
+  };
+
+  // Register handlers (registration order = execution order for serial)
+  bus.on(TopEvent, top_handler_fast);
+  bus.on(TopEvent, top_handler_main);
+  bus.on(ChildEvent, child_handler);
+  bus.on(GrandchildEvent, gc_handler_a);
+  bus.on(GrandchildEvent, gc_handler_b);
+  bus.on(GrandchildEvent, gc_handler_c);
+  bus.on(GrandchildEvent, gc_handler_d);
+  bus.on(GrandchildEvent, gc_handler_e);
+  bus.on(QueuedGrandchildEvent, queued_gc_handler);
+  bus.on(SiblingEvent, sibling_handler);
+
+  // ── Dispatch and wait ─────────────────────────────────────────────────
+  const top = bus.dispatch(TopEvent({ event_timeout: 0.25 }));
+  await top.done();
+  await bus.waitUntilIdle();
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ASSERTIONS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // ── TopEvent: 2 handler results (1 completed, 1 timed out) ──────────
+  assert.equal(top.event_status, "completed");
+  assert.ok(top.event_errors.length >= 1, "TopEvent should have at least 1 error");
+
+  const top_results = Array.from(top.event_results.values());
+  assert.equal(top_results.length, 2, "TopEvent should have 2 handler results");
+
+  const top_fast_result = top_results.find((r) => r.handler_name === "top_handler_fast");
+  assert.ok(top_fast_result, "top_handler_fast result should exist");
+  assert.equal(top_fast_result!.status, "completed");
+  assert.equal(top_fast_result!.result, "top_fast_done");
+
+  const top_main_result = top_results.find((r) => r.handler_name === "top_handler_main");
+  assert.ok(top_main_result, "top_handler_main result should exist");
+  assert.equal(top_main_result!.status, "error");
+  assert.ok(
+    top_main_result!.error instanceof EventHandlerTimeoutError,
+    "top_handler_main should have timed out"
+  );
+
+  // ── ChildEvent: 1 handler result (timed out at 80ms) ────────────────
+  assert.ok(child_ref, "ChildEvent should have been emitted");
+  assert.equal(child_ref!.event_status, "completed");
+
+  const child_results = Array.from(child_ref!.event_results.values());
+  assert.equal(child_results.length, 1, "ChildEvent should have 1 handler result");
+  assert.equal(child_results[0].handler_name, "child_handler");
+  assert.equal(child_results[0].status, "error");
+  assert.ok(
+    child_results[0].error instanceof EventHandlerTimeoutError,
+    "child_handler should have timed out"
+  );
+
+  // ── GrandchildEvent: 5 handler results (2 completed, 3 timed out) ──
+  assert.ok(grandchild_ref, "GrandchildEvent should have been emitted");
+  assert.equal(grandchild_ref!.event_status, "completed");
+
+  const gc_results = Array.from(grandchild_ref!.event_results.values());
+  assert.equal(gc_results.length, 5, "GrandchildEvent should have 5 handler results");
+
+  // Handlers a, c, e: slow → individually timed out
+  for (const name of ["gc_handler_a", "gc_handler_c", "gc_handler_e"]) {
+    const result = gc_results.find((r) => r.handler_name === name);
+    assert.ok(result, `${name} result should exist`);
+    assert.equal(result!.status, "error", `${name} should have status error`);
+    assert.ok(
+      result!.error instanceof EventHandlerTimeoutError,
+      `${name} should be EventHandlerTimeoutError`
+    );
+  }
+
+  // Handlers b, d: fast → completed successfully
+  const gc_b_result = gc_results.find((r) => r.handler_name === "gc_handler_b");
+  assert.ok(gc_b_result, "gc_handler_b result should exist");
+  assert.equal(gc_b_result!.status, "completed");
+  assert.equal(gc_b_result!.result, "gc_b_done");
+
+  const gc_d_result = gc_results.find((r) => r.handler_name === "gc_handler_d");
+  assert.ok(gc_d_result, "gc_handler_d result should exist");
+  assert.equal(gc_d_result!.status, "completed");
+  assert.equal(gc_d_result!.result, "gc_d_done");
+
+  // ── QueuedGrandchildEvent: CANCELLED by child_handler timeout ───────
+  // This event was emitted but never awaited. It sat in pending_event_queue
+  // until child_handler timed out, which triggered cancelPendingChildProcessing
+  // to walk ChildEvent.event_children and cancel all pending handlers.
+  assert.ok(queued_grandchild_ref, "QueuedGrandchildEvent should have been emitted");
+  assert.equal(queued_grandchild_ref!.event_status, "completed");
+
+  const queued_gc_results = Array.from(queued_grandchild_ref!.event_results.values());
+  assert.equal(queued_gc_results.length, 1, "QueuedGC should have 1 handler result");
+  assert.equal(queued_gc_results[0].status, "error");
+  assert.ok(
+    queued_gc_results[0].error instanceof EventHandlerCancelledError,
+    "QueuedGC handler should be EventHandlerCancelledError (not timeout — it never ran)"
+  );
+  // Verify the cancellation error chain: CancelledError.parent_error → TimeoutError
+  assert.ok(
+    (queued_gc_results[0].error as EventHandlerCancelledError).parent_error instanceof
+      EventHandlerTimeoutError,
+    "QueuedGC cancellation should reference the child_handler's timeout as parent_error"
+  );
+
+  // ── SiblingEvent: CANCELLED by top_handler_main timeout ─────────────
+  // Same pattern: emitted but never awaited, stays in queue, cancelled when
+  // top_handler_main times out and cancelPendingChildProcessing runs.
+  assert.ok(sibling_ref, "SiblingEvent should have been emitted");
+  assert.equal(sibling_ref!.event_status, "completed");
+
+  const sibling_results = Array.from(sibling_ref!.event_results.values());
+  assert.equal(sibling_results.length, 1, "SiblingEvent should have 1 handler result");
+  assert.equal(sibling_results[0].status, "error");
+  assert.ok(
+    sibling_results[0].error instanceof EventHandlerCancelledError,
+    "SiblingEvent handler should be EventHandlerCancelledError"
+  );
+  assert.ok(
+    (sibling_results[0].error as EventHandlerCancelledError).parent_error instanceof
+      EventHandlerTimeoutError,
+    "SiblingEvent cancellation should reference top_handler_main's timeout as parent_error"
+  );
+
+  // ── Execution log: verify what ran and what didn't ──────────────────
+  // These handlers started AND completed:
+  assert.ok(execution_log.includes("top_fast_start"), "top_fast should have started");
+  assert.ok(execution_log.includes("top_fast_complete"), "top_fast should have completed");
+  assert.ok(execution_log.includes("gc_b_complete"), "gc_b (sync) should have completed");
+  assert.ok(execution_log.includes("gc_d_start"), "gc_d should have started");
+  assert.ok(execution_log.includes("gc_d_complete"), "gc_d should have completed");
+
+  // These handlers started but were interrupted by their own timeout:
+  assert.ok(execution_log.includes("gc_a_start"), "gc_a should have started");
+  assert.ok(!execution_log.includes("gc_a_end"), "gc_a should NOT have finished (timed out)");
+  assert.ok(execution_log.includes("gc_c_start"), "gc_c should have started");
+  assert.ok(!execution_log.includes("gc_c_end"), "gc_c should NOT have finished (timed out)");
+  assert.ok(execution_log.includes("gc_e_start"), "gc_e should have started");
+  assert.ok(!execution_log.includes("gc_e_end"), "gc_e should NOT have finished (timed out)");
+
+  // These handlers started and progressed, then parent timeout interrupted:
+  assert.ok(execution_log.includes("top_main_start"), "top_main should have started");
+  assert.ok(execution_log.includes("child_start"), "child should have started");
+  assert.ok(
+    execution_log.includes("child_after_grandchild"),
+    "child should have continued after grandchild completed"
+  );
+  assert.ok(
+    execution_log.includes("top_main_after_child"),
+    "top_main should have continued after child completed"
+  );
+  assert.ok(!execution_log.includes("child_end"), "child should NOT have finished (timed out)");
+  assert.ok(!execution_log.includes("top_main_end"), "top_main should NOT have finished (timed out)");
+
+  // These handlers never ran at all (cancelled before starting):
+  assert.ok(!execution_log.includes("queued_gc_start"), "queued_gc should never have started");
+  assert.ok(!execution_log.includes("sibling_start"), "sibling should never have started");
+
+  // ── Parent-child tree structure ─────────────────────────────────────
+  assert.ok(
+    top.event_children.some((c) => c.event_id === child_ref!.event_id),
+    "ChildEvent should be in TopEvent.event_children"
+  );
+  assert.ok(
+    top.event_children.some((c) => c.event_id === sibling_ref!.event_id),
+    "SiblingEvent should be in TopEvent.event_children"
+  );
+  assert.ok(
+    child_ref!.event_children.some((c) => c.event_id === grandchild_ref!.event_id),
+    "GrandchildEvent should be in ChildEvent.event_children"
+  );
+  assert.ok(
+    child_ref!.event_children.some((c) => c.event_id === queued_grandchild_ref!.event_id),
+    "QueuedGrandchildEvent should be in ChildEvent.event_children"
+  );
+
+  // ── Timing invariants ──────────────────────────────────────────────
+  // All events should have completion timestamps
+  for (const evt of [top, child_ref!, grandchild_ref!, queued_grandchild_ref!, sibling_ref!]) {
+    assert.ok(evt.event_completed_at, `${evt.event_type} should have event_completed_at`);
+  }
+  // All handler results should have started_at and completed_at
+  for (const result of top_results) {
+    assert.ok(result.started_at, `${result.handler_name} should have started_at`);
+    assert.ok(result.completed_at, `${result.handler_name} should have completed_at`);
+  }
+  for (const result of gc_results) {
+    assert.ok(result.started_at, `${result.handler_name} should have started_at`);
+    assert.ok(result.completed_at, `${result.handler_name} should have completed_at`);
+  }
+});
+
+// =============================================================================
+// Verify the timeout→cancellation error chain is intact at every level.
+// When a parent handler times out and cancels a child's pending handlers,
+// the EventHandlerCancelledError.parent_error must reference the specific
+// EventHandlerTimeoutError that caused the cascade. This test creates a
+// 2-level chain where each level's cancellation error can be inspected.
+// =============================================================================
+
+test("cancellation error chain preserves parent_error references through hierarchy", async () => {
+  const OuterEvent = BaseEvent.extend("ErrorChainOuter", {});
+  const InnerEvent = BaseEvent.extend("ErrorChainInner", {});
+  const DeepEvent = BaseEvent.extend("ErrorChainDeep", {});
+
+  const bus = new EventBus("ErrorChainBus", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial"
+  });
+
+  let inner_ref: InstanceType<typeof InnerEvent> | null = null;
+  let deep_ref: InstanceType<typeof DeepEvent> | null = null;
+
+  // DeepEvent handler: sleeps long, will be still pending when inner times out
+  // Because DeepEvent is emitted but NOT awaited, it stays in the queue.
+  const deep_handler = async () => {
+    await delay(200);
+    return "deep_done";
+  };
+
+  // InnerEvent handler: emits DeepEvent (not awaited), then sleeps long → times out
+  const inner_handler = async (event: InstanceType<typeof InnerEvent>) => {
+    deep_ref = event.bus?.emit(DeepEvent({ event_timeout: 0.5 }))!;
+    await delay(200); // interrupted by inner timeout
+    return "inner_done";
+  };
+
+  // OuterEvent handler: emits InnerEvent (awaited), then sleeps long → times out
+  const outer_handler = async (event: InstanceType<typeof OuterEvent>) => {
+    inner_ref = event.bus?.emit(InnerEvent({ event_timeout: 0.04 }))!;
+    await inner_ref.done();
+    await delay(200); // interrupted by outer timeout
+    return "outer_done";
+  };
+
+  bus.on(OuterEvent, outer_handler);
+  bus.on(InnerEvent, inner_handler);
+  bus.on(DeepEvent, deep_handler);
+
+  const outer = bus.dispatch(OuterEvent({ event_timeout: 0.15 }));
+  await outer.done();
+  await bus.waitUntilIdle();
+
+  // Outer handler timed out
+  const outer_result = Array.from(outer.event_results.values())[0];
+  assert.equal(outer_result.status, "error");
+  assert.ok(outer_result.error instanceof EventHandlerTimeoutError);
+  const outer_timeout = outer_result.error as EventHandlerTimeoutError;
+
+  // Inner handler timed out (its own 40ms timeout, not outer's)
+  assert.ok(inner_ref);
+  const inner_result = Array.from(inner_ref!.event_results.values())[0];
+  assert.equal(inner_result.status, "error");
+  assert.ok(inner_result.error instanceof EventHandlerTimeoutError);
+  const inner_timeout = inner_result.error as EventHandlerTimeoutError;
+
+  // Inner's timeout is from InnerEvent's own event_timeout (40ms),
+  // not inherited from outer
+  assert.ok(
+    inner_timeout.message.includes("inner_handler"),
+    "Inner timeout should name inner_handler"
+  );
+
+  // DeepEvent was cancelled when inner_handler timed out.
+  // The cancellation error should reference inner_handler's timeout (not outer's).
+  assert.ok(deep_ref);
+  const deep_result = Array.from(deep_ref!.event_results.values())[0];
+  assert.equal(deep_result.status, "error");
+  assert.ok(
+    deep_result.error instanceof EventHandlerCancelledError,
+    "DeepEvent handler should be cancelled, not timed out (it never started)"
+  );
+  const deep_cancel = deep_result.error as EventHandlerCancelledError;
+  assert.ok(
+    deep_cancel.parent_error instanceof EventHandlerTimeoutError,
+    "Cancellation should reference parent timeout"
+  );
+  // The parent_error should be the INNER handler's timeout, because that's
+  // the handler whose cancelPendingChildProcessing actually cancelled DeepEvent.
+  assert.ok(
+    deep_cancel.parent_error.message.includes("inner_handler") ||
+      deep_cancel.parent_error.message.includes("child_handler"),
+    "parent_error should reference the handler that directly caused cancellation"
+  );
+});
+
+// =============================================================================
+// When a parent has a timeout but a child has event_timeout: null (no timeout),
+// the child's handlers run indefinitely on their own — but if the PARENT times
+// out, cancelPendingChildProcessing still cancels any pending child handlers.
+// This tests that cancellation works across timeout/no-timeout boundaries.
+// =============================================================================
+
+test("parent timeout cancels children that have no timeout of their own", async () => {
+  const ParentEvent = BaseEvent.extend("TimeoutBoundaryParent", {});
+  const NoTimeoutChild = BaseEvent.extend("TimeoutBoundaryChild", {});
+
+  const bus = new EventBus("TimeoutBoundaryBus", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial",
+    event_timeout: null // no bus-level default
+  });
+
+  let child_ref: InstanceType<typeof NoTimeoutChild> | null = null;
+  let child_handler_ran = false;
+
+  // Child handler: would run forever but should be cancelled
+  const child_slow_handler = async () => {
+    child_handler_ran = true;
+    await delay(500);
+    return "child_done";
+  };
+
+  // Parent handler: emits child (not awaited), then sleeps → parent times out
+  const parent_handler = async (event: InstanceType<typeof ParentEvent>) => {
+    // event_timeout: null means the child has no timeout of its own.
+    // It would run forever if the parent didn't cancel it.
+    child_ref = event.bus?.emit(NoTimeoutChild({ event_timeout: null }))!;
+    await delay(200);
+    return "parent_done";
+  };
+
+  bus.on(ParentEvent, parent_handler);
+  bus.on(NoTimeoutChild, child_slow_handler);
+
+  const parent = bus.dispatch(ParentEvent({ event_timeout: 0.03 }));
+  await parent.done();
+  await bus.waitUntilIdle();
+
+  // Parent timed out
+  const parent_result = Array.from(parent.event_results.values())[0];
+  assert.equal(parent_result.status, "error");
+  assert.ok(parent_result.error instanceof EventHandlerTimeoutError);
+
+  // Child should exist and be cancelled (it was in the queue, never started)
+  assert.ok(child_ref, "Child event should have been emitted");
+  assert.equal(child_ref!.event_status, "completed");
+  assert.equal(child_handler_ran, false, "Child handler should never have started");
+
+  const child_results = Array.from(child_ref!.event_results.values());
+  assert.equal(child_results.length, 1);
+  assert.ok(
+    child_results[0].error instanceof EventHandlerCancelledError,
+    "Child handler should be cancelled by parent timeout, even though it has no timeout"
+  );
+});

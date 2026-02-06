@@ -18,7 +18,7 @@ test("eventIsChildOf and eventIsParentOf work for direct children", async () => 
   const parent_event = bus.dispatch(ParentEvent({}));
   await bus.waitUntilIdle();
 
-  const child_event = bus.event_history.find((event) => event.event_type === "ChildEvent");
+  const child_event = Array.from(bus.event_history.values()).find((event) => event.event_type === "ChildEvent");
   assert.ok(child_event);
 
   assert.equal(child_event.event_parent_id, parent_event.event_id);
@@ -40,8 +40,8 @@ test("eventIsChildOf works for grandchildren", async () => {
   const parent_event = bus.dispatch(ParentEvent({}));
   await bus.waitUntilIdle();
 
-  const child_event = bus.event_history.find((event) => event.event_type === "ChildEvent");
-  const grandchild_event = bus.event_history.find((event) => event.event_type === "GrandchildEvent");
+  const child_event = Array.from(bus.event_history.values()).find((event) => event.event_type === "ChildEvent");
+  const grandchild_event = Array.from(bus.event_history.values()).find((event) => event.event_type === "GrandchildEvent");
 
   assert.ok(child_event);
   assert.ok(grandchild_event);

@@ -64,7 +64,7 @@ test("comprehensive patterns: forwarding, async/sync dispatch, parent tracking",
   await bus_1.waitUntilIdle();
   await bus_2.waitUntilIdle();
 
-  const event_children = bus_1.event_history.filter(
+  const event_children = Array.from(bus_1.event_history.values()).filter(
     (event) =>
       event.event_type === "ImmediateChildEvent" || event.event_type === "QueuedChildEvent"
   );
@@ -217,37 +217,37 @@ test("awaited child jumps queue without overshoot", async () => {
   const event_2 = bus.dispatch(Event2({}));
   const event_3 = bus.dispatch(Event3({}));
 
-  await delay(0);
-  debug_order.push({ label: "after_delay_0", at: new Date().toISOString() });
-
+  // Wait for everything to complete
   await event_1.done();
-  debug_order.push({ label: "after_event1_done", at: new Date().toISOString() });
-  console.log("debug_order", debug_order);
+  await bus.waitUntilIdle();
 
+  // Core assertion: child jumped the queue and ran DURING Event1's handler
   assert.ok(execution_order.includes("Child_start"));
   assert.ok(execution_order.includes("Child_end"));
   const child_start_idx = execution_order.indexOf("Child_start");
   const child_end_idx = execution_order.indexOf("Child_end");
   const event1_end_idx = execution_order.indexOf("Event1_end");
-  assert.ok(child_start_idx < event1_end_idx);
-  assert.ok(child_end_idx < event1_end_idx);
+  assert.ok(child_start_idx < event1_end_idx, "child must start before Event1 handler returns");
+  assert.ok(child_end_idx < event1_end_idx, "child must end before Event1 handler returns");
 
-  assert.ok(!execution_order.includes("Event2_start"));
-  assert.ok(!execution_order.includes("Event3_start"));
-
-  assert.equal(event_2.event_status, "pending");
-  assert.equal(event_3.event_status, "pending");
-
-  await bus.waitUntilIdle();
-
+  // No overshoot: Event2 and Event3 must only start AFTER Event1's handler fully completes.
+  // In JS, the microtask-based runloop processes them after Event1 completes (so they may
+  // already be done by this point), but the key guarantee is ordering, not timing.
   const event2_start_idx = execution_order.indexOf("Event2_start");
   const event3_start_idx = execution_order.indexOf("Event3_start");
-  assert.ok(event2_start_idx < event3_start_idx);
+  assert.ok(event2_start_idx > event1_end_idx, "Event2 must not start until Event1 handler returns");
+  assert.ok(event3_start_idx > event1_end_idx, "Event3 must not start until Event1 handler returns");
 
+  // FIFO preserved among queued events
+  assert.ok(event2_start_idx < event3_start_idx, "Event2 must start before Event3 (FIFO)");
+
+  // All events completed
+  assert.equal(event_1.event_status, "completed");
   assert.equal(event_2.event_status, "completed");
   assert.equal(event_3.event_status, "completed");
 
-  const history_list = bus.event_history;
+  // Timestamp ordering confirms the same
+  const history_list = Array.from(bus.event_history.values());
   const child_event = history_list.find((event) => event.event_type === "ChildEvent");
   const event2_from_history = history_list.find((event) => event.event_type === "Event2");
   const event3_from_history = history_list.find((event) => event.event_type === "Event3");
@@ -258,6 +258,151 @@ test("awaited child jumps queue without overshoot", async () => {
 
   assert.ok(child_event!.event_started_at! < event2_from_history!.event_started_at!);
   assert.ok(child_event!.event_started_at! < event3_from_history!.event_started_at!);
+});
+
+test("done() on non-proxied event still holds immediate_processing_stack_depth", async () => {
+  const bus = new EventBus("RawDoneBus", { max_history_size: 100 });
+  const Event1 = BaseEvent.extend("Event1", {});
+  const ChildEvent = BaseEvent.extend("RawChild", {});
+
+  let depth_after_done = -1;
+
+  bus.on(ChildEvent, () => {});
+
+  bus.on(Event1, async (event) => {
+    // Dispatch child via the raw bus (not the proxied event.bus)
+    const child = bus.dispatch(ChildEvent({}));
+    // Get the raw (non-proxied) event
+    const raw_child = child._original_event ?? child;
+    // done() on raw event bypasses handler_result injection from proxy
+    await raw_child.done();
+    // After done() returns, depth should still be > 0 because
+    // we're still inside a handler doing queue-jump processing
+    depth_after_done = bus.immediate_processing_stack_depth;
+  });
+
+  bus.dispatch(Event1({}));
+  await bus.waitUntilIdle();
+
+  assert.ok(
+    depth_after_done > 0,
+    `immediate_processing_stack_depth should be > 0 after raw done() ` +
+      `but before handler returns, got ${depth_after_done}`
+  );
+});
+
+test("immediate_processing_stack_depth returns to 0 after queue-jump completes", async () => {
+  const bus = new EventBus("DepthBalanceBus", { max_history_size: 100 });
+  const Event1 = BaseEvent.extend("DepthEvent1", {});
+  const ChildA = BaseEvent.extend("DepthChildA", {});
+  const ChildB = BaseEvent.extend("DepthChildB", {});
+
+  let depth_during_handler = -1;
+  let depth_between_dones = -1;
+  let depth_after_second_done = -1;
+
+  bus.on(ChildA, () => {});
+  bus.on(ChildB, () => {});
+
+  bus.on(Event1, async (event) => {
+    // First queue-jump
+    const child_a = event.bus?.emit(ChildA({}))!;
+    await child_a.done();
+    depth_during_handler = bus.immediate_processing_stack_depth;
+
+    // Second queue-jump — should NOT double-increment (queue_jump_hold guard)
+    const child_b = event.bus?.emit(ChildB({}))!;
+    depth_between_dones = bus.immediate_processing_stack_depth;
+    await child_b.done();
+    depth_after_second_done = bus.immediate_processing_stack_depth;
+  });
+
+  bus.dispatch(Event1({}));
+  await bus.waitUntilIdle();
+
+  // During handler, depth should be > 0 (held by queue_jump_hold)
+  assert.ok(
+    depth_during_handler > 0,
+    `depth should be > 0 after first done(), got ${depth_during_handler}`
+  );
+
+  // Between done() calls, depth should still be held
+  assert.ok(
+    depth_between_dones > 0,
+    `depth should be > 0 between done() calls, got ${depth_between_dones}`
+  );
+
+  // After second done(), still held until handler returns
+  assert.ok(
+    depth_after_second_done > 0,
+    `depth should be > 0 after second done(), got ${depth_after_second_done}`
+  );
+
+  // After handler finishes and bus is idle, depth must be exactly 0
+  assert.equal(
+    bus.immediate_processing_stack_depth,
+    0,
+    `depth should return to 0 after handler completes, got ${bus.immediate_processing_stack_depth}`
+  );
+});
+
+test("isInsideHandler() is per-bus, not global", async () => {
+  const bus_a = new EventBus("InsideHandlerA", { max_history_size: 100 });
+  const bus_b = new EventBus("InsideHandlerB", { max_history_size: 100 });
+
+  const EventA = BaseEvent.extend("InsideHandlerEventA", {});
+  const EventB = BaseEvent.extend("InsideHandlerEventB", {});
+
+  let bus_a_inside_during_a_handler = false;
+  let bus_b_inside_during_a_handler = false;
+  let bus_a_inside_during_b_handler = false;
+  let bus_b_inside_during_b_handler = false;
+
+  bus_a.on(EventA, () => {
+    bus_a_inside_during_a_handler = bus_a.isInsideHandler();
+    bus_b_inside_during_a_handler = bus_b.isInsideHandler();
+  });
+
+  bus_b.on(EventB, () => {
+    bus_a_inside_during_b_handler = bus_a.isInsideHandler();
+    bus_b_inside_during_b_handler = bus_b.isInsideHandler();
+  });
+
+  // Dispatch to bus_a first, wait for completion so bus_b has no active handlers
+  await bus_a.dispatch(EventA({})).done();
+  await bus_a.waitUntilIdle();
+
+  // Then dispatch to bus_b so bus_a has no active handlers
+  await bus_b.dispatch(EventB({})).done();
+  await bus_b.waitUntilIdle();
+
+  // During bus_a's handler: bus_a should report inside, bus_b should not
+  assert.equal(
+    bus_a_inside_during_a_handler,
+    true,
+    "bus_a.isInsideHandler() should be true during bus_a handler"
+  );
+  assert.equal(
+    bus_b_inside_during_a_handler,
+    false,
+    "bus_b.isInsideHandler() should be false during bus_a handler"
+  );
+
+  // During bus_b's handler: bus_b should report inside, bus_a should not
+  assert.equal(
+    bus_b_inside_during_b_handler,
+    true,
+    "bus_b.isInsideHandler() should be true during bus_b handler"
+  );
+  assert.equal(
+    bus_a_inside_during_b_handler,
+    false,
+    "bus_a.isInsideHandler() should be false during bus_b handler"
+  );
+
+  // After all handlers complete, neither bus should report inside
+  assert.equal(bus_a.isInsideHandler(), false, "bus_a.isInsideHandler() should be false after idle");
+  assert.equal(bus_b.isInsideHandler(), false, "bus_b.isInsideHandler() should be false after idle");
 });
 
 test("dispatch multiple, await one skips others until after handler completes", async () => {
@@ -621,4 +766,461 @@ test("deeply nested awaited children", async () => {
 
   const event2_start_idx = execution_order.indexOf("Event2_start");
   assert.ok(event2_start_idx > event1_end_idx);
+});
+
+// =============================================================================
+// Queue-Jump Concurrency Tests (Two-Bus)
+//
+// BUG: runImmediatelyAcrossBuses passes { bypass_handler_limiters: true,
+// bypass_event_limiters: true } for ALL buses. This causes:
+//   1. Handlers to run in parallel regardless of configured concurrency
+//   2. Event limiters on remote buses to be skipped
+//
+// The fix requires "yield-and-reacquire":
+//   - Before processing the child, temporarily RELEASE the limiter the parent
+//     handler holds (the parent is suspended in `await child.done()` and isn't
+//     using it).
+//   - Process the child event NORMALLY — handlers acquire/release the real
+//     limiter, serializing among themselves as configured.
+//   - After the child completes, RE-ACQUIRE the limiter for the parent handler
+//     before it resumes.
+//
+// For event limiters, only bypass on the initiating bus (where the parent holds
+// the limiter). On other buses, respect their event concurrency — bypass only
+// if they resolve to the SAME limiter instance (i.e. global-serial).
+//
+// All tests use two buses. The pattern is:
+//   bus_a: origin bus where TriggerEvent handler dispatches a child
+//   bus_b: forward bus that also handles the child event
+//   The trigger handler dispatches the child on bus_a and also to bus_b,
+//   then awaits child.done(), which queue-jumps the child on both buses.
+// =============================================================================
+
+test("BUG: queue-jump two-bus bus-serial handlers should serialize on each bus", async () => {
+  const TriggerEvent = BaseEvent.extend("QJ2BS_Trigger", {});
+  const ChildEvent = BaseEvent.extend("QJ2BS_Child", {});
+
+  const bus_a = new EventBus("QJ2BS_A", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial"
+  });
+  const bus_b = new EventBus("QJ2BS_B", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial"
+  });
+
+  const log: string[] = [];
+
+  // Two handlers per bus. handler_1 is slow (15ms), handler_2 is fast (5ms).
+  // With bus-serial, handler_1 must finish before handler_2 starts ON EACH BUS.
+  // With buggy parallel, both start simultaneously and handler_2 finishes first.
+  const a_handler_1 = async () => { log.push("a1_start"); await delay(15); log.push("a1_end"); };
+  const a_handler_2 = async () => { log.push("a2_start"); await delay(5); log.push("a2_end"); };
+  const b_handler_1 = async () => { log.push("b1_start"); await delay(15); log.push("b1_end"); };
+  const b_handler_2 = async () => { log.push("b2_start"); await delay(5); log.push("b2_end"); };
+
+  bus_a.on(TriggerEvent, async (event: InstanceType<typeof TriggerEvent>) => {
+    const child = event.bus?.emit(ChildEvent({ event_timeout: null }))!;
+    bus_b.dispatch(child);
+    await child.done();
+  });
+  bus_a.on(ChildEvent, a_handler_1);
+  bus_a.on(ChildEvent, a_handler_2);
+  bus_b.on(ChildEvent, b_handler_1);
+  bus_b.on(ChildEvent, b_handler_2);
+
+  const top = bus_a.dispatch(TriggerEvent({ event_timeout: null }));
+  await top.done();
+  await bus_a.waitUntilIdle();
+  await bus_b.waitUntilIdle();
+
+  // Bus A: handlers must serialize (a1 finishes before a2 starts)
+  const a1_end = log.indexOf("a1_end");
+  const a2_start = log.indexOf("a2_start");
+  assert.ok(a1_end >= 0 && a2_start >= 0, "bus_a handlers should have run");
+  assert.ok(
+    a1_end < a2_start,
+    `bus_a (bus-serial): a1 should finish before a2 starts. Got: [${log.join(", ")}]`
+  );
+
+  // Bus B: handlers must serialize (b1 finishes before b2 starts)
+  const b1_end = log.indexOf("b1_end");
+  const b2_start = log.indexOf("b2_start");
+  assert.ok(b1_end >= 0 && b2_start >= 0, "bus_b handlers should have run");
+  assert.ok(
+    b1_end < b2_start,
+    `bus_b (bus-serial): b1 should finish before b2 starts. Got: [${log.join(", ")}]`
+  );
+});
+
+test("BUG: queue-jump two-bus global-serial handlers should serialize across both buses", async () => {
+  const TriggerEvent = BaseEvent.extend("QJ2GS_Trigger", {});
+  const ChildEvent = BaseEvent.extend("QJ2GS_Child", {});
+
+  // Global-serial means ONE handler at a time GLOBALLY, across all buses.
+  const bus_a = new EventBus("QJ2GS_A", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "global-serial"
+  });
+  const bus_b = new EventBus("QJ2GS_B", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "global-serial"
+  });
+
+  const log: string[] = [];
+
+  const a_handler_1 = async () => { log.push("a1_start"); await delay(15); log.push("a1_end"); };
+  const a_handler_2 = async () => { log.push("a2_start"); await delay(5); log.push("a2_end"); };
+  const b_handler_1 = async () => { log.push("b1_start"); await delay(15); log.push("b1_end"); };
+  const b_handler_2 = async () => { log.push("b2_start"); await delay(5); log.push("b2_end"); };
+
+  bus_a.on(TriggerEvent, async (event: InstanceType<typeof TriggerEvent>) => {
+    const child = event.bus?.emit(ChildEvent({ event_timeout: null }))!;
+    bus_b.dispatch(child);
+    await child.done();
+  });
+  bus_a.on(ChildEvent, a_handler_1);
+  bus_a.on(ChildEvent, a_handler_2);
+  bus_b.on(ChildEvent, b_handler_1);
+  bus_b.on(ChildEvent, b_handler_2);
+
+  const top = bus_a.dispatch(TriggerEvent({ event_timeout: null }));
+  await top.done();
+  await bus_a.waitUntilIdle();
+  await bus_b.waitUntilIdle();
+
+  // With global-serial, no two handlers should overlap anywhere.
+  // runImmediatelyAcrossBuses processes buses sequentially (bus_a first,
+  // then bus_b), so the expected order is strictly serial:
+  //   a1_start, a1_end, a2_start, a2_end, b1_start, b1_end, b2_start, b2_end
+  //
+  // With the bug (bypass), all handlers on a bus run in parallel:
+  //   a1_start, a2_start, a2_end, a1_end, b1_start, b2_start, b2_end, b1_end
+
+  // Check: within bus_a, handlers are serial
+  const a1_end = log.indexOf("a1_end");
+  const a2_start = log.indexOf("a2_start");
+  assert.ok(
+    a1_end < a2_start,
+    `global-serial: a1 should finish before a2 starts. Got: [${log.join(", ")}]`
+  );
+
+  // Check: within bus_b, handlers are serial
+  const b1_end = log.indexOf("b1_end");
+  const b2_start = log.indexOf("b2_start");
+  assert.ok(
+    b1_end < b2_start,
+    `global-serial: b1 should finish before b2 starts. Got: [${log.join(", ")}]`
+  );
+
+  // Check: bus_a handlers all finish before bus_b handlers start
+  // (because runImmediatelyAcrossBuses processes sequentially and
+  // all share the global handler limiter)
+  const a2_end = log.indexOf("a2_end");
+  const b1_start = log.indexOf("b1_start");
+  assert.ok(
+    a2_end < b1_start,
+    `global-serial: bus_a should finish before bus_b starts. Got: [${log.join(", ")}]`
+  );
+});
+
+test("BUG: queue-jump two-bus mixed: bus_a bus-serial, bus_b parallel", async () => {
+  const TriggerEvent = BaseEvent.extend("QJ2Mix1_Trigger", {});
+  const ChildEvent = BaseEvent.extend("QJ2Mix1_Child", {});
+
+  const bus_a = new EventBus("QJ2Mix1_A", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial"
+  });
+  const bus_b = new EventBus("QJ2Mix1_B", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "parallel" // bus_b handlers should run in parallel
+  });
+
+  const log: string[] = [];
+
+  const a_handler_1 = async () => { log.push("a1_start"); await delay(15); log.push("a1_end"); };
+  const a_handler_2 = async () => { log.push("a2_start"); await delay(5); log.push("a2_end"); };
+  const b_handler_1 = async () => { log.push("b1_start"); await delay(15); log.push("b1_end"); };
+  const b_handler_2 = async () => { log.push("b2_start"); await delay(5); log.push("b2_end"); };
+
+  bus_a.on(TriggerEvent, async (event: InstanceType<typeof TriggerEvent>) => {
+    const child = event.bus?.emit(ChildEvent({ event_timeout: null }))!;
+    bus_b.dispatch(child);
+    await child.done();
+  });
+  bus_a.on(ChildEvent, a_handler_1);
+  bus_a.on(ChildEvent, a_handler_2);
+  bus_b.on(ChildEvent, b_handler_1);
+  bus_b.on(ChildEvent, b_handler_2);
+
+  const top = bus_a.dispatch(TriggerEvent({ event_timeout: null }));
+  await top.done();
+  await bus_a.waitUntilIdle();
+  await bus_b.waitUntilIdle();
+
+  // Bus A (bus-serial): a1 must finish before a2 starts
+  const a1_end = log.indexOf("a1_end");
+  const a2_start = log.indexOf("a2_start");
+  assert.ok(
+    a1_end < a2_start,
+    `bus_a (bus-serial): a1 should finish before a2 starts. Got: [${log.join(", ")}]`
+  );
+
+  // Bus B (parallel): both handlers should start before the slower one finishes.
+  // b2 (5ms) starts and finishes before b1 (15ms) finishes.
+  const b1_end = log.indexOf("b1_end");
+  const b2_start = log.indexOf("b2_start");
+  assert.ok(
+    b2_start < b1_end,
+    `bus_b (parallel): b2 should start before b1 finishes. Got: [${log.join(", ")}]`
+  );
+});
+
+test("BUG: queue-jump two-bus mixed: bus_a parallel, bus_b bus-serial", async () => {
+  const TriggerEvent = BaseEvent.extend("QJ2Mix2_Trigger", {});
+  const ChildEvent = BaseEvent.extend("QJ2Mix2_Child", {});
+
+  const bus_a = new EventBus("QJ2Mix2_A", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "parallel" // bus_a handlers should run in parallel
+  });
+  const bus_b = new EventBus("QJ2Mix2_B", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial"
+  });
+
+  const log: string[] = [];
+
+  const a_handler_1 = async () => { log.push("a1_start"); await delay(15); log.push("a1_end"); };
+  const a_handler_2 = async () => { log.push("a2_start"); await delay(5); log.push("a2_end"); };
+  const b_handler_1 = async () => { log.push("b1_start"); await delay(15); log.push("b1_end"); };
+  const b_handler_2 = async () => { log.push("b2_start"); await delay(5); log.push("b2_end"); };
+
+  bus_a.on(TriggerEvent, async (event: InstanceType<typeof TriggerEvent>) => {
+    const child = event.bus?.emit(ChildEvent({ event_timeout: null }))!;
+    bus_b.dispatch(child);
+    await child.done();
+  });
+  bus_a.on(ChildEvent, a_handler_1);
+  bus_a.on(ChildEvent, a_handler_2);
+  bus_b.on(ChildEvent, b_handler_1);
+  bus_b.on(ChildEvent, b_handler_2);
+
+  const top = bus_a.dispatch(TriggerEvent({ event_timeout: null }));
+  await top.done();
+  await bus_a.waitUntilIdle();
+  await bus_b.waitUntilIdle();
+
+  // Bus A (parallel): handlers should overlap
+  const a1_end = log.indexOf("a1_end");
+  const a2_start = log.indexOf("a2_start");
+  assert.ok(
+    a2_start < a1_end,
+    `bus_a (parallel): a2 should start before a1 finishes. Got: [${log.join(", ")}]`
+  );
+
+  // Bus B (bus-serial): b1 must finish before b2 starts
+  const b1_end = log.indexOf("b1_end");
+  const b2_start = log.indexOf("b2_start");
+  assert.ok(
+    b1_end < b2_start,
+    `bus_b (bus-serial): b1 should finish before b2 starts. Got: [${log.join(", ")}]`
+  );
+});
+
+// =============================================================================
+// Event-level concurrency on the forward bus.
+//
+// When the forward bus (bus_b) has bus-serial event concurrency and is already
+// processing an event, a queue-jumped child should WAIT for bus_b's in-flight
+// event to finish. The current code bypasses event limiters for ALL buses,
+// causing the child to cut in front of the in-flight event.
+//
+// The fix should only bypass event limiters on the INITIATING bus (where the
+// parent event holds the limiter). On other buses, bypass only if they resolve
+// to the SAME limiter instance (global-serial shares one global limiter).
+// =============================================================================
+
+test("BUG: queue-jump should respect bus-serial event concurrency on forward bus", async () => {
+  const TriggerEvent = BaseEvent.extend("QJEvt_Trigger", {});
+  const ChildEvent = BaseEvent.extend("QJEvt_Child", {});
+  const SlowEvent = BaseEvent.extend("QJEvt_Slow", {});
+
+  const bus_a = new EventBus("QJEvt_A", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial"
+  });
+  const bus_b = new EventBus("QJEvt_B", {
+    event_concurrency: "bus-serial", // only one event at a time on bus_b
+    handler_concurrency: "bus-serial"
+  });
+
+  const log: string[] = [];
+
+  // SlowEvent handler: occupies bus_b's event limiter for 40ms
+  bus_b.on(SlowEvent, async () => {
+    log.push("slow_start");
+    await delay(40);
+    log.push("slow_end");
+  });
+
+  // ChildEvent handler on bus_b: should only run after SlowEvent finishes
+  bus_b.on(ChildEvent, async () => {
+    log.push("child_b_start");
+    await delay(5);
+    log.push("child_b_end");
+  });
+
+  // ChildEvent handler on bus_a (so bus_a also processes the child)
+  bus_a.on(ChildEvent, async () => {
+    log.push("child_a_start");
+    await delay(5);
+    log.push("child_a_end");
+  });
+
+  // TriggerEvent handler: dispatches child to both buses, awaits completion
+  bus_a.on(TriggerEvent, async (event: InstanceType<typeof TriggerEvent>) => {
+    const child = event.bus?.emit(ChildEvent({ event_timeout: null }))!;
+    bus_b.dispatch(child);
+    await child.done();
+  });
+
+  // Step 1: Start a slow event on bus_b so it's busy
+  bus_b.dispatch(SlowEvent({ event_timeout: null }));
+  await delay(5); // let slow_handler start
+
+  // Step 2: Trigger the queue-jump on bus_a
+  const top = bus_a.dispatch(TriggerEvent({ event_timeout: null }));
+  await top.done();
+  await bus_a.waitUntilIdle();
+  await bus_b.waitUntilIdle();
+
+  // The child on bus_b should start AFTER the slow event finishes,
+  // because bus_b has bus-serial event concurrency.
+  const slow_end = log.indexOf("slow_end");
+  const child_b_start = log.indexOf("child_b_start");
+  assert.ok(slow_end >= 0, "slow event should have completed");
+  assert.ok(child_b_start >= 0, "child on bus_b should have run");
+  assert.ok(
+    slow_end < child_b_start,
+    `bus_b (bus-serial events): child should wait for slow event to finish. ` +
+      `Got: [${log.join(", ")}]`
+  );
+
+  // The child on bus_a should have processed (queue-jumped, bypasses bus_a's event limiter)
+  assert.ok(log.includes("child_a_start"), "child on bus_a should have run");
+  assert.ok(log.includes("child_a_end"), "child on bus_a should have completed");
+});
+
+test("queue-jump with fully-parallel forward bus starts immediately", async () => {
+  // When bus_b uses parallel event AND handler concurrency, the queue-jumped
+  // child should start immediately even while another event's handler is running.
+
+  const TriggerEvent = BaseEvent.extend("QJFullPar_Trigger", {});
+  const ChildEvent = BaseEvent.extend("QJFullPar_Child", {});
+  const SlowEvent = BaseEvent.extend("QJFullPar_Slow", {});
+
+  const bus_a = new EventBus("QJFullPar_A", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial"
+  });
+  const bus_b = new EventBus("QJFullPar_B", {
+    event_concurrency: "parallel",
+    handler_concurrency: "parallel"
+  });
+
+  const log: string[] = [];
+
+  bus_b.on(SlowEvent, async () => {
+    log.push("slow_start");
+    await delay(40);
+    log.push("slow_end");
+  });
+
+  bus_b.on(ChildEvent, async () => {
+    log.push("child_b_start");
+    await delay(5);
+    log.push("child_b_end");
+  });
+
+  bus_a.on(TriggerEvent, async (event: InstanceType<typeof TriggerEvent>) => {
+    const child = event.bus?.emit(ChildEvent({ event_timeout: null }))!;
+    bus_b.dispatch(child);
+    await child.done();
+  });
+
+  bus_b.dispatch(SlowEvent({ event_timeout: null }));
+  await delay(5);
+
+  const top = bus_a.dispatch(TriggerEvent({ event_timeout: null }));
+  await top.done();
+  await bus_a.waitUntilIdle();
+  await bus_b.waitUntilIdle();
+
+  const slow_end = log.indexOf("slow_end");
+  const child_b_start = log.indexOf("child_b_start");
+  assert.ok(child_b_start >= 0, "child on bus_b should have run");
+  assert.ok(
+    child_b_start < slow_end,
+    `bus_b (fully parallel): child should start before slow finishes. ` +
+      `Got: [${log.join(", ")}]`
+  );
+});
+
+test("queue-jump with parallel events but bus-serial handlers on forward bus serializes handlers", async () => {
+  // When bus_b has parallel event concurrency but bus-serial handler concurrency,
+  // the child event can start processing immediately (event limiter is parallel),
+  // but its handler must wait for the slow handler to release the handler limiter.
+
+  const TriggerEvent = BaseEvent.extend("QJEvtParHSer_Trigger", {});
+  const ChildEvent = BaseEvent.extend("QJEvtParHSer_Child", {});
+  const SlowEvent = BaseEvent.extend("QJEvtParHSer_Slow", {});
+
+  const bus_a = new EventBus("QJEvtParHSer_A", {
+    event_concurrency: "bus-serial",
+    handler_concurrency: "bus-serial"
+  });
+  const bus_b = new EventBus("QJEvtParHSer_B", {
+    event_concurrency: "parallel",    // events can start concurrently
+    handler_concurrency: "bus-serial"  // but handlers serialize
+  });
+
+  const log: string[] = [];
+
+  bus_b.on(SlowEvent, async () => {
+    log.push("slow_start");
+    await delay(40);
+    log.push("slow_end");
+  });
+
+  bus_b.on(ChildEvent, async () => {
+    log.push("child_b_start");
+    await delay(5);
+    log.push("child_b_end");
+  });
+
+  bus_a.on(TriggerEvent, async (event: InstanceType<typeof TriggerEvent>) => {
+    const child = event.bus?.emit(ChildEvent({ event_timeout: null }))!;
+    bus_b.dispatch(child);
+    await child.done();
+  });
+
+  bus_b.dispatch(SlowEvent({ event_timeout: null }));
+  await delay(5);
+
+  const top = bus_a.dispatch(TriggerEvent({ event_timeout: null }));
+  await top.done();
+  await bus_a.waitUntilIdle();
+  await bus_b.waitUntilIdle();
+
+  // With bus-serial handler concurrency, child handler must wait for slow handler
+  const slow_end = log.indexOf("slow_end");
+  const child_b_start = log.indexOf("child_b_start");
+  assert.ok(child_b_start >= 0, "child on bus_b should have run");
+  assert.ok(
+    child_b_start > slow_end,
+    `bus_b (bus-serial handlers): child handler should wait for slow handler. ` +
+      `Got: [${log.join(", ")}]`
+  );
 });

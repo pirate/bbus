@@ -3,8 +3,8 @@ import { v7 as uuidv7 } from "uuid";
 
 import type { EventBus } from "./event_bus.js";
 import { EventResult } from "./event_result.js";
-import type { ConcurrencyMode } from "./semaphores.js";
-import { CONCURRENCY_MODES } from "./semaphores.js";
+import type { ConcurrencyMode, Deferred } from "./semaphores.js";
+import { CONCURRENCY_MODES, withResolvers } from "./semaphores.js";
 
 
 export const BaseEventSchema = z
@@ -82,7 +82,6 @@ export class BaseEvent {
   event_result_schema?: z.ZodTypeAny;
   event_result_type?: string;
   event_results: Map<string, EventResult>;
-  event_children: BaseEvent[];
   event_emitted_by_handler_id?: string;
   event_pending_buses: number;
   event_status: "pending" | "started" | "completed";
@@ -99,9 +98,7 @@ export class BaseEvent {
   static schema = BaseEventSchema;
   static event_type?: string;
 
-  _done_promise: Promise<this> | null;
-  _done_resolve: ((event: this) => void) | null;
-  _done_reject: ((reason: unknown) => void) | null;
+  _done: Deferred<this> | null;
 
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
     const ctor = this.constructor as typeof BaseEvent & {
@@ -143,11 +140,8 @@ export class BaseEvent {
     this.event_result_schema = event_result_schema;
     this.event_result_type = event_result_type;
     this.event_results = new Map();
-    this.event_children = [];
 
-    this._done_promise = null;
-    this._done_resolve = null;
-    this._done_reject = null;
+    this._done = null;
     this._dispatch_context = undefined;
   }
 
@@ -259,26 +253,39 @@ export class BaseEvent {
     return this.event_type;
   }
 
+  get event_children(): BaseEvent[] {
+    const children: BaseEvent[] = [];
+    const seen = new Set<string>();
+    for (const result of this.event_results.values()) {
+      for (const child of result.event_children) {
+        if (!seen.has(child.event_id)) {
+          seen.add(child.event_id);
+          children.push(child);
+        }
+      }
+    }
+    return children;
+  }
+
   done(): Promise<this> {
     if (!this.bus) {
       return Promise.reject(new Error("event has no bus attached"));
     }
-    const runner_bus = this.bus as {
-      _runImmediately: (event: BaseEvent) => Promise<BaseEvent>;
-      isInsideHandler: () => boolean;
-    };
     if (this.event_status === "completed") {
       return Promise.resolve(this);
     }
-    if (runner_bus.isInsideHandler()) {
-      return runner_bus._runImmediately(this) as Promise<this>;
-    }
-    return this.waitForCompletion();
+    // Always delegate to _runImmediately — it walks up the parent event tree
+    // to determine whether we're inside a handler (works cross-bus). If no
+    // ancestor handler is in-flight, it falls back to waitForCompletion().
+    const runner_bus = this.bus as {
+      _runImmediately: (event: BaseEvent) => Promise<BaseEvent>;
+    };
+    return runner_bus._runImmediately(this) as Promise<this>;
   }
 
   waitForCompletion(): Promise<this> {
     this.ensureDonePromise();
-    return this._done_promise as Promise<this>;
+    return this._done!.promise;
   }
 
   markStarted(): void {
@@ -296,9 +303,7 @@ export class BaseEvent {
     this.event_status = "completed";
     this.event_completed_at = BaseEvent.nextIsoTimestamp();
     this.ensureDonePromise();
-    if (this._done_resolve) {
-      this._done_resolve(this as this);
-    }
+    this._done!.resolve(this);
   }
 
   markFailed(error: unknown): void {
@@ -343,13 +348,10 @@ export class BaseEvent {
   }
 
   ensureDonePromise(): void {
-    if (this._done_promise) {
+    if (this._done) {
       return;
     }
-    this._done_promise = new Promise<this>((resolve, reject) => {
-      this._done_resolve = resolve;
-      this._done_reject = reject;
-    });
+    this._done = withResolvers<this>();
   }
 }
 

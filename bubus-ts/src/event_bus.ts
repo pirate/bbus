@@ -7,7 +7,8 @@ import {
   type ConcurrencyMode,
   limiterForMode,
   resolveConcurrencyMode,
-  runWithLimiter
+  runWithLimiter,
+  withResolvers
 } from "./semaphores.js";
 
 
@@ -45,20 +46,6 @@ export class EventHandlerCancelledError extends Error {
   }
 }
 
-const withResolvers = <T>() => {
-  if (typeof Promise.withResolvers === "function") {
-    return Promise.withResolvers<T>();
-  }
-
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolve_fn, reject_fn) => {
-    resolve = resolve_fn;
-    reject = reject_fn;
-  });
-
-  return { promise, resolve, reject };
-};
 import type { EventHandler, EventKey, FindOptions, HandlerOptions } from "./types.js";
 
 type FindWaiter = {
@@ -87,14 +74,53 @@ type EventBusOptions = {
   event_timeout?: number | null;
 };
 
+class EventBusInstanceRegistry {
+  private _refs = new Set<WeakRef<EventBus>>();
+  private _lookup = new WeakMap<EventBus, WeakRef<EventBus>>();
+  private _gc = typeof FinalizationRegistry !== "undefined"
+    ? new FinalizationRegistry<WeakRef<EventBus>>((ref) => { this._refs.delete(ref); })
+    : null;
+
+  add(bus: EventBus): void {
+    const ref = new WeakRef(bus);
+    this._refs.add(ref);
+    this._lookup.set(bus, ref);
+    this._gc?.register(bus, ref, bus);
+  }
+
+  delete(bus: EventBus): void {
+    const ref = this._lookup.get(bus);
+    if (!ref) return;
+    this._refs.delete(ref);
+    this._lookup.delete(bus);
+    this._gc?.unregister(bus);
+  }
+
+  has(bus: EventBus): boolean {
+    return this._lookup.get(bus)?.deref() !== undefined;
+  }
+
+  get size(): number {
+    let n = 0;
+    for (const ref of this._refs) ref.deref() ? n++ : this._refs.delete(ref);
+    return n;
+  }
+
+  *[Symbol.iterator](): Iterator<EventBus> {
+    for (const ref of this._refs) {
+      const bus = ref.deref();
+      if (bus) yield bus; else this._refs.delete(ref);
+    }
+  }
+}
+
 export class EventBus {
-  static instances: Set<EventBus> = new Set();
+  static instances = new EventBusInstanceRegistry();
   static global_event_limiter = new AsyncLimiter(1);
   static global_handler_limiter = new AsyncLimiter(1);
-  static global_inside_handler_depth = 0;
   static findEventById(event_id: string): BaseEvent | null {
     for (const bus of EventBus.instances) {
-      const event = bus.event_history_by_id.get(event_id);
+      const event = bus.event_history.get(event_id);
       if (event) {
         return event;
       }
@@ -109,10 +135,8 @@ export class EventBus {
   event_timeout_default: number | null;
   bus_event_limiter: AsyncLimiter;
   bus_handler_limiter: AsyncLimiter;
-  handlers_by_key: Map<string | "*", Set<string>>;
-  handlers_by_id: Map<string, HandlerEntry>;
-  event_history: BaseEvent[];
-  event_history_by_id: Map<string, BaseEvent>;
+  handlers: Map<string, HandlerEntry>;
+  event_history: Map<string, BaseEvent>;
   pending_event_queue: BaseEvent[];
   in_flight_event_ids: Set<string>;
   runloop_running: boolean;
@@ -129,6 +153,10 @@ export class EventBus {
   immediate_processing_stack_depth: number;
   // Runloop waiters that resume once immediate_processing_stack_depth returns to 0.
   immediate_processing_waiters: Array<() => void>;
+  // Stack of EventResults for handlers currently executing on this bus.
+  // Enables per-bus isInsideHandler() and gives _runImmediately access to the
+  // calling handler's result even when called on raw (non-proxied) events.
+  _event_result_stack: EventResult[];
 
   constructor(name: string = "EventBus", options: EventBusOptions = {}) {
     this.name = name;
@@ -140,10 +168,8 @@ export class EventBus {
       options.event_timeout === undefined ? 60 : options.event_timeout;
     this.bus_event_limiter = new AsyncLimiter(1);
     this.bus_handler_limiter = new AsyncLimiter(1);
-    this.handlers_by_key = new Map();
-    this.handlers_by_id = new Map();
-    this.event_history = [];
-    this.event_history_by_id = new Map();
+    this.handlers = new Map();
+    this.event_history = new Map();
     this.pending_event_queue = [];
     this.in_flight_event_ids = new Set();
     this.runloop_running = false;
@@ -153,11 +179,23 @@ export class EventBus {
     this.find_waiters = new Set();
     this.immediate_processing_stack_depth = 0;
     this.immediate_processing_waiters = [];
+    this._event_result_stack = [];
 
     EventBus.instances.add(this);
 
     this.dispatch = this.dispatch.bind(this);
     this.emit = this.emit.bind(this);
+  }
+
+  destroy(): void {
+    EventBus.instances.delete(this);
+    this.handlers.clear();
+    this.event_history.clear();
+    this.pending_event_queue.length = 0;
+    this.in_flight_event_ids.clear();
+    this.find_waiters.clear();
+    this.idle_waiters.length = 0;
+    this.immediate_processing_waiters.length = 0;
   }
 
   on<T extends BaseEvent>(
@@ -176,14 +214,7 @@ export class EventBus {
       handler_registered_at
     );
 
-    let handler_ids = this.handlers_by_key.get(normalized_key);
-    if (!handler_ids) {
-      handler_ids = new Set();
-      this.handlers_by_key.set(normalized_key, handler_ids);
-    }
-    handler_ids.add(handler_id);
-
-    this.handlers_by_id.set(handler_id, {
+    this.handlers.set(handler_id, {
       id: handler_id,
       handler: handler as EventHandler,
       handler_name,
@@ -194,25 +225,16 @@ export class EventBus {
     });
   }
 
-  off<T extends BaseEvent>(event_key: EventKey<T> | "*", handler: EventHandler<T>): void {
+  off<T extends BaseEvent>(event_key: EventKey<T> | "*", handler?: EventHandler<T> | string): void {
     const normalized_key = this.normalizeEventKey(event_key);
-    const handler_ids = this.handlers_by_key.get(normalized_key);
-    if (!handler_ids || handler_ids.size === 0) {
-      return;
-    }
-    for (const handler_id of Array.from(handler_ids)) {
-      const entry = this.handlers_by_id.get(handler_id);
-      if (!entry) {
-        handler_ids.delete(handler_id);
+    const match_by_id = typeof handler === "string";
+    for (const [handler_id, entry] of this.handlers) {
+      if (entry.event_key !== normalized_key) {
         continue;
       }
-      if (entry.handler === (handler as EventHandler)) {
-        handler_ids.delete(handler_id);
-        this.handlers_by_id.delete(handler_id);
+      if (handler === undefined || (match_by_id ? handler_id === handler : entry.handler === (handler as EventHandler))) {
+        this.handlers.delete(handler_id);
       }
-    }
-    if (handler_ids.size === 0) {
-      this.handlers_by_key.delete(normalized_key);
     }
   }
 
@@ -252,7 +274,7 @@ export class EventBus {
     }
 
     if (original_event.event_parent_id) {
-      const parent_event = this.event_history_by_id.get(original_event.event_parent_id);
+      const parent_event = this.event_history.get(original_event.event_parent_id);
       if (parent_event) {
         this.recordChildEvent(
           parent_event.event_id,
@@ -262,8 +284,7 @@ export class EventBus {
       }
     }
 
-    this.event_history.push(original_event);
-    this.event_history_by_id.set(original_event.event_id, original_event);
+    this.event_history.set(original_event.event_id, original_event);
     this.trimHistory();
 
     original_event.event_pending_buses += 1;
@@ -325,8 +346,9 @@ export class EventBus {
       const cutoff_ms =
         past === true ? null : now_ms - Math.max(0, Number(past)) * 1000;
 
-      for (let i = this.event_history.length - 1; i >= 0; i -= 1) {
-        const event = this.event_history[i];
+      const history_values = Array.from(this.event_history.values());
+      for (let i = history_values.length - 1; i >= 0; i -= 1) {
+        const event = history_values[i];
         if (!matches(event)) {
           continue;
         }
@@ -368,30 +390,70 @@ export class EventBus {
     });
   }
 
+  // Called when a handler does `await child.done()` — processes the child event
+  // immediately ("queue-jump") instead of waiting for the runloop to pick it up.
+  //
+  // Yield-and-reacquire: if the calling handler holds a handler concurrency limiter,
+  // we temporarily release it so child handlers on the same bus can acquire it
+  // (preventing deadlock for bus-serial/global-serial modes). We re-acquire after
+  // the child completes so the parent handler can continue with the limiter held.
   async _runImmediately<T extends BaseEvent>(
     event: T,
     handler_result?: EventResult
   ): Promise<T> {
     const original_event = event._original_event ?? event;
-    if (handler_result && !handler_result.queue_jump_hold) {
-      handler_result.queue_jump_hold = true;
+    // Find the parent handler's result: prefer the proxy-provided one (only if
+    // the handler is still running), then this bus's stack, then walk up the
+    // parent event tree (cross-bus case). If none found, we're not inside a
+    // handler and should fall back to waitForCompletion.
+    const proxy_result = handler_result?.status === "started" ? handler_result : undefined;
+    const effective_result = proxy_result
+      ?? this._event_result_stack[this._event_result_stack.length - 1]
+      ?? this._findInFlightAncestorResult(original_event)
+      ?? undefined;
+    if (!effective_result) {
+      // Not inside any handler — fall back to normal completion waiting
+      await original_event.waitForCompletion();
+      return event;
+    }
+    if (!effective_result.queue_jump_hold) {
+      effective_result.queue_jump_hold = true;
       this.immediate_processing_stack_depth += 1;
     }
     if (original_event.event_status === "completed") {
       return event;
     }
-    if (original_event.event_status === "started") {
+
+    // Yield the parent handler's limiter so child handlers can use it.
+    // Null out _held_handler_limiter so concurrent calls from the same handler
+    // (e.g. Promise.all([child1.done(), child2.done()])) don't double-release.
+    const limiter_to_yield = effective_result?._held_handler_limiter ?? null;
+    if (limiter_to_yield) {
+      effective_result!._held_handler_limiter = null;
+      limiter_to_yield.release();
+    }
+
+    try {
+      if (original_event.event_status === "started") {
+        await this.runImmediatelyAcrossBuses(original_event);
+        return event;
+      }
+
+      const index = this.pending_event_queue.indexOf(original_event);
+      if (index >= 0) {
+        this.pending_event_queue.splice(index, 1);
+      }
+
       await this.runImmediatelyAcrossBuses(original_event);
       return event;
+    } finally {
+      // Re-acquire the parent handler's limiter before returning control.
+      // Only the call that actually released it will re-acquire.
+      if (limiter_to_yield) {
+        await limiter_to_yield.acquire();
+        effective_result!._held_handler_limiter = limiter_to_yield;
+      }
     }
-
-    const index = this.pending_event_queue.indexOf(original_event);
-    if (index >= 0) {
-      this.pending_event_queue.splice(index, 1);
-    }
-
-    await this.runImmediatelyAcrossBuses(original_event);
-    return event;
   }
 
   async waitUntilIdle(): Promise<void> {
@@ -448,7 +510,7 @@ export class EventBus {
   }
 
   private hasPendingResults(): boolean {
-    for (const event of this.event_history) {
+    for (const event of this.event_history.values()) {
       for (const result of event.event_results.values()) {
         if (result.eventbus_name !== this.name) {
           continue;
@@ -471,7 +533,7 @@ export class EventBus {
       if (current_parent_id === ancestor.event_id) {
         return true;
       }
-      const parent = this.event_history_by_id.get(current_parent_id);
+      const parent = this.event_history.get(current_parent_id);
       if (!parent) {
         return false;
       }
@@ -490,12 +552,7 @@ export class EventBus {
     handler_id?: string
   ): void {
     const original_child = child_event._original_event ?? child_event;
-    const parent_event = this.event_history_by_id.get(parent_event_id);
-    if (parent_event) {
-      if (!parent_event.event_children.some((child) => child.event_id === original_child.event_id)) {
-        parent_event.event_children.push(original_child);
-      }
-    }
+    const parent_event = this.event_history.get(parent_event_id);
 
     const target_handler_id =
       handler_id ?? original_child.event_emitted_by_handler_id ?? undefined;
@@ -519,7 +576,7 @@ export class EventBus {
       parent_to_children.set(parent_id, existing);
     };
 
-    for (const event of this.event_history) {
+    for (const event of this.event_history.values()) {
       add_child(event.event_parent_id ?? null, event);
     }
 
@@ -530,9 +587,9 @@ export class EventBus {
     const root_events: BaseEvent[] = [];
     const seen = new Set<string>();
 
-    for (const event of this.event_history) {
+    for (const event of this.event_history.values()) {
       const parent_id = event.event_parent_id;
-      if (!parent_id || parent_id === event.event_id || !this.event_history_by_id.has(parent_id)) {
+      if (!parent_id || parent_id === event.event_id || !this.event_history.has(parent_id)) {
         if (!seen.has(event.event_id)) {
           root_events.push(event);
           seen.add(event.event_id);
@@ -567,10 +624,42 @@ export class EventBus {
     return lines.join("\n");
   }
 
+  // Per-bus check: true only if this specific bus has a handler on its stack.
+  // For cross-bus queue-jumping, done() uses the _is_handler_scoped flag on
+  // the bus proxy instead (set by _getBusScopedEvent when handler_result exists).
   isInsideHandler(): boolean {
-    return EventBus.global_inside_handler_depth > 0;
+    return this._event_result_stack.length > 0;
   }
 
+  // Walk up the parent event chain to find an in-flight ancestor handler result.
+  // Returns the result if found, null otherwise. Used by _runImmediately to detect
+  // cross-bus queue-jump scenarios where the calling handler is on a different bus.
+  _findInFlightAncestorResult(event: BaseEvent): EventResult | null {
+    const original = event._original_event ?? event;
+    let current_parent_id = original.event_parent_id;
+    let current_handler_id = original.event_emitted_by_handler_id;
+    while (current_handler_id && current_parent_id) {
+      const parent = EventBus.findEventById(current_parent_id);
+      if (!parent) break;
+      const handler_result = parent.event_results.get(current_handler_id);
+      if (handler_result && handler_result.status === "started") return handler_result;
+      current_parent_id = parent.event_parent_id;
+      current_handler_id = parent.event_emitted_by_handler_id;
+    }
+    return null;
+  }
+
+  // Processes a queue-jumped event across all buses that have it dispatched.
+  // Called from _runImmediately after the parent handler's limiter has been yielded.
+  //
+  // Event limiter bypass: the initiating bus (this) always bypasses its event limiter
+  // since we're inside a handler that already holds it. Other buses only bypass if
+  // they resolve to the same limiter instance (i.e. global-serial mode where all
+  // buses share EventBus.global_event_limiter).
+  //
+  // Handler limiters are NOT bypassed — child handlers must acquire the handler
+  // limiter normally. This works because _runImmediately already released the
+  // parent's handler limiter via yield-and-reacquire.
   private async runImmediatelyAcrossBuses(event: BaseEvent): Promise<void> {
     const buses = this.getBusesForImmediateRun(event);
     if (buses.length === 0) {
@@ -581,6 +670,10 @@ export class EventBus {
     for (const bus of buses) {
       bus.immediate_processing_stack_depth += 1;
     }
+
+    // Determine which event limiter the initiating bus resolves to, so we can
+    // detect when other buses share the same instance (global-serial).
+    const initiating_event_limiter = this.resolveEventLimiter(event);
 
     try {
       for (const bus of buses) {
@@ -595,9 +688,18 @@ export class EventBus {
           continue;
         }
         bus.in_flight_event_ids.add(event.event_id);
+
+        // Bypass event limiter on the initiating bus (we're already inside a handler
+        // that acquired it). For other buses, only bypass if they resolve to the same
+        // limiter instance (global-serial shares one limiter across all buses).
+        const bus_event_limiter = bus.resolveEventLimiter(event);
+        const should_bypass_event_limiter =
+          bus === this ||
+          (initiating_event_limiter !== null &&
+            bus_event_limiter === initiating_event_limiter);
+
         await bus.scheduleEventProcessing(event, {
-          bypass_event_limiters: true,
-          bypass_handler_limiters: true
+          bypass_event_limiters: should_bypass_event_limiter
         });
       }
 
@@ -625,7 +727,7 @@ export class EventBus {
         if (bus.name !== name) {
           continue;
         }
-        if (!bus.event_history_by_id.has(event.event_id)) {
+        if (!bus.event_history.has(event.event_id)) {
           continue;
         }
         if (bus.eventHasVisited(event)) {
@@ -638,7 +740,7 @@ export class EventBus {
       }
     }
 
-    if (!seen.has(this) && this.event_history_by_id.has(event.event_id)) {
+    if (!seen.has(this) && this.event_history.has(event.event_id)) {
       ordered.push(this);
     }
 
@@ -681,7 +783,6 @@ export class EventBus {
     event: BaseEvent,
     options: {
       bypass_event_limiters?: boolean;
-      bypass_handler_limiters?: boolean;
       pre_acquired_limiter?: AsyncLimiter | null;
     } = {}
   ): Promise<void> {
@@ -689,10 +790,10 @@ export class EventBus {
       const limiter = options.bypass_event_limiters ? null : this.resolveEventLimiter(event);
       const pre_acquired_limiter = options.pre_acquired_limiter ?? null;
       if (pre_acquired_limiter) {
-        await this.processEvent(event, { bypass_handler_limiters: options.bypass_handler_limiters });
+        await this.processEvent(event);
       } else {
         await runWithLimiter(limiter, async () => {
-          await this.processEvent(event, { bypass_handler_limiters: options.bypass_handler_limiters });
+          await this.processEvent(event);
         });
       }
     } finally {
@@ -753,10 +854,7 @@ export class EventBus {
     }
   }
 
-  private async processEvent(
-    event: BaseEvent,
-    options: { bypass_handler_limiters?: boolean } = {}
-  ): Promise<void> {
+  private async processEvent(event: BaseEvent): Promise<void> {
     if (this.eventHasVisited(event)) {
       return;
     }
@@ -779,12 +877,10 @@ export class EventBus {
           }, event.event_timeout * 1000);
 
     try {
-    const handler_entries = this.createPendingHandlerResults(event);
+      const handler_entries = this.createPendingHandlerResults(event);
 
       const handler_promises = handler_entries.map((entry) =>
-        this.runHandlerEntry(event, entry.handler, entry.result, entry.options, {
-          bypass_handler_limiters: options.bypass_handler_limiters
-        })
+        this.runHandlerEntry(event, entry.handler, entry.result, entry.options)
       );
       await Promise.all(handler_promises);
 
@@ -832,24 +928,24 @@ export class EventBus {
     event: BaseEvent,
     handler: EventHandler,
     result: EventResult,
-    options?: HandlerOptions,
-    run_options: { bypass_handler_limiters?: boolean } = {}
+    options?: HandlerOptions
   ): Promise<void> {
     if (result.status === "error" && result.error instanceof EventHandlerCancelledError) {
       return;
     }
 
     const handler_event = this._getBusScopedEvent(event, result);
-    const limiter = run_options.bypass_handler_limiters
-      ? null
-      : this.resolveHandlerLimiter(event, options);
+    const limiter = this.resolveHandlerLimiter(event, options);
 
     await runWithLimiter(limiter, async () => {
       if (result.status === "error" && result.error instanceof EventHandlerCancelledError) {
         return;
       }
 
-      EventBus.global_inside_handler_depth += 1;
+      // Track which limiter this handler holds so _runImmediately can yield it
+      // (release before child processing, re-acquire after) to prevent deadlock.
+      result._held_handler_limiter = limiter;
+      this._event_result_stack.push(result);
       try {
         result.markStarted();
         const handler_result = await this.runHandlerWithTimeout(event, handler, handler_event);
@@ -885,10 +981,11 @@ export class EventBus {
           event.markFailed(error);
         }
       } finally {
-        EventBus.global_inside_handler_depth = Math.max(
-          0,
-          EventBus.global_inside_handler_depth - 1
-        );
+        result._held_handler_limiter = null;
+        const stack_idx = this._event_result_stack.indexOf(result);
+        if (stack_idx >= 0) {
+          this._event_result_stack.splice(stack_idx, 1);
+        }
         if (result.queue_jump_hold) {
           result.queue_jump_hold = false;
           this.immediate_processing_stack_depth = Math.max(
@@ -1437,38 +1534,17 @@ export class EventBus {
       options?: HandlerOptions;
     }> = [];
 
-    const keyed_handlers = this.handlers_by_key.get(event.event_type);
-    if (keyed_handlers) {
-      for (const handler_id of keyed_handlers.values()) {
-        const entry = this.handlers_by_id.get(handler_id);
-        if (!entry) {
-          continue;
-        }
-        handlers.push({
-          handler_id,
-          handler: entry.handler,
-          handler_name: entry.handler_name,
-          handler_file_path: entry.handler_file_path,
-          options: entry.options
-        });
+    for (const [handler_id, entry] of this.handlers) {
+      if (entry.event_key !== event.event_type && entry.event_key !== "*") {
+        continue;
       }
-    }
-
-    const wildcard_handlers = this.handlers_by_key.get("*");
-    if (wildcard_handlers) {
-      for (const handler_id of wildcard_handlers.values()) {
-        const entry = this.handlers_by_id.get(handler_id);
-        if (!entry) {
-          continue;
-        }
-        handlers.push({
-          handler_id,
-          handler: entry.handler,
-          handler_name: entry.handler_name,
-          handler_file_path: entry.handler_file_path,
-          options: entry.options
-        });
-      }
+      handlers.push({
+        handler_id,
+        handler: entry.handler,
+        handler_name: entry.handler_name,
+        handler_file_path: entry.handler_file_path,
+        options: entry.options
+      });
     }
 
     return handlers;
@@ -1505,29 +1581,33 @@ export class EventBus {
     if (this.max_history_size === null) {
       return;
     }
-    if (this.event_history.length <= this.max_history_size) {
+    if (this.event_history.size <= this.max_history_size) {
       return;
     }
 
-    let remaining_overage = this.event_history.length - this.max_history_size;
+    let remaining_overage = this.event_history.size - this.max_history_size;
 
-    for (let i = 0; i < this.event_history.length && remaining_overage > 0; i += 1) {
-      const event = this.event_history[i];
+    // First pass: remove completed events (oldest first, Map iterates in insertion order)
+    for (const [event_id, event] of this.event_history) {
+      if (remaining_overage <= 0) {
+        break;
+      }
       if (event.event_status !== "completed") {
         continue;
       }
-      this.event_history_by_id.delete(event.event_id);
-      this.event_history.splice(i, 1);
-      i -= 1;
+      this.event_history.delete(event_id);
       remaining_overage -= 1;
     }
 
-    while (remaining_overage > 0 && this.event_history.length > 0) {
-      const event = this.event_history.shift();
-      if (event) {
-        this.event_history_by_id.delete(event.event_id);
+    // Second pass: force-remove oldest events regardless of status
+    if (remaining_overage > 0) {
+      for (const event_id of this.event_history.keys()) {
+        if (remaining_overage <= 0) {
+          break;
+        }
+        this.event_history.delete(event_id);
+        remaining_overage -= 1;
       }
-      remaining_overage -= 1;
     }
   }
 }

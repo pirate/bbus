@@ -23,8 +23,7 @@ test("logTree: single event", () => {
   event.event_status = "completed";
   event.event_completed_at = event.event_created_at;
 
-  bus.event_history.push(event);
-  bus.event_history_by_id.set(event.event_id, event);
+  bus.event_history.set(event.event_id, event);
 
   const output = bus.logTree();
 
@@ -50,8 +49,7 @@ test("logTree: with handler results", () => {
   result.markCompleted("status: success");
   event.event_results.set(handler_id, result);
 
-  bus.event_history.push(event);
-  bus.event_history_by_id.set(event.event_id, event);
+  bus.event_history.set(event.event_id, event);
 
   const output = bus.logTree();
 
@@ -78,8 +76,7 @@ test("logTree: with handler errors", () => {
   result.markError(new ValueError("Test error message"));
   event.event_results.set(handler_id, result);
 
-  bus.event_history.push(event);
-  bus.event_history_by_id.set(event.event_id, event);
+  bus.event_history.set(event.event_id, event);
 
   const output = bus.logTree();
 
@@ -139,10 +136,9 @@ test("logTree: complex nested", () => {
   grandchild_result.markCompleted(null);
   grandchild.event_results.set(grandchild_handler_id, grandchild_result);
 
-  bus.event_history.push(root, child, grandchild);
-  bus.event_history_by_id.set(root.event_id, root);
-  bus.event_history_by_id.set(child.event_id, child);
-  bus.event_history_by_id.set(grandchild.event_id, grandchild);
+  bus.event_history.set(root.event_id, root);
+  bus.event_history.set(child.event_id, child);
+  bus.event_history.set(grandchild.event_id, grandchild);
 
   const output = bus.logTree();
 
@@ -168,9 +164,8 @@ test("logTree: multiple roots", () => {
   root2.event_status = "completed";
   root2.event_completed_at = root2.event_created_at;
 
-  bus.event_history.push(root1, root2);
-  bus.event_history_by_id.set(root1.event_id, root1);
-  bus.event_history_by_id.set(root2.event_id, root2);
+  bus.event_history.set(root1.event_id, root1);
+  bus.event_history.set(root2.event_id, root2);
 
   const output = bus.logTree();
 
@@ -196,8 +191,7 @@ test("logTree: timing info", () => {
   result.markCompleted("done");
   event.event_results.set(handler_id, result);
 
-  bus.event_history.push(event);
-  bus.event_history_by_id.set(event.event_id, event);
+  bus.event_history.set(event.event_id, event);
 
   const output = bus.logTree();
 
@@ -221,8 +215,7 @@ test("logTree: running handler", () => {
   result.markStarted();
   event.event_results.set(handler_id, result);
 
-  bus.event_history.push(event);
-  bus.event_history_by_id.set(event.event_id, event);
+  bus.event_history.set(event.event_id, event);
 
   const output = bus.logTree();
 
