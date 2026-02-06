@@ -3,8 +3,8 @@ import { v7 as uuidv7 } from 'uuid'
 
 import type { EventBus } from './event_bus.js'
 import { EventResult } from './event_result.js'
-import type { ConcurrencyMode, Deferred } from './semaphores.js'
-import { CONCURRENCY_MODES, withResolvers } from './semaphores.js'
+import type { ConcurrencyMode, Deferred } from './lock_manager.js'
+import { CONCURRENCY_MODES, withResolvers } from './lock_manager.js'
 
 export const BaseEventSchema = z
   .object({
@@ -78,6 +78,9 @@ export class BaseEvent {
   event_status!: 'pending' | 'started' | 'completed'
   event_started_at?: string
   event_completed_at?: string
+  _event_created_at_ts!: number
+  _event_started_at_ts?: number
+  _event_completed_at_ts?: number
   bus?: EventBus
   event_concurrency?: ConcurrencyMode
   handler_concurrency?: ConcurrencyMode
@@ -123,6 +126,7 @@ export class BaseEvent {
     this.event_result_schema = event_result_schema
     this.event_result_type = event_result_type
     this.event_results = new Map()
+    this._event_created_at_ts = monotonicNowMs()
 
     this._done = null
     this._dispatch_context = undefined
@@ -255,6 +259,7 @@ export class BaseEvent {
     }
     this.event_status = 'started'
     this.event_started_at = BaseEvent.nextIsoTimestamp()
+    this._event_started_at_ts = monotonicNowMs()
   }
 
   markCompleted(): void {
@@ -263,6 +268,7 @@ export class BaseEvent {
     }
     this.event_status = 'completed'
     this.event_completed_at = BaseEvent.nextIsoTimestamp()
+    this._event_completed_at_ts = monotonicNowMs()
     this._dispatch_context = null
     this.ensureDonePromise()
     this._done!.resolve(this)
@@ -352,4 +358,11 @@ const to_json_schema = (schema: unknown): unknown => {
     return zod_any.toJSONSchema(schema)
   }
   return undefined
+}
+
+const monotonicNowMs = (): number => {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now()
+  }
+  return Date.now()
 }

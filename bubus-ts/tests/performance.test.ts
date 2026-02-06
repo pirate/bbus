@@ -228,9 +228,17 @@ test(
       await gc.done()
     })
 
-    // Persistent handler on bus_c for grandchild
-    bus_c.on(GrandchildEvent, () => {
+    // Persistent handler on bus_c for grandchild — slow on timeout iterations
+    // so the child's 5ms timeout fires while this is still sleeping.
+    // This creates EventHandlerTimeoutError → EventHandlerCancelledError chains.
+    // Sleep is 50ms but child timeout is 5ms — with cancellation of started handlers,
+    // the child completes immediately when timeout fires. Background sleep continues
+    // silently (JS can't cancel async functions, but the event system moves on).
+    bus_c.on(GrandchildEvent, async (event) => {
       grandchild_handled += 1
+      if ((event as any).iteration % 5 === 0) {
+        await new Promise((r) => setTimeout(r, 50))
+      }
     })
 
     global.gc?.()
@@ -243,7 +251,7 @@ test(
       // Ephemeral handler on bus_a — queue-jumps a child to bus_c
       const ephemeral_handler = async (event: any) => {
         parent_handled_a += 1
-        const child_timeout = should_timeout ? 0.001 : null // 1ms timeout → will fire
+        const child_timeout = should_timeout ? 0.005 : null // 5ms timeout → fires while grandchild sleeps 50ms
         const child = event.bus?.emit(ChildEvent({
           iteration: i,
           event_timeout: child_timeout,
@@ -263,7 +271,9 @@ test(
       bus_b.dispatch(parent)
 
       await ev_a.done()
-      await bus_c.waitUntilIdle()
+      // Don't waitUntilIdle on bus_c here — timed-out grandchild handlers are
+      // still sleeping in the background (JS can't cancel async functions).
+      // Let them pile up; the final waitUntilIdle() outside the loop will drain.
 
       // Deregister ephemeral handler
       bus_a.off(ParentEvent, ephemeral_handler)

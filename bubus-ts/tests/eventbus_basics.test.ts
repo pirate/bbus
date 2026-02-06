@@ -11,7 +11,7 @@ const delay = (ms: number): Promise<void> =>
 
 // ─── Constructor defaults ────────────────────────────────────────────────────
 
-test('EventBus initializes with correct defaults', () => {
+test('EventBus initializes with correct defaults', async () => {
   const bus = new EventBus('DefaultsBus')
 
   assert.equal(bus.name, 'DefaultsBus')
@@ -20,9 +20,8 @@ test('EventBus initializes with correct defaults', () => {
   assert.equal(bus.handler_concurrency_default, 'bus-serial')
   assert.equal(bus.event_timeout_default, 60)
   assert.equal(bus.event_history.size, 0)
-  assert.equal(bus.pending_event_queue.length, 0)
-  assert.equal(bus.in_flight_event_ids.size, 0)
   assert.ok(EventBus.instances.has(bus))
+  await bus.waitUntilIdle()
 })
 
 test('EventBus applies custom options', () => {
@@ -52,6 +51,78 @@ test('EventBus with null event_timeout disables timeouts', () => {
 test('EventBus auto-generates name when not provided', () => {
   const bus = new EventBus()
   assert.equal(bus.name, 'EventBus')
+})
+
+test('EventBus exposes locks API surface', () => {
+  const bus = new EventBus('GateSurfaceBus')
+  const locks = bus.locks as unknown as Record<string, unknown>
+
+  assert.equal(typeof locks.requestPause, 'function')
+  assert.equal(typeof locks.waitUntilResumed, 'function')
+  assert.equal(typeof locks.isPaused, 'function')
+  assert.equal(typeof locks.waitForIdle, 'function')
+  assert.equal(typeof locks.notifyIdleListeners, 'function')
+  assert.equal(typeof locks.getSemaphoreForEvent, 'function')
+  assert.equal(typeof locks.getSemaphoreForHandler, 'function')
+})
+
+test('EventBus locks methods are callable and preserve semaphore resolution behavior', async () => {
+  const bus = new EventBus('GateInvocationBus', {
+    event_concurrency: 'bus-serial',
+    handler_concurrency: 'bus-serial',
+  })
+  const GateEvent = BaseEvent.extend('GateInvocationEvent', {})
+
+  const release_pause = bus.locks.requestPause()
+  assert.equal(bus.locks.isPaused(), true)
+
+  let resumed = false
+  const resumed_promise = bus.locks.waitUntilResumed().then(() => {
+    resumed = true
+  })
+  await Promise.resolve()
+  assert.equal(resumed, false)
+
+  release_pause()
+  await resumed_promise
+  assert.equal(bus.locks.isPaused(), false)
+
+  const event_with_global = GateEvent({
+    event_concurrency: 'global-serial',
+    handler_concurrency: 'global-serial',
+  })
+  assert.equal(bus.locks.getSemaphoreForEvent(event_with_global), EventBus.global_event_semaphore)
+  assert.equal(bus.locks.getSemaphoreForHandler(event_with_global), EventBus.global_handler_semaphore)
+
+  const event_with_parallel = GateEvent({
+    event_concurrency: 'parallel',
+    handler_concurrency: 'parallel',
+  })
+  assert.equal(bus.locks.getSemaphoreForEvent(event_with_parallel), null)
+  assert.equal(bus.locks.getSemaphoreForHandler(event_with_parallel), null)
+
+  const event_using_handler_options = GateEvent({})
+  assert.equal(bus.locks.getSemaphoreForHandler(event_using_handler_options, { handler_concurrency: 'parallel' }), null)
+
+  bus.dispatch(GateEvent({}))
+  bus.locks.notifyIdleListeners()
+  await bus.locks.waitForIdle()
+})
+
+test('BaseEvent lifecycle methods are callable and preserve lifecycle behavior', async () => {
+  const LifecycleEvent = BaseEvent.extend('LifecycleMethodInvocationEvent', {})
+
+  const standalone = LifecycleEvent({})
+  standalone.markStarted()
+  assert.equal(standalone.event_status, 'started')
+  standalone.tryFinalizeCompletion()
+  assert.equal(standalone.event_status, 'completed')
+  await standalone.waitForCompletion()
+
+  const bus = new EventBus('LifecycleMethodInvocationBus')
+  const dispatched = bus.dispatch(LifecycleEvent({}))
+  await dispatched.waitForCompletion()
+  assert.equal(dispatched.event_status, 'completed')
 })
 
 // ─── Event dispatch and status lifecycle ─────────────────────────────────────

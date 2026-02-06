@@ -1,5 +1,5 @@
 import type { BaseEvent } from './base_event.js'
-import type { ConcurrencyMode } from './semaphores.js'
+import type { ConcurrencyMode } from './lock_manager.js'
 
 export type EventStatus = 'pending' | 'started' | 'completed'
 

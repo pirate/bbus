@@ -11,13 +11,13 @@ Potential failure modes
 A) Event concurrency modes
 - global-serial not enforcing strict FIFO across multiple buses (events interleave).
 - bus-serial allows cross-bus interleaving but still must be FIFO within a bus; breaks under forwarding.
-- parallel accidentally serializes (e.g., limiter still used) or breaks queue-jump semantics.
+- parallel accidentally serializes (e.g., semaphore still used) or breaks queue-jump semantics.
 - auto not resolving correctly to bus defaults.
 
 B) Handler concurrency modes
 - global-serial not enforcing strict handler order across buses.
 - bus-serial leaks parallelism between handlers on the same bus.
-- parallel accidentally serializes or fails to gate per-handler ordering.
+- parallel accidentally serializes or fails to enforce per-handler ordering.
 - auto not resolving correctly to handler options or bus defaults.
 
 C) Precedence resolution
@@ -27,7 +27,7 @@ C) Precedence resolution
 
 D) Queue-jump / awaited events
 - event.done() inside handler doesn’t jump the queue across buses.
-- Queue-jump bypasses limiters incorrectly in contexts where it shouldn’t.
+- Queue-jump bypasses semaphores incorrectly in contexts where it shouldn’t.
 - Queue-jump fails when event already in-flight.
 
 E) FIFO correctness
@@ -68,7 +68,7 @@ K) Idle / completion
 
 L) Reentrancy / nested awaits
 - Nested awaited child events starve sibling handlers.
-- Awaited child events skip limiter incorrectly (deadlocks or ordering regressions).
+- Awaited child events skip semaphore incorrectly (deadlocks or ordering regressions).
 
 M) Edge-cases
 - Multiple handlers for same event type with different options collide.
@@ -180,7 +180,7 @@ test('global-serial: awaited child jumps ahead of queued events across buses', a
   assert.ok(child_end_idx < queued_start_idx)
 })
 
-test('global-serial: handler limiter serializes handlers across buses', async () => {
+test('global-serial: handler semaphore serializes handlers across buses', async () => {
   const HandlerEvent = BaseEvent.extend('HandlerEvent', {
     order: z.number(),
     source: z.string(),
@@ -415,7 +415,7 @@ test('parallel: handlers overlap for same event when handler_concurrency is para
   assert.ok(max_in_flight >= 2)
 })
 
-test('parallel: global-serial handler limiter still serializes across buses', async () => {
+test('parallel: global-serial handler semaphore still serializes across buses', async () => {
   const ParallelEvent = BaseEvent.extend('ParallelEventGlobalHandler', {
     source: z.string(),
   })
@@ -835,6 +835,63 @@ test('queue-jump: awaited child preempts queued sibling on same bus', async () =
   assert.ok(sibling_start_idx !== -1)
   assert.ok(child_start_idx < sibling_start_idx)
   assert.ok(child_end_idx < sibling_start_idx)
+})
+
+test('queue-jump: same event handlers on separate buses stay isolated without forwarding', async () => {
+  const ParentEvent = BaseEvent.extend('QueueJumpIsolatedParent', {})
+  const SharedEvent = BaseEvent.extend('QueueJumpIsolatedShared', {})
+  const SiblingEvent = BaseEvent.extend('QueueJumpIsolatedSibling', {})
+
+  const bus_a = new EventBus('QueueJumpIsolatedA', { event_concurrency: 'bus-serial' })
+  const bus_b = new EventBus('QueueJumpIsolatedB', { event_concurrency: 'bus-serial' })
+
+  const order: string[] = []
+  let bus_a_shared_runs = 0
+  let bus_b_shared_runs = 0
+
+  bus_a.on(SharedEvent, async () => {
+    bus_a_shared_runs += 1
+    order.push('bus_a_shared_start')
+    await sleep(2)
+    order.push('bus_a_shared_end')
+  })
+
+  bus_b.on(SharedEvent, async () => {
+    bus_b_shared_runs += 1
+    order.push('bus_b_shared_start')
+    await sleep(2)
+    order.push('bus_b_shared_end')
+  })
+
+  bus_a.on(SiblingEvent, async () => {
+    order.push('bus_a_sibling_start')
+    await sleep(1)
+    order.push('bus_a_sibling_end')
+  })
+
+  bus_a.on(ParentEvent, async (event) => {
+    order.push('parent_start')
+    bus_a.emit(SiblingEvent({}))
+    const shared = event.bus?.emit(SharedEvent({}))!
+    order.push('shared_dispatched')
+    await shared.done()
+    order.push('shared_awaited')
+    order.push('parent_end')
+  })
+
+  const parent = bus_a.dispatch(ParentEvent({}))
+  await parent.done()
+  await Promise.all([bus_a.waitUntilIdle(), bus_b.waitUntilIdle()])
+
+  assert.equal(bus_a_shared_runs, 1)
+  assert.equal(bus_b_shared_runs, 0)
+  assert.equal(order.includes('bus_b_shared_start'), false)
+
+  const bus_a_shared_end_idx = order.indexOf('bus_a_shared_end')
+  const bus_a_sibling_start_idx = order.indexOf('bus_a_sibling_start')
+  assert.ok(bus_a_shared_end_idx !== -1)
+  assert.ok(bus_a_sibling_start_idx !== -1)
+  assert.ok(bus_a_shared_end_idx < bus_a_sibling_start_idx)
 })
 
 test('queue-jump: awaiting in-flight event does not double-run handlers', async () => {

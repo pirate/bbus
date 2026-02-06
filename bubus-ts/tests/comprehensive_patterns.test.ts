@@ -244,12 +244,12 @@ test('awaited child jumps queue without overshoot', async () => {
   assert.ok(child_event!.event_started_at! < event3_from_history!.event_started_at!)
 })
 
-test('done() on non-proxied event still holds immediate_processing_stack_depth', async () => {
+test('done() on non-proxied event keeps bus paused during queue-jump', async () => {
   const bus = new EventBus('RawDoneBus', { max_history_size: 100 })
   const Event1 = BaseEvent.extend('Event1', {})
   const ChildEvent = BaseEvent.extend('RawChild', {})
 
-  let depth_after_done = -1
+  let paused_after_done = false
 
   bus.on(ChildEvent, () => {})
 
@@ -260,29 +260,26 @@ test('done() on non-proxied event still holds immediate_processing_stack_depth',
     const raw_child = child._original_event ?? child
     // done() on raw event bypasses handler_result injection from proxy
     await raw_child.done()
-    // After done() returns, depth should still be > 0 because
+    // After done() returns, bus should still be paused because
     // we're still inside a handler doing queue-jump processing
-    depth_after_done = bus.immediate_processing_stack_depth
+    paused_after_done = bus.locks.isPaused()
   })
 
   bus.dispatch(Event1({}))
   await bus.waitUntilIdle()
 
-  assert.ok(
-    depth_after_done > 0,
-    `immediate_processing_stack_depth should be > 0 after raw done() ` + `but before handler returns, got ${depth_after_done}`
-  )
+  assert.equal(paused_after_done, true, 'bus should be paused after raw done() but before handler returns')
 })
 
-test('immediate_processing_stack_depth returns to 0 after queue-jump completes', async () => {
+test('bus pause state clears after queue-jump completes', async () => {
   const bus = new EventBus('DepthBalanceBus', { max_history_size: 100 })
   const Event1 = BaseEvent.extend('DepthEvent1', {})
   const ChildA = BaseEvent.extend('DepthChildA', {})
   const ChildB = BaseEvent.extend('DepthChildB', {})
 
-  let depth_during_handler = -1
-  let depth_between_dones = -1
-  let depth_after_second_done = -1
+  let paused_during_handler = false
+  let paused_between_dones = false
+  let paused_after_second_done = false
 
   bus.on(ChildA, () => {})
   bus.on(ChildB, () => {})
@@ -291,33 +288,29 @@ test('immediate_processing_stack_depth returns to 0 after queue-jump completes',
     // First queue-jump
     const child_a = event.bus?.emit(ChildA({}))!
     await child_a.done()
-    depth_during_handler = bus.immediate_processing_stack_depth
+    paused_during_handler = bus.locks.isPaused()
 
-    // Second queue-jump — should NOT double-increment (queue_jump_hold guard)
+    // Second queue-jump — bus should remain paused across both awaits.
     const child_b = event.bus?.emit(ChildB({}))!
-    depth_between_dones = bus.immediate_processing_stack_depth
+    paused_between_dones = bus.locks.isPaused()
     await child_b.done()
-    depth_after_second_done = bus.immediate_processing_stack_depth
+    paused_after_second_done = bus.locks.isPaused()
   })
 
   bus.dispatch(Event1({}))
   await bus.waitUntilIdle()
 
-  // During handler, depth should be > 0 (held by queue_jump_hold)
-  assert.ok(depth_during_handler > 0, `depth should be > 0 after first done(), got ${depth_during_handler}`)
+  // During handler, pause should still be held.
+  assert.equal(paused_during_handler, true, 'bus should remain paused after first done()')
 
-  // Between done() calls, depth should still be held
-  assert.ok(depth_between_dones > 0, `depth should be > 0 between done() calls, got ${depth_between_dones}`)
+  // Between done() calls, pause should still be held.
+  assert.equal(paused_between_dones, true, 'bus should remain paused between done() calls')
 
-  // After second done(), still held until handler returns
-  assert.ok(depth_after_second_done > 0, `depth should be > 0 after second done(), got ${depth_after_second_done}`)
+  // After second done(), pause is still held until handler returns.
+  assert.equal(paused_after_second_done, true, 'bus should remain paused after second done()')
 
-  // After handler finishes and bus is idle, depth must be exactly 0
-  assert.equal(
-    bus.immediate_processing_stack_depth,
-    0,
-    `depth should return to 0 after handler completes, got ${bus.immediate_processing_stack_depth}`
-  )
+  // After handler finishes and bus is idle, pause must be released.
+  assert.equal(bus.locks.isPaused(), false, 'bus should no longer be paused after handler completes')
 })
 
 test('isInsideHandler() is per-bus, not global', async () => {
@@ -729,23 +722,23 @@ test('deeply nested awaited children', async () => {
 // =============================================================================
 // Queue-Jump Concurrency Tests (Two-Bus)
 //
-// BUG: runImmediatelyAcrossBuses passes { bypass_handler_limiters: true,
-// bypass_event_limiters: true } for ALL buses. This causes:
+// BUG: runImmediatelyAcrossBuses passes { bypass_handler_semaphores: true,
+// bypass_event_semaphores: true } for ALL buses. This causes:
 //   1. Handlers to run in parallel regardless of configured concurrency
-//   2. Event limiters on remote buses to be skipped
+//   2. Event semaphores on remote buses to be skipped
 //
 // The fix requires "yield-and-reacquire":
-//   - Before processing the child, temporarily RELEASE the limiter the parent
+//   - Before processing the child, temporarily RELEASE the semaphore the parent
 //     handler holds (the parent is suspended in `await child.done()` and isn't
 //     using it).
 //   - Process the child event NORMALLY — handlers acquire/release the real
-//     limiter, serializing among themselves as configured.
-//   - After the child completes, RE-ACQUIRE the limiter for the parent handler
+//     semaphore, serializing among themselves as configured.
+//   - After the child completes, RE-ACQUIRE the semaphore for the parent handler
 //     before it resumes.
 //
-// For event limiters, only bypass on the initiating bus (where the parent holds
-// the limiter). On other buses, respect their event concurrency — bypass only
-// if they resolve to the SAME limiter instance (i.e. global-serial).
+// For event semaphores, only bypass on the initiating bus (where the parent holds
+// the semaphore). On other buses, respect their event concurrency — bypass only
+// if they resolve to the SAME semaphore instance (i.e. global-serial).
 //
 // All tests use two buses. The pattern is:
 //   bus_a: origin bus where TriggerEvent handler dispatches a child
@@ -893,7 +886,7 @@ test('BUG: queue-jump two-bus global-serial handlers should serialize across bot
 
   // Check: bus_a handlers all finish before bus_b handlers start
   // (because runImmediatelyAcrossBuses processes sequentially and
-  // all share the global handler limiter)
+  // all share the global handler semaphore)
   const a2_end = log.indexOf('a2_end')
   const b1_start = log.indexOf('b1_start')
   assert.ok(a2_end < b1_start, `global-serial: bus_a should finish before bus_b starts. Got: [${log.join(', ')}]`)
@@ -1029,12 +1022,12 @@ test('BUG: queue-jump two-bus mixed: bus_a parallel, bus_b bus-serial', async ()
 //
 // When the forward bus (bus_b) has bus-serial event concurrency and is already
 // processing an event, a queue-jumped child should WAIT for bus_b's in-flight
-// event to finish. The current code bypasses event limiters for ALL buses,
+// event to finish. The current code bypasses event semaphores for ALL buses,
 // causing the child to cut in front of the in-flight event.
 //
-// The fix should only bypass event limiters on the INITIATING bus (where the
-// parent event holds the limiter). On other buses, bypass only if they resolve
-// to the SAME limiter instance (global-serial shares one global limiter).
+// The fix should only bypass event semaphores on the INITIATING bus (where the
+// parent event holds the semaphore). On other buses, bypass only if they resolve
+// to the SAME semaphore instance (global-serial shares one global semaphore).
 // =============================================================================
 
 test('BUG: queue-jump should respect bus-serial event concurrency on forward bus', async () => {
@@ -1053,7 +1046,7 @@ test('BUG: queue-jump should respect bus-serial event concurrency on forward bus
 
   const log: string[] = []
 
-  // SlowEvent handler: occupies bus_b's event limiter for 40ms
+  // SlowEvent handler: occupies bus_b's event semaphore for 40ms
   bus_b.on(SlowEvent, async () => {
     log.push('slow_start')
     await delay(40)
@@ -1102,7 +1095,7 @@ test('BUG: queue-jump should respect bus-serial event concurrency on forward bus
     `bus_b (bus-serial events): child should wait for slow event to finish. ` + `Got: [${log.join(', ')}]`
   )
 
-  // The child on bus_a should have processed (queue-jumped, bypasses bus_a's event limiter)
+  // The child on bus_a should have processed (queue-jumped, bypasses bus_a's event semaphore)
   assert.ok(log.includes('child_a_start'), 'child on bus_a should have run')
   assert.ok(log.includes('child_a_end'), 'child on bus_a should have completed')
 })
@@ -1160,8 +1153,8 @@ test('queue-jump with fully-parallel forward bus starts immediately', async () =
 
 test('queue-jump with parallel events but bus-serial handlers on forward bus serializes handlers', async () => {
   // When bus_b has parallel event concurrency but bus-serial handler concurrency,
-  // the child event can start processing immediately (event limiter is parallel),
-  // but its handler must wait for the slow handler to release the handler limiter.
+  // the child event can start processing immediately (event semaphore is parallel),
+  // but its handler must wait for the slow handler to release the handler semaphore.
 
   const TriggerEvent = BaseEvent.extend('QJEvtParHSer_Trigger', {})
   const ChildEvent = BaseEvent.extend('QJEvtParHSer_Child', {})

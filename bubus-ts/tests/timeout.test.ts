@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { BaseEvent, EventBus, EventHandlerCancelledError, EventHandlerTimeoutError } from '../src/index.js'
+import { BaseEvent, EventBus, EventHandlerCancelledError, EventHandlerAbortedError, EventHandlerTimeoutError } from '../src/index.js'
 
 const TimeoutEvent = BaseEvent.extend('TimeoutEvent', {})
 
@@ -300,7 +300,244 @@ test('queue-jump awaited child timeouts still fire across buses', async () => {
   assert.ok(timeout_result)
 })
 
-test('parent timeout cancels pending child handler results under serial handler limiter', async () => {
+const STEP1_HANDLER_MODES = ['bus-serial', 'global-serial'] as const
+type Step1HandlerMode = (typeof STEP1_HANDLER_MODES)[number]
+
+const getHandlerSemaphore = (bus: EventBus, mode: Step1HandlerMode) =>
+  mode === 'global-serial' ? EventBus.global_handler_semaphore : bus.bus_handler_semaphore
+
+for (const handler_mode of STEP1_HANDLER_MODES) {
+  test(`regression: timeout during awaited child.done() does not leak handler semaphore lock [${handler_mode}]`, async () => {
+    const ParentEvent = BaseEvent.extend(`TimeoutLeakParent-${handler_mode}`, {})
+    const ChildEvent = BaseEvent.extend(`TimeoutLeakChild-${handler_mode}`, {})
+
+    const bus = new EventBus(`TimeoutLeakBus-${handler_mode}`, {
+      event_concurrency: 'bus-serial',
+      handler_concurrency: handler_mode,
+    })
+    const semaphore = getHandlerSemaphore(bus, handler_mode)
+    const baseline_in_use = semaphore.in_use
+    const original_acquire = semaphore.acquire.bind(semaphore)
+    let acquire_count = 0
+
+    semaphore.acquire = async () => {
+      acquire_count += 1
+      // Third acquire is the parent reclaim in _runImmediately finally.
+      // Delay it so the parent handler timeout can fire in the middle.
+      if (acquire_count === 3) {
+        await delay(30)
+      }
+      await original_acquire()
+    }
+
+    try {
+      bus.on(ChildEvent, async () => {
+        await delay(1)
+        return 'child_done'
+      })
+
+      bus.on(ParentEvent, async (event) => {
+        const child = event.bus?.emit(ChildEvent({ event_timeout: 0.2 }))!
+        await child.done()
+        return 'parent_done'
+      })
+
+      const parent = bus.dispatch(ParentEvent({ event_timeout: 0.01 }))
+      await parent.done()
+      await bus.waitUntilIdle()
+
+      const parent_result = Array.from(parent.event_results.values())[0]
+      assert.equal(parent_result.status, 'error')
+      assert.ok(parent_result.error instanceof EventHandlerTimeoutError)
+      assert.equal(
+        semaphore.in_use,
+        baseline_in_use,
+        `handler semaphore leaked lock (mode=${handler_mode}, in_use=${semaphore.in_use}, baseline=${baseline_in_use}, acquires=${acquire_count})`
+      )
+    } finally {
+      semaphore.acquire = original_acquire
+      while (semaphore.in_use > baseline_in_use) {
+        semaphore.release()
+      }
+    }
+  })
+}
+
+for (const handler_mode of STEP1_HANDLER_MODES) {
+  test(`regression: parent timeout while reacquire waits behind third serial handler is lock-safe [${handler_mode}]`, async () => {
+    const ParentEvent = BaseEvent.extend(`TimeoutContentionParent-${handler_mode}`, {})
+    const ChildEvent = BaseEvent.extend(`TimeoutContentionChild-${handler_mode}`, {})
+
+    const bus = new EventBus(`TimeoutContentionBus-${handler_mode}`, {
+      event_concurrency: 'bus-serial',
+      handler_concurrency: handler_mode,
+    })
+    const semaphore = getHandlerSemaphore(bus, handler_mode)
+    const baseline_in_use = semaphore.in_use
+
+    bus.on(ChildEvent, async () => {
+      await delay(2)
+      return 'child_done'
+    })
+
+    bus.on(ParentEvent, async (event) => {
+      const child = event.bus?.emit(ChildEvent({ event_timeout: 0.2, handler_concurrency: 'parallel' }))!
+      await child.done()
+      return 'parent_main'
+    })
+
+    // This handler queues behind parent_main, then holds the serial semaphore
+    // while parent_main is trying to reclaim after child.done() completes.
+    bus.on(ParentEvent, async () => {
+      await delay(40)
+      return 'parent_blocker'
+    })
+
+    const parent = bus.dispatch(ParentEvent({ event_timeout: 0.01 }))
+    await parent.done()
+    await bus.waitUntilIdle()
+
+    const parent_results = Array.from(parent.event_results.values())
+    const timeout_results = parent_results.filter((result) => result.error instanceof EventHandlerTimeoutError)
+    assert.ok(timeout_results.length >= 1, `expected at least one timeout result in ${handler_mode}`)
+    assert.equal(semaphore.in_use, baseline_in_use)
+  })
+}
+
+for (const handler_mode of STEP1_HANDLER_MODES) {
+  test(`regression: next event still runs on same bus after timeout queue-jump path [${handler_mode}]`, async () => {
+    const ParentEvent = BaseEvent.extend(`TimeoutFollowupParent-${handler_mode}`, {})
+    const ChildEvent = BaseEvent.extend(`TimeoutFollowupChild-${handler_mode}`, {})
+    const FollowupEvent = BaseEvent.extend(`TimeoutFollowupTail-${handler_mode}`, {})
+
+    const bus = new EventBus(`TimeoutFollowupBus-${handler_mode}`, {
+      event_concurrency: 'bus-serial',
+      handler_concurrency: handler_mode,
+    })
+    const semaphore = getHandlerSemaphore(bus, handler_mode)
+    const baseline_in_use = semaphore.in_use
+    const original_acquire = semaphore.acquire.bind(semaphore)
+    let acquire_count = 0
+    semaphore.acquire = async () => {
+      acquire_count += 1
+      if (acquire_count === 3) {
+        await delay(30)
+      }
+      await original_acquire()
+    }
+
+    let followup_runs = 0
+
+    try {
+      bus.on(ChildEvent, async () => {
+        await delay(1)
+      })
+
+      bus.on(ParentEvent, async (event) => {
+        const child = event.bus?.emit(ChildEvent({ event_timeout: 0.2 }))!
+        await child.done()
+      })
+
+      bus.on(FollowupEvent, async () => {
+        followup_runs += 1
+        return 'followup_done'
+      })
+
+      const parent = bus.dispatch(ParentEvent({ event_timeout: 0.01 }))
+      await parent.done()
+      await bus.waitUntilIdle()
+
+      const followup = bus.dispatch(FollowupEvent({ event_timeout: 0.05 }))
+      const followup_completed = await Promise.race([followup.done().then(() => true), delay(100).then(() => false)])
+
+      assert.equal(
+        followup_completed,
+        true,
+        `follow-up event stalled after timeout queue-jump path (mode=${handler_mode}, in_use=${semaphore.in_use}, acquires=${acquire_count})`
+      )
+      assert.equal(followup_runs, 1)
+      assert.equal(semaphore.in_use, baseline_in_use)
+    } finally {
+      semaphore.acquire = original_acquire
+      while (semaphore.in_use > baseline_in_use) {
+        semaphore.release()
+      }
+    }
+  })
+}
+
+for (const handler_mode of STEP1_HANDLER_MODES) {
+  test(`regression: nested queue-jump with timeout cancellation remains lock-safe [${handler_mode}]`, async () => {
+    const ParentEvent = BaseEvent.extend(`NestedPermitParent-${handler_mode}`, {})
+    const ChildEvent = BaseEvent.extend(`NestedPermitChild-${handler_mode}`, {})
+    const GrandchildEvent = BaseEvent.extend(`NestedPermitGrandchild-${handler_mode}`, {})
+    const QueuedSiblingEvent = BaseEvent.extend(`NestedPermitQueuedSibling-${handler_mode}`, {})
+    const TailEvent = BaseEvent.extend(`NestedPermitTail-${handler_mode}`, {})
+
+    const bus = new EventBus(`NestedPermitBus-${handler_mode}`, {
+      event_concurrency: 'bus-serial',
+      handler_concurrency: handler_mode,
+    })
+    const semaphore = getHandlerSemaphore(bus, handler_mode)
+    const baseline_in_use = semaphore.in_use
+
+    let queued_sibling_runs = 0
+    let tail_runs = 0
+    let queued_sibling_ref: InstanceType<typeof QueuedSiblingEvent> | null = null
+
+    bus.on(GrandchildEvent, async () => {
+      await delay(1)
+      return 'grandchild_done'
+    })
+
+    bus.on(ChildEvent, async (event) => {
+      const grandchild = event.bus?.emit(GrandchildEvent({ event_timeout: 0.2 }))!
+      await grandchild.done()
+      await delay(40)
+      return 'child_done'
+    })
+
+    bus.on(QueuedSiblingEvent, async () => {
+      queued_sibling_runs += 1
+      return 'queued_sibling_done'
+    })
+
+    bus.on(ParentEvent, async (event) => {
+      queued_sibling_ref = event.bus?.emit(QueuedSiblingEvent({ event_timeout: 0.2 }))!
+      const child = event.bus?.emit(ChildEvent({ event_timeout: 0.02 }))!
+      await child.done()
+      await delay(40)
+    })
+
+    bus.on(TailEvent, async () => {
+      tail_runs += 1
+      return 'tail_done'
+    })
+
+    const parent = bus.dispatch(ParentEvent({ event_timeout: 0.03 }))
+    await parent.done()
+    await bus.waitUntilIdle()
+
+    const parent_result = Array.from(parent.event_results.values())[0]
+    assert.equal(parent_result.status, 'error')
+    assert.ok(parent_result.error instanceof EventHandlerTimeoutError)
+
+    assert.ok(queued_sibling_ref)
+    assert.equal(queued_sibling_runs, 0)
+    const queued_sibling_results = Array.from(queued_sibling_ref!.event_results.values())
+    assert.ok(queued_sibling_results.some((result) => result.error instanceof EventHandlerCancelledError))
+
+    assert.equal(semaphore.in_use, baseline_in_use)
+
+    const tail = bus.dispatch(TailEvent({ event_timeout: 0.05 }))
+    const tail_completed = await Promise.race([tail.done().then(() => true), delay(100).then(() => false)])
+    assert.equal(tail_completed, true)
+    assert.equal(tail_runs, 1)
+    assert.equal(semaphore.in_use, baseline_in_use)
+  })
+}
+
+test('parent timeout cancels pending child handler results under serial handler semaphore', async () => {
   const ParentEvent = BaseEvent.extend('TimeoutCancelParentEvent', {})
   const ChildEvent = BaseEvent.extend('TimeoutCancelChildEvent', {})
 
@@ -488,10 +725,11 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
   const immediate_results = Array.from(immediate_grandchild!.event_results.values())
   // With bus-serial handler concurrency (no longer bypassed during queue-jump),
   // only the first grandchild handler starts before the awaited child's 30ms timeout fires.
-  // The second handler is still pending (waiting for limiter) → cancelled.
+  // The second handler is still pending (waiting for semaphore) → cancelled.
+  // The first handler was already started → aborted (EventHandlerAbortedError).
   assert.equal(immediate_grandchild_runs, 1)
-  const immediate_completed = immediate_results.filter((result) => result.status === 'completed')
-  assert.equal(immediate_completed.length, 1)
+  const immediate_aborted = immediate_results.filter((result) => result.error instanceof EventHandlerAbortedError)
+  assert.equal(immediate_aborted.length, 1)
   const immediate_cancelled = immediate_results.filter((result) => result.error instanceof EventHandlerCancelledError)
   assert.equal(immediate_cancelled.length, 1)
 
@@ -517,7 +755,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 //
 // KEY MECHANIC: When a child event is awaited via event.done() inside a handler,
 // it triggers "queue-jumping" via _runImmediately → runImmediatelyAcrossBuses.
-// Queue-jumped events use yield-and-reacquire: the parent handler's limiter is
+// Queue-jumped events use yield-and-reacquire: the parent handler's semaphore is
 // temporarily released so child handlers can acquire it normally. This means
 // child handlers run SERIALLY on a bus-serial bus (respecting concurrency limits).
 // Non-awaited child events stay in the pending_event_queue and are blocked by
@@ -525,9 +763,9 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 //
 // TIMEOUT BEHAVIOR: Each handler gets its OWN timeout window starting from when
 // that handler begins execution — NOT from when the event was dispatched.
-// With serial handlers, each timeout starts when the handler acquires the limiter.
+// With serial handlers, each timeout starts when the handler acquires the semaphore.
 //
-// CANCELLATION CASCADE: When a handler times out, cancelPendingChildProcessing()
+// CANCELLATION CASCADE: When a handler times out, bus.cancelPendingDescendants()
 // walks the event's children tree and marks any "pending" handler results as
 // EventHandlerCancelledError. Only "pending" results are cancelled — handlers
 // that already started ("started" status) continue running in the background.
@@ -553,8 +791,8 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
 
   // ── GrandchildEvent handlers ──────────────────────────────────────────
   // These run SERIALLY because queue-jumped events respect the bus-serial
-  // handler limiter (yield-and-reacquire). Each handler gets its own 35ms
-  // timeout window starting from when that handler acquires the limiter.
+  // handler semaphore (yield-and-reacquire). Each handler gets its own 35ms
+  // timeout window starting from when that handler acquires the semaphore.
   //
   // Serial order: a(35ms timeout) → b(sync) → c(35ms timeout) → d(10ms) → e(35ms timeout)
   // Total time for all 5: ~35+0+35+10+35 = ~115ms (within child's 150ms timeout)
@@ -595,7 +833,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   // ── QueuedGrandchildEvent handler ─────────────────────────────────────
   // This event is emitted by child_handler but NOT awaited, so it sits in
   // pending_event_queue. When child_handler times out at 80ms,
-  // cancelPendingChildProcessing walks ChildEvent.event_children and finds
+  // bus.cancelPendingDescendants walks ChildEvent.event_children and finds
   // this event still pending → its handler results are marked as cancelled.
   const queued_gc_handler = () => {
     execution_log.push('queued_gc_start') // should never reach here
@@ -622,14 +860,14 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   // ── SiblingEvent handler ──────────────────────────────────────────────
   // This event is emitted by top_handler_main but NOT awaited. Stays in
   // pending_event_queue until top_handler_main times out at 250ms →
-  // cancelled by cancelPendingChildProcessing.
+  // cancelled by bus.cancelPendingDescendants.
   const sibling_handler = () => {
     execution_log.push('sibling_start') // should never reach here
     return 'sibling_done'
   }
 
   // ── TopEvent handlers ─────────────────────────────────────────────────
-  // These run SERIALLY (via bus handler limiter) because TopEvent is
+  // These run SERIALLY (via bus handler semaphore) because TopEvent is
   // processed by the normal runloop (not queue-jumped). top_handler_fast
   // goes first, completes quickly, then top_handler_main starts.
 
@@ -729,7 +967,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
 
   // ── QueuedGrandchildEvent: CANCELLED by child_handler timeout ───────
   // This event was emitted but never awaited. It sat in pending_event_queue
-  // until child_handler timed out, which triggered cancelPendingChildProcessing
+  // until child_handler timed out, which triggered bus.cancelPendingDescendants
   // to walk ChildEvent.event_children and cancel all pending handlers.
   assert.ok(queued_grandchild_ref, 'QueuedGrandchildEvent should have been emitted')
   assert.equal(queued_grandchild_ref!.event_status, 'completed')
@@ -749,7 +987,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
 
   // ── SiblingEvent: CANCELLED by top_handler_main timeout ─────────────
   // Same pattern: emitted but never awaited, stays in queue, cancelled when
-  // top_handler_main times out and cancelPendingChildProcessing runs.
+  // top_handler_main times out and bus.cancelPendingDescendants runs.
   assert.ok(sibling_ref, 'SiblingEvent should have been emitted')
   assert.equal(sibling_ref!.event_status, 'completed')
 
@@ -902,7 +1140,7 @@ test('cancellation error chain preserves parent_error references through hierarc
   const deep_cancel = deep_result.error as EventHandlerCancelledError
   assert.ok(deep_cancel.parent_error instanceof EventHandlerTimeoutError, 'Cancellation should reference parent timeout')
   // The parent_error should be the INNER handler's timeout, because that's
-  // the handler whose cancelPendingChildProcessing actually cancelled DeepEvent.
+  // the handler whose bus.cancelPendingDescendants actually cancelled DeepEvent.
   assert.ok(
     deep_cancel.parent_error.message.includes('inner_handler') || deep_cancel.parent_error.message.includes('child_handler'),
     'parent_error should reference the handler that directly caused cancellation'
@@ -912,7 +1150,7 @@ test('cancellation error chain preserves parent_error references through hierarc
 // =============================================================================
 // When a parent has a timeout but a child has event_timeout: null (no timeout),
 // the child's handlers run indefinitely on their own — but if the PARENT times
-// out, cancelPendingChildProcessing still cancels any pending child handlers.
+// out, bus.cancelPendingDescendants still cancels any pending child handlers.
 // This tests that cancellation works across timeout/no-timeout boundaries.
 // =============================================================================
 

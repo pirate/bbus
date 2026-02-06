@@ -2,7 +2,14 @@ import { BaseEvent } from './base_event.js'
 import { EventResult } from './event_result.js'
 import { captureAsyncContext, runWithAsyncContext } from './async_context.js'
 import { v5 as uuidv5 } from 'uuid'
-import { AsyncLimiter, type ConcurrencyMode, limiterForMode, resolveConcurrencyMode, runWithLimiter, withResolvers } from './semaphores.js'
+import { AsyncSemaphore, type ConcurrencyMode, HandlerLock, LockManager, runWithSemaphore, withResolvers } from './lock_manager.js'
+
+const monotonicNowMs = (): number => {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now()
+  }
+  return Date.now()
+}
 
 export class EventHandlerTimeoutError extends Error {
   event_type: string
@@ -29,6 +36,22 @@ export class EventHandlerCancelledError extends Error {
     this.event_type = params.event_type
     this.handler_name = params.handler_name
     this.parent_error = params.parent_error
+  }
+}
+
+export class EventHandlerAbortedError extends Error {
+  event_type: string
+  handler_name: string
+  parent_error: Error
+  event_result: EventResult
+
+  constructor(message: string, params: { event_type: string; handler_name: string; parent_error: Error; event_result: EventResult }) {
+    super(message)
+    this.name = 'EventHandlerAbortedError'
+    this.event_type = params.event_type
+    this.handler_name = params.handler_name
+    this.parent_error = params.parent_error
+    this.event_result = params.event_result
   }
 }
 
@@ -106,8 +129,8 @@ class EventBusInstanceRegistry {
 
 export class EventBus {
   static instances = new EventBusInstanceRegistry()
-  static global_event_limiter = new AsyncLimiter(1)
-  static global_handler_limiter = new AsyncLimiter(1)
+  static global_event_semaphore = new AsyncSemaphore(1)
+  static global_handler_semaphore = new AsyncSemaphore(1)
   static findEventById(event_id: string): BaseEvent | null {
     for (const bus of EventBus.instances) {
       const event = bus.event_history.get(event_id)
@@ -123,30 +146,16 @@ export class EventBus {
   event_concurrency_default: ConcurrencyMode
   handler_concurrency_default: ConcurrencyMode
   event_timeout_default: number | null
-  bus_event_limiter: AsyncLimiter
-  bus_handler_limiter: AsyncLimiter
+  bus_event_semaphore: AsyncSemaphore
+  bus_handler_semaphore: AsyncSemaphore
   handlers: Map<string, HandlerEntry>
   event_history: Map<string, BaseEvent>
   pending_event_queue: BaseEvent[]
   in_flight_event_ids: Set<string>
   runloop_running: boolean
-  // Resolves for callers of waitUntilIdle(); only drained when idle is confirmed twice.
-  idle_waiters: Array<() => void>
-  // True while an idle check timeout is scheduled.
-  idle_check_pending: boolean
-  // Number of consecutive idle snapshots seen; must reach 2 to resolve waiters.
-  idle_check_streak: number
+  locks: LockManager
   // Pending find() callers waiting for a matching future event.
   find_waiters: Set<FindWaiter>
-  // Depth counter for "immediate processing" (queue-jump) inside handlers.
-  // While > 0, the runloop pauses to avoid processing unrelated events.
-  immediate_processing_stack_depth: number
-  // Runloop waiters that resume once immediate_processing_stack_depth returns to 0.
-  immediate_processing_waiters: Array<() => void>
-  // Stack of EventResults for handlers currently executing on this bus.
-  // Enables per-bus isInsideHandler() and gives _runImmediately access to the
-  // calling handler's result even when called on raw (non-proxied) events.
-  _event_result_stack: EventResult[]
 
   constructor(name: string = 'EventBus', options: EventBusOptions = {}) {
     this.name = name
@@ -154,20 +163,24 @@ export class EventBus {
     this.event_concurrency_default = options.event_concurrency ?? 'bus-serial'
     this.handler_concurrency_default = options.handler_concurrency ?? 'bus-serial'
     this.event_timeout_default = options.event_timeout === undefined ? 60 : options.event_timeout
-    this.bus_event_limiter = new AsyncLimiter(1)
-    this.bus_handler_limiter = new AsyncLimiter(1)
+    this.bus_event_semaphore = new AsyncSemaphore(1)
+    this.bus_handler_semaphore = new AsyncSemaphore(1)
     this.handlers = new Map()
     this.event_history = new Map()
     this.pending_event_queue = []
     this.in_flight_event_ids = new Set()
     this.runloop_running = false
-    this.idle_waiters = []
-    this.idle_check_pending = false
-    this.idle_check_streak = 0
+    this.locks = new LockManager({
+      get_idle_snapshot: () =>
+        this.pending_event_queue.length === 0 && this.in_flight_event_ids.size === 0 && !this.hasPendingResults() && !this.runloop_running,
+      get_event_concurrency_default: () => this.event_concurrency_default,
+      get_handler_concurrency_default: () => this.handler_concurrency_default,
+      get_bus_event_semaphore: () => this.bus_event_semaphore,
+      get_bus_handler_semaphore: () => this.bus_handler_semaphore,
+      get_global_event_semaphore: () => EventBus.global_event_semaphore,
+      get_global_handler_semaphore: () => EventBus.global_handler_semaphore,
+    })
     this.find_waiters = new Set()
-    this.immediate_processing_stack_depth = 0
-    this.immediate_processing_waiters = []
-    this._event_result_stack = []
 
     EventBus.instances.add(this)
 
@@ -185,9 +198,7 @@ export class EventBus {
     this.pending_event_queue.length = 0
     this.in_flight_event_ids.clear()
     this.find_waiters.clear()
-    this.idle_waiters.length = 0
-    this.immediate_processing_waiters.length = 0
-    this._event_result_stack.length = 0
+    this.locks.clear()
   }
 
   on<T extends BaseEvent>(event_key: EventKey<T> | '*', handler: EventHandler<T>, options: HandlerOptions = {}): void {
@@ -366,10 +377,10 @@ export class EventBus {
   // Called when a handler does `await child.done()` — processes the child event
   // immediately ("queue-jump") instead of waiting for the runloop to pick it up.
   //
-  // Yield-and-reacquire: if the calling handler holds a handler concurrency limiter,
+  // Yield-and-reacquire: if the calling handler holds a handler concurrency semaphore,
   // we temporarily release it so child handlers on the same bus can acquire it
   // (preventing deadlock for bus-serial/global-serial modes). We re-acquire after
-  // the child completes so the parent handler can continue with the limiter held.
+  // the child completes so the parent handler can continue with the semaphore held.
   async _runImmediately<T extends BaseEvent>(event: T, handler_result?: EventResult): Promise<T> {
     const original_event = event._original_event ?? event
     // Find the parent handler's result: prefer the proxy-provided one (only if
@@ -379,7 +390,7 @@ export class EventBus {
     const proxy_result = handler_result?.status === 'started' ? handler_result : undefined
     const effective_result =
       proxy_result ??
-      this._event_result_stack[this._event_result_stack.length - 1] ??
+      this.locks.getCurrentHandlerResult() ??
       this._findInFlightAncestorResult(original_event) ??
       undefined
     if (!effective_result) {
@@ -387,24 +398,15 @@ export class EventBus {
       await original_event.waitForCompletion()
       return event
     }
-    if (!effective_result.queue_jump_hold) {
-      effective_result.queue_jump_hold = true
-      this.immediate_processing_stack_depth += 1
-    }
+    this.locks.ensureQueueJumpPauseForResult(effective_result)
     if (original_event.event_status === 'completed') {
       return event
     }
 
-    // Yield the parent handler's limiter so child handlers can use it.
-    // Null out _held_handler_limiter so concurrent calls from the same handler
-    // (e.g. Promise.all([child1.done(), child2.done()])) don't double-release.
-    const limiter_to_yield = effective_result?._held_handler_limiter ?? null
-    if (limiter_to_yield) {
-      effective_result!._held_handler_limiter = null
-      limiter_to_yield.release()
-    }
-
-    try {
+    const run_queue_jump = effective_result._lock
+      ? (fn: () => Promise<T>) => effective_result._lock!.runQueueJump(fn)
+      : (fn: () => Promise<T>) => fn()
+    return await run_queue_jump(async () => {
       if (original_event.event_status === 'started') {
         await this.runImmediatelyAcrossBuses(original_event)
         return event
@@ -417,67 +419,11 @@ export class EventBus {
 
       await this.runImmediatelyAcrossBuses(original_event)
       return event
-    } finally {
-      // Re-acquire the parent handler's limiter before returning control.
-      // Only the call that actually released it will re-acquire.
-      // If the handler timed out while we were processing children,
-      // runHandlerEntry's finally has already run and the limiter is no longer
-      // needed — skip re-acquire to avoid leaking the limiter.
-      if (limiter_to_yield && effective_result!.status === 'started') {
-        await limiter_to_yield.acquire()
-        effective_result!._held_handler_limiter = limiter_to_yield
-      }
-    }
-  }
-
-  async waitUntilIdle(): Promise<void> {
-    if (this.isIdleSnapshot()) {
-      return
-    }
-    return new Promise((resolve) => {
-      this.idle_waiters.push(resolve)
-      this.scheduleIdleCheck()
     })
   }
 
-  private scheduleIdleCheck(): void {
-    if (this.idle_check_pending) {
-      return
-    }
-    this.idle_check_pending = true
-    setTimeout(() => {
-      this.idle_check_pending = false
-      this.resolveIdleWaitersIfDone()
-    }, 0)
-  }
-
-  private isIdleSnapshot(): boolean {
-    return (
-      this.pending_event_queue.length === 0 && this.in_flight_event_ids.size === 0 && !this.hasPendingResults() && !this.runloop_running
-    )
-  }
-
-  private resolveIdleWaitersIfDone(): void {
-    if (!this.isIdleSnapshot()) {
-      this.idle_check_streak = 0
-      if (this.idle_waiters.length > 0) {
-        this.scheduleIdleCheck()
-      }
-      return
-    }
-    this.idle_check_streak += 1
-    if (this.idle_check_streak < 2) {
-      if (this.idle_waiters.length > 0) {
-        this.scheduleIdleCheck()
-      }
-      return
-    }
-    this.idle_check_streak = 0
-    const idle_waiters = this.idle_waiters
-    this.idle_waiters = []
-    for (const resolve of idle_waiters) {
-      resolve()
-    }
+  async waitUntilIdle(): Promise<void> {
+    await this.locks.waitForIdle()
   }
 
   private hasPendingResults(): boolean {
@@ -585,9 +531,9 @@ export class EventBus {
   // Per-bus check: true only if this specific bus has a handler on its stack.
   // For cross-bus queue-jumping, _runImmediately uses _findInFlightAncestorResult()
   // to walk up the parent event tree, and the bus proxy passes handler_result
-  // to _runImmediately so it can yield/reacquire the correct limiter.
+  // to _runImmediately so it can yield/reacquire the correct semaphore.
   isInsideHandler(): boolean {
-    return this._event_result_stack.length > 0
+    return this.locks.isInsideHandlerContext()
   }
 
   // Walk up the parent event chain to find an in-flight ancestor handler result.
@@ -609,16 +555,16 @@ export class EventBus {
   }
 
   // Processes a queue-jumped event across all buses that have it dispatched.
-  // Called from _runImmediately after the parent handler's limiter has been yielded.
+  // Called from _runImmediately after the parent handler's semaphore has been yielded.
   //
-  // Event limiter bypass: the initiating bus (this) always bypasses its event limiter
+  // Event semaphore bypass: the initiating bus (this) always bypasses its event semaphore
   // since we're inside a handler that already holds it. Other buses only bypass if
-  // they resolve to the same limiter instance (i.e. global-serial mode where all
-  // buses share EventBus.global_event_limiter).
+  // they resolve to the same semaphore instance (i.e. global-serial mode where all
+  // buses share EventBus.global_event_semaphore).
   //
-  // Handler limiters are NOT bypassed — child handlers must acquire the handler
-  // limiter normally. This works because _runImmediately already released the
-  // parent's handler limiter via yield-and-reacquire.
+  // Handler semaphores are NOT bypassed — child handlers must acquire the handler
+  // semaphore normally. This works because _runImmediately already released the
+  // parent's handler semaphore via yield-and-reacquire.
   private async runImmediatelyAcrossBuses(event: BaseEvent): Promise<void> {
     const buses = this.getBusesForImmediateRun(event)
     if (buses.length === 0) {
@@ -626,13 +572,11 @@ export class EventBus {
       return
     }
 
-    for (const bus of buses) {
-      bus.immediate_processing_stack_depth += 1
-    }
+    const pause_releases = buses.map((bus) => bus.locks.requestPause())
 
-    // Determine which event limiter the initiating bus resolves to, so we can
+    // Determine which event semaphore the initiating bus resolves to, so we can
     // detect when other buses share the same instance (global-serial).
-    const initiating_event_limiter = this.resolveEventLimiter(event)
+    const initiating_event_semaphore = this.locks.getSemaphoreForEvent(event)
 
     try {
       for (const bus of buses) {
@@ -648,15 +592,15 @@ export class EventBus {
         }
         bus.in_flight_event_ids.add(event.event_id)
 
-        // Bypass event limiter on the initiating bus (we're already inside a handler
+        // Bypass event semaphore on the initiating bus (we're already inside a handler
         // that acquired it). For other buses, only bypass if they resolve to the same
-        // limiter instance (global-serial shares one limiter across all buses).
-        const bus_event_limiter = bus.resolveEventLimiter(event)
-        const should_bypass_event_limiter =
-          bus === this || (initiating_event_limiter !== null && bus_event_limiter === initiating_event_limiter)
+        // semaphore instance (global-serial shares one semaphore across all buses).
+        const bus_event_semaphore = bus.locks.getSemaphoreForEvent(event)
+        const should_bypass_event_semaphore =
+          bus === this || (initiating_event_semaphore !== null && bus_event_semaphore === initiating_event_semaphore)
 
         await bus.scheduleEventProcessing(event, {
-          bypass_event_limiters: should_bypass_event_limiter,
+          bypass_event_semaphores: should_bypass_event_semaphore,
         })
       }
 
@@ -664,9 +608,8 @@ export class EventBus {
         await event.waitForCompletion()
       }
     } finally {
-      for (const bus of buses) {
-        bus.immediate_processing_stack_depth = Math.max(0, bus.immediate_processing_stack_depth - 1)
-        bus.releaseImmediateProcessingWaiters()
+      for (const release of pause_releases) {
+        release()
       }
     }
   }
@@ -701,24 +644,6 @@ export class EventBus {
     return ordered
   }
 
-  private releaseImmediateProcessingWaiters(): void {
-    if (this.immediate_processing_stack_depth !== 0 || this.immediate_processing_waiters.length === 0) {
-      return
-    }
-    const waiters = this.immediate_processing_waiters
-    this.immediate_processing_waiters = []
-    for (const resolve of waiters) {
-      try {
-        // Each waiter is a Promise resolver created by runloop() while it was paused.
-        // Resolving it resumes that runloop tick so it can continue draining the queue.
-        resolve()
-      } catch (error) {
-        // Should never happen: these are internal Promise resolve callbacks.
-        console.error('[bubus] immediate processing waiter threw', error)
-      }
-    }
-  }
-
   private startRunloop(): void {
     if (this.runloop_running) {
       return
@@ -732,26 +657,26 @@ export class EventBus {
   private async scheduleEventProcessing(
     event: BaseEvent,
     options: {
-      bypass_event_limiters?: boolean
-      pre_acquired_limiter?: AsyncLimiter | null
+      bypass_event_semaphores?: boolean
+      pre_acquired_semaphore?: AsyncSemaphore | null
     } = {}
   ): Promise<void> {
     try {
-      const limiter = options.bypass_event_limiters ? null : this.resolveEventLimiter(event)
-      const pre_acquired_limiter = options.pre_acquired_limiter ?? null
-      if (pre_acquired_limiter) {
+      const semaphore = options.bypass_event_semaphores ? null : this.locks.getSemaphoreForEvent(event)
+      const pre_acquired_semaphore = options.pre_acquired_semaphore ?? null
+      if (pre_acquired_semaphore) {
         await this.processEvent(event)
       } else {
-        await runWithLimiter(limiter, async () => {
+        await runWithSemaphore(semaphore, async () => {
           await this.processEvent(event)
         })
       }
     } finally {
-      if (options.pre_acquired_limiter) {
-        options.pre_acquired_limiter.release()
+      if (options.pre_acquired_semaphore) {
+        options.pre_acquired_semaphore.release()
       }
       this.in_flight_event_ids.delete(event.event_id)
-      this.resolveIdleWaitersIfDone()
+      this.locks.notifyIdleListeners()
     }
   }
 
@@ -759,10 +684,8 @@ export class EventBus {
     for (;;) {
       while (this.pending_event_queue.length > 0) {
         await Promise.resolve()
-        if (this.immediate_processing_stack_depth > 0) {
-          await new Promise<void>((resolve) => {
-            this.immediate_processing_waiters.push(resolve)
-          })
+        if (this.locks.isPaused()) {
+          await this.locks.waitUntilResumed()
           continue
         }
         const next_event = this.pending_event_queue[0]
@@ -774,23 +697,23 @@ export class EventBus {
           this.pending_event_queue.shift()
           continue
         }
-        let pre_acquired_limiter: AsyncLimiter | null = null
-        const event_limiter = this.resolveEventLimiter(original_event)
-        if (event_limiter) {
-          await event_limiter.acquire()
-          pre_acquired_limiter = event_limiter
+        let pre_acquired_semaphore: AsyncSemaphore | null = null
+        const event_semaphore = this.locks.getSemaphoreForEvent(original_event)
+        if (event_semaphore) {
+          await event_semaphore.acquire()
+          pre_acquired_semaphore = event_semaphore
         }
         this.pending_event_queue.shift()
         if (this.in_flight_event_ids.has(original_event.event_id)) {
-          if (pre_acquired_limiter) {
-            pre_acquired_limiter.release()
+          if (pre_acquired_semaphore) {
+            pre_acquired_semaphore.release()
           }
           continue
         }
         this.in_flight_event_ids.add(original_event.event_id)
         void this.scheduleEventProcessing(original_event, {
-          bypass_event_limiters: true,
-          pre_acquired_limiter,
+          bypass_event_semaphores: true,
+          pre_acquired_semaphore,
         })
         await Promise.resolve()
       }
@@ -799,7 +722,7 @@ export class EventBus {
         this.startRunloop()
         return
       }
-      this.resolveIdleWaitersIfDone()
+      this.locks.notifyIdleListeners()
       return
     }
   }
@@ -818,8 +741,8 @@ export class EventBus {
             if (event.event_status === 'completed') {
               return
             }
-            const started_at = event.event_started_at ?? event.event_created_at
-            const elapsed_ms = Date.now() - Date.parse(started_at)
+            const started_at_ts = event._event_started_at_ts ?? event._event_created_at_ts ?? monotonicNowMs()
+            const elapsed_ms = Math.max(0, monotonicNowMs() - started_at_ts)
             const elapsed_seconds = (elapsed_ms / 1000).toFixed(1)
             console.warn(
               `[bubus] Possible deadlock: ${event.event_type}#${event.event_id} still ${event.event_status} on ${this.name} after ${elapsed_seconds}s (timeout ${event.event_timeout}s)`
@@ -844,49 +767,35 @@ export class EventBus {
     }
   }
 
-  private resolveEventLimiter(event: BaseEvent): AsyncLimiter | null {
-    const resolved = resolveConcurrencyMode(event.event_concurrency, this.event_concurrency_default)
-    return limiterForMode(resolved, EventBus.global_event_limiter, this.bus_event_limiter)
-  }
-
-  private resolveHandlerLimiter(event: BaseEvent, options?: HandlerOptions): AsyncLimiter | null {
-    const event_override = event.handler_concurrency && event.handler_concurrency !== 'auto' ? event.handler_concurrency : undefined
-    const handler_override =
-      options?.handler_concurrency && options.handler_concurrency !== 'auto' ? options.handler_concurrency : undefined
-    const fallback = this.handler_concurrency_default
-    const resolved = resolveConcurrencyMode(event_override ?? handler_override ?? fallback, fallback)
-    return limiterForMode(resolved, EventBus.global_handler_limiter, this.bus_handler_limiter)
-  }
-
-  // Manually manages the handler concurrency limiter instead of using runWithLimiter,
-  // because _runImmediately may temporarily yield it during queue-jumping. If the handler
-  // times out while the limiter is yielded, runWithLimiter's unconditional release() would
-  // double-release (and _runImmediately's later re-acquire would leak). By tracking
-  // _held_handler_limiter, we only release if we still own the limiter.
+  // Manually manages the handler concurrency semaphore instead of using runWithSemaphore,
+  // because _runImmediately may temporarily yield it during queue-jumping.
   private async runHandlerEntry(event: BaseEvent, handler: EventHandler, result: EventResult, options?: HandlerOptions): Promise<void> {
     if (result.status === 'error' && result.error instanceof EventHandlerCancelledError) {
       return
     }
 
     const handler_event = this._getBusScopedEvent(event, result)
-    const limiter = this.resolveHandlerLimiter(event, options)
+    const semaphore = this.locks.getSemaphoreForHandler(event, options)
 
-    if (limiter) {
-      await limiter.acquire()
+    if (semaphore) {
+      await semaphore.acquire()
     }
 
     if (result.status === 'error' && result.error instanceof EventHandlerCancelledError) {
-      if (limiter) limiter.release()
+      if (semaphore) semaphore.release()
       return
     }
 
-    // Track which limiter this handler holds so _runImmediately can yield it
-    // (release before child processing, re-acquire after) to prevent deadlock.
-    result._held_handler_limiter = limiter
-    this._event_result_stack.push(result)
+    if (result._lock) result._lock.exitHandlerRun()
+    result._lock = new HandlerLock(semaphore)
+    this.locks.enterHandlerContext(result)
     try {
       result.markStarted()
-      const handler_result = await this.runHandlerWithTimeout(event, handler, handler_event)
+      const abort_promise = result.ensureAbortSignal()
+      const handler_result = await Promise.race([
+        this.runHandlerWithTimeout(event, handler, handler_event),
+        abort_promise,
+      ])
       if (event.event_result_schema) {
         const parsed = event.event_result_schema.safeParse(handler_result)
         if (parsed.success) {
@@ -906,27 +815,15 @@ export class EventBus {
           handler_name: result.handler_name,
           parent_error: error,
         })
-        this.cancelPendingChildProcessing(event, cancelled_error)
+        this.cancelPendingDescendants(event, cancelled_error)
       } else {
         result.markError(error)
       }
     } finally {
-      // If _runImmediately yielded our limiter (_held_handler_limiter is null), it was
-      // already released. Only release if we still own it (normal completion or no yield).
-      const handler_still_owns_limiter = result._held_handler_limiter !== null
-      result._held_handler_limiter = null
-      const stack_idx = this._event_result_stack.indexOf(result)
-      if (stack_idx >= 0) {
-        this._event_result_stack.splice(stack_idx, 1)
-      }
-      if (result.queue_jump_hold) {
-        result.queue_jump_hold = false
-        this.immediate_processing_stack_depth = Math.max(0, this.immediate_processing_stack_depth - 1)
-        this.releaseImmediateProcessingWaiters()
-      }
-      if (limiter && handler_still_owns_limiter) {
-        limiter.release()
-      }
+      result._abort = null
+      result._lock?.exitHandlerRun()
+      this.locks.exitHandlerContext(result)
+      this.locks.releaseQueueJumpPauseForResult(result)
     }
   }
 
@@ -1072,7 +969,8 @@ export class EventBus {
     return scoped as T
   }
 
-  private cancelPendingChildProcessing(event: BaseEvent, error: EventHandlerCancelledError): void {
+  cancelPendingDescendants(event: BaseEvent, reason: unknown): void {
+    const cancellation_error = this.normalizeCancellationError(event, reason)
     const visited = new Set<string>()
     const cancel_child = (child: BaseEvent): void => {
       const original_child = child._original_event ?? child
@@ -1081,23 +979,46 @@ export class EventBus {
       }
       visited.add(original_child.event_id)
 
+      // Depth-first: cancel grandchildren before parent so
+      // eventAreAllChildrenComplete() returns true when we get back up.
+      for (const grandchild of original_child.event_children) {
+        cancel_child(grandchild)
+      }
+
       const path = Array.isArray(original_child.event_path) ? original_child.event_path : []
       const buses_to_cancel = new Set<string>(path)
       for (const bus of EventBus.instances) {
         if (!buses_to_cancel.has(bus.name)) {
           continue
         }
-        bus.cancelEventOnBus(original_child, error)
+        bus.cancelEventOnBus(original_child, cancellation_error)
       }
 
-      for (const grandchild of original_child.event_children) {
-        cancel_child(grandchild)
+      // Force-complete the child event. In JS we can't stop running async
+      // handlers, but markCompleted() resolves the done() promise so callers
+      // aren't blocked waiting for background work to finish. The background
+      // handler's eventual markCompleted/markError is a no-op (terminal guard).
+      if (original_child.event_status !== 'completed') {
+        original_child.markCompleted()
       }
     }
 
     for (const child of event.event_children) {
       cancel_child(child)
     }
+  }
+
+  private normalizeCancellationError(event: BaseEvent, reason: unknown): EventHandlerCancelledError {
+    if (reason instanceof EventHandlerCancelledError) {
+      return reason
+    }
+
+    const parent_error = reason instanceof Error ? reason : new Error(String(reason))
+    return new EventHandlerCancelledError(`Cancelled pending handler due to ancestor cancellation: ${parent_error.message}`, {
+      event_type: event.event_type,
+      handler_name: 'unknown',
+      parent_error,
+    })
   }
 
   private cancelEventOnBus(event: BaseEvent, error: EventHandlerCancelledError): void {
@@ -1107,6 +1028,29 @@ export class EventBus {
     for (const entry of handler_entries) {
       if (entry.result.status === 'pending') {
         entry.result.markError(error)
+        updated = true
+      } else if (entry.result.status === 'started') {
+        // Abort running handlers. In JS we can't actually stop a running async
+        // function, but marking it as error means the event system treats it as
+        // done. The background handler will finish silently (its markCompleted/
+        // markError call is a no-op once in terminal state).
+        //
+        // Exit handler-run ownership immediately so any held lock is released.
+        // If reacquire is currently pending, exit closes ownership and the
+        // reacquire path auto-releases when it wakes.
+        entry.result._lock?.exitHandlerRun()
+
+        const aborted_error = new EventHandlerAbortedError(
+          `Aborted running handler due to parent timeout: ${error.message}`,
+          {
+            event_type: original_event.event_type,
+            handler_name: entry.result.handler_name,
+            parent_error: error.parent_error,
+            event_result: entry.result,
+          }
+        )
+        entry.result.markError(aborted_error)
+        entry.result.signalAbort(aborted_error)
         updated = true
       }
     }
