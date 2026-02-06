@@ -17,6 +17,7 @@ export class EventResult {
   result?: unknown;
   error?: unknown;
   event_children: BaseEvent[];
+  queue_jump_hold: boolean;
 
   constructor(params: {
     event_id: string;
@@ -33,6 +34,7 @@ export class EventResult {
     this.handler_file_path = params.handler_file_path;
     this.eventbus_name = params.eventbus_name;
     this.event_children = [];
+    this.queue_jump_hold = false;
   }
 
   markStarted(): void {

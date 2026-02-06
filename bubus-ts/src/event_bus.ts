@@ -368,8 +368,15 @@ export class EventBus {
     });
   }
 
-  async _runImmediately<T extends BaseEvent>(event: T): Promise<T> {
+  async _runImmediately<T extends BaseEvent>(
+    event: T,
+    handler_result?: EventResult
+  ): Promise<T> {
     const original_event = event._original_event ?? event;
+    if (handler_result && !handler_result.queue_jump_hold) {
+      handler_result.queue_jump_hold = true;
+      this.immediate_processing_stack_depth += 1;
+    }
     if (original_event.event_status === "completed") {
       return event;
     }
@@ -603,7 +610,7 @@ export class EventBus {
           0,
           bus.immediate_processing_stack_depth - 1
         );
-        bus.releaseRunNowWaiters();
+        bus.releaseImmediateProcessingWaiters();
       }
     }
   }
@@ -638,7 +645,7 @@ export class EventBus {
     return ordered;
   }
 
-  private releaseRunNowWaiters(): void {
+  private releaseImmediateProcessingWaiters(): void {
     if (
       this.immediate_processing_stack_depth !== 0 ||
       this.immediate_processing_waiters.length === 0
@@ -882,6 +889,14 @@ export class EventBus {
           0,
           EventBus.global_inside_handler_depth - 1
         );
+        if (result.queue_jump_hold) {
+          result.queue_jump_hold = false;
+          this.immediate_processing_stack_depth = Math.max(
+            0,
+            this.immediate_processing_stack_depth - 1
+          );
+          this.releaseImmediateProcessingWaiters();
+        }
       }
     });
   }
@@ -993,6 +1008,15 @@ export class EventBus {
     const handler_id = handler_result?.handler_id;
     const bus_proxy = new Proxy(bus, {
       get(target, prop, receiver) {
+        if (prop === "_runImmediately") {
+          return (child_event: BaseEvent) => {
+            const runner = Reflect.get(target, prop, receiver) as (
+              event: BaseEvent,
+              handler_result?: EventResult
+            ) => Promise<BaseEvent>;
+            return runner.call(target, child_event, handler_result);
+          };
+        }
         if (prop === "dispatch" || prop === "emit") {
           return (child_event: BaseEvent, event_key?: EventKey) => {
             const original_child = child_event._original_event ?? child_event;
@@ -1006,7 +1030,8 @@ export class EventBus {
               event: BaseEvent,
               event_key?: EventKey
             ) => BaseEvent;
-            return dispatcher.call(target, original_child, event_key);
+            const dispatched = dispatcher.call(target, original_child, event_key);
+            return target._getBusScopedEvent(dispatched, handler_result);
           };
         }
         return Reflect.get(target, prop, receiver);
