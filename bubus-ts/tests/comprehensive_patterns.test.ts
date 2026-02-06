@@ -163,6 +163,7 @@ test("race condition stress", async () => {
 test("awaited child jumps queue without overshoot", async () => {
   const bus = new EventBus("TestBus", { max_history_size: 100 });
   const execution_order: string[] = [];
+  const debug_order: Array<{ label: string; at: string }> = [];
 
   const Event1 = BaseEvent.extend("Event1", {});
   const Event2 = BaseEvent.extend("Event2", {});
@@ -171,29 +172,39 @@ test("awaited child jumps queue without overshoot", async () => {
 
   const event1_handler = async (_event: BaseEvent): Promise<string> => {
     execution_order.push("Event1_start");
+    debug_order.push({ label: "Event1_start", at: new Date().toISOString() });
     const child = _event.bus?.emit(LocalChildEvent({}))!;
     execution_order.push("Child_dispatched");
+    debug_order.push({ label: "Child_dispatched", at: new Date().toISOString() });
     await child.done();
     execution_order.push("Child_await_returned");
+    debug_order.push({ label: "Child_await_returned", at: new Date().toISOString() });
     execution_order.push("Event1_end");
+    debug_order.push({ label: "Event1_end", at: new Date().toISOString() });
     return "event1_done";
   };
 
   const event2_handler = async (): Promise<string> => {
     execution_order.push("Event2_start");
+    debug_order.push({ label: "Event2_start", at: new Date().toISOString() });
     execution_order.push("Event2_end");
+    debug_order.push({ label: "Event2_end", at: new Date().toISOString() });
     return "event2_done";
   };
 
   const event3_handler = async (): Promise<string> => {
     execution_order.push("Event3_start");
+    debug_order.push({ label: "Event3_start", at: new Date().toISOString() });
     execution_order.push("Event3_end");
+    debug_order.push({ label: "Event3_end", at: new Date().toISOString() });
     return "event3_done";
   };
 
   const child_handler = async (): Promise<string> => {
     execution_order.push("Child_start");
+    debug_order.push({ label: "Child_start", at: new Date().toISOString() });
     execution_order.push("Child_end");
+    debug_order.push({ label: "Child_end", at: new Date().toISOString() });
     return "child_done";
   };
 
@@ -207,8 +218,11 @@ test("awaited child jumps queue without overshoot", async () => {
   const event_3 = bus.dispatch(Event3({}));
 
   await delay(0);
+  debug_order.push({ label: "after_delay_0", at: new Date().toISOString() });
 
   await event_1.done();
+  debug_order.push({ label: "after_event1_done", at: new Date().toISOString() });
+  console.log("debug_order", debug_order);
 
   assert.ok(execution_order.includes("Child_start"));
   assert.ok(execution_order.includes("Child_end"));
