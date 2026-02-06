@@ -16,7 +16,7 @@ gotchas we uncovered while matching behavior. It intentionally does **not** re-d
 
 - Python uses a global re-entrant lock to let awaited events process immediately on every bus where they appear.
 - TS optionally uses `AsyncLocalStorage` on Node.js (auto-detected) to capture dispatch context, but falls back gracefully in browsers.
-- `EventBus.instances` + `immediate_processing_stack_depth` pauses each runloop and processes the same event immediately across buses.
+- `EventBus.instances` + the `LockManager` pause mechanism pauses each runloop and processes the same event immediately across buses.
 
 ### 3) `event.bus` is a BusScopedEvent view
 
@@ -104,14 +104,14 @@ bus.on(SomeEvent, handler, {
 
 If an event sets `handler_concurrency: "parallel"`, that wins even if a handler is ordered.
 
-## Limiters (how concurrency is enforced)
+## Semaphores (how concurrency is enforced)
 
-We use four limiters:
+We use four semaphores:
 
-- `EventBus.global_event_limiter`
-- `EventBus.global_handler_limiter`
-- `bus.bus_event_limiter`
-- `bus.bus_handler_limiter`
+- `EventBus.global_event_semaphore`
+- `EventBus.global_handler_semaphore`
+- `bus.bus_event_semaphore`
+- `bus.bus_handler_semaphore`
 
 They are applied centrally when scheduling events and handlers, so concurrency is controlled without scattering
 mutex checks throughout the code.
@@ -139,19 +139,19 @@ under different `event_concurrency` / `handler_concurrency` configurations.
 1. `runloop()` drains `pending_event_queue`.
 2. Adds event id to `in_flight_event_ids`.
 3. Calls `scheduleEventProcessing()` (async).
-4. `scheduleEventProcessing()` selects the event limiter and runs `processEvent()`.
+4. `scheduleEventProcessing()` selects the event semaphore and runs `processEvent()`.
 5. `processEvent()`:
    - `event.markStarted()`
    - `notifyFinders(event)`
    - creates handler results (`event_results`)
-   - runs handlers (respecting handler limiter)
+   - runs handlers (respecting handler semaphore)
    - decrements `event_pending_buses` and calls `event.tryFinalizeCompletion()`
 
 ### 2) Event concurrency modes (`event_concurrency`)
 
-- **`global-serial`**: events are serialized across _all_ buses using the global event limiter.
+- **`global-serial`**: events are serialized across _all_ buses using the global event semaphore.
 - **`bus-serial`**: events are serialized per bus; different buses can overlap.
-- **`parallel`**: no event limiter; events can run concurrently on the same bus.
+- **`parallel`**: no event semaphore; events can run concurrently on the same bus.
 - **`auto`**: resolves to the bus default.
 
 **Mixed buses:** each bus enforces its own event mode. Forwarding to another bus does not inherit the source bus’s mode.
@@ -160,7 +160,7 @@ under different `event_concurrency` / `handler_concurrency` configurations.
 
 `handler_concurrency` controls how handlers run **for a single event**:
 
-- **`global-serial`**: only one handler at a time across all buses using the global handler limiter.
+- **`global-serial`**: only one handler at a time across all buses using the global handler semaphore.
 - **`bus-serial`**: handlers serialize per bus.
 - **`parallel`**: handlers run concurrently for the event.
 - **`auto`**: resolves to the bus default.
@@ -175,23 +175,22 @@ When a handler on Bus A calls `bus_b.dispatch(event)` without awaiting:
 
 - Bus A continues running its handler.
 - Bus B queues and processes the event according to **Bus B’s** concurrency settings.
-- No coupling unless both buses use the global limiters.
+- No coupling unless both buses use the global semaphores.
 
 ### 5) Queue-jump (`await event.done()` inside handlers)
 
 When `event.done()` is awaited inside a handler, **queue-jump** happens:
 
 1. `BaseEvent.done()` detects it's inside a handler and calls `_runImmediately()`.
-2. `_runImmediately()` **yields** the parent handler's concurrency limiter (if held) so child handlers can acquire it.
+2. `_runImmediately()` **yields** the parent handler's concurrency semaphore (if held) so child handlers can acquire it.
 3. `_runImmediately()` removes the event from the pending queue (if present).
 4. `runImmediatelyAcrossBuses()` processes the event immediately on all buses where it is queued.
-5. While immediate processing is active, each affected bus increments `immediate_processing_stack_depth`,
-   and its `runloop()` pauses to prevent unrelated events from running.
-6. Once immediate processing completes, `_runImmediately()` **re-acquires** the parent handler's limiter
+5. While immediate processing is active, each affected bus's runloop is paused to prevent unrelated events from running.
+6. Once immediate processing completes, `_runImmediately()` **re-acquires** the parent handler's semaphore
    (unless the parent timed out while the child was processing).
-7. `immediate_processing_waiters` resume the paused runloops.
+7. Paused runloops resume.
 
-**Important:** queue-jump bypasses event limiters but **respects** handler limiters via yield-and-reacquire.
+**Important:** queue-jump bypasses event semaphores but **respects** handler semaphores via yield-and-reacquire.
 This means queue-jumped handlers run serially on a `bus-serial` bus, not in parallel.
 
 ### 6) Precedence recap
@@ -217,13 +216,13 @@ We need to know **which handler emitted a child** to correctly assign:
 In TS we do this by injecting a **BusScopedEvent** into handlers, which captures the active handler id and
 propagates it via `event_emitted_by_handler_id`. This keeps parentage deterministic even with nested awaits.
 
-### B) Why `immediate_processing_stack_depth` exists
+### B) Why runloop pausing exists
 
 When an event is awaited inside a handler, the event must **jump the queue**. If the runloop continues normally,
 it could process unrelated events ("overshoot"), breaking FIFO guarantees.
 
-`immediate_processing_stack_depth` pauses the runloop while we run the awaited event immediately. Once the queue-jump completes,
-the runloop resumes in FIFO order. This matches the Python behavior.
+The `LockManager` pause mechanism (`requestPause`/`waitUntilResumed`) pauses the runloop while we run the awaited
+event immediately. Once the queue-jump completes, the runloop resumes in FIFO order. This matches the Python behavior.
 
 ### C) BusScopedEvent: why it exists and how it works
 
@@ -262,6 +261,6 @@ The core contract is preserved:
 - forwarding
 - await-inside-handler queue jump
 
-But the **implementation details are different** because JS needs browser compatibility and lacks Python’s
-contextvars + asyncio primitives. The stack, runloop pause, and BusScopedEvent proxy are the key differences
-that make the behavior match in practice.
+But the **implementation details are different** because JS needs browser compatibility and lacks Python's
+contextvars + asyncio primitives. The `LockManager` (runloop pause + semaphore coordination), `HandlerLock`
+(yield-and-reacquire), and `BusScopedEvent` proxy are the key differences that make the behavior match in practice.
