@@ -299,6 +299,13 @@ export class LockManager {
   }
 
   notifyIdleListeners(): void {
+    // Fast-path: most completions have no waitUntilIdle() callers waiting,
+    // so skip expensive idle snapshot scans in that common case.
+    if (this.idle_waiters.length === 0) {
+      this.idle_check_streak = 0
+      return
+    }
+
     if (!this.getIdleSnapshot()) {
       this.idle_check_streak = 0
       if (this.idle_waiters.length > 0) {
