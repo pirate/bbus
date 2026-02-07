@@ -257,6 +257,7 @@ export class BaseEvent {
     return descendants;
   }
 
+  // awaitable to trigger immediate processing of the event on all buses where it is queued
   done(): Promise<this> {
     if (!this.bus) {
       return Promise.reject(new Error('event has no bus attached'))
@@ -277,7 +278,7 @@ export class BaseEvent {
     if (this.event_status === 'completed') {
       return Promise.resolve(this)
     }
-    this.ensureDonePromise()
+    this._notifyDoneListeners()
     return this._done!.promise
   }
 
@@ -291,16 +292,24 @@ export class BaseEvent {
     this.event_started_ts = event_started_ts
   }
 
-  markCompleted(): void {
+  markCompleted(force: boolean = true): void {
     if (this.event_status === 'completed') {
       return
+    }
+    if (!force) {
+      if (this.event_pending_bus_count > 0) {
+        return
+      }
+      if (!this.eventAreAllChildrenComplete()) {
+        return
+      }
     }
     this.event_status = 'completed'
     const { isostring: event_completed_at, ts: event_completed_ts } = BaseEvent.nextTimestamp()
     this.event_completed_at = event_completed_at
     this.event_completed_ts = event_completed_ts
     this._dispatch_context = null
-    this.ensureDonePromise()
+    this._notifyDoneListeners()
     this._done!.resolve(this)
     this._done = null
   }
@@ -324,17 +333,7 @@ export class BaseEvent {
     return true
   }
 
-  tryFinalizeCompletion(): void {
-    if (this.event_pending_bus_count > 0) {
-      return
-    }
-    if (!this.eventAreAllChildrenComplete()) {
-      return
-    }
-    this.markCompleted()
-  }
-
-  ensureDonePromise(): void {
+  _notifyDoneListeners(): void {
     if (this._done) {
       return
     }

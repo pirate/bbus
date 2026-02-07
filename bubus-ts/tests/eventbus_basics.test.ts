@@ -116,7 +116,7 @@ test('BaseEvent lifecycle methods are callable and preserve lifecycle behavior',
   const standalone = LifecycleEvent({})
   standalone.markStarted()
   assert.equal(standalone.event_status, 'started')
-  standalone.tryFinalizeCompletion()
+  standalone.markCompleted(false)
   assert.equal(standalone.event_status, 'completed')
   await standalone.waitForCompletion()
 

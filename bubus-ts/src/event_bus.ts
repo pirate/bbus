@@ -352,14 +352,6 @@ export class EventBus {
     const where = typeof where_or_options === 'function' ? where_or_options : () => true
     const options = typeof where_or_options === 'function' ? maybe_options : where_or_options
 
-    return this.findInternal(event_key, where, options)
-  }
-
-  private async findInternal<T extends BaseEvent>(
-    event_key: EventKey<T>,
-    where: (event: T) => boolean,
-    options: FindOptions
-  ): Promise<T | null> {
     const past = options.past ?? true
     const future = options.future ?? true
     const child_of = options.child_of ?? null
@@ -410,7 +402,7 @@ export class EventBus {
       return null
     }
 
-    return new Promise<T | null>((resolve, _reject) => {
+    return new Promise<T | null>((resolve) => {
       const waiter: FindWaiter = {
         event_key,
         matches,
@@ -686,6 +678,11 @@ export class EventBus {
     }
   }
 
+  // Collects buses that currently "own" this event so queue-jump can run it immediately
+  // across all forwarded buses. Called by runImmediatelyAcrossBuses(), which itself is
+  // invoked from _runImmediately (via BaseEvent.done()) when an event is awaited inside
+  // a handler. Uses event.event_path ordering to pick candidate buses and filters out
+  // buses that haven't seen the event or already processed it.
   private getBusesForImmediateRun(event: BaseEvent): EventBus[] {
     const ordered: EventBus[] = []
     const seen = new Set<EventBus>()
@@ -815,9 +812,10 @@ export class EventBus {
             }
             const started_ts = event.event_started_ts ?? event.event_created_ts ?? performance.now()
             const elapsed_ms = Math.max(0, performance.now() - started_ts)
-            const elapsed_seconds = (elapsed_ms / 1000).toFixed(1)
+            const elapsed_seconds = (elapsed_ms / 1000).toFixed(2)
+            const active_handler = [...event.event_results.values()].find((result: EventResult) => result.status === 'started')?.handler_file_path ?? 'handlers'
             console.warn(
-              `[bubus] Possible deadlock: ${event.event_type}#${event.event_id} still ${event.event_status} on ${this.name} after ${elapsed_seconds}s (timeout ${event.event_timeout}s)`
+              `[bubus] Slow handler: ${this.name}.on(${event.event_type}#${event.event_id.slice(-8, -1)}, ${active_handler}) still running after ${elapsed_seconds}s (timeout=${event.event_timeout}s)`
             )
           }, event.event_timeout * 1000)
 
@@ -828,7 +826,7 @@ export class EventBus {
       await Promise.all(handler_promises)
 
       event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
-      event.tryFinalizeCompletion()
+      event.markCompleted(false)
       if (event.event_status === 'completed') {
         this.notifyParentsFor(event)
       }
@@ -972,7 +970,7 @@ export class EventBus {
       if (!parent) {
         break
       }
-      parent.tryFinalizeCompletion()
+      parent.markCompleted(false)
       if (parent.event_status !== 'completed') {
         break
       }
@@ -1136,7 +1134,7 @@ export class EventBus {
     }
 
     if (updated || removed > 0) {
-      original_event.tryFinalizeCompletion()
+      original_event.markCompleted(false)
       if (original_event.event_status === 'completed') {
         this.notifyParentsFor(original_event)
       }

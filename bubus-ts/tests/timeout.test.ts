@@ -214,7 +214,7 @@ test('deadlock warning triggers when event exceeds timeout', async () => {
   }
 
   assert.ok(
-    warnings.some((message) => message.includes('Possible deadlock')),
+    warnings.some((message) => message.includes('Slow handler')),
     'Expected deadlock warning'
   )
 })
