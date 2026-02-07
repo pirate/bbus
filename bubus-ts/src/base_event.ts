@@ -44,14 +44,19 @@ export type EventSchema<TShape extends z.ZodRawShape> = z.ZodObject<BaseEventSch
 type EventInput<TShape extends z.ZodRawShape> = z.input<EventSchema<TShape>>
 export type EventInit<TShape extends z.ZodRawShape> = Omit<EventInput<TShape>, keyof BaseEventFields> & Partial<BaseEventFields>
 
-export type EventFactory<TShape extends z.ZodRawShape> = {
-  (data: EventInit<TShape>): BaseEvent & z.infer<EventSchema<TShape>>
-  new (data: EventInit<TShape>): BaseEvent & z.infer<EventSchema<TShape>>
+type EventWithResult<TResult> = BaseEvent & { __event_result_type__?: TResult }
+
+type ResultTypeFromShape<TShape> =
+  TShape extends { event_result_schema: infer S } ? (S extends z.ZodTypeAny ? z.infer<S> : unknown) : unknown
+
+export type EventFactory<TShape extends z.ZodRawShape, TResult = unknown> = {
+  (data: EventInit<TShape>): EventWithResult<TResult> & z.infer<EventSchema<TShape>>
+  new (data: EventInit<TShape>): EventWithResult<TResult> & z.infer<EventSchema<TShape>>
   schema: EventSchema<TShape>
   event_type?: string
   event_result_schema?: z.ZodTypeAny
   event_result_type?: string
-  fromJSON?: (data: unknown) => BaseEvent & z.infer<EventSchema<TShape>>
+  fromJSON?: (data: unknown) => EventWithResult<TResult> & z.infer<EventSchema<TShape>>
 }
 
 type ZodShapeFrom<TShape extends Record<string, unknown>> = {
@@ -143,12 +148,18 @@ export class BaseEvent {
     return { date, isostring: date.toISOString(), ts }
   }
 
-  static extend<TShape extends z.ZodRawShape>(event_type: string, shape?: TShape): EventFactory<TShape>
-  static extend<TShape extends Record<string, unknown>>(event_type: string, shape?: TShape): EventFactory<ZodShapeFrom<TShape>>
+  static extend<TShape extends z.ZodRawShape>(
+    event_type: string,
+    shape?: TShape
+  ): EventFactory<TShape, ResultTypeFromShape<TShape>>
+  static extend<TShape extends Record<string, unknown>>(
+    event_type: string,
+    shape?: TShape
+  ): EventFactory<ZodShapeFrom<TShape>, ResultTypeFromShape<TShape>>
   static extend<TShape extends Record<string, unknown>>(
     event_type: string,
     shape: TShape = {} as TShape
-  ): EventFactory<ZodShapeFrom<TShape>> {
+  ): EventFactory<ZodShapeFrom<TShape>, ResultTypeFromShape<TShape>> {
     const raw_shape = shape as Record<string, unknown>
 
     const event_result_schema = is_zod_schema(raw_shape.event_result_schema) ? (raw_shape.event_result_schema as z.ZodTypeAny) : undefined
@@ -168,7 +179,7 @@ export class BaseEvent {
       }
     }
 
-    type FactoryResult = BaseEvent & z.infer<EventSchema<ZodShapeFrom<TShape>>>
+    type FactoryResult = EventWithResult<ResultTypeFromShape<TShape>> & z.infer<EventSchema<ZodShapeFrom<TShape>>>
 
     function EventFactory(data: EventInit<ZodShapeFrom<TShape>>): FactoryResult {
       return new ExtendedEvent(data) as FactoryResult
@@ -182,7 +193,7 @@ export class BaseEvent {
     EventFactory.prototype = ExtendedEvent.prototype
     ;(EventFactory as unknown as { class: typeof ExtendedEvent }).class = ExtendedEvent
 
-    return EventFactory as unknown as EventFactory<ZodShapeFrom<TShape>>
+    return EventFactory as unknown as EventFactory<ZodShapeFrom<TShape>, ResultTypeFromShape<TShape>>
   }
 
   static parse<T extends typeof BaseEvent>(this: T, data: unknown): InstanceType<T> {

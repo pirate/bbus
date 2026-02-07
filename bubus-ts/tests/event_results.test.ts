@@ -43,6 +43,19 @@ test('event_result_schema validates handler results', async () => {
   assert.deepEqual(result.result, { value: 'hello', count: 2 })
 })
 
+test('event_result_schema allows undefined handler return values', async () => {
+  const bus = new EventBus('ResultSchemaUndefinedBus')
+
+  bus.on(ObjectResultEvent, () => {})
+
+  const event = bus.dispatch(ObjectResultEvent({}))
+  await event.done()
+
+  const result = Array.from(event.event_results.values())[0]
+  assert.equal(result.status, 'completed')
+  assert.equal(result.result, undefined)
+})
+
 test('invalid result marks handler error', async () => {
   const bus = new EventBus('ResultSchemaErrorBus')
 

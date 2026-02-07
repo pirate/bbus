@@ -11,7 +11,7 @@ import {
 } from './event_handler.js'
 import { logTree } from './logging.js'
 
-import type { EventHandlerFunction, EventKey, FindOptions, HandlerOptions } from './types.js'
+import type { EventClass, EventHandlerFunction, EventKey, FindOptions, HandlerOptions, UntypedEventHandlerFunction } from './types.js'
 
 type FindWaiter = {
   // similar to a handler, except its for .find() calls
@@ -158,7 +158,9 @@ export class EventBus {
     this.locks.clear()
   }
 
-  on<T extends BaseEvent>(event_key: EventKey<T> | '*', handler: EventHandlerFunction<T>, options: HandlerOptions = {}): EventHandler {
+  on<T extends BaseEvent>(event_key: EventClass<T>, handler: EventHandlerFunction<T>, options?: HandlerOptions): EventHandler
+  on<T extends BaseEvent>(event_key: string | '*', handler: UntypedEventHandlerFunction<T>, options?: HandlerOptions): EventHandler
+  on(event_key: EventKey | '*', handler: EventHandlerFunction | UntypedEventHandlerFunction, options: HandlerOptions = {}): EventHandler {
     const normalized_key = this.normalizeEventKey(event_key)
     const handler_name = handler.name || 'anonymous'
     const { isostring: handler_registered_at, ts: handler_registered_ts } = BaseEvent.nextTimestamp()
@@ -712,7 +714,7 @@ export class EventBus {
     try {
       const abort_signal = result.markStarted()
       const handler_result = await Promise.race([this.runHandlerWithTimeout(event, handler, handler_event, result), abort_signal])
-      if (event.event_result_schema) {
+      if (event.event_result_schema && handler_result !== undefined) {
         // if there is a result schema to enforce, parse the handler's return value and mark the event as completed or errored if it doesn't match the schema
         const parsed = event.event_result_schema.safeParse(handler_result)
         if (parsed.success) {

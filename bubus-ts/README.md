@@ -27,7 +27,7 @@ gotchas we uncovered while matching behavior. It intentionally does **not** re-d
 ### 4) Monotonic timestamps
 
 - JS `Date.now()` is not strictly monotonic at millisecond granularity.
-- To keep FIFO tests stable, we generate strictly increasing ISO timestamps via `BaseEvent.nextIsoTimestamp()`.
+- To keep FIFO tests stable, we generate strictly increasing timestamps via `BaseEvent.nextTimestamp()` (returns `{ date, isostring, ts }`).
 
 ### 5) No middleware, no WAL, no SQLite mirrors
 
@@ -100,16 +100,13 @@ Handlers can be configured with `HandlerOptions`:
 
 ```ts
 bus.on(SomeEvent, handler, {
-  order: -10, // serial ordering (lower runs earlier)
   handler_concurrency: 'parallel',
+  handler_timeout: 10, // per-handler timeout in seconds
 })
 ```
 
-- `order: number` runs handlers in ascending order (serial).
-- `order: null` puts the handler into the parallel bucket.
-- `handler_concurrency` allows per-handler overrides.
-
-If an event sets `handler_concurrency: "parallel"`, that wins even if a handler is ordered.
+- `handler_concurrency` allows per-handler concurrency overrides.
+- `handler_timeout` sets a per-handler timeout in seconds (overrides the bus default when lower).
 
 ## Semaphores (how concurrency is enforced)
 
@@ -152,7 +149,7 @@ under different `event_concurrency` / `handler_concurrency` configurations.
    - `notifyFindListeners(event)`
    - creates handler results (`event_results`)
    - runs handlers (respecting handler semaphore)
-   - decrements `event_pending_bus_count` and calls `event.tryFinalizeCompletion()`
+   - decrements `event_pending_bus_count` and calls `event.markCompleted(false)` (completes only if all buses and children are done)
 
 ### 2) Event concurrency modes (`event_concurrency`)
 
@@ -188,7 +185,8 @@ When a handler on Bus A calls `bus_b.dispatch(event)` without awaiting:
 
 When `event.done()` is awaited inside a handler, **queue-jump** happens:
 
-1. `BaseEvent.done()` detects it's inside a handler and calls `processEventImmediately()`.
+1. `BaseEvent.done()` delegates to `bus.processEventImmediately()`, which detects whether we're inside a handler
+   (via `getActiveHandlerResult()` / `getParentEventResultAcrossAllBusses()`). If not inside a handler, it falls back to `waitForCompletion()`.
 2. `processEventImmediately()` **yields** the parent handler's concurrency semaphore (if held) so child handlers can acquire it.
 3. `processEventImmediately()` removes the event from the pending queue (if present).
 4. `runImmediatelyAcrossBuses()` processes the event immediately on all buses where it is queued.
