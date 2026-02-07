@@ -340,13 +340,31 @@ export class EventBus {
     // handler and should fall back to waitForCompletion.
     const proxy_result = handler_result?.status === 'started' ? handler_result : undefined
     const currently_active_event_result =
-      proxy_result ?? this.locks.getCurrentHandlerResult() ?? this.getParentEventResultAcrossAllBusses(original_event) ?? undefined
+      proxy_result ?? this.locks.getActiveHandlerResult() ?? this.getParentEventResultAcrossAllBusses(original_event) ?? undefined
     if (!currently_active_event_result) {
-      // Not inside any handler scope — fall back to normal completion waiting
+      // Not inside any handler scope — avoid queue-jump, but if this event is
+      // next in line we can process it immediately without waiting on the runloop.
+      const queue_index = this.pending_event_queue.indexOf(original_event)
+      const can_process_now =
+        queue_index === 0 &&
+        !this.locks.isPaused() &&
+        !this.in_flight_event_ids.has(original_event.event_id) &&
+        !this.hasProcessedEvent(original_event)
+      if (can_process_now) {
+        this.pending_event_queue.shift()
+        this.in_flight_event_ids.add(original_event.event_id)
+        await this.scheduleEventProcessing(original_event)
+        if (original_event.event_status !== 'completed') {
+          await original_event.waitForCompletion()
+        }
+        return event
+      }
       await original_event.waitForCompletion()
       return event
     }
-    this.locks.ensureQueueJumpPauseForResult(currently_active_event_result)
+
+    // ensure a pause request is set so the runloop pauses and (will resume when the event is completed)
+    this.locks.requestRunloopPauseForQueueJumpEvent(currently_active_event_result)
     if (original_event.event_status === 'completed') {
       return event
     }
@@ -586,7 +604,7 @@ export class EventBus {
       while (this.pending_event_queue.length > 0) {
         await Promise.resolve()
         if (this.locks.isPaused()) {
-          await this.locks.waitUntilResumed()
+          await this.locks.waitUntilRunloopResumed()
           continue
         }
         const next_event = this.pending_event_queue[0]
@@ -685,7 +703,7 @@ export class EventBus {
     if (result._lock) result._lock.exitHandlerRun()
     // create a new handler lock to track ownership of the semaphore during handler execution
     result._lock = new HandlerLock(semaphore)
-    this.locks.enterHandlerContext(result)
+    this.locks.enterActiveHandlerContext(result)
 
     // resolve the effective timeout by combining the event timeout and the handler timeout
     const effective_timeout = this.resolveEffectiveTimeout(event.event_timeout, result.handler.handler_timeout)
@@ -722,8 +740,8 @@ export class EventBus {
     } finally {
       result._abort = null
       result._lock?.exitHandlerRun()
-      this.locks.exitHandlerContext(result)
-      this.locks.releaseQueueJumpPauseForResult(result)
+      this.locks.exitActiveHandlerContext(result)
+      this.locks.releaseRunloopPauseForQueueJumpEvent(result)
       if (slow_handler_warning_timer) {
         clearTimeout(slow_handler_warning_timer)
       }
@@ -739,7 +757,6 @@ export class EventBus {
   ): Promise<unknown> {
     // resolve the effective timeout by combining the event timeout and the handler timeout
     const effective_timeout = this.resolveEffectiveTimeout(event.event_timeout, result.handler.handler_timeout)
-    const handler_name = handler.name || 'anonymous'
     const run_handler = () =>
       Promise.resolve().then(() => runWithAsyncContext(event._dispatch_context ?? null, () => handler(handler_event)))
 
@@ -769,7 +786,7 @@ export class EventBus {
     // set a timeout to reject the promise if the handler takes too long
     const timer = setTimeout(() => {
       finalize(reject)(
-        new EventHandlerTimeoutError(`handler ${handler_name} timed out after ${timeout_seconds}s`, {
+        new EventHandlerTimeoutError(`${this.toString()}.on(${event.toString()}, ${result.handler.toString()}) timed out after ${timeout_seconds}s`, {
           event_result: result,
           timeout_seconds,
         })

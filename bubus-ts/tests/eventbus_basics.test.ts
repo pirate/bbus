@@ -59,7 +59,7 @@ test('EventBus exposes locks API surface', () => {
   const locks = bus.locks as unknown as Record<string, unknown>
 
   assert.equal(typeof locks.requestPause, 'function')
-  assert.equal(typeof locks.waitUntilResumed, 'function')
+  assert.equal(typeof locks.waitUntilRunloopResumed, 'function')
   assert.equal(typeof locks.isPaused, 'function')
   assert.equal(typeof locks.waitForIdle, 'function')
   assert.equal(typeof locks.notifyIdleListeners, 'function')
@@ -78,7 +78,7 @@ test('EventBus locks methods are callable and preserve semaphore resolution beha
   assert.equal(bus.locks.isPaused(), true)
 
   let resumed = false
-  const resumed_promise = bus.locks.waitUntilResumed().then(() => {
+  const resumed_promise = bus.locks.waitUntilRunloopResumed().then(() => {
     resumed = true
   })
   await Promise.resolve()

@@ -228,7 +228,7 @@ propagates it via `event_emitted_by_handler_id`. This keeps parentage determinis
 When an event is awaited inside a handler, the event must **jump the queue**. If the runloop continues normally,
 it could process unrelated events ("overshoot"), breaking FIFO guarantees.
 
-The `LockManager` pause mechanism (`requestPause`/`waitUntilResumed`) pauses the runloop while we run the awaited
+The `LockManager` pause mechanism (`requestPause`/`waitUntilRunloopResumed`) pauses the runloop while we run the awaited
 event immediately. Once the queue-jump completes, the runloop resumes in FIFO order. This matches the Python behavior.
 
 ### C) BusScopedEvent: why it exists and how it works

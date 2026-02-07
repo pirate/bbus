@@ -126,11 +126,70 @@ test('50k events with ephemeral on/off handler registration across 2 buses', { t
   const bus_b = new EventBus('SharedBusB', { max_history_size: total_events })
   let processed_a = 0
   let processed_b = 0
+  let on_ms = 0
+  let off_ms = 0
+  let dispatch_a_ms = 0
+  let dispatch_b_ms = 0
+  let done_ms = 0
+  let process_a_ms = 0
+  let process_b_ms = 0
+  let handler_a_ms = 0
+  let handler_b_ms = 0
 
   // Persistent handler on bus_b that forwards count
   bus_b.on(RequestEvent, () => {
     processed_b += 1
   })
+
+  const bus_a_any = bus_a as any
+  const bus_b_any = bus_b as any
+  const original_process_a = typeof bus_a_any.processEvent === 'function' ? bus_a_any.processEvent.bind(bus_a) : null
+  const original_process_b = typeof bus_b_any.processEvent === 'function' ? bus_b_any.processEvent.bind(bus_b) : null
+  const original_run_handler_a =
+    typeof bus_a_any.runEventHandler === 'function' ? bus_a_any.runEventHandler.bind(bus_a) : null
+  const original_run_handler_b =
+    typeof bus_b_any.runEventHandler === 'function' ? bus_b_any.runEventHandler.bind(bus_b) : null
+
+  if (original_process_a) {
+    bus_a_any.processEvent = async (event: any) => {
+      const t = performance.now()
+      try {
+        return await original_process_a(event)
+      } finally {
+        process_a_ms += performance.now() - t
+      }
+    }
+  }
+  if (original_process_b) {
+    bus_b_any.processEvent = async (event: any) => {
+      const t = performance.now()
+      try {
+        return await original_process_b(event)
+      } finally {
+        process_b_ms += performance.now() - t
+      }
+    }
+  }
+  if (original_run_handler_a) {
+    bus_a_any.runEventHandler = async (...args: any[]) => {
+      const t = performance.now()
+      try {
+        return await original_run_handler_a(...args)
+      } finally {
+        handler_a_ms += performance.now() - t
+      }
+    }
+  }
+  if (original_run_handler_b) {
+    bus_b_any.runEventHandler = async (...args: any[]) => {
+      const t = performance.now()
+      try {
+        return await original_run_handler_b(...args)
+      } finally {
+        handler_b_ms += performance.now() - t
+      }
+    }
+  }
 
   global.gc?.()
   const mem_before = process.memoryUsage()
@@ -141,17 +200,27 @@ test('50k events with ephemeral on/off handler registration across 2 buses', { t
     const ephemeral_handler = () => {
       processed_a += 1
     }
+    let t = performance.now()
     bus_a.on(RequestEvent, ephemeral_handler)
+    on_ms += performance.now() - t
 
     // Dispatch on bus_a, forward to bus_b
     const event = RequestEvent({})
+    t = performance.now()
     const ev_a = bus_a.dispatch(event)
+    dispatch_a_ms += performance.now() - t
+    t = performance.now()
     bus_b.dispatch(event)
+    dispatch_b_ms += performance.now() - t
 
+    t = performance.now()
     await ev_a.done()
+    done_ms += performance.now() - t
 
     // Tear down ephemeral handler
+    t = performance.now()
     bus_a.off(RequestEvent, ephemeral_handler)
+    off_ms += performance.now() - t
   }
 
   await bus_a.waitUntilIdle()
@@ -168,6 +237,8 @@ test('50k events with ephemeral on/off handler registration across 2 buses', { t
   console.log(
     `\n  perf: ${total_events} events with ephemeral on/off in ${total_ms}ms (${Math.round(total_events / (total_ms / 1000))}/s)` +
       `\n    dispatch: bus_a=${processed_a} | bus_b=${processed_b}` +
+      `\n    timings: on=${on_ms.toFixed(0)}ms | off=${off_ms.toFixed(0)}ms | dispatch_a=${dispatch_a_ms.toFixed(0)}ms | dispatch_b=${dispatch_b_ms.toFixed(0)}ms | done=${done_ms.toFixed(0)}ms` +
+      `\n    processing: bus_a=${process_a_ms.toFixed(0)}ms | bus_b=${process_b_ms.toFixed(0)}ms | handlers_a=${handler_a_ms.toFixed(0)}ms | handlers_b=${handler_b_ms.toFixed(0)}ms` +
       `\n    memory: before=${mb(mem_before.heapUsed)}MB → done=${mb(mem_done.heapUsed)}MB → gc=${mb(mem_gc.heapUsed)}MB` +
       `\n    per-event: time=${(total_ms / total_events).toFixed(4)}ms | heap=${(((mem_done.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB | heap_gc=${(((mem_gc.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB` +
       `\n    rss: before=${mb(mem_before.rss)}MB → done=${mb(mem_done.rss)}MB → gc=${mb(mem_gc.rss)}MB` +

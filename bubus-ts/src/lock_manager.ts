@@ -120,10 +120,6 @@ export class HandlerLock {
     this.state = 'held'
   }
 
-  getExecutionState(): HandlerExecutionState {
-    return this.state
-  }
-
   yieldHandlerLockForChildRun(): boolean {
     if (!this.semaphore || this.state !== 'held') {
       return false
@@ -190,7 +186,7 @@ export class LockManager {
   readonly bus_handler_semaphore: AsyncSemaphore // Per-bus handler semaphore; created with LockManager and never swapped.
 
   private pause_depth: number // Re-entrant pause counter; increments on requestPause, decrements on release.
-  private pause_waiters: Array<() => void> // Resolvers for waitUntilResumed; drained when pause_depth hits 0.
+  private pause_waiters: Array<() => void> // Resolvers for waitUntilRunloopResumed; drained when pause_depth hits 0.
   private queue_jump_pause_releases: WeakMap<EventResult, () => void> // Per-handler pause release for queue-jump; cleared on handler exit.
   private active_handler_results: EventResult[] // Stack of active handler results for "inside handler" detection.
 
@@ -214,6 +210,8 @@ export class LockManager {
   }
 
   requestPause(): () => void {
+    // Low-level runloop pause: increments a re-entrant counter and returns a release
+    // function. Used for broad, bus-scoped pauses (e.g. runImmediatelyAcrossBuses).
     this.pause_depth += 1
     let released = false
     return () => {
@@ -233,7 +231,7 @@ export class LockManager {
     }
   }
 
-  waitUntilResumed(): Promise<void> {
+  waitUntilRunloopResumed(): Promise<void> {
     if (this.pause_depth === 0) {
       return Promise.resolve()
     }
@@ -246,18 +244,18 @@ export class LockManager {
     return this.pause_depth > 0
   }
 
-  enterHandlerContext(result: EventResult): void {
+  enterActiveHandlerContext(result: EventResult): void {
     this.active_handler_results.push(result)
   }
 
-  exitHandlerContext(result: EventResult): void {
+  exitActiveHandlerContext(result: EventResult): void {
     const idx = this.active_handler_results.indexOf(result)
     if (idx >= 0) {
       this.active_handler_results.splice(idx, 1)
     }
   }
 
-  getCurrentHandlerResult(): EventResult | undefined {
+  getActiveHandlerResult(): EventResult | undefined {
     return this.active_handler_results[this.active_handler_results.length - 1]
   }
 
@@ -265,18 +263,23 @@ export class LockManager {
   // For cross-bus queue-jumping, EventBus.processEventImmediately uses getParentEventResultAcrossAllBusses()
   // to walk up the parent event tree, and the bus proxy passes handler_result
   // to processEventImmediately so it can yield/reacquire the correct semaphore.
-  isInsideHandlerContext(): boolean {
+  isAnyHandlerActive(): boolean {
     return this.active_handler_results.length > 0
   }
 
-  ensureQueueJumpPauseForResult(result: EventResult): void {
+  requestRunloopPauseForQueueJumpEvent(result: EventResult): void {
+    // Queue-jump pause: wraps requestPause with per-handler deduping so repeated
+    // calls during the same handler run don't stack pauses. Released via
+    // releaseRunloopPauseForQueueJumpEvent when the handler finishes.
     if (this.queue_jump_pause_releases.has(result)) {
       return
     }
     this.queue_jump_pause_releases.set(result, this.requestPause())
   }
 
-  releaseQueueJumpPauseForResult(result: EventResult): void {
+  // release the eventt bus runloop pause for a given event result if there is a pause request for it
+  // i.e. if it was a queue-jump event that was processed immediately, notify the runloop to resume
+  releaseRunloopPauseForQueueJumpEvent(result: EventResult): void {
     const release_pause = this.queue_jump_pause_releases.get(result)
     if (!release_pause) {
       return

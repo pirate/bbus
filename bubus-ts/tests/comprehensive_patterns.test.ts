@@ -326,13 +326,13 @@ test('isInsideHandler() is per-bus, not global', async () => {
   let bus_b_inside_during_b_handler = false
 
   bus_a.on(EventA, () => {
-    bus_a_inside_during_a_handler = bus_a.locks.isInsideHandlerContext()
-    bus_b_inside_during_a_handler = bus_b.locks.isInsideHandlerContext()
+    bus_a_inside_during_a_handler = bus_a.locks.isAnyHandlerActive()
+    bus_b_inside_during_a_handler = bus_b.locks.isAnyHandlerActive()
   })
 
   bus_b.on(EventB, () => {
-    bus_a_inside_during_b_handler = bus_a.locks.isInsideHandlerContext()
-    bus_b_inside_during_b_handler = bus_b.locks.isInsideHandlerContext()
+    bus_a_inside_during_b_handler = bus_a.locks.isAnyHandlerActive()
+    bus_b_inside_during_b_handler = bus_b.locks.isAnyHandlerActive()
   })
 
   // Dispatch to bus_a first, wait for completion so bus_b has no active handlers
@@ -344,16 +344,16 @@ test('isInsideHandler() is per-bus, not global', async () => {
   await bus_b.waitUntilIdle()
 
   // During bus_a's handler: bus_a should report inside, bus_b should not
-  assert.equal(bus_a_inside_during_a_handler, true, 'bus_a.locks.isInsideHandlerContext() should be true during bus_a handler')
-  assert.equal(bus_b_inside_during_a_handler, false, 'bus_b.locks.isInsideHandlerContext() should be false during bus_a handler')
+  assert.equal(bus_a_inside_during_a_handler, true, 'bus_a.locks.isAnyHandlerActive() should be true during bus_a handler')
+  assert.equal(bus_b_inside_during_a_handler, false, 'bus_b.locks.isAnyHandlerActive() should be false during bus_a handler')
 
   // During bus_b's handler: bus_b should report inside, bus_a should not
-  assert.equal(bus_b_inside_during_b_handler, true, 'bus_b.locks.isInsideHandlerContext() should be true during bus_b handler')
-  assert.equal(bus_a_inside_during_b_handler, false, 'bus_a.locks.isInsideHandlerContext() should be false during bus_b handler')
+  assert.equal(bus_b_inside_during_b_handler, true, 'bus_b.locks.isAnyHandlerActive() should be true during bus_b handler')
+  assert.equal(bus_a_inside_during_b_handler, false, 'bus_a.locks.isAnyHandlerActive() should be false during bus_b handler')
 
   // After all handlers complete, neither bus should report inside
-  assert.equal(bus_a.locks.isInsideHandlerContext(), false, 'bus_a.locks.isInsideHandlerContext() should be false after idle')
-  assert.equal(bus_b.locks.isInsideHandlerContext(), false, 'bus_b.locks.isInsideHandlerContext() should be false after idle')
+  assert.equal(bus_a.locks.isAnyHandlerActive(), false, 'bus_a.locks.isAnyHandlerActive() should be false after idle')
+  assert.equal(bus_b.locks.isAnyHandlerActive(), false, 'bus_b.locks.isAnyHandlerActive() should be false after idle')
 })
 
 test('dispatch multiple, await one skips others until after handler completes', async () => {
