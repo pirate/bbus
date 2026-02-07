@@ -63,17 +63,17 @@ type ZodShapeFrom<TShape extends Record<string, unknown>> = {
 }
 
 export class BaseEvent {
-  event_id!: string                   // unique uuidv7 identifier for the event
-  event_created_at!: string           // ISO datetime string version of event_created_ts
-  event_created_ts!: number           // nanosecond monotonic version of event_created_at
-  event_type!: string                 // should match the class name of the event, e.g. BaseEvent.extend("MyEvent").event_type === "MyEvent"
-  event_timeout!: number | null       // maximum time in seconds that each handler for the event is allowed to run before it is aborted
-  event_parent_id?: string            // id of the parent event that triggered this event, if this event was emitted during handling of another event
-  event_path!: string[]               // list of bus names that the event has been dispatched to, including the current bus
-  event_result_schema?: z.ZodTypeAny  // optional zod schema to enforce the shape of return values from handlers
-  event_result_type?: string          // optional string identifier of the type of the return values from handlers, to make it easier to reference common shapes across networkboundaries e.g. ScreenshotEventResultType
+  event_id!: string // unique uuidv7 identifier for the event
+  event_created_at!: string // ISO datetime string version of event_created_ts
+  event_created_ts!: number // nanosecond monotonic version of event_created_at
+  event_type!: string // should match the class name of the event, e.g. BaseEvent.extend("MyEvent").event_type === "MyEvent"
+  event_timeout!: number | null // maximum time in seconds that each handler for the event is allowed to run before it is aborted
+  event_parent_id?: string // id of the parent event that triggered this event, if this event was emitted during handling of another event
+  event_path!: string[] // list of bus names that the event has been dispatched to, including the current bus
+  event_result_schema?: z.ZodTypeAny // optional zod schema to enforce the shape of return values from handlers
+  event_result_type?: string // optional string identifier of the type of the return values from handlers, to make it easier to reference common shapes across networkboundaries e.g. ScreenshotEventResultType
   event_results!: Map<string, EventResult>
-  event_emitted_by_handler_id?: string  // if event was emitted inside a handler while it was running, this will be set to the enclosing handler's handler id
+  event_emitted_by_handler_id?: string // if event was emitted inside a handler while it was running, this will be set to the enclosing handler's handler id
   event_pending_bus_count!: number // Number of buses that have accepted this event and not yet finished processing or removed it from their queues.
   event_status!: 'pending' | 'started' | 'completed'
   event_started_at?: string
@@ -82,10 +82,10 @@ export class BaseEvent {
   event_completed_ts?: number
   event_concurrency?: ConcurrencyMode
   handler_concurrency?: ConcurrencyMode
-  
-  bus?: EventBus                       // shortcut to the bus that dispatched this event, for event.bus.dispatch(event) auto-child tracking via proxy wrapping
-  _original_event?: BaseEvent          // underlying event object that was dispatched, if this is a bus-scoped proxy wrapping it
-  _dispatch_context?: unknown | null   // captured AsyncLocalStorage context at dispatch site, used to restore that context when running handlers
+
+  bus?: EventBus // shortcut to the bus that dispatched this event, for event.bus.dispatch(event) auto-child tracking via proxy wrapping
+  _original_event?: BaseEvent // underlying event object that was dispatched, if this is a bus-scoped proxy wrapping it
+  _dispatch_context?: unknown | null // captured AsyncLocalStorage context at dispatch site, used to restore that context when running handlers
 
   static schema = BaseEventSchema
   static event_type?: string
@@ -133,6 +133,10 @@ export class BaseEvent {
     this._dispatch_context = undefined
   }
 
+  toString(): string {
+    return `${this.event_type}#${this.event_id.slice(-4)}`
+  }
+
   static nextTimestamp(): { date: Date; isostring: string; ts: number } {
     const ts = performance.now()
     const date = new Date(performance.timeOrigin + ts)
@@ -141,7 +145,10 @@ export class BaseEvent {
 
   static extend<TShape extends z.ZodRawShape>(event_type: string, shape?: TShape): EventFactory<TShape>
   static extend<TShape extends Record<string, unknown>>(event_type: string, shape?: TShape): EventFactory<ZodShapeFrom<TShape>>
-  static extend<TShape extends Record<string, unknown>>(event_type: string, shape: TShape = {} as TShape): EventFactory<ZodShapeFrom<TShape>> {
+  static extend<TShape extends Record<string, unknown>>(
+    event_type: string,
+    shape: TShape = {} as TShape
+  ): EventFactory<ZodShapeFrom<TShape>> {
     const raw_shape = shape as Record<string, unknown>
 
     const event_result_schema = is_zod_schema(raw_shape.event_result_schema) ? (raw_shape.event_result_schema as z.ZodTypeAny) : undefined
@@ -230,34 +237,35 @@ export class BaseEvent {
 
   // get all children grandchildren etc. recursively
   get event_descendants(): BaseEvent[] {
-    const descendants: BaseEvent[] = [];
-    const visited = new Set<string>();
-    const root_id = this.event_id;
-    const stack = [...this.event_children];
+    const descendants: BaseEvent[] = []
+    const visited = new Set<string>()
+    const root_id = this.event_id
+    const stack = [...this.event_children]
 
     while (stack.length > 0) {
-      const child = stack.pop();
+      const child = stack.pop()
       if (!child) {
-        continue;
+        continue
       }
-      const child_id = child.event_id;
+      const child_id = child.event_id
       if (child_id === root_id) {
-        continue;
+        continue
       }
       if (visited.has(child_id)) {
-        continue;
+        continue
       }
-      visited.add(child_id);
-      descendants.push(child);
+      visited.add(child_id)
+      descendants.push(child)
       if (child.event_children.length > 0) {
-        stack.push(...child.event_children);
+        stack.push(...child.event_children)
       }
     }
 
-    return descendants;
+    return descendants
   }
 
   // awaitable to trigger immediate processing of the event on all buses where it is queued
+  // TODO: rename to immediate()
   done(): Promise<this> {
     if (!this.bus) {
       return Promise.reject(new Error('event has no bus attached'))
@@ -265,15 +273,16 @@ export class BaseEvent {
     if (this.event_status === 'completed') {
       return Promise.resolve(this)
     }
-    // Always delegate to _runImmediately — it walks up the parent event tree
+    // Always delegate to processEventImmediately — it walks up the parent event tree
     // to determine whether we're inside a handler (works cross-bus). If no
     // ancestor handler is in-flight, it falls back to waitForCompletion().
     const runner_bus = this.bus as {
-      _runImmediately: (event: BaseEvent) => Promise<BaseEvent>
+      processEventImmediately: (event: BaseEvent) => Promise<BaseEvent>
     }
-    return runner_bus._runImmediately(this) as Promise<this>
+    return runner_bus.processEventImmediately(this) as Promise<this>
   }
 
+  // TODO: rename to done()
   waitForCompletion(): Promise<this> {
     if (this.event_status === 'completed') {
       return Promise.resolve(this)

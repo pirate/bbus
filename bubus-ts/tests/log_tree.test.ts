@@ -4,6 +4,8 @@ import { test } from 'node:test'
 import { z } from 'zod'
 
 import { BaseEvent, EventBus, EventResult } from '../src/index.js'
+import { EventHandler } from '../src/event_handler.js'
+import type { EventHandlerFunction } from '../src/types.js'
 
 const RootEvent = BaseEvent.extend('RootEvent', { data: z.string().optional() })
 const ChildEvent = BaseEvent.extend('ChildEvent', { value: z.number().optional() })
@@ -14,6 +16,21 @@ class ValueError extends Error {
     super(message)
     this.name = 'ValueError'
   }
+}
+
+const createHandlerEntry = (bus: EventBus, handler_id: string, handler_name: string, event_key: string): EventHandler => {
+  const handler: EventHandlerFunction = () => undefined
+  const { isostring: handler_registered_at, ts: handler_registered_ts } = BaseEvent.nextTimestamp()
+  return new EventHandler({
+    id: handler_id,
+    handler,
+    handler_name,
+    handler_timeout: bus.event_timeout_default,
+    handler_registered_at,
+    handler_registered_ts,
+    event_key,
+    eventbus_name: bus.name,
+  })
 }
 
 test('logTree: single event', () => {
@@ -40,10 +57,8 @@ test('logTree: with handler results', () => {
 
   const handler_id = 'handler-1'
   const result = new EventResult({
-    event_id: event.event_id,
-    handler_id,
-    handler_name: 'test_handler',
-    eventbus_name: 'HandlerBus',
+    event,
+    handler: createHandlerEntry(bus, handler_id, 'test_handler', event.event_type),
   })
   result.markStarted()
   result.markCompleted('status: success')
@@ -67,10 +82,8 @@ test('logTree: with handler errors', () => {
 
   const handler_id = 'handler-2'
   const result = new EventResult({
-    event_id: event.event_id,
-    handler_id,
-    handler_name: 'error_handler',
-    eventbus_name: 'ErrorBus',
+    event,
+    handler: createHandlerEntry(bus, handler_id, 'error_handler', event.event_type),
   })
   result.markStarted()
   result.markError(new ValueError('Test error message'))
@@ -93,10 +106,8 @@ test('logTree: complex nested', () => {
 
   const root_handler_id = 'handler-root'
   const root_result = new EventResult({
-    event_id: root.event_id,
-    handler_id: root_handler_id,
-    handler_name: 'root_handler',
-    eventbus_name: 'ComplexBus',
+    event: root,
+    handler: createHandlerEntry(bus, root_handler_id, 'root_handler', root.event_type),
   })
   root_result.markStarted()
   root_result.markCompleted('Root processed')
@@ -110,10 +121,8 @@ test('logTree: complex nested', () => {
 
   const child_handler_id = 'handler-child'
   const child_result = new EventResult({
-    event_id: child.event_id,
-    handler_id: child_handler_id,
-    handler_name: 'child_handler',
-    eventbus_name: 'ComplexBus',
+    event: child,
+    handler: createHandlerEntry(bus, child_handler_id, 'child_handler', child.event_type),
   })
   child_result.markStarted()
   child_result.markCompleted([1, 2, 3])
@@ -127,10 +136,8 @@ test('logTree: complex nested', () => {
 
   const grandchild_handler_id = 'handler-grandchild'
   const grandchild_result = new EventResult({
-    event_id: grandchild.event_id,
-    handler_id: grandchild_handler_id,
-    handler_name: 'grandchild_handler',
-    eventbus_name: 'ComplexBus',
+    event: grandchild,
+    handler: createHandlerEntry(bus, grandchild_handler_id, 'grandchild_handler', grandchild.event_type),
   })
   grandchild_result.markStarted()
   grandchild_result.markCompleted(null)
@@ -182,10 +189,8 @@ test('logTree: timing info', () => {
 
   const handler_id = 'handler-time'
   const result = new EventResult({
-    event_id: event.event_id,
-    handler_id,
-    handler_name: 'timed_handler',
-    eventbus_name: 'TimingBus',
+    event,
+    handler: createHandlerEntry(bus, handler_id, 'timed_handler', event.event_type),
   })
   result.markStarted()
   result.markCompleted('done')
@@ -207,10 +212,8 @@ test('logTree: running handler', () => {
 
   const handler_id = 'handler-running'
   const result = new EventResult({
-    event_id: event.event_id,
-    handler_id,
-    handler_name: 'running_handler',
-    eventbus_name: 'RunningBus',
+    event,
+    handler: createHandlerEntry(bus, handler_id, 'running_handler', event.event_type),
   })
   result.markStarted()
   event.event_results.set(handler_id, result)

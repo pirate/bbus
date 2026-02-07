@@ -3,7 +3,8 @@ import { BaseEvent, EventBus } from '../src/index.js'
 const SimpleEvent = BaseEvent.extend('SimpleEvent', {})
 
 const total_events = 200_000
-const bus = new EventBus('PerfBus', { max_history_size: 1000 })
+// Keep full history to avoid trimming inflight events during perf profiling.
+const bus = new EventBus('PerfBus', { max_history_size: total_events })
 
 let processed_count = 0
 bus.on(SimpleEvent, () => {
@@ -45,6 +46,13 @@ console.log(
 global.gc?.()
 const mem_gc = process.memoryUsage()
 console.log(`Memory after GC: RSS=${(mem_gc.rss / 1024 / 1024).toFixed(1)}MB, Heap=${(mem_gc.heapUsed / 1024 / 1024).toFixed(1)}MB`)
+
+const total_ms = t3 - t0
+console.log(
+  `Per-event: time=${(total_ms / total_events).toFixed(4)}ms, ` +
+    `heap=${(((mem_after.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB, ` +
+    `heap_gc=${(((mem_gc.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB`
+)
 
 console.log(`\nProcessed: ${processed_count}/${total_events}`)
 console.log(`History size: ${bus.event_history.size} (max: ${bus.max_history_size})`)

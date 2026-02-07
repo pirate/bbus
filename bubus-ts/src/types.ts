@@ -7,10 +7,11 @@ export type EventClass<T extends BaseEvent = BaseEvent> = { event_type?: string 
 
 export type EventKey<T extends BaseEvent = BaseEvent> = string | EventClass<T>
 
-export type EventHandler<T extends BaseEvent = BaseEvent> = (event: T) => void | Promise<void>
+export type EventHandlerFunction<T extends BaseEvent = BaseEvent> = (event: T) => void | Promise<void>
 
 export type HandlerOptions = {
   handler_concurrency?: ConcurrencyMode
+  handler_timeout?: number | null
 }
 
 export type FindWindow = boolean | number

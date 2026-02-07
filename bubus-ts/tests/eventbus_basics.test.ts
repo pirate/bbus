@@ -489,7 +489,7 @@ test('unreferenced EventBus can be garbage collected (not retained by _all_insta
 
   let weak_ref: WeakRef<EventBus>
 
-  // Create a bus inside an IIFE so the only reference is the WeakRef
+    // Create a bus inside an IIFE so the only reference is the WeakRef
   ;(() => {
     const bus = new EventBus('GCTestBus')
     weak_ref = new WeakRef(bus)

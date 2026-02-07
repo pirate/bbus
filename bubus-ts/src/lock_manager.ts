@@ -75,7 +75,11 @@ export class AsyncSemaphore {
   }
 }
 
-export const semaphoreForMode = (mode: ConcurrencyMode, global_semaphore: AsyncSemaphore, bus_semaphore: AsyncSemaphore): AsyncSemaphore | null => {
+export const semaphoreForMode = (
+  mode: ConcurrencyMode,
+  global_semaphore: AsyncSemaphore,
+  bus_semaphore: AsyncSemaphore
+): AsyncSemaphore | null => {
   if (mode === 'parallel') {
     return null
   }
@@ -172,7 +176,7 @@ export type EventBusInterfaceForLockManager = {
   pending_event_queue: BaseEvent[]
   in_flight_event_ids: Set<string>
   runloop_running: boolean
-  hasPendingResults: () => boolean
+  isIdle: () => boolean
   event_concurrency_default: ConcurrencyMode
   handler_concurrency_default: ConcurrencyMode
 }
@@ -257,6 +261,10 @@ export class LockManager {
     return this.active_handler_results[this.active_handler_results.length - 1]
   }
 
+  // Per-bus check: true only if this specific bus has a handler on its stack.
+  // For cross-bus queue-jumping, EventBus.processEventImmediately uses getParentEventResultAcrossAllBusses()
+  // to walk up the parent event tree, and the bus proxy passes handler_result
+  // to processEventImmediately so it can yield/reacquire the correct semaphore.
   isInsideHandlerContext(): boolean {
     return this.active_handler_results.length > 0
   }
@@ -318,8 +326,7 @@ export class LockManager {
   }
 
   getSemaphoreForHandler(event: BaseEvent, options?: HandlerOptions): AsyncSemaphore | null {
-    const event_override =
-      event.handler_concurrency && event.handler_concurrency !== 'auto' ? event.handler_concurrency : undefined
+    const event_override = event.handler_concurrency && event.handler_concurrency !== 'auto' ? event.handler_concurrency : undefined
     const handler_override =
       options?.handler_concurrency && options.handler_concurrency !== 'auto' ? options.handler_concurrency : undefined
     const fallback = this.bus.handler_concurrency_default
@@ -351,10 +358,7 @@ export class LockManager {
   // Compute instantaneous idle snapshot from live bus state; used to gate waiters.
   private getIdleSnapshot(): boolean {
     return (
-      this.bus.pending_event_queue.length === 0 &&
-      this.bus.in_flight_event_ids.size === 0 &&
-      !this.bus.hasPendingResults() &&
-      !this.bus.runloop_running
+      this.bus.pending_event_queue.length === 0 && this.bus.in_flight_event_ids.size === 0 && this.bus.isIdle() && !this.bus.runloop_running
     )
   }
 }

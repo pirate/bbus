@@ -38,7 +38,7 @@ gotchas we uncovered while matching behavior. It intentionally does **not** re-d
 - `BaseEvent.event_timeout` defaults to `null`.
 - When dispatched, `EventBus` applies its default `event_timeout` (60s unless configured).
 - You can set `{ event_timeout: null }` on the bus to disable timeouts entirely.
-- Handlers that exceed 15s emit a warning (deadlock detection signal); the event still continues unless a timeout is hit.
+- Slow handler warnings fire after `event_handler_slow_timeout` (default: `30s`). Slow event warnings fire after `event_slow_timeout` (default: `300s`).
 
 ## EventBus Options
 
@@ -58,6 +58,13 @@ All options are passed to `new EventBus(name, options)`.
 - `event_timeout?: number | null` (default: `60`)
   - Default handler timeout in seconds, applied when `event.event_timeout` is `null`.
   - Set to `null` to disable timeouts globally for the bus.
+- `event_handler_slow_timeout?: number | null` (default: `30`)
+  - Warn after this many seconds for slow handlers.
+  - Only warns when the handler's timeout is `null` or greater than this value.
+  - Set to `null` to disable slow handler warnings.
+- `event_slow_timeout?: number | null` (default: `300`)
+  - Warn after this many seconds for slow event processing.
+  - Set to `null` to disable slow event warnings.
 
 ## Concurrency Overrides and Precedence
 
@@ -128,7 +135,7 @@ under different `event_concurrency` / `handler_concurrency` configurations.
 1. `dispatch()` normalizes to `original_event`, sets `bus` if missing.
 2. Captures `_dispatch_context` (AsyncLocalStorage if available).
 3. Applies `event_timeout_default` if `event.event_timeout === null`.
-4. If this bus is already in `event_path` (or `eventHasVisited()`), return a BusScopedEvent without queueing.
+4. If this bus is already in `event_path` (or `bus.hasProcessedEvent()`), return a BusScopedEvent without queueing.
 5. Append bus name to `event_path`, record child relationship (if `event_parent_id` is set).
 6. Add to `event_history` (a `Map<string, BaseEvent>` keyed by event id).
 7. Increment `event_pending_bus_count`.
@@ -142,7 +149,7 @@ under different `event_concurrency` / `handler_concurrency` configurations.
 4. `scheduleEventProcessing()` selects the event semaphore and runs `processEvent()`.
 5. `processEvent()`:
    - `event.markStarted()`
-   - `notifyFinders(event)`
+   - `notifyFindListeners(event)`
    - creates handler results (`event_results`)
    - runs handlers (respecting handler semaphore)
    - decrements `event_pending_bus_count` and calls `event.tryFinalizeCompletion()`
@@ -181,12 +188,12 @@ When a handler on Bus A calls `bus_b.dispatch(event)` without awaiting:
 
 When `event.done()` is awaited inside a handler, **queue-jump** happens:
 
-1. `BaseEvent.done()` detects it's inside a handler and calls `_runImmediately()`.
-2. `_runImmediately()` **yields** the parent handler's concurrency semaphore (if held) so child handlers can acquire it.
-3. `_runImmediately()` removes the event from the pending queue (if present).
+1. `BaseEvent.done()` detects it's inside a handler and calls `processEventImmediately()`.
+2. `processEventImmediately()` **yields** the parent handler's concurrency semaphore (if held) so child handlers can acquire it.
+3. `processEventImmediately()` removes the event from the pending queue (if present).
 4. `runImmediatelyAcrossBuses()` processes the event immediately on all buses where it is queued.
 5. While immediate processing is active, each affected bus's runloop is paused to prevent unrelated events from running.
-6. Once immediate processing completes, `_runImmediately()` **re-acquires** the parent handler's semaphore
+6. Once immediate processing completes, `processEventImmediately()` **re-acquires** the parent handler's semaphore
    (unless the parent timed out while the child was processing).
 7. Paused runloops resume.
 

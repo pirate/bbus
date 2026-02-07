@@ -189,8 +189,11 @@ test('timeout still marks event failed when other handlers finish', async () => 
   assert.ok(results.includes('fast'))
 })
 
-test('deadlock warning triggers when event exceeds timeout', async () => {
-  const bus = new EventBus('DeadlockWarnBus')
+test('slow event warning fires when event exceeds event_slow_timeout', async () => {
+  const bus = new EventBus('SlowEventWarnBus', {
+    event_slow_timeout: 0.01,
+    event_handler_slow_timeout: null,
+  })
   const warnings: string[] = []
   const original_warn = console.warn
   console.warn = (message?: unknown, ...args: unknown[]) => {
@@ -202,30 +205,29 @@ test('deadlock warning triggers when event exceeds timeout', async () => {
 
   try {
     bus.on(TimeoutEvent, async () => {
-      await new Promise(() => {
-        // never resolve
-      })
+      await delay(25)
+      return 'ok'
     })
 
-    const event = bus.dispatch(TimeoutEvent({ event_timeout: 0.01 }))
+    const event = bus.dispatch(TimeoutEvent({ event_timeout: 0.5 }))
     await event.done()
   } finally {
     console.warn = original_warn
   }
 
   assert.ok(
-    warnings.some((message) => message.includes('Slow handler')),
-    'Expected deadlock warning'
+    warnings.some((message) => message.toLowerCase().includes('slow event processing')),
+    'Expected slow event warning'
   )
 })
 
 test('slow handler warning fires when handler runs long', async () => {
-  const bus = new EventBus('SlowHandlerWarnBus')
+  const bus = new EventBus('SlowHandlerWarnBus', {
+    event_handler_slow_timeout: 0.01,
+    event_slow_timeout: null,
+  })
   const warnings: string[] = []
   const original_warn = console.warn
-  const original_set_timeout = global.setTimeout
-  const original_clear_timeout = global.clearTimeout
-
   console.warn = (message?: unknown, ...args: unknown[]) => {
     warnings.push(String(message))
     if (args.length > 0) {
@@ -233,35 +235,57 @@ test('slow handler warning fires when handler runs long', async () => {
     }
   }
 
-  // Force the slow-handler warning timer to fire immediately
-  global.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
-    if (delay === 15000) {
-      return original_set_timeout(callback, 0, ...args)
-    }
-    return original_set_timeout(callback, delay as number, ...args)
-  }) as typeof setTimeout
-
-  global.clearTimeout = ((timeout: ReturnType<typeof setTimeout>) => {
-    return original_clear_timeout(timeout)
-  }) as typeof clearTimeout
-
   try {
     bus.on(TimeoutEvent, async () => {
-      await delay(5)
+      await delay(25)
       return 'ok'
     })
 
-    const event = bus.dispatch(TimeoutEvent({ event_timeout: null }))
+    const event = bus.dispatch(TimeoutEvent({ event_timeout: 0.5 }))
     await event.done()
   } finally {
     console.warn = original_warn
-    global.setTimeout = original_set_timeout
-    global.clearTimeout = original_clear_timeout
   }
 
   assert.ok(
-    warnings.some((message) => message.includes('Slow handler')),
+    warnings.some((message) => message.toLowerCase().includes('slow event handler')),
     'Expected slow handler warning'
+  )
+})
+
+test('slow handler and slow event warnings can both fire', async () => {
+  const bus = new EventBus('SlowComboWarnBus', {
+    event_handler_slow_timeout: 0.01,
+    event_slow_timeout: 0.01,
+  })
+  const warnings: string[] = []
+  const original_warn = console.warn
+  console.warn = (message?: unknown, ...args: unknown[]) => {
+    warnings.push(String(message))
+    if (args.length > 0) {
+      warnings.push(args.map(String).join(' '))
+    }
+  }
+
+  try {
+    bus.on(TimeoutEvent, async () => {
+      await delay(25)
+      return 'ok'
+    })
+
+    const event = bus.dispatch(TimeoutEvent({ event_timeout: 0.5 }))
+    await event.done()
+  } finally {
+    console.warn = original_warn
+  }
+
+  assert.ok(
+    warnings.some((message) => message.toLowerCase().includes('slow event handler')),
+    'Expected slow handler warning'
+  )
+  assert.ok(
+    warnings.some((message) => message.toLowerCase().includes('slow event processing')),
+    'Expected slow event warning'
   )
 })
 
@@ -369,7 +393,7 @@ test('queue-jump awaited child timeouts still fire across buses', async () => {
   bus_a.on(ParentEvent, async (event) => {
     // Use scoped bus emit to set parent tracking (event_parent_id, event_emitted_by_handler_id),
     // then also dispatch on bus_b for cross-bus handler execution.
-    // Without parent tracking, _runImmediately can't detect the queue-jump context
+    // Without parent tracking, processEventImmediately can't detect the queue-jump context
     // and falls back to waitForCompletion(), which deadlocks with global-serial.
     const child = event.bus?.emit(ChildEvent({ event_timeout: 0.01 }))!
     bus_b.dispatch(child)
@@ -408,7 +432,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
 
     semaphore.acquire = async () => {
       acquire_count += 1
-      // Third acquire is the parent reclaim in _runImmediately finally.
+      // Third acquire is the parent reclaim in processEventImmediately finally.
       // Delay it so the parent handler timeout can fire in the middle.
       if (acquire_count === 3) {
         await delay(30)
@@ -667,7 +691,7 @@ test('parent timeout cancels pending child handler results under serial handler 
 test('event_timeout null falls back to bus default', async () => {
   const bus = new EventBus('TimeoutDefaultBus', { event_timeout: 0.01 })
 
-  bus.on(TimeoutEvent, async () => {
+  bus.on(TimeoutEvent, async (_event: BaseEvent) => {
     await delay(50)
     return 'slow'
   })
@@ -840,7 +864,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 //           └── 1 handler: never runs, CANCELLED when top_handler_main times out
 //
 // KEY MECHANIC: When a child event is awaited via event.done() inside a handler,
-// it triggers "queue-jumping" via _runImmediately → runImmediatelyAcrossBuses.
+// it triggers "queue-jumping" via processEventImmediately → runImmediatelyAcrossBuses.
 // Queue-jumped events use yield-and-reacquire: the parent handler's semaphore is
 // temporarily released so child handlers can acquire it normally. This means
 // child handlers run SERIALLY on a bus-serial bus (respecting concurrency limits).
