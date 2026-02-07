@@ -108,6 +108,25 @@ bus.on(SomeEvent, handler, {
 - `handler_concurrency` allows per-handler concurrency overrides.
 - `handler_timeout` sets a per-handler timeout in seconds (overrides the bus default when lower).
 
+## TypeScript Return Type Enforcement (Edge Cases)
+
+TypeScript can only enforce handler return types when the event type is inferable at compile time.
+
+- `bus.on(EventFactoryOrClass, handler)`:
+  - Return values are type-checked against the event's `event_result_schema` (if defined).
+  - `undefined` (or no return) is always allowed.
+- `bus.on('SomeEventName', handler)`:
+  - Return type checking is best-effort only (treated as unknown in typing).
+  - Use class/factory keys when you want compile-time return-shape enforcement.
+- `bus.on('*', handler)`:
+  - Return type checking is intentionally loose (best-effort only), because wildcard handlers may receive many event types, including forwarded events from other buses.
+  - In practice, wildcard handlers are expected to be side-effect/forwarding handlers and usually return `undefined`.
+
+Runtime behavior is still consistent across all key styles:
+
+- If an event has `event_result_schema` and a handler returns a non-`undefined` value, that value is validated at runtime.
+- If the handler returns `undefined`, schema validation is skipped and the result is accepted.
+
 ## Semaphores (how concurrency is enforced)
 
 We use four semaphores:
