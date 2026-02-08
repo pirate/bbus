@@ -154,6 +154,8 @@ test('event.bus.dispatch sets parent-child relationships through 3 levels', asyn
   // Parent-child relationships are set correctly
   assert.equal(child_ref!.event_parent_id, parent_event.event_id)
   assert.equal(grandchild_ref!.event_parent_id, child_ref!.event_id)
+  assert.equal(child_ref!.event_parent?.event_id, parent_event.event_id)
+  assert.equal(grandchild_ref!.event_parent?.event_id, child_ref!.event_id)
 })
 
 test('event.bus with forwarding: child dispatched via event.bus goes to the correct bus', async () => {
@@ -217,6 +219,7 @@ test('event.bus.dispatch from handler correctly attributes event_emitted_by_hand
   const child = Array.from(bus.event_history.values()).find((e) => e.event_type === 'ChildEvent')
   assert.ok(child, 'child event should be in history')
   assert.equal(child!.event_parent_id, parent.event_id)
+  assert.equal(child!.event_parent?.event_id, parent.event_id)
 
   // The child should have event_emitted_by_handler_id set to the handler that emitted it
   assert.ok(child!.event_emitted_by_handler_id, 'event_emitted_by_handler_id should be set on child events dispatched via event.bus')

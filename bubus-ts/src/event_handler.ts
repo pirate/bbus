@@ -1,23 +1,24 @@
 import { v5 as uuidv5 } from 'uuid'
 
-import type { EventHandlerFunction, HandlerOptions } from './types.js'
+import type { ConcurrencyMode } from './lock_manager.js'
+import type { EventHandlerFunction } from './types.js'
 import { BaseEvent } from './base_event.js'
 import { EventResult } from './event_result.js'
 
 const HANDLER_ID_NAMESPACE = uuidv5('bubus-handler', uuidv5.DNS)
 
+// an entry in the list of event handlers that are registered on a bus
 export class EventHandler {
-  // an entry in the list of handlers that are registered on a bus
   id: string // unique uuidv5 based on hash of bus name, handler name, handler file path:lineno, registered at timestamp, and event key
-  handler: EventHandlerFunction
-  handler_name: string
-  handler_file_path?: string
-  handler_timeout: number | null
-  handler_registered_at: string
-  handler_registered_ts: number
-  options?: HandlerOptions
-  event_key: string | '*'
-  eventbus_name: string
+  handler: EventHandlerFunction // the handler function itself
+  handler_name: string // name of the handler function, or 'anonymous' if the handler is an anonymous/arrow function
+  handler_file_path?: string // ~/path/to/source/file.ts:123
+  handler_timeout: number | null // maximum time in seconds that the handler is allowed to run before it is aborted, defaults to event.event_timeout if not set
+  event_handler_concurrency?: ConcurrencyMode // per-handler concurrency override
+  handler_registered_at: string // ISO datetime string version of handler_registered_ts
+  handler_registered_ts: number // nanosecond monotonic version of handler_registered_at
+  event_key: string | '*' // event_type string to match against, or '*' to match all events
+  eventbus_name: string // name of the event bus that the handler is registered on
 
   constructor(params: {
     id?: string
@@ -25,9 +26,9 @@ export class EventHandler {
     handler_name: string
     handler_file_path?: string
     handler_timeout: number | null
+    event_handler_concurrency?: ConcurrencyMode
     handler_registered_at: string
     handler_registered_ts: number
-    options?: HandlerOptions
     event_key: string | '*'
     eventbus_name: string
   }) {
@@ -45,9 +46,9 @@ export class EventHandler {
     this.handler_name = params.handler_name
     this.handler_file_path = handler_file_path
     this.handler_timeout = params.handler_timeout
+    this.event_handler_concurrency = params.event_handler_concurrency
     this.handler_registered_at = params.handler_registered_at
     this.handler_registered_ts = params.handler_registered_ts
-    this.options = params.options
     this.event_key = params.event_key
     this.eventbus_name = params.eventbus_name
   }
@@ -65,12 +66,15 @@ export class EventHandler {
     return uuidv5(seed, HANDLER_ID_NAMESPACE)
   }
 
+  // "someHandlerName() (~/path/to/source/file.ts:123)"
   toString(): string {
     const label = this.handler_name && this.handler_name !== 'anonymous' ? `${this.handler_name}()` : `function#${this.id.slice(-4)}()`
     const file_path = this.handler_file_path ?? 'unknown'
     return `${label} (${file_path})`
   }
 
+  // walk the stack trace at registration time to detect the location of the source code file that defines the handler function
+  // and return the file path and line number as a string, or 'unknown' if the file path cannot be determined
   private static detectHandlerFilePath(file_path?: string, fallback: string = 'unknown'): string | undefined {
     const extract = (value: string): string =>
       value.trim().match(/\(([^)]+)\)$/)?.[1] ??
@@ -79,7 +83,10 @@ export class EventHandler {
       value.trim()
     let resolved_path = file_path ? extract(file_path) : file_path
     if (!resolved_path) {
-      const line = new Error().stack?.split('\n').map((l) => l.trim()).filter(Boolean)[4]
+      const line = new Error().stack
+        ?.split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)[4]
       if (line) resolved_path = extract(line)
     }
     if (!resolved_path) return fallback
@@ -96,10 +103,12 @@ export class EventHandler {
         normalized = path
       }
     }
-    normalized = normalized.replace(/\/Users\/[^/]+\//, '~/')
+    normalized = normalized.replace(/\/users\/[^/]+\//i, '~/').replace(/\/home\/[^/]+\//i, '~/')
     return line_number ? `${normalized}:${line_number}` : normalized
   }
 }
+
+// Generic base TimeoutError used for EventHandlerTimeoutError.cause default value if
 export class TimeoutError extends Error {
   constructor(message: string) {
     super(message)
@@ -107,6 +116,7 @@ export class TimeoutError extends Error {
   }
 }
 
+// Base class for all errors that can occur while running an event handler
 export class EventHandlerError extends Error {
   event_result: EventResult
   timeout_seconds: number | null
@@ -140,8 +150,8 @@ export class EventHandlerError extends Error {
     return this.event.event_timeout
   }
 }
-// EventHandlerTimeoutError: when the handler itself timed out while executing (due to event.event_timeout being exceeded)
 
+// When the handler itself timed out while executing (due to handler.handler_timeout being exceeded)
 export class EventHandlerTimeoutError extends EventHandlerError {
   constructor(message: string, params: { event_result: EventResult; timeout_seconds?: number | null; cause?: Error }) {
     super(message, {
@@ -152,16 +162,16 @@ export class EventHandlerTimeoutError extends EventHandlerError {
     this.name = 'EventHandlerTimeoutError'
   }
 }
-// EventHandlerCancelledError: when a pending handler was cancelled and never run due to an error (e.g. timeout) in a parent scope
 
+// When a pending handler was cancelled and never run due to an error (e.g. timeout) in a parent scope
 export class EventHandlerCancelledError extends EventHandlerError {
   constructor(message: string, params: { event_result: EventResult; timeout_seconds?: number | null; cause: Error }) {
     super(message, params)
     this.name = 'EventHandlerCancelledError'
   }
 }
-// EventHandlerAbortedError: when a handler that was already running was aborted due to an error in the parent scope, not due to an error in its own logic / exceeding its own timeout
 
+// When a handler that was already running was aborted due to an error in the parent scope, not due to an error in its own logic / exceeding its own timeout
 export class EventHandlerAbortedError extends EventHandlerError {
   constructor(message: string, params: { event_result: EventResult; timeout_seconds?: number | null; cause: Error }) {
     super(message, params)
@@ -169,11 +179,11 @@ export class EventHandlerAbortedError extends EventHandlerError {
   }
 }
 
-// EventHandlerResultSchemaError: when a handler returns a value that fails event_result_schema validation
+// When a handler run succesfully but returned a value that failed event_result_schema validation
 export class EventHandlerResultSchemaError extends EventHandlerError {
   raw_value: unknown
 
-  constructor(message: string, params: { event_result: EventResult; timeout_seconds?: number | null; cause: Error, raw_value: unknown }) {
+  constructor(message: string, params: { event_result: EventResult; timeout_seconds?: number | null; cause: Error; raw_value: unknown }) {
     super(message, params)
     this.name = 'EventHandlerResultSchemaError'
     this.raw_value = params.raw_value

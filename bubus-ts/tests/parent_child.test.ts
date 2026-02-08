@@ -22,6 +22,7 @@ test('eventIsChildOf and eventIsParentOf work for direct children', async () => 
   assert.ok(child_event)
 
   assert.equal(child_event.event_parent_id, parent_event.event_id)
+  assert.equal(child_event.event_parent?.event_id, parent_event.event_id)
   assert.equal(bus.eventIsChildOf(child_event, parent_event), true)
   assert.equal(bus.eventIsParentOf(parent_event, child_event), true)
 })
@@ -48,6 +49,8 @@ test('eventIsChildOf works for grandchildren', async () => {
 
   assert.equal(bus.eventIsChildOf(child_event, parent_event), true)
   assert.equal(bus.eventIsChildOf(grandchild_event, parent_event), true)
+  assert.equal(child_event.event_parent?.event_id, parent_event.event_id)
+  assert.equal(grandchild_event.event_parent?.event_id, child_event.event_id)
   assert.equal(bus.eventIsParentOf(parent_event, grandchild_event), true)
 })
 

@@ -18,7 +18,7 @@ test('EventBus initializes with correct defaults', async () => {
   assert.equal(bus.name, 'DefaultsBus')
   assert.equal(bus.max_history_size, 100)
   assert.equal(bus.event_concurrency_default, 'bus-serial')
-  assert.equal(bus.handler_concurrency_default, 'bus-serial')
+  assert.equal(bus.event_handler_concurrency_default, 'bus-serial')
   assert.equal(bus.event_timeout_default, 60)
   assert.equal(bus.event_history.size, 0)
   assert.ok(EventBus._all_instances.has(bus))
@@ -29,13 +29,13 @@ test('EventBus applies custom options', () => {
   const bus = new EventBus('CustomBus', {
     max_history_size: 500,
     event_concurrency: 'parallel',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
     event_timeout: 30,
   })
 
   assert.equal(bus.max_history_size, 500)
   assert.equal(bus.event_concurrency_default, 'parallel')
-  assert.equal(bus.handler_concurrency_default, 'global-serial')
+  assert.equal(bus.event_handler_concurrency_default, 'global-serial')
   assert.equal(bus.event_timeout_default, 30)
 })
 
@@ -70,7 +70,7 @@ test('EventBus exposes locks API surface', () => {
 test('EventBus locks methods are callable and preserve semaphore resolution behavior', async () => {
   const bus = new EventBus('GateInvocationBus', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
   const GateEvent = BaseEvent.extend('GateInvocationEvent', {})
 
@@ -90,20 +90,20 @@ test('EventBus locks methods are callable and preserve semaphore resolution beha
 
   const event_with_global = GateEvent({
     event_concurrency: 'global-serial',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
   })
   assert.equal(bus.locks.getSemaphoreForEvent(event_with_global), LockManager.global_event_semaphore)
   assert.equal(bus.locks.getSemaphoreForHandler(event_with_global), LockManager.global_handler_semaphore)
 
   const event_with_parallel = GateEvent({
     event_concurrency: 'parallel',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
   assert.equal(bus.locks.getSemaphoreForEvent(event_with_parallel), null)
   assert.equal(bus.locks.getSemaphoreForHandler(event_with_parallel), null)
 
   const event_using_handler_options = GateEvent({})
-  assert.equal(bus.locks.getSemaphoreForHandler(event_using_handler_options, { handler_concurrency: 'parallel' }), null)
+  assert.equal(bus.locks.getSemaphoreForHandler(event_using_handler_options, { event_handler_concurrency: 'parallel' }), null)
 
   bus.dispatch(GateEvent({}))
   bus.locks.notifyIdleListeners()
@@ -126,6 +126,40 @@ test('BaseEvent lifecycle methods are callable and preserve lifecycle behavior',
   assert.equal(dispatched.event_status, 'completed')
 })
 
+test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', async () => {
+  const RuntimeEvent = BaseEvent.extend('RuntimeSerializationEvent', {
+    event_result_schema: z.string(),
+  })
+  const bus = new EventBus('RuntimeSerializationBus')
+
+  bus.on(RuntimeEvent, () => 'ok')
+
+  const event = bus.dispatch(RuntimeEvent({}))
+  await event.done()
+
+  const json = event.toJSON() as Record<string, unknown>
+  assert.equal(json.event_status, 'completed')
+  assert.equal(typeof json.event_created_ts, 'number')
+  assert.equal(typeof json.event_started_ts, 'number')
+  assert.equal(typeof json.event_completed_ts, 'number')
+  assert.equal(json.event_pending_bus_count, 0)
+  assert.ok(Array.isArray(json.event_results))
+  const json_results = json.event_results as Array<Record<string, unknown>>
+  assert.equal(json_results.length, 1)
+  assert.equal(json_results[0].status, 'completed')
+  assert.equal(json_results[0].result, 'ok')
+  assert.equal((json_results[0].handler as Record<string, unknown>).id, Array.from(event.event_results.values())[0].handler_id)
+
+  const restored = RuntimeEvent.fromJSON?.(json) ?? RuntimeEvent(json as never)
+  assert.equal(restored.event_status, 'completed')
+  assert.equal(restored.event_created_ts, event.event_created_ts)
+  assert.equal(restored.event_pending_bus_count, 0)
+  assert.equal(restored.event_results.size, 1)
+  const restored_result = Array.from(restored.event_results.values())[0]
+  assert.equal(restored_result.status, 'completed')
+  assert.equal(restored_result.result, 'ok')
+})
+
 // ─── Event dispatch and status lifecycle ─────────────────────────────────────
 
 test('dispatch returns pending event with correct initial state', async () => {
@@ -141,7 +175,7 @@ test('dispatch returns pending event with correct initial state', async () => {
   assert.equal((event as any).data, 'hello')
 
   // event_path should include the bus name
-  const original = event._original_event ?? event
+  const original = event._event_original ?? event
   assert.ok(original.event_path.includes('LifecycleBus'))
 
   await bus.waitUntilIdle()
@@ -158,7 +192,7 @@ test('event transitions through pending -> started -> completed', async () => {
   })
 
   const event = bus.dispatch(TestEvent({}))
-  const original = event._original_event ?? event
+  const original = event._event_original ?? event
 
   await event.done()
 
@@ -175,7 +209,7 @@ test('event with no handlers completes immediately', async () => {
   const event = bus.dispatch(OrphanEvent({}))
   await event.done()
 
-  const original = event._original_event ?? event
+  const original = event._event_original ?? event
   assert.equal(original.event_status, 'completed')
   assert.equal(original.event_results.size, 0)
 })
@@ -305,7 +339,7 @@ test('handler error is captured without crashing the bus', async () => {
   const event = bus.dispatch(ErrorEvent({}))
   await event.done()
 
-  const original = event._original_event ?? event
+  const original = event._event_original ?? event
   assert.equal(original.event_status, 'completed')
   assert.ok(original.event_errors.length > 0, 'event should record the error')
 
@@ -320,7 +354,7 @@ test('handler error is captured without crashing the bus', async () => {
 test('one handler error does not prevent other handlers from running', async () => {
   const bus = new EventBus('IsolationBus', {
     max_history_size: 100,
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
   const MultiEvent = BaseEvent.extend('MultiEvent', {})
 
@@ -341,7 +375,7 @@ test('one handler error does not prevent other handlers from running', async () 
   const event = bus.dispatch(MultiEvent({}))
   await event.done()
 
-  const original = event._original_event ?? event
+  const original = event._event_original ?? event
   assert.equal(original.event_status, 'completed')
 
   // Both non-erroring handlers should have run
@@ -395,7 +429,7 @@ test('dispatch applies bus event_timeout_default when event has null timeout', a
   const TEvent = BaseEvent.extend('TEvent', {})
 
   const event = bus.dispatch(TEvent({}))
-  const original = event._original_event ?? event
+  const original = event._event_original ?? event
 
   // The bus should have applied its default timeout
   assert.equal(original.event_timeout, 42)
@@ -411,7 +445,7 @@ test('event with explicit timeout is not overridden by bus default', async () =>
   const TEvent = BaseEvent.extend('TEvent', {})
 
   const event = bus.dispatch(TEvent({ event_timeout: 10 }))
-  const original = event._original_event ?? event
+  const original = event._event_original ?? event
 
   assert.equal(original.event_timeout, 10)
 
@@ -471,7 +505,7 @@ test('circular forwarding does not cause infinite loop', async () => {
   assert.equal(handler_calls.filter((h) => h === 'C').length, 1)
 
   // event_path should contain all three buses
-  const original = event._original_event ?? event
+  const original = event._event_original ?? event
   assert.ok(original.event_path.includes('CircA'))
   assert.ok(original.event_path.includes('CircB'))
   assert.ok(original.event_path.includes('CircC'))
@@ -508,6 +542,51 @@ test('unreferenced EventBus can be garbage collected (not retained by _all_insta
     undefined,
     'bus should be garbage collected when no external references remain — ' +
       'EventBus._all_instances is holding a strong reference (memory leak)'
+  )
+})
+
+test('unreferenced buses with event history are garbage collected without destroy()', async () => {
+  const gc = globalThis.gc as (() => void) | undefined
+  if (typeof gc !== 'function') {
+    return
+  }
+
+  const GcEvent = BaseEvent.extend('GcNoDestroyEvent', {})
+  const weak_refs: Array<WeakRef<EventBus>> = []
+
+  gc()
+  await delay(20)
+  gc()
+  const heap_before = process.memoryUsage().heapUsed
+
+  const create_and_run_bus = async (index: number): Promise<WeakRef<EventBus>> => {
+    const bus = new EventBus(`GC-NoDestroy-${index}`, { max_history_size: 200 })
+    bus.on(GcEvent, () => {})
+    for (let i = 0; i < 200; i += 1) {
+      const event = bus.dispatch(GcEvent({}))
+      await event.done()
+    }
+    await bus.waitUntilIdle()
+    return new WeakRef(bus)
+  }
+
+  for (let i = 0; i < 120; i += 1) {
+    weak_refs.push(await create_and_run_bus(i))
+  }
+
+  for (let i = 0; i < 30; i += 1) {
+    gc()
+    await delay(20)
+  }
+
+  const alive_count = weak_refs.reduce((count, ref) => count + (ref.deref() ? 1 : 0), 0)
+  const heap_after = process.memoryUsage().heapUsed
+
+  assert.equal(alive_count, 0, 'all unreferenced buses should be garbage collected without explicit destroy()')
+  assert.equal(EventBus._all_instances.size, 0, '_all_instances should not retain unreferenced buses')
+  assert.ok(
+    heap_after <= heap_before + 20 * 1024 * 1024,
+    `heap should return near baseline after GC, before=${(heap_before / 1024 / 1024).toFixed(1)}MB after=${(heap_after / 1024 / 1024).toFixed(1)}MB`
   )
 })
 

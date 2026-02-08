@@ -48,7 +48,7 @@ test('processes 50k events within reasonable time', { timeout: 30_000 }, async (
     `\n  perf: ${total_events} events in ${total_ms}ms (${Math.round(total_events / (total_ms / 1000))}/s)` +
       `\n    dispatch: ${dispatch_ms}ms | await: ${await_ms}ms` +
       `\n    memory: before=${mb(mem_before.heapUsed)}MB → dispatch=${mb(mem_dispatch.heapUsed)}MB → done=${mb(mem_done.heapUsed)}MB → gc=${mb(mem_gc.heapUsed)}MB` +
-      `\n    per-event: time=${(total_ms / total_events).toFixed(4)}ms | heap=${(((mem_done.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB | heap_gc=${(((mem_gc.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB` +
+      `\n    per-event: time=${(total_ms / total_events).toFixed(4)}ms | heap=${((mem_done.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB | heap_gc=${((mem_gc.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB` +
       `\n    rss: before=${mb(mem_before.rss)}MB → done=${mb(mem_done.rss)}MB → gc=${mb(mem_gc.rss)}MB`
   )
 
@@ -103,7 +103,7 @@ test('500 ephemeral buses with 100 events each', { timeout: 30_000 }, async () =
   console.log(
     `\n  perf: ${total_buses} buses × ${events_per_bus} events = ${total_events} total in ${total_ms}ms (${Math.round(total_events / (total_ms / 1000))}/s)` +
       `\n    memory: before=${mb(mem_before.heapUsed)}MB → done=${mb(mem_done.heapUsed)}MB → gc=${mb(mem_gc.heapUsed)}MB` +
-      `\n    per-event: time=${(total_ms / total_events).toFixed(4)}ms | heap=${(((mem_done.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB | heap_gc=${(((mem_gc.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB` +
+      `\n    per-event: time=${(total_ms / total_events).toFixed(4)}ms | heap=${((mem_done.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB | heap_gc=${((mem_gc.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB` +
       `\n    rss: before=${mb(mem_before.rss)}MB → done=${mb(mem_done.rss)}MB → gc=${mb(mem_gc.rss)}MB` +
       `\n    live bus instances: ${EventBus._all_instances.size}`
   )
@@ -145,10 +145,8 @@ test('50k events with ephemeral on/off handler registration across 2 buses', { t
   const bus_b_any = bus_b as any
   const original_process_a = typeof bus_a_any.processEvent === 'function' ? bus_a_any.processEvent.bind(bus_a) : null
   const original_process_b = typeof bus_b_any.processEvent === 'function' ? bus_b_any.processEvent.bind(bus_b) : null
-  const original_run_handler_a =
-    typeof bus_a_any.runEventHandler === 'function' ? bus_a_any.runEventHandler.bind(bus_a) : null
-  const original_run_handler_b =
-    typeof bus_b_any.runEventHandler === 'function' ? bus_b_any.runEventHandler.bind(bus_b) : null
+  const original_run_handler_a = typeof bus_a_any.runEventHandler === 'function' ? bus_a_any.runEventHandler.bind(bus_a) : null
+  const original_run_handler_b = typeof bus_b_any.runEventHandler === 'function' ? bus_b_any.runEventHandler.bind(bus_b) : null
 
   if (original_process_a) {
     bus_a_any.processEvent = async (event: any) => {
@@ -240,7 +238,7 @@ test('50k events with ephemeral on/off handler registration across 2 buses', { t
       `\n    timings: on=${on_ms.toFixed(0)}ms | off=${off_ms.toFixed(0)}ms | dispatch_a=${dispatch_a_ms.toFixed(0)}ms | dispatch_b=${dispatch_b_ms.toFixed(0)}ms | done=${done_ms.toFixed(0)}ms` +
       `\n    processing: bus_a=${process_a_ms.toFixed(0)}ms | bus_b=${process_b_ms.toFixed(0)}ms | handlers_a=${handler_a_ms.toFixed(0)}ms | handlers_b=${handler_b_ms.toFixed(0)}ms` +
       `\n    memory: before=${mb(mem_before.heapUsed)}MB → done=${mb(mem_done.heapUsed)}MB → gc=${mb(mem_gc.heapUsed)}MB` +
-      `\n    per-event: time=${(total_ms / total_events).toFixed(4)}ms | heap=${(((mem_done.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB | heap_gc=${(((mem_gc.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB` +
+      `\n    per-event: time=${(total_ms / total_events).toFixed(4)}ms | heap=${((mem_done.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB | heap_gc=${((mem_gc.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB` +
       `\n    rss: before=${mb(mem_before.rss)}MB → done=${mb(mem_done.rss)}MB → gc=${mb(mem_gc.rss)}MB` +
       `\n    bus_a handlers: ${bus_a.handlers.size} | bus_b handlers: ${bus_b.handlers.size}`
   )
@@ -390,7 +388,7 @@ test('worst-case: forwarding + queue-jump + timeouts + cancellation at scale', {
       `\n    child: bus_c=${child_handled_c} | grandchild=${grandchild_handled}` +
       `\n    timeouts=${timeout_count} cancellations=${cancel_count}` +
       `\n    memory: before=${mb(mem_before.heapUsed)}MB → done=${mb(mem_done.heapUsed)}MB → gc=${mb(mem_gc.heapUsed)}MB (delta=${mem_delta_mb.toFixed(1)}MB)` +
-      `\n    per-event (est): time=${(total_ms / estimated_events).toFixed(4)}ms | heap=${(((mem_done.heapUsed - mem_before.heapUsed) / estimated_events) / 1024).toFixed(2)}KB | heap_gc=${(((mem_gc.heapUsed - mem_before.heapUsed) / estimated_events) / 1024).toFixed(2)}KB` +
+      `\n    per-event (est): time=${(total_ms / estimated_events).toFixed(4)}ms | heap=${((mem_done.heapUsed - mem_before.heapUsed) / estimated_events / 1024).toFixed(2)}KB | heap_gc=${((mem_gc.heapUsed - mem_before.heapUsed) / estimated_events / 1024).toFixed(2)}KB` +
       `\n    rss: before=${mb(mem_before.rss)}MB → done=${mb(mem_done.rss)}MB → gc=${mb(mem_gc.rss)}MB` +
       `\n    history: a=${bus_a.event_history.size} b=${bus_b.event_history.size} c=${bus_c.event_history.size}` +
       `\n    handlers: a=${bus_a.handlers.size} b=${bus_b.handlers.size} c=${bus_c.handlers.size}` +

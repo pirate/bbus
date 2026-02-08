@@ -74,7 +74,7 @@ M) Edge-cases
 - Multiple handlers for same event type with different options collide.
 - Handler throws synchronously before await (still counted, no leaks).
 - Handler returns a rejected promise (properly surfaced).
-- Event emitted with event_concurrency/handler_concurrency invalid value (schema rejects).
+- Event emitted with event_concurrency/event_handler_concurrency invalid value (schema rejects).
 - Event emitted with no bus set (done should reject).
 */
 
@@ -188,11 +188,11 @@ test('global-serial: handler semaphore serializes handlers across buses', async 
 
   const bus_a = new EventBus('GlobalHandlerA', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
   })
   const bus_b = new EventBus('GlobalHandlerB', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
   })
 
   let in_flight = 0
@@ -355,7 +355,7 @@ test('parallel: events overlap on same bus when event_concurrency is parallel', 
   const ParallelEvent = BaseEvent.extend('ParallelEvent', { order: z.number() })
   const bus = new EventBus('ParallelEventBus', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
 
   let in_flight = 0
@@ -378,11 +378,11 @@ test('parallel: events overlap on same bus when event_concurrency is parallel', 
   assert.ok(max_in_flight >= 2)
 })
 
-test('parallel: handlers overlap for same event when handler_concurrency is parallel', async () => {
+test('parallel: handlers overlap for same event when event_handler_concurrency is parallel', async () => {
   const ParallelHandlerEvent = BaseEvent.extend('ParallelHandlerEvent', {})
   const bus = new EventBus('ParallelHandlerBus', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
 
   let in_flight = 0
@@ -422,11 +422,11 @@ test('parallel: global-serial handler semaphore still serializes across buses', 
 
   const bus_a = new EventBus('ParallelHandlerGlobalA', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
   })
   const bus_b = new EventBus('ParallelHandlerGlobalB', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
   })
 
   let in_flight = 0
@@ -453,11 +453,11 @@ test('parallel: global-serial handler semaphore still serializes across buses', 
   assert.equal(max_in_flight, 1)
 })
 
-test('precedence: event handler_concurrency overrides handler options', async () => {
+test('precedence: event event_handler_concurrency overrides handler options', async () => {
   const OverrideEvent = BaseEvent.extend('OverrideEvent', {
-    handler_concurrency: z.literal('bus-serial'),
+    event_handler_concurrency: z.literal('bus-serial'),
   })
-  const bus = new EventBus('OverrideBus', { handler_concurrency: 'parallel' })
+  const bus = new EventBus('OverrideBus', { event_handler_concurrency: 'parallel' })
 
   let in_flight = 0
   let max_in_flight = 0
@@ -470,10 +470,10 @@ test('precedence: event handler_concurrency overrides handler options', async ()
     in_flight -= 1
   }
 
-  bus.on(OverrideEvent, handler, { handler_concurrency: 'parallel' })
-  bus.on(OverrideEvent, handler, { handler_concurrency: 'parallel' })
+  bus.on(OverrideEvent, handler, { event_handler_concurrency: 'parallel' })
+  bus.on(OverrideEvent, handler, { event_handler_concurrency: 'parallel' })
 
-  const event = bus.dispatch(OverrideEvent({ handler_concurrency: 'bus-serial' }))
+  const event = bus.dispatch(OverrideEvent({ event_handler_concurrency: 'bus-serial' }))
   await sleep(0)
   resolve()
   await event.done()
@@ -484,7 +484,7 @@ test('precedence: event handler_concurrency overrides handler options', async ()
 
 test('precedence: handler options override bus defaults when event has no override', async () => {
   const OptionEvent = BaseEvent.extend('OptionEvent', {})
-  const bus = new EventBus('OptionBus', { handler_concurrency: 'bus-serial' })
+  const bus = new EventBus('OptionBus', { event_handler_concurrency: 'bus-serial' })
 
   let in_flight = 0
   let max_in_flight = 0
@@ -504,8 +504,8 @@ test('precedence: handler options override bus defaults when event has no overri
     in_flight -= 1
   }
 
-  bus.on(OptionEvent, handler_a, { handler_concurrency: 'parallel' })
-  bus.on(OptionEvent, handler_b, { handler_concurrency: 'parallel' })
+  bus.on(OptionEvent, handler_a, { event_handler_concurrency: 'parallel' })
+  bus.on(OptionEvent, handler_b, { event_handler_concurrency: 'parallel' })
 
   const event = bus.dispatch(OptionEvent({}))
   await sleep(0)
@@ -516,11 +516,11 @@ test('precedence: handler options override bus defaults when event has no overri
   assert.ok(max_in_flight >= 2)
 })
 
-test('precedence: event handler_concurrency overrides handler options to parallel', async () => {
+test('precedence: event event_handler_concurrency overrides handler options to parallel', async () => {
   const OverrideEvent = BaseEvent.extend('OverrideEventParallelHandlers', {
-    handler_concurrency: z.literal('parallel'),
+    event_handler_concurrency: z.literal('parallel'),
   })
-  const bus = new EventBus('OverrideParallelHandlersBus', { handler_concurrency: 'bus-serial' })
+  const bus = new EventBus('OverrideParallelHandlersBus', { event_handler_concurrency: 'bus-serial' })
 
   let in_flight = 0
   let max_in_flight = 0
@@ -533,10 +533,10 @@ test('precedence: event handler_concurrency overrides handler options to paralle
     in_flight -= 1
   }
 
-  bus.on(OverrideEvent, handler, { handler_concurrency: 'bus-serial' })
-  bus.on(OverrideEvent, handler, { handler_concurrency: 'bus-serial' })
+  bus.on(OverrideEvent, handler, { event_handler_concurrency: 'bus-serial' })
+  bus.on(OverrideEvent, handler, { event_handler_concurrency: 'bus-serial' })
 
-  const event = bus.dispatch(OverrideEvent({ handler_concurrency: 'parallel' }))
+  const event = bus.dispatch(OverrideEvent({ event_handler_concurrency: 'parallel' }))
   await sleep(0)
   resolve()
   await event.done()
@@ -552,7 +552,7 @@ test('precedence: event event_concurrency overrides bus defaults to parallel', a
   })
   const bus = new EventBus('OverrideParallelEventsBus', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
 
   let in_flight = 0
@@ -583,7 +583,7 @@ test('precedence: event event_concurrency overrides bus defaults to bus-serial',
   })
   const bus = new EventBus('OverrideBusSerialEventsBus', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
 
   let in_flight = 0
@@ -611,11 +611,11 @@ test('global-serial + handler parallel: handlers overlap but events do not acros
 
   const bus_a = new EventBus('GlobalSerialParallelA', {
     event_concurrency: 'global-serial',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
   const bus_b = new EventBus('GlobalSerialParallelB', {
     event_concurrency: 'global-serial',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
 
   let in_flight = 0
@@ -647,7 +647,7 @@ test('event parallel + handler bus-serial: handlers serialize within a bus acros
   const ParallelEvent = BaseEvent.extend('ParallelEventsSerialHandlers', { order: z.number() })
   const bus = new EventBus('ParallelEventsSerialHandlersBus', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
 
   let in_flight = 0
@@ -675,11 +675,11 @@ test('event parallel + handler bus-serial: handlers overlap across buses', async
 
   const bus_a = new EventBus('ParallelBusHandlersA', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
   const bus_b = new EventBus('ParallelBusHandlersB', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
 
   let in_flight = 0
@@ -710,11 +710,11 @@ test('handler options can enforce global-serial even when bus defaults to parall
 
   const bus_a = new EventBus('HandlerOptionsGlobalA', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
   const bus_b = new EventBus('HandlerOptionsGlobalB', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
 
   let in_flight = 0
@@ -728,8 +728,8 @@ test('handler options can enforce global-serial even when bus defaults to parall
     in_flight -= 1
   }
 
-  bus_a.on(HandlerEvent, handler, { handler_concurrency: 'global-serial' })
-  bus_b.on(HandlerEvent, handler, { handler_concurrency: 'global-serial' })
+  bus_a.on(HandlerEvent, handler, { event_handler_concurrency: 'global-serial' })
+  bus_b.on(HandlerEvent, handler, { event_handler_concurrency: 'global-serial' })
 
   bus_a.dispatch(HandlerEvent({ source: 'a' }))
   bus_b.dispatch(HandlerEvent({ source: 'b' }))
@@ -763,11 +763,11 @@ test('auto: event_concurrency auto resolves to bus defaults', async () => {
   assert.equal(max_in_flight, 1)
 })
 
-test('auto: handler_concurrency auto resolves to bus defaults', async () => {
+test('auto: event_handler_concurrency auto resolves to bus defaults', async () => {
   const AutoHandlerEvent = BaseEvent.extend('AutoHandlerEvent', {
-    handler_concurrency: z.literal('auto'),
+    event_handler_concurrency: z.literal('auto'),
   })
-  const bus = new EventBus('AutoHandlerBus', { handler_concurrency: 'bus-serial' })
+  const bus = new EventBus('AutoHandlerBus', { event_handler_concurrency: 'bus-serial' })
 
   let in_flight = 0
   let max_in_flight = 0
@@ -783,7 +783,7 @@ test('auto: handler_concurrency auto resolves to bus defaults', async () => {
   bus.on(AutoHandlerEvent, handler)
   bus.on(AutoHandlerEvent, handler)
 
-  const event = bus.dispatch(AutoHandlerEvent({ handler_concurrency: 'auto' }))
+  const event = bus.dispatch(AutoHandlerEvent({ event_handler_concurrency: 'auto' }))
   await sleep(0)
   resolve()
   await event.done()
@@ -898,7 +898,7 @@ test('queue-jump: awaiting in-flight event does not double-run handlers', async 
   const InFlightEvent = BaseEvent.extend('InFlightEvent', {})
   const bus = new EventBus('InFlightBus', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
 
   let handler_runs = 0

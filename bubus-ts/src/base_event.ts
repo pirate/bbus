@@ -5,34 +5,54 @@ import type { EventBus } from './event_bus.js'
 import { EventResult } from './event_result.js'
 import type { ConcurrencyMode, Deferred } from './lock_manager.js'
 import { CONCURRENCY_MODES, withResolvers } from './lock_manager.js'
+import { extractZodShape, getStringTypeName, isZodSchema, toJsonSchema } from './types.js'
 
 export const BaseEventSchema = z
   .object({
     event_id: z.string().uuid(),
     event_created_at: z.string().datetime(),
+    event_created_ts: z.number().optional(),
     event_type: z.string(),
     event_timeout: z.number().positive().nullable(),
     event_parent_id: z.string().uuid().optional(),
     event_path: z.array(z.string()).optional(),
     event_result_type: z.string().optional(),
     event_result_schema: z.unknown().optional(),
+    event_emitted_by_handler_id: z.string().uuid().optional(),
+    event_pending_bus_count: z.number().nonnegative().optional(),
+    event_status: z.enum(['pending', 'started', 'completed']).optional(),
+    event_started_at: z.string().datetime().optional(),
+    event_started_ts: z.number().optional(),
+    event_completed_at: z.string().datetime().optional(),
+    event_completed_ts: z.number().optional(),
+    event_results: z.array(z.unknown()).optional(),
     event_concurrency: z.enum(CONCURRENCY_MODES).optional(),
-    handler_concurrency: z.enum(CONCURRENCY_MODES).optional(),
+    event_handler_concurrency: z.enum(CONCURRENCY_MODES).optional(),
   })
-  .passthrough()
+  .loose()
 
 export type BaseEventData = z.infer<typeof BaseEventSchema>
 type BaseEventFields = Pick<
   BaseEventData,
   | 'event_id'
   | 'event_created_at'
+  | 'event_created_ts'
   | 'event_type'
   | 'event_timeout'
   | 'event_parent_id'
+  | 'event_path'
   | 'event_result_type'
   | 'event_result_schema'
+  | 'event_emitted_by_handler_id'
+  | 'event_pending_bus_count'
+  | 'event_status'
+  | 'event_started_at'
+  | 'event_started_ts'
+  | 'event_completed_at'
+  | 'event_completed_ts'
+  | 'event_results'
   | 'event_concurrency'
-  | 'handler_concurrency'
+  | 'event_handler_concurrency'
 >
 
 export type BaseEventInit<TFields extends Record<string, unknown>> = TFields & Partial<BaseEventFields>
@@ -40,23 +60,27 @@ export type BaseEventInit<TFields extends Record<string, unknown>> = TFields & P
 type BaseEventSchemaShape = typeof BaseEventSchema.shape
 
 export type EventSchema<TShape extends z.ZodRawShape> = z.ZodObject<BaseEventSchemaShape & TShape>
+type EventPayload<TShape extends z.ZodRawShape> = z.infer<z.ZodObject<TShape>>
 
 type EventInput<TShape extends z.ZodRawShape> = z.input<EventSchema<TShape>>
 export type EventInit<TShape extends z.ZodRawShape> = Omit<EventInput<TShape>, keyof BaseEventFields> & Partial<BaseEventFields>
 
 type EventWithResult<TResult> = BaseEvent & { __event_result_type__?: TResult }
 
-type ResultTypeFromShape<TShape> =
-  TShape extends { event_result_schema: infer S } ? (S extends z.ZodTypeAny ? z.infer<S> : unknown) : unknown
+type ResultTypeFromShape<TShape> = TShape extends { event_result_schema: infer S }
+  ? S extends z.ZodTypeAny
+    ? z.infer<S>
+    : unknown
+  : unknown
 
 export type EventFactory<TShape extends z.ZodRawShape, TResult = unknown> = {
-  (data: EventInit<TShape>): EventWithResult<TResult> & z.infer<EventSchema<TShape>>
-  new (data: EventInit<TShape>): EventWithResult<TResult> & z.infer<EventSchema<TShape>>
+  (data: EventInit<TShape>): EventWithResult<TResult> & EventPayload<TShape>
+  new (data: EventInit<TShape>): EventWithResult<TResult> & EventPayload<TShape>
   schema: EventSchema<TShape>
   event_type?: string
   event_result_schema?: z.ZodTypeAny
   event_result_type?: string
-  fromJSON?: (data: unknown) => EventWithResult<TResult> & z.infer<EventSchema<TShape>>
+  fromJSON?: (data: unknown) => EventWithResult<TResult> & EventPayload<TShape>
 }
 
 type ZodShapeFrom<TShape extends Record<string, unknown>> = {
@@ -68,34 +92,36 @@ type ZodShapeFrom<TShape extends Record<string, unknown>> = {
 }
 
 export class BaseEvent {
+  // event metadata fields
   event_id!: string // unique uuidv7 identifier for the event
-  event_created_at!: string // ISO datetime string version of event_created_ts
+  event_created_at!: string // ISO datetime string version of event_created_at
   event_created_ts!: number // nanosecond monotonic version of event_created_at
   event_type!: string // should match the class name of the event, e.g. BaseEvent.extend("MyEvent").event_type === "MyEvent"
-  event_timeout!: number | null // maximum time in seconds that each handler for the event is allowed to run before it is aborted
+  event_timeout!: number | null // maximum time in seconds that the event is allowed to run before it is aborted
   event_parent_id?: string // id of the parent event that triggered this event, if this event was emitted during handling of another event
   event_path!: string[] // list of bus names that the event has been dispatched to, including the current bus
   event_result_schema?: z.ZodTypeAny // optional zod schema to enforce the shape of return values from handlers
   event_result_type?: string // optional string identifier of the type of the return values from handlers, to make it easier to reference common shapes across networkboundaries e.g. ScreenshotEventResultType
-  event_results!: Map<string, EventResult>
+  event_results!: Map<string, EventResult<this>> // map of handler ids to EventResult objects for the event
   event_emitted_by_handler_id?: string // if event was emitted inside a handler while it was running, this will be set to the enclosing handler's handler id
-  event_pending_bus_count!: number // Number of buses that have accepted this event and not yet finished processing or removed it from their queues.
-  event_status!: 'pending' | 'started' | 'completed'
-  event_started_at?: string
-  event_started_ts?: number
-  event_completed_at?: string
-  event_completed_ts?: number
-  event_concurrency?: ConcurrencyMode
-  handler_concurrency?: ConcurrencyMode
+  event_pending_bus_count!: number // number of buses that have accepted this event and not yet finished processing or removed it from their queues (for queue-jump processing)
+  event_status!: 'pending' | 'started' | 'completed' // processing status of the event as a whole, no separate 'error' state because events can not error, only individual handlers can
+  event_started_at?: string // ISO datetime string version of event_started_ts
+  event_started_ts?: number // nanosecond monotonic version of event_started_at
+  event_completed_at?: string // ISO datetime string version of event_completed_ts
+  event_completed_ts?: number // nanosecond monotonic version of event_completed_at
+  event_concurrency?: ConcurrencyMode // concurrency mode for the event as a whole in relation to other events
+  event_handler_concurrency?: ConcurrencyMode // concurrency mode for the handlers within the event
 
+  static event_type?: string // class name of the event, e.g. BaseEvent.extend("MyEvent").event_type === "MyEvent"
+  static schema = BaseEventSchema // zod schema for the event data fields, used to parse and validate event data when creating a new event
+
+  // internal runtime state
   bus?: EventBus // shortcut to the bus that dispatched this event, for event.bus.dispatch(event) auto-child tracking via proxy wrapping
-  _original_event?: BaseEvent // underlying event object that was dispatched, if this is a bus-scoped proxy wrapping it
-  _dispatch_context?: unknown | null // captured AsyncLocalStorage context at dispatch site, used to restore that context when running handlers
+  _event_original?: BaseEvent // underlying event object that was dispatched, if this is a bus-scoped proxy wrapping it
+  _event_dispatch_context?: unknown | null // captured AsyncLocalStorage context at dispatch site, used to restore that context when running handlers
 
-  static schema = BaseEventSchema
-  static event_type?: string
-
-  _done: Deferred<this> | null
+  _event_done_signal: Deferred<this> | null
 
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
     const ctor = this.constructor as typeof BaseEvent & {
@@ -104,7 +130,7 @@ export class BaseEvent {
     }
     const event_type = data.event_type ?? ctor.event_type ?? ctor.name
     const event_result_schema = (data.event_result_schema ?? ctor.event_result_schema) as z.ZodTypeAny | undefined
-    const event_result_type = data.event_result_type ?? ctor.event_result_type
+    const event_result_type = data.event_result_type ?? ctor.event_result_type ?? getStringTypeName(event_result_schema)
     const event_id = data.event_id ?? uuidv7()
     const { isostring: default_event_created_at, ts: event_created_ts } = BaseEvent.nextTimestamp()
     const event_created_at = data.event_created_at ?? default_event_created_at
@@ -127,31 +153,64 @@ export class BaseEvent {
 
     const parsed_path = (parsed as { event_path?: string[] }).event_path
     this.event_path = Array.isArray(parsed_path) ? [...parsed_path] : []
-    this.event_pending_bus_count = 0
-    this.event_status = 'pending'
+
+    // load event results from potentially raw objects from JSON to proper EventResult objects
+    this.event_results = hydrateEventResults(this, (parsed as { event_results?: unknown }).event_results)
+    this.event_pending_bus_count =
+      typeof (parsed as { event_pending_bus_count?: unknown }).event_pending_bus_count === 'number'
+        ? Math.max(0, Number((parsed as { event_pending_bus_count?: number }).event_pending_bus_count))
+        : 0
+    const parsed_status = (parsed as { event_status?: unknown }).event_status
+    this.event_status =
+      parsed_status === 'pending' || parsed_status === 'started' || parsed_status === 'completed' ? parsed_status : 'pending'
+
+    this.event_started_at =
+      typeof (parsed as { event_started_at?: unknown }).event_started_at === 'string'
+        ? (parsed as { event_started_at: string }).event_started_at
+        : undefined
+    this.event_started_ts =
+      typeof (parsed as { event_started_ts?: unknown }).event_started_ts === 'number'
+        ? (parsed as { event_started_ts: number }).event_started_ts
+        : undefined
+    this.event_completed_at =
+      typeof (parsed as { event_completed_at?: unknown }).event_completed_at === 'string'
+        ? (parsed as { event_completed_at: string }).event_completed_at
+        : undefined
+    this.event_completed_ts =
+      typeof (parsed as { event_completed_ts?: unknown }).event_completed_ts === 'number'
+        ? (parsed as { event_completed_ts: number }).event_completed_ts
+        : undefined
+    this.event_emitted_by_handler_id =
+      typeof (parsed as { event_emitted_by_handler_id?: unknown }).event_emitted_by_handler_id === 'string'
+        ? (parsed as { event_emitted_by_handler_id: string }).event_emitted_by_handler_id
+        : undefined
+
     this.event_result_schema = event_result_schema
     this.event_result_type = event_result_type
-    this.event_results = new Map()
-    this.event_created_ts = event_created_ts
+    this.event_created_ts =
+      typeof (parsed as { event_created_ts?: unknown }).event_created_ts === 'number'
+        ? (parsed as { event_created_ts: number }).event_created_ts
+        : event_created_ts
 
-    this._done = null
-    this._dispatch_context = undefined
+    this._event_done_signal = null
+    this._event_dispatch_context = undefined
   }
 
+  // "MyEvent#a48f"
   toString(): string {
     return `${this.event_type}#${this.event_id.slice(-4)}`
   }
 
+  // get the next monotonic timestamp for global ordering of all operations
   static nextTimestamp(): { date: Date; isostring: string; ts: number } {
     const ts = performance.now()
     const date = new Date(performance.timeOrigin + ts)
     return { date, isostring: date.toISOString(), ts }
   }
 
-  static extend<TShape extends z.ZodRawShape>(
-    event_type: string,
-    shape?: TShape
-  ): EventFactory<TShape, ResultTypeFromShape<TShape>>
+  // main entry point for users to define their own event types
+  // BaseEvent.extend("MyEvent", { some_custom_field: z.string(), event_result_schema: z.string(), event_timeout: 25, ... }) -> MyEvent
+  static extend<TShape extends z.ZodRawShape>(event_type: string, shape?: TShape): EventFactory<TShape, ResultTypeFromShape<TShape>>
   static extend<TShape extends Record<string, unknown>>(
     event_type: string,
     shape?: TShape
@@ -162,12 +221,14 @@ export class BaseEvent {
   ): EventFactory<ZodShapeFrom<TShape>, ResultTypeFromShape<TShape>> {
     const raw_shape = shape as Record<string, unknown>
 
-    const event_result_schema = is_zod_schema(raw_shape.event_result_schema) ? (raw_shape.event_result_schema as z.ZodTypeAny) : undefined
-    const event_result_type = typeof raw_shape.event_result_type === 'string' ? raw_shape.event_result_type : undefined
+    const event_result_schema = isZodSchema(raw_shape.event_result_schema) ? (raw_shape.event_result_schema as z.ZodTypeAny) : undefined
+    const explicit_event_result_type = typeof raw_shape.event_result_type === 'string' ? raw_shape.event_result_type : undefined
+    const event_result_type = explicit_event_result_type ?? getStringTypeName(event_result_schema)
 
-    const zod_shape = extract_zod_shape(raw_shape)
+    const zod_shape = extractZodShape(raw_shape)
     const full_schema = BaseEventSchema.extend(zod_shape)
 
+    // create a new event class that extends BaseEvent and adds the custom fields
     class ExtendedEvent extends BaseEvent {
       static schema = full_schema as unknown as typeof BaseEvent.schema
       static event_type = event_type
@@ -179,7 +240,7 @@ export class BaseEvent {
       }
     }
 
-    type FactoryResult = EventWithResult<ResultTypeFromShape<TShape>> & z.infer<EventSchema<ZodShapeFrom<TShape>>>
+    type FactoryResult = EventWithResult<ResultTypeFromShape<TShape>> & EventPayload<ZodShapeFrom<TShape>>
 
     function EventFactory(data: EventInit<ZodShapeFrom<TShape>>): FactoryResult {
       return new ExtendedEvent(data) as FactoryResult
@@ -196,6 +257,7 @@ export class BaseEvent {
     return EventFactory as unknown as EventFactory<ZodShapeFrom<TShape>, ResultTypeFromShape<TShape>>
   }
 
+  // parse raw event data into a new event object
   static parse<T extends typeof BaseEvent>(this: T, data: unknown): InstanceType<T> {
     const schema = this.schema ?? BaseEventSchema
     const parsed = schema.parse(data)
@@ -207,7 +269,7 @@ export class BaseEvent {
       return this.parse(data)
     }
     const record = { ...(data as Record<string, unknown>) }
-    if (record.event_result_schema && !is_zod_schema(record.event_result_schema)) {
+    if (record.event_result_schema && !isZodSchema(record.event_result_schema)) {
       const zod_any = z as unknown as { fromJSONSchema?: (schema: unknown) => z.ZodTypeAny }
       if (typeof zod_any.fromJSONSchema === 'function') {
         record.event_result_schema = zod_any.fromJSONSchema(record.event_result_schema)
@@ -220,15 +282,34 @@ export class BaseEvent {
     return {
       event_id: this.event_id,
       event_created_at: this.event_created_at,
+      event_created_ts: this.event_created_ts,
       event_type: this.event_type,
       event_timeout: this.event_timeout,
       event_parent_id: this.event_parent_id,
       event_path: this.event_path,
       event_result_type: this.event_result_type,
+      event_emitted_by_handler_id: this.event_emitted_by_handler_id,
+      event_pending_bus_count: this.event_pending_bus_count,
+      event_status: this.event_status,
+      event_started_at: this.event_started_at,
+      event_started_ts: this.event_started_ts,
+      event_completed_at: this.event_completed_at,
+      event_completed_ts: this.event_completed_ts,
+      event_results: Array.from(this.event_results.values()).map((result) => result.toJSON()),
       event_concurrency: this.event_concurrency,
-      handler_concurrency: this.handler_concurrency,
-      event_result_schema: this.event_result_schema ? to_json_schema(this.event_result_schema) : this.event_result_schema,
+      event_handler_concurrency: this.event_handler_concurrency,
+      event_result_schema: this.event_result_schema ? toJsonSchema(this.event_result_schema) : this.event_result_schema,
     }
+  }
+
+  // Get parent event object from event_parent_id (checks across all busses)
+  get event_parent(): BaseEvent | undefined {
+    const original = this._event_original ?? this
+    const parent_id = original.event_parent_id
+    if (!parent_id) {
+      return undefined
+    }
+    return original.bus?.findEventById(parent_id) ?? undefined
   }
 
   // get all direct children of this event
@@ -275,8 +356,8 @@ export class BaseEvent {
     return descendants
   }
 
-  // awaitable to trigger immediate processing of the event on all buses where it is queued
-  // TODO: rename to immediate()
+  // awaitable that triggers immediate (queue-jump) processing of the event on all buses where it is queued
+  // use event.waitForCompletion() or event.finished() to wait for the event to be processed in normal queue order
   done(): Promise<this> {
     if (!this.bus) {
       return Promise.reject(new Error('event has no bus attached'))
@@ -293,13 +374,24 @@ export class BaseEvent {
     return runner_bus.processEventImmediately(this) as Promise<this>
   }
 
-  // TODO: rename to done()
+  // clearer alias for done() to indicate that the event will be processed immediately
+  // await bus.dispatch(event).immediate() is less ambiguous than await event.done()
+  immediate(): Promise<this> {
+    return this.done()
+  }
+
+  // awaitable that waits for the event to be processed in normal queue order by the runloop
   waitForCompletion(): Promise<this> {
     if (this.event_status === 'completed') {
       return Promise.resolve(this)
     }
     this._notifyDoneListeners()
-    return this._done!.promise
+    return this._event_done_signal!.promise
+  }
+
+  // convenience alias for await event.waitForCompletion()
+  finished(): Promise<this> {
+    return this.waitForCompletion()
   }
 
   markStarted(): void {
@@ -328,10 +420,10 @@ export class BaseEvent {
     const { isostring: event_completed_at, ts: event_completed_ts } = BaseEvent.nextTimestamp()
     this.event_completed_at = event_completed_at
     this.event_completed_ts = event_completed_ts
-    this._dispatch_context = null
+    this._event_dispatch_context = null
     this._notifyDoneListeners()
-    this._done!.resolve(this)
-    this._done = null
+    this._event_done_signal!.resolve(this)
+    this._event_done_signal = null
   }
 
   get event_errors(): unknown[] {
@@ -354,17 +446,17 @@ export class BaseEvent {
   }
 
   _notifyDoneListeners(): void {
-    if (this._done) {
+    if (this._event_done_signal) {
       return
     }
-    this._done = withResolvers<this>()
+    this._event_done_signal = withResolvers<this>()
   }
 
   // Break internal reference chains so a completed event can be GC'd when
   // evicted from event_history. Called by EventBus.trimHistory().
   _gc(): void {
-    this._done = null
-    this._dispatch_context = null
+    this._event_done_signal = null
+    this._event_dispatch_context = null
     this.bus = undefined
     for (const result of this.event_results.values()) {
       result.event_children = []
@@ -373,31 +465,18 @@ export class BaseEvent {
   }
 }
 
-const is_zod_schema = (value: unknown): value is z.ZodTypeAny => !!value && typeof (value as z.ZodTypeAny).safeParse === 'function'
-
-const extract_zod_shape = (raw: Record<string, unknown>): z.ZodRawShape => {
-  const shape: Record<string, z.ZodTypeAny> = {}
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === 'event_result_schema' || key === 'event_result_type') {
+const hydrateEventResults = <TEvent extends BaseEvent>(event: TEvent, raw_event_results: unknown): Map<string, EventResult<TEvent>> => {
+  const event_results = new Map<string, EventResult<TEvent>>()
+  if (!Array.isArray(raw_event_results)) {
+    return event_results
+  }
+  for (const item of raw_event_results) {
+    const result = EventResult.fromJSON(event, item)
+    if (!result) {
       continue
     }
-    if (is_zod_schema(value)) {
-      shape[key] = value
-    }
+    const map_key = typeof result.handler_id === 'string' && result.handler_id.length > 0 ? result.handler_id : result.id
+    event_results.set(map_key, result)
   }
-  return shape as z.ZodRawShape
-}
-
-const to_json_schema = (schema: unknown): unknown => {
-  if (!schema) {
-    return schema
-  }
-  if (!is_zod_schema(schema)) {
-    return schema
-  }
-  const zod_any = z as unknown as { toJSONSchema?: (schema: z.ZodTypeAny) => unknown }
-  if (typeof zod_any.toJSONSchema === 'function') {
-    return zod_any.toJSONSchema(schema)
-  }
-  return undefined
+  return event_results
 }

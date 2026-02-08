@@ -1,6 +1,6 @@
 import type { BaseEvent } from './base_event.js'
+import type { EventHandler } from './event_handler.js'
 import type { EventResult } from './event_result.js'
-import type { HandlerOptions } from './types.js'
 
 // ─── Deferred / withResolvers ────────────────────────────────────────────────
 
@@ -26,10 +26,11 @@ export const withResolvers = <T>(): Deferred<T> => {
 // ─── Concurrency modes ──────────────────────────────────────────────────────
 
 export const CONCURRENCY_MODES = ['global-serial', 'bus-serial', 'parallel', 'auto'] as const
-export type ConcurrencyMode = (typeof CONCURRENCY_MODES)[number]
+export type ConcurrencyMode = (typeof CONCURRENCY_MODES)[number] // union type of the values in the CONCURRENCY_MODES array
+export const DEFAULT_CONCURRENCY_MODE = 'bus-serial'
 
 export const resolveConcurrencyMode = (mode: ConcurrencyMode | undefined, fallback: ConcurrencyMode): ConcurrencyMode => {
-  const normalized_fallback = fallback === 'auto' ? 'bus-serial' : fallback
+  const normalized_fallback = fallback === 'auto' ? DEFAULT_CONCURRENCY_MODE : fallback
   if (!mode || mode === 'auto') {
     return normalized_fallback
   }
@@ -120,6 +121,7 @@ export class HandlerLock {
     this.state = 'held'
   }
 
+  // used by EventBus.processEventImmediately to yield the parent handler's lock to the child event so it can be processed immediately
   yieldHandlerLockForChildRun(): boolean {
     if (!this.semaphore || this.state !== 'held') {
       return false
@@ -129,6 +131,7 @@ export class HandlerLock {
     return true
   }
 
+  // used by EventBus.processEventImmediately to reacquire the handler lock after the child event has been processed
   async reclaimHandlerLockIfRunning(): Promise<boolean> {
     if (!this.semaphore || this.state !== 'yielded') {
       return false
@@ -143,6 +146,7 @@ export class HandlerLock {
     return true
   }
 
+  // used by EventBus.runEventHandler to exit the handler lock after the handler has finished executing
   exitHandlerRun(): void {
     if (this.state === 'closed') {
       return
@@ -154,6 +158,7 @@ export class HandlerLock {
     }
   }
 
+  // used by EventBus.processEventImmediately to yield the handler lock and reacquire it after the child event has been processed
   async runQueueJump<T>(fn: () => Promise<T>): Promise<T> {
     const yielded = this.yieldHandlerLockForChildRun()
     try {
@@ -168,18 +173,17 @@ export class HandlerLock {
 
 // ─── LockManager ─────────────────────────────────────────────────────────────
 
+// Interface that must be implemented by the EventBus class to be used by the LockManager
 export type EventBusInterfaceForLockManager = {
-  pending_event_queue: BaseEvent[]
-  in_flight_event_ids: Set<string>
-  runloop_running: boolean
-  isIdle: () => boolean
+  isIdleAndQueueEmpty: () => boolean
   event_concurrency_default: ConcurrencyMode
-  handler_concurrency_default: ConcurrencyMode
+  event_handler_concurrency_default: ConcurrencyMode
 }
 
+// The LockManager is responsible for managing the concurrency of events and handlers
 export class LockManager {
-  static global_event_semaphore = new AsyncSemaphore(1)
-  static global_handler_semaphore = new AsyncSemaphore(1)
+  static global_event_semaphore = new AsyncSemaphore(1) // used for the global-serial concurrency mode
+  static global_handler_semaphore = new AsyncSemaphore(1) // used for the global-serial concurrency mode
 
   private bus: EventBusInterfaceForLockManager // Live bus reference; used to read defaults and idle state.
   readonly bus_event_semaphore: AsyncSemaphore // Per-bus event semaphore; created with LockManager and never swapped.
@@ -196,8 +200,8 @@ export class LockManager {
 
   constructor(bus: EventBusInterfaceForLockManager) {
     this.bus = bus
-    this.bus_event_semaphore = new AsyncSemaphore(1)
-    this.bus_handler_semaphore = new AsyncSemaphore(1)
+    this.bus_event_semaphore = new AsyncSemaphore(1) // used for the bus-serial concurrency mode
+    this.bus_handler_semaphore = new AsyncSemaphore(1) // used for the bus-serial concurrency mode
 
     this.pause_depth = 0
     this.pause_waiters = []
@@ -209,9 +213,9 @@ export class LockManager {
     this.idle_check_streak = 0
   }
 
+  // Low-level runloop pause: increments a re-entrant counter and returns a release
+  // function. Used for broad, bus-scoped pauses (e.g. runImmediatelyAcrossBuses).
   requestPause(): () => void {
-    // Low-level runloop pause: increments a re-entrant counter and returns a release
-    // function. Used for broad, bus-scoped pauses (e.g. runImmediatelyAcrossBuses).
     this.pause_depth += 1
     let released = false
     return () => {
@@ -267,10 +271,10 @@ export class LockManager {
     return this.active_handler_results.length > 0
   }
 
+  // Queue-jump pause: wraps requestPause with per-handler deduping so repeated
+  // calls during the same handler run don't stack pauses. Released via
+  // releaseRunloopPauseForQueueJumpEvent when the handler finishes.
   requestRunloopPauseForQueueJumpEvent(result: EventResult): void {
-    // Queue-jump pause: wraps requestPause with per-handler deduping so repeated
-    // calls during the same handler run don't stack pauses. Released via
-    // releaseRunloopPauseForQueueJumpEvent when the handler finishes.
     if (this.queue_jump_pause_releases.has(result)) {
       return
     }
@@ -289,7 +293,7 @@ export class LockManager {
   }
 
   waitForIdle(): Promise<void> {
-    if (this.getIdleSnapshot()) {
+    if (this.bus.isIdleAndQueueEmpty()) {
       return Promise.resolve()
     }
     return new Promise((resolve) => {
@@ -298,6 +302,8 @@ export class LockManager {
     })
   }
 
+  // Called by EventBus.markEventCompleted and EventBus.markHandlerCompleted to notify
+  // waitUntilIdle() callers that the bus may now be idle.
   notifyIdleListeners(): void {
     // Fast-path: most completions have no waitUntilIdle() callers waiting,
     // so skip expensive idle snapshot scans in that common case.
@@ -306,7 +312,7 @@ export class LockManager {
       return
     }
 
-    if (!this.getIdleSnapshot()) {
+    if (!this.bus.isIdleAndQueueEmpty()) {
       this.idle_check_streak = 0
       if (this.idle_waiters.length > 0) {
         this.scheduleIdleCheck()
@@ -335,25 +341,18 @@ export class LockManager {
     return semaphoreForMode(resolved, LockManager.global_event_semaphore, this.bus_event_semaphore)
   }
 
-  getSemaphoreForHandler(event: BaseEvent, options?: HandlerOptions): AsyncSemaphore | null {
-    const event_override = event.handler_concurrency && event.handler_concurrency !== 'auto' ? event.handler_concurrency : undefined
+  getSemaphoreForHandler(event: BaseEvent, handler?: Pick<EventHandler, 'event_handler_concurrency'>): AsyncSemaphore | null {
+    const event_override =
+      event.event_handler_concurrency && event.event_handler_concurrency !== 'auto' ? event.event_handler_concurrency : undefined
     const handler_override =
-      options?.handler_concurrency && options.handler_concurrency !== 'auto' ? options.handler_concurrency : undefined
-    const fallback = this.bus.handler_concurrency_default
+      handler?.event_handler_concurrency && handler.event_handler_concurrency !== 'auto' ? handler.event_handler_concurrency : undefined
+    const fallback = this.bus.event_handler_concurrency_default
     const resolved = resolveConcurrencyMode(event_override ?? handler_override ?? fallback, fallback)
     return semaphoreForMode(resolved, LockManager.global_handler_semaphore, this.bus_handler_semaphore)
   }
 
-  clear(): void {
-    this.pause_depth = 0
-    this.pause_waiters = []
-    this.queue_jump_pause_releases = new WeakMap()
-    this.active_handler_results = []
-    this.idle_waiters = []
-    this.idle_check_pending = false
-    this.idle_check_streak = 0
-  }
-
+  // Schedules a debounced idle check to run after a short delay. Used to gate
+  // waitUntilIdle() calls during handler execution and after event completion.
   private scheduleIdleCheck(): void {
     if (this.idle_check_pending) {
       return
@@ -365,10 +364,14 @@ export class LockManager {
     }, 0)
   }
 
-  // Compute instantaneous idle snapshot from live bus state; used to gate waiters.
-  private getIdleSnapshot(): boolean {
-    return (
-      this.bus.pending_event_queue.length === 0 && this.bus.in_flight_event_ids.size === 0 && this.bus.isIdle() && !this.bus.runloop_running
-    )
+  // Reset all state to initial values
+  clear(): void {
+    this.pause_depth = 0
+    this.pause_waiters = []
+    this.queue_jump_pause_releases = new WeakMap()
+    this.active_handler_results = []
+    this.idle_waiters = []
+    this.idle_check_pending = false
+    this.idle_check_streak = 0
   }
 }

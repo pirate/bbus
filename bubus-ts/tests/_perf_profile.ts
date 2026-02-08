@@ -50,8 +50,8 @@ console.log(`Memory after GC: RSS=${(mem_gc.rss / 1024 / 1024).toFixed(1)}MB, He
 const total_ms = t3 - t0
 console.log(
   `Per-event: time=${(total_ms / total_events).toFixed(4)}ms, ` +
-    `heap=${(((mem_after.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB, ` +
-    `heap_gc=${(((mem_gc.heapUsed - mem_before.heapUsed) / total_events) / 1024).toFixed(2)}KB`
+    `heap=${((mem_after.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB, ` +
+    `heap_gc=${((mem_gc.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB`
 )
 
 console.log(`\nProcessed: ${processed_count}/${total_events}`)

@@ -52,7 +52,7 @@ All options are passed to `new EventBus(name, options)`.
   - `"bus-serial"` enforces FIFO per bus, allows cross-bus overlap.
   - `"parallel"` allows events to process concurrently.
   - `"auto"` uses the bus default (mostly useful for overrides).
-- `handler_concurrency?: "global-serial" | "bus-serial" | "parallel" | "auto"` (default: `"bus-serial"`)
+- `event_handler_concurrency?: "global-serial" | "bus-serial" | "parallel" | "auto"` (default: `"bus-serial"`)
   - Controls how many **handlers** run at once for each event.
   - Same semantics as `event_concurrency`, but applied to handler execution.
 - `event_timeout?: number | null` (default: `60`)
@@ -79,33 +79,33 @@ const FastEvent = BaseEvent.extend('FastEvent', {
 const event = FastEvent({
   payload: 'x',
   event_concurrency: 'parallel',
-  handler_concurrency: 'parallel',
+  event_handler_concurrency: 'parallel',
 })
 
 // Per-handler override (lower precedence)
-bus.on(FastEvent, handler, { handler_concurrency: 'parallel' })
+bus.on(FastEvent, handler, { event_handler_concurrency: 'parallel' })
 ```
 
 Precedence order (highest → lowest):
 
-1. Event instance overrides (`event_concurrency`, `handler_concurrency`)
-2. Handler options (`handler_concurrency`)
-3. Bus defaults (`event_concurrency`, `handler_concurrency`)
+1. Event instance overrides (`event_concurrency`, `event_handler_concurrency`)
+2. Handler options (`event_handler_concurrency`)
+3. Bus defaults (`event_concurrency`, `event_handler_concurrency`)
 
 `"auto"` resolves to the bus default.
 
 ## Handler Options
 
-Handlers can be configured with `HandlerOptions`:
+Handlers can be configured at registration time:
 
 ```ts
 bus.on(SomeEvent, handler, {
-  handler_concurrency: 'parallel',
+  event_handler_concurrency: 'parallel',
   handler_timeout: 10, // per-handler timeout in seconds
 })
 ```
 
-- `handler_concurrency` allows per-handler concurrency overrides.
+- `event_handler_concurrency` allows per-handler concurrency overrides.
 - `handler_timeout` sets a per-handler timeout in seconds (overrides the bus default when lower).
 
 ## TypeScript Return Type Enforcement (Edge Cases)
@@ -127,6 +127,61 @@ Runtime behavior is still consistent across all key styles:
 - If an event has `event_result_schema` and a handler returns a non-`undefined` value, that value is validated at runtime.
 - If the handler returns `undefined`, schema validation is skipped and the result is accepted.
 
+## Throughput + Memory Behavior (Current)
+
+This section documents the current runtime profile and the important edge cases. It is intentionally conservative:
+we describe what is enforced today, not theoretical best-case behavior.
+
+### Throughput model
+
+- Baseline throughput in tests is gated at `<30s` for:
+  - `50k events within reasonable time`
+  - `50k events with ephemeral on/off handler registration across 2 buses`
+  - `500 ephemeral buses with 100 events each`
+- The major hot-path operations are linear in collection sizes:
+  - Per event, handler matching is `O(total handlers on bus)` (`exact` scan + `*` scan).
+  - `.off()` is `O(total handlers on bus)` for matching/removal.
+  - Queue-jump (`await event.done()` inside handlers) does cross-bus discovery by walking `event_path` and iterating `EventBus._all_instances`, so cost grows with buses and forwarding depth.
+- `waitUntilIdle()` is best used at batch boundaries, not per event:
+  - Idle checks call `isIdle()`, which scans `event_history` and handler results.
+  - There is a fast-path that skips idle scans when no idle waiters exist, which keeps normal dispatch/complete flows fast even with large history.
+- Concurrency settings are a direct throughput limiter:
+  - `global-serial` and `bus-serial` intentionally serialize work.
+  - `parallel` increases throughput but can increase transient memory if producers outpace consumers.
+
+### Memory model
+
+- Per bus, strong references are held for:
+  - `handlers`
+  - `pending_event_queue`
+  - `in_flight_event_ids`
+  - `event_history` (bounded by `max_history_size`, or unbounded if `null`)
+  - active `find()` waiters until match/timeout
+- Per event, retained state includes:
+  - `event_results` (per-handler result objects)
+  - descendant links in `event_results[].event_children`
+- History trimming behavior:
+  - Completed events are evicted first (oldest first).
+  - If still over limit, oldest remaining events are dropped even if pending, and a warning is logged.
+  - Eviction calls `event._gc()` to clear internal references (`event_results`, child arrays, bus/context pointers).
+- Memory is not strictly bounded by only `pending_queue_size + max_history_size`:
+  - A retained parent event can hold references to many children/grandchildren via `event_children`.
+  - So effective retained memory can exceed a simple `event_count * avg_event_size` bound in high fan-out trees.
+- `destroy()` is recommended for deterministic cleanup, but not required for GC safety:
+  - `_all_instances` is WeakRef-based, so unreferenced buses can be collected without calling `.destroy()`.
+  - There is a GC regression test for this (`unreferenced buses with event history are garbage collected without destroy()`).
+- `heapUsed` vs `rss`:
+  - `heapUsed` returning near baseline after GC is the primary leak signal in tests.
+  - `rss` can stay elevated due to V8 allocator high-water behavior and is not, by itself, a proof of leak.
+
+### Practical guidance for high-load deployments
+
+- Keep `max_history_size` finite in production.
+- Avoid very large wildcard handler sets on hot event types.
+- Avoid calling `waitUntilIdle()` for every single event in large streams; prefer periodic/batch waits.
+- Be aware that very deep/high-fan-out parent-child graphs increase retained memory until parent events are evicted.
+- Use `.destroy()` for explicit lifecycle control in request-scoped or short-lived bus patterns.
+
 ## Semaphores (how concurrency is enforced)
 
 We use four semaphores:
@@ -142,7 +197,7 @@ mutex checks throughout the code.
 ## Full lifecycle across concurrency modes
 
 Below is the complete execution flow for nested events, including forwarding across buses, and how it behaves
-under different `event_concurrency` / `handler_concurrency` configurations.
+under different `event_concurrency` / `event_handler_concurrency` configurations.
 
 ### 1) Base execution flow (applies to all modes)
 
@@ -179,9 +234,9 @@ under different `event_concurrency` / `handler_concurrency` configurations.
 
 **Mixed buses:** each bus enforces its own event mode. Forwarding to another bus does not inherit the source bus’s mode.
 
-### 3) Handler concurrency modes (`handler_concurrency`)
+### 3) Handler concurrency modes (`event_handler_concurrency`)
 
-`handler_concurrency` controls how handlers run **for a single event**:
+`event_handler_concurrency` controls how handlers run **for a single event**:
 
 - **`global-serial`**: only one handler at a time across all buses using `LockManager.global_handler_semaphore`.
 - **`bus-serial`**: handlers serialize per bus.
@@ -190,7 +245,7 @@ under different `event_concurrency` / `handler_concurrency` configurations.
 
 **Interaction with event concurrency:**
 Even if events are parallel, handlers can still be serialized:
-`event_concurrency: "parallel"` + `handler_concurrency: "bus-serial"` means events start concurrently but handler execution on a bus is serialized.
+`event_concurrency: "parallel"` + `event_handler_concurrency: "bus-serial"` means events start concurrently but handler execution on a bus is serialized.
 
 ### 4) Forwarding across buses (non-awaited)
 
@@ -221,8 +276,8 @@ This means queue-jumped handlers run serially on a `bus-serial` bus, not in para
 
 Highest → lowest:
 
-1. Event instance fields (`event_concurrency`, `handler_concurrency`)
-2. Handler options (`handler_concurrency`)
+1. Event instance fields (`event_concurrency`, `event_handler_concurrency`)
+2. Handler options (`event_handler_concurrency`)
 3. Bus defaults
 
 `"auto"` always resolves to the bus default.

@@ -8,12 +8,4 @@ export {
   EventHandlerResultSchemaError,
 } from './event_handler.js'
 export type { ConcurrencyMode, EventBusInterfaceForLockManager } from './lock_manager.js'
-export type {
-  EventClass,
-  EventHandlerFunction as EventHandler,
-  EventKey,
-  HandlerOptions,
-  EventStatus,
-  FindOptions,
-  FindWindow,
-} from './types.js'
+export type { EventClass, EventHandlerFunction as EventHandler, EventKey, EventStatus, FindOptions, FindWindow } from './types.js'

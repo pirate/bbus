@@ -257,7 +257,7 @@ test('done() on non-proxied event keeps bus paused during queue-jump', async () 
     // Dispatch child via the raw bus (not the proxied event.bus)
     const child = bus.dispatch(ChildEvent({}))
     // Get the raw (non-proxied) event
-    const raw_child = child._original_event ?? child
+    const raw_child = child._event_original ?? child
     // done() on raw event bypasses handler_result injection from proxy
     await raw_child.done()
     // After done() returns, bus should still be paused because
@@ -753,11 +753,11 @@ test('BUG: queue-jump two-bus bus-serial handlers should serialize on each bus',
 
   const bus_a = new EventBus('QJ2BS_A', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
   const bus_b = new EventBus('QJ2BS_B', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
 
   const log: string[] = []
@@ -821,11 +821,11 @@ test('BUG: queue-jump two-bus global-serial handlers should serialize across bot
   // Global-serial means ONE handler at a time GLOBALLY, across all buses.
   const bus_a = new EventBus('QJ2GS_A', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
   })
   const bus_b = new EventBus('QJ2GS_B', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
   })
 
   const log: string[] = []
@@ -898,11 +898,11 @@ test('BUG: queue-jump two-bus mixed: bus_a bus-serial, bus_b parallel', async ()
 
   const bus_a = new EventBus('QJ2Mix1_A', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
   const bus_b = new EventBus('QJ2Mix1_B', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'parallel', // bus_b handlers should run in parallel
+    event_handler_concurrency: 'parallel', // bus_b handlers should run in parallel
   })
 
   const log: string[] = []
@@ -961,11 +961,11 @@ test('BUG: queue-jump two-bus mixed: bus_a parallel, bus_b bus-serial', async ()
 
   const bus_a = new EventBus('QJ2Mix2_A', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'parallel', // bus_a handlers should run in parallel
+    event_handler_concurrency: 'parallel', // bus_a handlers should run in parallel
   })
   const bus_b = new EventBus('QJ2Mix2_B', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
 
   const log: string[] = []
@@ -1037,11 +1037,11 @@ test('BUG: queue-jump should respect bus-serial event concurrency on forward bus
 
   const bus_a = new EventBus('QJEvt_A', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
   const bus_b = new EventBus('QJEvt_B', {
     event_concurrency: 'bus-serial', // only one event at a time on bus_b
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
 
   const log: string[] = []
@@ -1110,11 +1110,11 @@ test('queue-jump with fully-parallel forward bus starts immediately', async () =
 
   const bus_a = new EventBus('QJFullPar_A', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
   const bus_b = new EventBus('QJFullPar_B', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
 
   const log: string[] = []
@@ -1162,11 +1162,11 @@ test('queue-jump with parallel events but bus-serial handlers on forward bus ser
 
   const bus_a = new EventBus('QJEvtParHSer_A', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
   const bus_b = new EventBus('QJEvtParHSer_B', {
     event_concurrency: 'parallel', // events can start concurrently
-    handler_concurrency: 'bus-serial', // but handlers serialize
+    event_handler_concurrency: 'bus-serial', // but handlers serialize
   })
 
   const log: string[] = []

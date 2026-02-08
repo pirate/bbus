@@ -34,6 +34,35 @@ const ComplexResultEvent = BaseEvent.extend('ComplexResultEvent', {
 
 const NoSchemaEvent = BaseEvent.extend('NoSchemaEvent', {})
 
+const AutoObjectResultEvent = BaseEvent.extend('AutoObjectResultEvent', {
+  event_result_schema: z.object({ ok: z.boolean() }),
+})
+
+const AutoRecordResultEvent = BaseEvent.extend('AutoRecordResultEvent', {
+  event_result_schema: z.record(z.string(), z.number()),
+})
+
+const AutoMapResultEvent = BaseEvent.extend('AutoMapResultEvent', {
+  event_result_schema: z.map(z.string(), z.number()),
+})
+
+const AutoStringResultEvent = BaseEvent.extend('AutoStringResultEvent', {
+  event_result_schema: z.string(),
+})
+
+const AutoNumberResultEvent = BaseEvent.extend('AutoNumberResultEvent', {
+  event_result_schema: z.number(),
+})
+
+const AutoBooleanResultEvent = BaseEvent.extend('AutoBooleanResultEvent', {
+  event_result_schema: z.boolean(),
+})
+
+const ExplicitTypeWinsEvent = BaseEvent.extend('ExplicitTypeWinsEvent', {
+  event_result_schema: z.string(),
+  event_result_type: 'CustomResultType',
+})
+
 test('typed result schema validates and parses handler result', async () => {
   const bus = new EventBus('TypedResultBus')
 
@@ -109,6 +138,27 @@ test('complex result schema validates nested data', async () => {
   const result = Array.from(event.event_results.values())[0]
   assert.equal(result.status, 'completed')
   assert.deepEqual(result.result, { items: ['a', 'b'], metadata: { a: 1, b: 2 } })
+})
+
+test('event_result_type auto-infers from common event_result_schema types', () => {
+  assert.equal(AutoObjectResultEvent.event_result_type, 'object')
+  assert.equal(AutoRecordResultEvent.event_result_type, 'object')
+  assert.equal(AutoMapResultEvent.event_result_type, 'object')
+  assert.equal(AutoStringResultEvent.event_result_type, 'string')
+  assert.equal(AutoNumberResultEvent.event_result_type, 'number')
+  assert.equal(AutoBooleanResultEvent.event_result_type, 'boolean')
+
+  assert.equal(AutoObjectResultEvent({}).event_result_type, 'object')
+  assert.equal(AutoRecordResultEvent({}).event_result_type, 'object')
+  assert.equal(AutoMapResultEvent({}).event_result_type, 'object')
+  assert.equal(AutoStringResultEvent({}).event_result_type, 'string')
+  assert.equal(AutoNumberResultEvent({}).event_result_type, 'number')
+  assert.equal(AutoBooleanResultEvent({}).event_result_type, 'boolean')
+})
+
+test('explicit event_result_type is not overridden by inference', () => {
+  assert.equal(ExplicitTypeWinsEvent.event_result_type, 'CustomResultType')
+  assert.equal(ExplicitTypeWinsEvent({}).event_result_type, 'CustomResultType')
 })
 
 test('fromJSON converts event_result_schema into zod schema', async () => {

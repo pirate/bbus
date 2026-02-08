@@ -135,7 +135,7 @@ test('handler timeouts fire across concurrency modes', async () => {
     for (const handler_mode of modes) {
       const bus = new EventBus(`Timeout-${event_mode}-${handler_mode}`, {
         event_concurrency: event_mode,
-        handler_concurrency: handler_mode,
+        event_handler_concurrency: handler_mode,
       })
 
       bus.on(TimeoutEvent, async () => {
@@ -161,7 +161,7 @@ test('handler timeouts fire across concurrency modes', async () => {
 test('timeout still marks event failed when other handlers finish', async () => {
   const bus = new EventBus('TimeoutParallelHandlers', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
   })
 
   const results: string[] = []
@@ -292,7 +292,7 @@ test('slow handler and slow event warnings can both fire', async () => {
 test('event-level concurrency overrides do not bypass timeouts', async () => {
   const bus = new EventBus('TimeoutEventOverrideBus', {
     event_concurrency: 'global-serial',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
   })
 
   bus.on(TimeoutEvent, async () => {
@@ -304,7 +304,7 @@ test('event-level concurrency overrides do not bypass timeouts', async () => {
     TimeoutEvent({
       event_timeout: 0.01,
       event_concurrency: 'parallel',
-      handler_concurrency: 'parallel',
+      event_handler_concurrency: 'parallel',
     })
   )
   await event.done()
@@ -317,7 +317,7 @@ test('event-level concurrency overrides do not bypass timeouts', async () => {
 test('handler-level concurrency overrides do not bypass timeouts', async () => {
   const bus = new EventBus('TimeoutHandlerOverrideBus', {
     event_concurrency: 'parallel',
-    handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'global-serial',
   })
 
   const order: string[] = []
@@ -330,7 +330,7 @@ test('handler-level concurrency overrides do not bypass timeouts', async () => {
       order.push('slow_end')
       return 'slow'
     },
-    { handler_concurrency: 'bus-serial' }
+    { event_handler_concurrency: 'bus-serial' }
   )
 
   bus.on(
@@ -341,7 +341,7 @@ test('handler-level concurrency overrides do not bypass timeouts', async () => {
       order.push('fast_end')
       return 'fast'
     },
-    { handler_concurrency: 'parallel' }
+    { event_handler_concurrency: 'parallel' }
   )
 
   const event = bus.dispatch(TimeoutEvent({ event_timeout: 0.01 }))
@@ -423,7 +423,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
 
     const bus = new EventBus(`TimeoutLeakBus-${handler_mode}`, {
       event_concurrency: 'bus-serial',
-      handler_concurrency: handler_mode,
+      event_handler_concurrency: handler_mode,
     })
     const semaphore = getHandlerSemaphore(bus, handler_mode)
     const baseline_in_use = semaphore.in_use
@@ -480,7 +480,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
 
     const bus = new EventBus(`TimeoutContentionBus-${handler_mode}`, {
       event_concurrency: 'bus-serial',
-      handler_concurrency: handler_mode,
+      event_handler_concurrency: handler_mode,
     })
     const semaphore = getHandlerSemaphore(bus, handler_mode)
     const baseline_in_use = semaphore.in_use
@@ -491,7 +491,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
     })
 
     bus.on(ParentEvent, async (event) => {
-      const child = event.bus?.emit(ChildEvent({ event_timeout: 0.2, handler_concurrency: 'parallel' }))!
+      const child = event.bus?.emit(ChildEvent({ event_timeout: 0.2, event_handler_concurrency: 'parallel' }))!
       await child.done()
       return 'parent_main'
     })
@@ -522,7 +522,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
 
     const bus = new EventBus(`TimeoutFollowupBus-${handler_mode}`, {
       event_concurrency: 'bus-serial',
-      handler_concurrency: handler_mode,
+      event_handler_concurrency: handler_mode,
     })
     const semaphore = getHandlerSemaphore(bus, handler_mode)
     const baseline_in_use = semaphore.in_use
@@ -586,7 +586,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
 
     const bus = new EventBus(`NestedPermitBus-${handler_mode}`, {
       event_concurrency: 'bus-serial',
-      handler_concurrency: handler_mode,
+      event_handler_concurrency: handler_mode,
     })
     const semaphore = getHandlerSemaphore(bus, handler_mode)
     const baseline_in_use = semaphore.in_use
@@ -653,7 +653,7 @@ test('parent timeout cancels pending child handler results under serial handler 
 
   const bus = new EventBus('TimeoutCancelBus', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
 
   let child_runs = 0
@@ -729,7 +729,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 
   const bus = new EventBus('TimeoutCascadeBus', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
 
   let queued_child: InstanceType<typeof QueuedChildEvent> | null = null
@@ -890,7 +890,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
 
   const bus = new EventBus('Cascade3LevelBus', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
 
   const execution_log: string[] = []
@@ -1187,7 +1187,7 @@ test('cancellation error chain preserves cause references through hierarchy', as
 
   const bus = new EventBus('ErrorChainBus', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
   })
 
   let inner_ref: InstanceType<typeof InnerEvent> | null = null
@@ -1270,7 +1270,7 @@ test('parent timeout cancels children that have no timeout of their own', async 
 
   const bus = new EventBus('TimeoutBoundaryBus', {
     event_concurrency: 'bus-serial',
-    handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'bus-serial',
     event_timeout: null, // no bus-level default
   })
 
