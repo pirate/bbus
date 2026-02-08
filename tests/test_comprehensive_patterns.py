@@ -81,9 +81,13 @@ async def test_comprehensive_patterns():
         print('   Handlers that processed this event:')
         for result in child_event_sync.event_results.values():
             print(f'     - {result.handler_name} (bus: {result.eventbus_name})')
-        # The event was processed by bus1 using bus2.dispatch handler
+        # The event was forwarded from bus1 and processed by bus2.
         assert any(
-            'bus2' in result.handler_name and 'dispatch' in result.handler_name
+            result.eventbus_name == 'bus1' and 'dispatch' in result.handler_name
+            for result in child_event_sync.event_results.values()
+        )
+        assert any(
+            result.eventbus_name == 'bus2' and 'child_bus2_event_handler' in result.handler_name
             for result in child_event_sync.event_results.values()
         )
         print('   Event was successfully forwarded to bus2')
@@ -111,6 +115,9 @@ async def test_comprehensive_patterns():
     # Wait for all buses to finish processing
     await bus1.wait_until_idle()
     await bus2.wait_until_idle()
+
+    # This is a happy-path test: no handler should have errored.
+    assert all(result.error is None for result in parent_event.event_results.values()), parent_event.event_results
 
     # Verify all child events have correct parent
     print('\n5. Verifying all events have correct parent...')
@@ -173,6 +180,47 @@ async def test_comprehensive_patterns():
 
     await bus1.stop(clear=True)
     await bus2.stop(clear=True)
+
+
+async def test_await_forwarded_event_waits_for_target_bus_handlers():
+    """
+    Awaiting a dispatched event on source bus must wait for forwarded target-bus
+    handlers too, not only the source forwarding handler.
+    """
+    bus_src = EventBus(name='ForwardWaitSrc')
+    bus_dst = EventBus(name='ForwardWaitDst')
+
+    class ForwardedEvent(BaseEvent[str]):
+        pass
+
+    target_started = asyncio.Event()
+    target_finished = asyncio.Event()
+
+    async def target_handler(event: ForwardedEvent) -> str:
+        target_started.set()
+        await asyncio.sleep(0.05)
+        target_finished.set()
+        return 'target_done'
+
+    bus_src.on('*', bus_dst.dispatch)
+    bus_dst.on(ForwardedEvent, target_handler)
+
+    try:
+        t0 = asyncio.get_running_loop().time()
+        event = await bus_src.dispatch(ForwardedEvent())
+        elapsed = asyncio.get_running_loop().time() - t0
+
+        assert target_started.is_set()
+        assert target_finished.is_set()
+        assert elapsed >= 0.04
+        assert any(
+            result.eventbus_name == 'ForwardWaitDst' and result.handler_name.endswith('target_handler')
+            for result in event.event_results.values()
+        ), event.event_results
+        assert all(result.status in ('completed', 'error') for result in event.event_results.values())
+    finally:
+        await bus_src.stop(clear=True)
+        await bus_dst.stop(clear=True)
 
 
 async def test_race_condition_stress():
@@ -727,6 +775,7 @@ async def test_multiple_awaits_same_event():
     bus = EventBus(name='MultiAwaitBus', max_history_size=100)
     execution_order: list[str] = []
     await_results: list[str] = []
+    child_ref: BaseEvent[str] | None = None
 
     class Event1(BaseEvent[str]):
         pass
@@ -738,10 +787,12 @@ async def test_multiple_awaits_same_event():
         pass
 
     async def event1_handler(event: Event1) -> str:
+        nonlocal child_ref
         execution_order.append('Event1_start')
 
         # Dispatch child
         child = bus.dispatch(ChildEvent())
+        child_ref = child
 
         # Create multiple concurrent awaits on the same child
         async def await_child(name: str):
@@ -788,12 +839,18 @@ async def test_multiple_awaits_same_event():
         assert 'await1_completed' in await_results
         assert 'await2_completed' in await_results
 
-        # Child should have executed before Event1 ended
+        # Child should have executed exactly once and before Event1 ended
+        assert execution_order.count('Child_start') == 1
+        assert execution_order.count('Child_end') == 1
         assert 'Child_start' in execution_order
         assert 'Child_end' in execution_order
         child_end_idx = execution_order.index('Child_end')
         event1_end_idx = execution_order.index('Event1_end')
         assert child_end_idx < event1_end_idx
+
+        # Child event should have exactly one handler result (no double-run).
+        assert child_ref is not None
+        assert len(child_ref.event_results) == 1
 
         # E2 should NOT have executed yet
         assert 'Event2_start' not in execution_order, \

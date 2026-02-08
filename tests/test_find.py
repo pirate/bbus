@@ -373,6 +373,36 @@ class TestFindPastOnly:
         finally:
             await bus.stop(clear=True)
 
+    async def test_past_ignores_in_progress_until_event_completes(self):
+        """History search should only return completed events, never in-progress ones."""
+        bus = EventBus()
+
+        try:
+            release_handler = asyncio.Event()
+
+            async def slow_handler(event: ParentEvent) -> str:
+                await release_handler.wait()
+                return 'done'
+
+            bus.on(ParentEvent, slow_handler)
+
+            dispatched = bus.dispatch(ParentEvent())
+            await asyncio.sleep(0.02)  # Let handler start.
+
+            # In-progress event should not be returned by history search.
+            found_while_running = await bus.find(ParentEvent, past=True, future=False)
+            assert found_while_running is None
+
+            release_handler.set()
+            await dispatched
+            await bus.wait_until_idle()
+
+            found_after_completion = await bus.find(ParentEvent, past=True, future=False)
+            assert found_after_completion is not None
+            assert found_after_completion.event_id == dispatched.event_id
+        finally:
+            await bus.stop(clear=True)
+
 
 class TestFindFutureOnly:
     """Tests for find(past=False, future=...) - equivalent to expect()."""
@@ -432,6 +462,101 @@ class TestFindFutureOnly:
 
             assert found is None
 
+        finally:
+            await bus.stop(clear=True)
+
+    async def test_future_works_with_string_event_type(self):
+        """find('EventName', ...) resolves using string keys, not just model classes."""
+        bus = EventBus()
+
+        try:
+            bus.on(ParentEvent, lambda e: 'done')
+
+            async def dispatch_after_delay():
+                await asyncio.sleep(0.05)
+                return await bus.dispatch(ParentEvent())
+
+            find_task = asyncio.create_task(bus.find('ParentEvent', past=False, future=1))
+            dispatch_task = asyncio.create_task(dispatch_after_delay())
+
+            found, dispatched = await asyncio.gather(find_task, dispatch_task)
+
+            assert found is not None
+            assert found.event_id == dispatched.event_id
+            assert found.event_type == 'ParentEvent'
+        finally:
+            await bus.stop(clear=True)
+
+    async def test_multiple_concurrent_find_waiters_resolve_correct_events(self):
+        """Concurrent find() waiters should each resolve to the correct event."""
+        bus = EventBus()
+
+        try:
+            # Keep one permanent handler so we can assert temporary find handlers are cleaned up.
+            bus.on(ScreenshotEvent, lambda e: 'done')
+            baseline_handler_count = len(bus.handlers.get('ScreenshotEvent', []))
+
+            wait_for_a = asyncio.create_task(
+                bus.find(
+                    ScreenshotEvent,
+                    where=lambda e: e.target_id == 'tab-a',
+                    past=False,
+                    future=1,
+                )
+            )
+            wait_for_b = asyncio.create_task(
+                bus.find(
+                    ScreenshotEvent,
+                    where=lambda e: e.target_id == 'tab-b',
+                    past=False,
+                    future=1,
+                )
+            )
+
+            await asyncio.sleep(0.02)
+            event_a = await bus.dispatch(ScreenshotEvent(target_id='tab-a'))
+            event_b = await bus.dispatch(ScreenshotEvent(target_id='tab-b'))
+
+            found_a, found_b = await asyncio.gather(wait_for_a, wait_for_b)
+
+            assert found_a is not None
+            assert found_b is not None
+            assert found_a.event_id == event_a.event_id
+            assert found_b.event_id == event_b.event_id
+
+            # All temporary find handlers should be removed.
+            assert len(bus.handlers.get('ScreenshotEvent', [])) == baseline_handler_count
+        finally:
+            await bus.stop(clear=True)
+
+    async def test_find_future_resolves_before_handlers_complete(self):
+        """find(future=...) resolves on dispatch, before slow handlers complete."""
+        bus = EventBus()
+
+        try:
+            processing_complete = False
+
+            async def slow_handler(event: ParentEvent) -> str:
+                nonlocal processing_complete
+                await asyncio.sleep(0.1)
+                processing_complete = True
+                return 'done'
+
+            bus.on(ParentEvent, slow_handler)
+
+            find_task = asyncio.create_task(bus.find(ParentEvent, past=False, future=1))
+            await asyncio.sleep(0.01)
+
+            dispatched = bus.dispatch(ParentEvent())
+            found = await find_task
+
+            assert found is not None
+            assert found.event_id == dispatched.event_id
+            assert processing_complete is False
+            assert found.event_status in ('pending', 'started')
+
+            await bus.wait_until_idle()
+            assert processing_complete is True
         finally:
             await bus.stop(clear=True)
 

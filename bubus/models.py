@@ -300,6 +300,23 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 return True
         return False
 
+    def _is_queued_on_any_bus(self) -> bool:
+        """
+        Check whether this event is currently queued on any live EventBus.
+
+        This prevents premature completion when an event has been forwarded to
+        another bus but that bus hasn't processed it yet.
+        """
+        from bubus.service import EventBus
+
+        for bus in list(EventBus.all_instances):
+            if not bus or not bus.event_queue or not hasattr(bus.event_queue, '_queue'):
+                continue
+            queue = cast(deque[BaseEvent[Any]], bus.event_queue._queue)  # type: ignore[attr-defined]
+            if self in queue:
+                return True
+        return False
+
     async def _process_self_on_all_buses(self) -> None:
         """
         Process this specific event on all buses where it's queued.
@@ -576,18 +593,18 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         }
 
         if raise_if_any and error_results:
-            failing_handler, failing_result = list(error_results.items())[0]  # throw first error
-            original_error = failing_result.error or cast(Any, failing_result.result)
+            if len(error_results) == 1:
+                single_result = next(iter(error_results.values()))
+                single_error = single_result.error or cast(Any, single_result.result)
+                if isinstance(single_error, BaseException):
+                    raise single_error
+                raise Exception(str(single_error))
 
-            # Log the handler context information instead of wrapping the exception
-            logger.debug(f'Event handler {failing_handler}({self}) returned an error -> {original_error}')
-
-            # Re-raise the original exception to preserve its type and structured data
-            if isinstance(original_error, BaseException):
-                raise original_error
-            else:
-                # Fallback for non-exception errors (shouldn't happen in practice)
-                raise Exception(str(original_error))
+            collected_errors = self._collect_handler_errors(include_cancelled=True)
+            raise ExceptionGroup(
+                f'Event {self.event_type}#{self.event_id[-4:]} had {len(collected_errors)} handler error(s)',
+                collected_errors,
+            )
 
         if raise_if_none and not included_results:
             raise ValueError(
@@ -601,6 +618,54 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             assert event_result.result is not None, f'EventResult {event_result} has no result'
 
         return event_results_by_handler_id
+
+    async def raise_if_errors(
+        self,
+        timeout: float | None = None,
+        include_cancelled: bool = False,
+    ) -> None:
+        """
+        Raise an ExceptionGroup containing all handler errors for this event.
+
+        This waits for event completion, then aggregates handler failures from
+        event_results. By default, asyncio.CancelledError entries are ignored.
+        """
+        assert self.event_completed_signal is not None, 'Event cannot be awaited outside of an async context'
+        await asyncio.wait_for(self.event_completed_signal.wait(), timeout=timeout or self.event_timeout)
+
+        collected_errors = self._collect_handler_errors(include_cancelled=include_cancelled)
+
+        if collected_errors:
+            raise ExceptionGroup(
+                f'Event {self.event_type}#{self.event_id[-4:]} had {len(collected_errors)} handler error(s)',
+                collected_errors,
+            )
+
+    def _collect_handler_errors(self, include_cancelled: bool) -> list[Exception]:
+        """Collect handler errors as Exception instances for aggregation."""
+        collected_errors: list[Exception] = []
+        for event_result in self.event_results.values():
+            original_error = event_result.error
+            if original_error is None and isinstance(event_result.result, BaseException):
+                original_error = event_result.result
+
+            if original_error is None:
+                continue
+
+            if isinstance(original_error, asyncio.CancelledError) and not include_cancelled:
+                continue
+
+            if isinstance(original_error, Exception):
+                collected_errors.append(original_error)
+                continue
+
+            wrapped = RuntimeError(
+                f'Non-Exception handler error from {event_result.eventbus_name}.{event_result.handler_name}: '
+                f'{type(original_error).__name__}: {original_error}'
+            )
+            wrapped.__cause__ = original_error
+            collected_errors.append(wrapped)
+        return collected_errors
 
     async def event_results_by_handler_id(
         self,
@@ -783,6 +848,11 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 # )
                 return
 
+            # Forwarded events may still be waiting in another bus queue.
+            # Don't mark complete until all queue copies have been consumed.
+            if self._is_queued_on_any_bus():
+                return
+
             # Recursively check if all child events are also complete
             if not self.event_are_all_children_complete():
                 # incomplete_children = [c for c in self.event_children if c.event_status != 'completed']
@@ -871,7 +941,8 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
 
 def attr_name_allowed(key: str) -> bool:
-    return key in pydantic_builtin_attrs or key in event_builtin_attrs or key.startswith('_')
+    allowed_unprefixed_attrs = {'raise_if_errors'}
+    return key in pydantic_builtin_attrs or key in event_builtin_attrs or key.startswith('_') or key in allowed_unprefixed_attrs
 
 
 # PSA: All BaseEvent buil-in attrs and methods must be prefixed with "event_" in order to avoid clashing with data contents (which share a namespace with the metadata)

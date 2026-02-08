@@ -241,3 +241,192 @@ async def test_cleanup_prioritizes_pending():
     finally:
         # Properly stop the bus to clean up pending tasks
         await bus.stop(timeout=0, clear=True)  # Don't wait, just force cleanup
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_buses_with_forwarding_churn():
+    """
+    Closest Python equivalent to request-scoped bus churn:
+    create short-lived buses, forward between them, process events, then clear.
+    """
+    total_bus_pairs = 60
+    events_per_pair = 20
+    total_events = total_bus_pairs * events_per_pair
+    initial_instances = len(EventBus.all_instances)
+
+    handled_a = 0
+    handled_b = 0
+
+    start = time.time()
+
+    for idx in range(total_bus_pairs):
+        bus_a = EventBus(name=f'EphemeralA_{idx}_{os.getpid()}', middlewares=[])
+        bus_b = EventBus(name=f'EphemeralB_{idx}_{os.getpid()}', middlewares=[])
+
+        async def handler_a(event: SimpleEvent) -> None:
+            nonlocal handled_a
+            handled_a += 1
+
+        async def handler_b(event: SimpleEvent) -> None:
+            nonlocal handled_b
+            handled_b += 1
+
+        bus_a.on(SimpleEvent, handler_a)
+        bus_b.on(SimpleEvent, handler_b)
+        bus_a.on('*', bus_b.dispatch)
+
+        try:
+            pending = [bus_a.dispatch(SimpleEvent()) for _ in range(events_per_pair)]
+            await asyncio.gather(*pending)
+            await bus_a.wait_until_idle()
+            await bus_b.wait_until_idle()
+
+            assert bus_a.max_history_size is None or len(bus_a.event_history) <= bus_a.max_history_size
+            assert bus_b.max_history_size is None or len(bus_b.event_history) <= bus_b.max_history_size
+        finally:
+            await bus_a.stop(timeout=0, clear=True)
+            await bus_b.stop(timeout=0, clear=True)
+
+    duration = time.time() - start
+    gc.collect()
+
+    assert handled_a == total_events
+    assert handled_b == total_events
+    assert len(EventBus.all_instances) <= initial_instances
+    assert duration < 60, f'Ephemeral bus churn took too long: {duration:.2f}s'
+
+
+@pytest.mark.asyncio
+async def test_forwarding_queue_jump_timeout_mix_stays_stable():
+    """
+    Stress a mixed path in Python:
+    parent handler awaits forwarded child events, with intermittent child timeouts.
+    """
+    class MixedParentEvent(BaseEvent):
+        iteration: int = 0
+        event_timeout: float | None = 0.2
+
+    class MixedChildEvent(BaseEvent):
+        iteration: int = 0
+        event_timeout: float | None = 0.05
+
+    history_limit = 500
+    total_iterations = 300
+
+    bus_a = EventBus(name='MixedPathA', max_history_size=history_limit, middlewares=[])
+    bus_b = EventBus(name='MixedPathB', max_history_size=history_limit, middlewares=[])
+
+    parent_handled = 0
+    child_handled = 0
+    child_events: list[MixedChildEvent] = []
+
+    async def child_handler(event: MixedChildEvent) -> str:
+        nonlocal child_handled
+        child_handled += 1
+        if event.iteration % 7 == 0:
+            await asyncio.sleep(0.01)
+        else:
+            await asyncio.sleep(0.0005)
+        return 'child_done'
+
+    async def parent_handler(event: MixedParentEvent) -> str:
+        nonlocal parent_handled
+        parent_handled += 1
+
+        child_timeout = 0.001 if event.iteration % 7 == 0 else 0.05
+        child = bus_a.dispatch(MixedChildEvent(iteration=event.iteration, event_timeout=child_timeout))
+        bus_b.dispatch(child)
+        child_events.append(child)
+        await child
+        return 'parent_done'
+
+    bus_a.on(MixedParentEvent, parent_handler)
+    bus_b.on(MixedChildEvent, child_handler)
+
+    start = time.time()
+    try:
+        for i in range(total_iterations):
+            await bus_a.dispatch(MixedParentEvent(iteration=i))
+
+        await bus_a.wait_until_idle()
+        await bus_b.wait_until_idle()
+    finally:
+        await bus_a.stop(timeout=0, clear=True)
+        await bus_b.stop(timeout=0, clear=True)
+
+    duration = time.time() - start
+
+    assert parent_handled == total_iterations
+    assert child_handled == total_iterations
+    timeout_count = sum(
+        1
+        for child in child_events
+        if any(isinstance(result.error, TimeoutError) for result in child.event_results.values())
+    )
+    assert timeout_count > 0
+    assert len(bus_a.event_history) <= history_limit
+    assert len(bus_b.event_history) <= history_limit
+    assert duration < 60, f'Mixed forwarding/queue-jump/timeout path took too long: {duration:.2f}s'
+
+
+@pytest.mark.asyncio
+async def test_history_bound_is_strict_after_idle():
+    """After steady-state processing, history should stay within max_history_size."""
+    bus = EventBus(name='StrictHistoryBound', max_history_size=25, middlewares=[])
+
+    async def handler(event: SimpleEvent) -> None:
+        return None
+
+    bus.on(SimpleEvent, handler)
+
+    try:
+        for _ in range(200):
+            await bus.dispatch(SimpleEvent())
+
+        await bus.wait_until_idle()
+        assert len(bus.event_history) <= 25
+    finally:
+        await bus.stop(timeout=0, clear=True)
+
+
+@pytest.mark.asyncio
+async def test_basic_throughput_floor_regression_guard():
+    """
+    Throughput regression guard (Python-specific floor).
+    Keeps threshold conservative to avoid CI flakiness while still catching
+    severe slowdowns.
+    """
+    bus = EventBus(name='ThroughputFloor', middlewares=[])
+
+    processed = 0
+
+    async def handler(event: SimpleEvent) -> None:
+        nonlocal processed
+        processed += 1
+
+    bus.on(SimpleEvent, handler)
+
+    total_events = 5_000
+    batch_size = 50
+    pending: list[BaseEvent[Any]] = []
+
+    start = time.time()
+    try:
+        for _ in range(total_events):
+            pending.append(bus.dispatch(SimpleEvent()))
+            if len(pending) >= batch_size:
+                await asyncio.gather(*pending)
+                pending.clear()
+
+        if pending:
+            await asyncio.gather(*pending)
+
+        await bus.wait_until_idle()
+    finally:
+        await bus.stop(timeout=0, clear=True)
+
+    duration = time.time() - start
+    rate = total_events / duration
+
+    assert processed == total_events
+    assert rate >= 600, f'Throughput regression: {rate:.0f} events/sec (expected >= 600 events/sec)'

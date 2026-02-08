@@ -176,3 +176,206 @@ async def test_nested_timeout_scenario_from_issue():
     # # assert 'ChildEvent' in str(exc_info.value) or 'ChildEvent' in str(exc_info.value)
 
     await bus.stop(clear=True, timeout=0)
+
+
+@pytest.mark.asyncio
+async def test_handler_timeout_marks_error_and_other_handlers_still_complete():
+    """Focused timeout behavior: one handler times out, another still completes."""
+    bus = EventBus(name='TimeoutFocusedBus')
+
+    class TimeoutFocusedEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.01
+
+    execution_order: list[str] = []
+
+    async def slow_handler(event: TimeoutFocusedEvent) -> str:
+        execution_order.append('slow_start')
+        await asyncio.sleep(0.05)
+        execution_order.append('slow_end')
+        return 'slow'
+
+    async def fast_handler(event: TimeoutFocusedEvent) -> str:
+        execution_order.append('fast_start')
+        return 'fast'
+
+    bus.on(TimeoutFocusedEvent, slow_handler)
+    bus.on(TimeoutFocusedEvent, fast_handler)
+
+    try:
+        event = await bus.dispatch(TimeoutFocusedEvent())
+        await bus.wait_until_idle()
+
+        slow_result = next((r for r in event.event_results.values() if r.handler_name.endswith('slow_handler')), None)
+        fast_result = next((r for r in event.event_results.values() if r.handler_name.endswith('fast_handler')), None)
+
+        assert slow_result is not None
+        assert slow_result.status == 'error'
+        assert isinstance(slow_result.error, TimeoutError)
+
+        assert fast_result is not None
+        assert fast_result.status == 'completed'
+        assert fast_result.result == 'fast'
+        assert 'fast_start' in execution_order
+    finally:
+        await bus.stop(clear=True, timeout=0)
+
+
+@pytest.mark.asyncio
+async def test_multi_bus_timeout_is_recorded_on_target_bus():
+    """Closest Python equivalent: same event dispatched to two buses, timeout on target bus is captured."""
+    bus_a = EventBus(name='MultiTimeoutA')
+    bus_b = EventBus(name='MultiTimeoutB')
+
+    class MultiBusTimeoutEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.01
+
+    async def slow_target_handler(event: MultiBusTimeoutEvent) -> str:
+        await asyncio.sleep(0.05)
+        return 'slow'
+
+    bus_b.on(MultiBusTimeoutEvent, slow_target_handler)
+
+    try:
+        event = MultiBusTimeoutEvent()
+        bus_a.dispatch(event)
+        bus_b.dispatch(event)
+        await bus_b.wait_until_idle()
+
+        bus_b_result = next((r for r in event.event_results.values() if r.eventbus_name == bus_b.name), None)
+        assert bus_b_result is not None
+        assert bus_b_result.status == 'error'
+        assert isinstance(bus_b_result.error, TimeoutError)
+        assert event.event_path == ['MultiTimeoutA', 'MultiTimeoutB']
+    finally:
+        await bus_a.stop(clear=True, timeout=0)
+        await bus_b.stop(clear=True, timeout=0)
+
+
+@pytest.mark.asyncio
+async def test_followup_event_runs_after_parent_timeout_in_queue_jump_path():
+    """
+    Regression guard: timeout in a handler that awaited a child event should not
+    stall subsequent events on the same bus.
+    """
+    bus = EventBus(name='TimeoutQueueJumpFollowupBus')
+
+    class ParentEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.02
+
+    class ChildEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.2
+
+    class TailEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.2
+
+    tail_runs = 0
+
+    async def child_handler(event: ChildEvent) -> str:
+        await asyncio.sleep(0.001)
+        return 'child_done'
+
+    async def parent_handler(event: ParentEvent) -> str:
+        child = bus.dispatch(ChildEvent())
+        await child
+        await asyncio.sleep(0.05)  # Exceeds parent timeout
+        return 'parent_done'
+
+    async def tail_handler(event: TailEvent) -> str:
+        nonlocal tail_runs
+        tail_runs += 1
+        return 'tail_done'
+
+    bus.on(ParentEvent, parent_handler)
+    bus.on(ChildEvent, child_handler)
+    bus.on(TailEvent, tail_handler)
+
+    try:
+        parent = await bus.dispatch(ParentEvent())
+        await bus.wait_until_idle()
+
+        parent_result = next(iter(parent.event_results.values()))
+        assert parent_result.status == 'error'
+        assert isinstance(parent_result.error, TimeoutError)
+
+        tail = bus.dispatch(TailEvent())
+        completed_tail = await asyncio.wait_for(tail, timeout=1.0)
+        assert completed_tail.event_status == 'completed'
+        assert tail_runs == 1
+    finally:
+        await bus.stop(clear=True, timeout=0)
+
+
+@pytest.mark.asyncio
+async def test_forwarded_timeout_path_does_not_stall_followup_events():
+    """
+    Regression guard: if a forwarded awaited child times out, subsequent events
+    should still run on both source and target buses.
+    """
+    bus_a = EventBus(name='TimeoutForwardA')
+    bus_b = EventBus(name='TimeoutForwardB')
+
+    class ParentEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.02
+
+    class ChildEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.01
+
+    class TailEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.2
+
+    bus_a_tail_runs = 0
+    bus_b_tail_runs = 0
+    child_ref: ChildEvent | None = None
+
+    async def parent_handler(event: ParentEvent) -> str:
+        nonlocal child_ref
+        child = bus_a.dispatch(ChildEvent())
+        child_ref = child
+        await child
+        return 'parent_done'
+
+    async def slow_child_handler(event: ChildEvent) -> str:
+        await asyncio.sleep(0.05)  # Guaranteed timeout on child.
+        return 'child_done'
+
+    async def tail_handler_a(event: TailEvent) -> str:
+        nonlocal bus_a_tail_runs
+        bus_a_tail_runs += 1
+        return 'tail_a'
+
+    async def tail_handler_b(event: TailEvent) -> str:
+        nonlocal bus_b_tail_runs
+        bus_b_tail_runs += 1
+        return 'tail_b'
+
+    bus_a.on(ParentEvent, parent_handler)
+    bus_a.on(TailEvent, tail_handler_a)
+    bus_a.on('*', bus_b.dispatch)
+    bus_b.on(ChildEvent, slow_child_handler)
+    bus_b.on(TailEvent, tail_handler_b)
+
+    try:
+        parent = await bus_a.dispatch(ParentEvent())
+        await bus_a.wait_until_idle()
+        await bus_b.wait_until_idle()
+
+        parent_result = next(iter(parent.event_results.values()))
+        assert parent_result.status == 'completed'
+
+        assert child_ref is not None
+        assert any(
+            isinstance(result.error, TimeoutError) for result in child_ref.event_results.values()
+        ), child_ref.event_results
+
+        # Lock/queue state should remain healthy after timeout.
+        tail = bus_a.dispatch(TailEvent())
+        completed_tail = await asyncio.wait_for(tail, timeout=1.0)
+        await bus_a.wait_until_idle()
+        await bus_b.wait_until_idle()
+
+        assert completed_tail.event_status == 'completed'
+        assert bus_a_tail_runs == 1
+        assert bus_b_tail_runs == 1
+    finally:
+        await bus_a.stop(clear=True, timeout=0)
+        await bus_b.stop(clear=True, timeout=0)

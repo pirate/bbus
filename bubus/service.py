@@ -1063,8 +1063,13 @@ class EventBus:
                     self._on_idle = asyncio.Event()
                     self._on_idle.clear()  # Start in a busy state unless we confirm queue is empty by running step() at least once
 
-                # Create and start the run loop task
-                self._runloop_task = loop.create_task(self._run_loop(), name=f'{self}._run_loop')
+                # Create and start the run loop task.
+                # Use a weakref-based runner so an unreferenced EventBus can be GC'd
+                # without requiring explicit stop(clear=True) by callers.
+                self._runloop_task = loop.create_task(
+                    EventBus._run_loop_weak(weakref.ref(self)),
+                    name=f'{self}._run_loop',
+                )
                 self._is_running = True
             except RuntimeError:
                 # No event loop - will start when one becomes available
@@ -1228,6 +1233,97 @@ class EventBus:
         finally:
             # Don't call stop() here as it might create new tasks
             self._is_running = False
+
+    @staticmethod
+    async def _run_loop_weak(bus_ref: 'weakref.ReferenceType[EventBus]') -> None:
+        """
+        Weakref-based run loop.
+
+        Unlike a bound coroutine (self._run_loop), this runner avoids holding a
+        strong EventBus reference while idle, allowing unreferenced buses to be
+        garbage-collected naturally without an explicit stop().
+        """
+        try:
+            while True:
+                bus = bus_ref()
+                if bus is None or not bus._is_running:
+                    break
+
+                queue = bus.event_queue
+                on_idle = bus._on_idle
+                del bus
+
+                if queue is None or on_idle is None:
+                    await asyncio.sleep(0.01)
+                    continue
+
+                event: BaseEvent[Any] | None = None
+                try:
+                    get_next_queued_event = asyncio.create_task(queue.get())
+                    if hasattr(get_next_queued_event, '_log_destroy_pending'):
+                        get_next_queued_event._log_destroy_pending = False  # type: ignore[attr-defined]
+                    has_next_event, _pending = await asyncio.wait({get_next_queued_event}, timeout=0.1)
+                    if not has_next_event:
+                        get_next_queued_event.cancel()
+                        bus = bus_ref()
+                        if bus is None:
+                            break
+                        if bus._on_idle and bus.event_queue:
+                            if not (bus.events_pending or bus.events_started or bus.event_queue.qsize()):
+                                bus._on_idle.set()
+                        del bus
+                        continue
+
+                    event = await get_next_queued_event
+                except QueueShutDown:
+                    break
+                except asyncio.CancelledError:
+                    break
+                except RuntimeError as e:
+                    if 'Event loop is closed' in str(e) or 'no running event loop' in str(e):
+                        break
+                    logger.exception(f'❌ Weak run loop runtime error: {type(e).__name__} {e}', exc_info=True)
+                    continue
+                except Exception as e:
+                    logger.exception(f'❌ Weak run loop error: {type(e).__name__} {e}', exc_info=True)
+                    continue
+
+                bus = bus_ref()
+                if bus is None:
+                    try:
+                        queue.task_done()
+                    except Exception:
+                        pass
+                    break
+
+                try:
+                    if bus._on_idle:
+                        bus._on_idle.clear()
+
+                    async with _get_global_lock():
+                        if event is not None:
+                            await bus.handle_event(event)
+                        queue.task_done()
+
+                    if bus._on_idle and bus.event_queue:
+                        if not (bus.events_pending or bus.events_started or bus.event_queue.qsize()):
+                            bus._on_idle.set()
+                except QueueShutDown:
+                    break
+                except asyncio.CancelledError:
+                    break
+                except RuntimeError as e:
+                    if 'Event loop is closed' in str(e) or 'no running event loop' in str(e):
+                        break
+                    logger.exception(f'❌ Weak run loop runtime error: {type(e).__name__} {e}', exc_info=True)
+                except Exception as e:
+                    logger.exception(f'❌ Weak run loop error: {type(e).__name__} {e}', exc_info=True)
+                finally:
+                    del bus
+        finally:
+            bus = bus_ref()
+            if bus is not None:
+                bus._is_running = False
 
     async def _get_next_event(self, wait_for_timeout: float = 0.1) -> 'BaseEvent[Any] | None':
         """Get the next event from the queue"""

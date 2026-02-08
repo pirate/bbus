@@ -6,11 +6,12 @@ Tests that EventBus instances that would be garbage collected don't cause
 name conflicts when creating new instances with the same name.
 """
 
+import asyncio
 import weakref
 
 import pytest
 
-from bubus import EventBus
+from bubus import BaseEvent, EventBus
 
 
 class TestNameConflictGC:
@@ -174,3 +175,91 @@ class TestNameConflictGC:
         assert bus1.name == 'ConcurrentTest'
         assert bus2.name.startswith('ConcurrentTest_')
         assert bus2.name != bus1.name
+
+    @pytest.mark.asyncio
+    async def test_unreferenced_buses_with_history_can_be_cleaned_without_instance_leak(self):
+        """
+        Buses with populated history may outlive local scope while runloops are still active,
+        but they must be releasable via explicit cleanup without leaking all_instances.
+        """
+        import gc
+
+        class GcHistoryEvent(BaseEvent[str]):
+            pass
+
+        baseline_instances = len(EventBus.all_instances)
+        refs: list[weakref.ReferenceType[EventBus]] = []
+
+        async def create_and_fill_bus(index: int) -> weakref.ReferenceType[EventBus]:
+            bus = EventBus(name=f'GCNoStopBus_{index}')
+            bus.on(GcHistoryEvent, lambda e: 'ok')
+            for _ in range(40):
+                await bus.dispatch(GcHistoryEvent())
+            await bus.wait_until_idle()
+            return weakref.ref(bus)
+
+        for i in range(30):
+            refs.append(await create_and_fill_bus(i))
+
+        # Encourage GC/finalization first (best effort without explicit stop()).
+        for _ in range(20):
+            gc.collect()
+            await asyncio.sleep(0.02)
+
+        alive_buses = [ref() for ref in refs if ref() is not None]
+        still_live = [bus for bus in alive_buses if bus is not None]
+
+        # Deterministically clean up anything still alive.
+        for bus in still_live:
+            await bus.stop(clear=True, timeout=0)
+        # Loop variable keeps a strong ref to the last bus in CPython.
+        if still_live:
+            del bus
+        del still_live
+        del alive_buses
+
+        # Final GC and WeakSet purge.
+        for _ in range(10):
+            gc.collect()
+            await asyncio.sleep(0.01)
+        _ = list(EventBus.all_instances)
+
+        assert all(ref() is None for ref in refs), 'all buses should be collectable after cleanup'
+        assert len(EventBus.all_instances) <= baseline_instances
+
+    @pytest.mark.asyncio
+    async def test_unreferenced_buses_with_history_are_collected_without_stop(self):
+        """
+        Unreferenced buses should be collectable without explicit stop(clear=True),
+        even after processing events and populating history.
+        """
+        import gc
+
+        class GcImplicitEvent(BaseEvent[str]):
+            pass
+
+        baseline_instances = len(EventBus.all_instances)
+        refs: list[weakref.ReferenceType[EventBus]] = []
+
+        async def create_and_fill_bus(index: int) -> weakref.ReferenceType[EventBus]:
+            bus = EventBus(name=f'GCImplicitNoStop_{index}')
+            bus.on(GcImplicitEvent, lambda e: 'ok')
+            for _ in range(30):
+                await bus.dispatch(GcImplicitEvent())
+            await bus.wait_until_idle()
+            return weakref.ref(bus)
+
+        for i in range(20):
+            refs.append(await create_and_fill_bus(i))
+
+        for _ in range(80):
+            gc.collect()
+            await asyncio.sleep(0.02)
+            if all(ref() is None for ref in refs):
+                break
+
+        # Force WeakSet iteration to purge any dead refs.
+        _ = list(EventBus.all_instances)
+
+        assert all(ref() is None for ref in refs), 'all unreferenced buses should be collected without stop()'
+        assert len(EventBus.all_instances) <= baseline_instances
