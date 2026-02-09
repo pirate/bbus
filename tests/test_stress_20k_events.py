@@ -1,5 +1,6 @@
 import asyncio
 import gc
+import math
 import os
 import time
 from typing import Any
@@ -14,6 +15,246 @@ def get_memory_usage_mb():
     """Get current process memory usage in MB"""
     process = psutil.Process(os.getpid())
     return process.memory_info().rss / 1024 / 1024
+
+
+def percentile(values: list[float], q: float) -> float:
+    """Simple percentile helper without numpy dependency."""
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    pos = (len(sorted_values) - 1) * q
+    low = math.floor(pos)
+    high = math.ceil(pos)
+    if low == high:
+        return sorted_values[int(pos)]
+    return sorted_values[low] + (sorted_values[high] - sorted_values[low]) * (pos - low)
+
+
+async def dispatch_and_measure(
+    bus: EventBus,
+    event_factory: callable,
+    total_events: int,
+    batch_size: int = 40,
+) -> tuple[float, float, float, float, float]:
+    """
+    Dispatch many events and return:
+    (throughput_events_per_sec, dispatch_p50_ms, dispatch_p95_ms, done_p50_ms, done_p95_ms)
+    """
+    dispatch_latencies_ms: list[float] = []
+    done_latencies_ms: list[float] = []
+    pending: list[tuple[BaseEvent[Any], float]] = []
+
+    start = time.perf_counter()
+    for _ in range(total_events):
+        t0 = time.perf_counter()
+        event = bus.dispatch(event_factory())
+        dispatch_latencies_ms.append((time.perf_counter() - t0) * 1000)
+        pending.append((event, time.perf_counter()))
+        if len(pending) >= batch_size:
+            await asyncio.gather(*(wait_one(item) for item in pending))
+            pending.clear()
+
+    async def wait_one(item: tuple[BaseEvent[Any], float]) -> None:
+        event, t_dispatch_done = item
+        await event
+        done_latencies_ms.append((time.perf_counter() - t_dispatch_done) * 1000)
+
+    if pending:
+        await asyncio.gather(*(wait_one(item) for item in pending))
+    await bus.wait_until_idle()
+
+    elapsed = time.perf_counter() - start
+    throughput = total_events / max(elapsed, 1e-9)
+    return (
+        throughput,
+        percentile(dispatch_latencies_ms, 0.50),
+        percentile(dispatch_latencies_ms, 0.95),
+        percentile(done_latencies_ms, 0.50),
+        percentile(done_latencies_ms, 0.95),
+    )
+
+
+async def run_mode_throughput_benchmark(
+    *,
+    parallel_handlers: bool,
+    total_events: int = 5_000,
+    batch_size: int = 50,
+) -> tuple[int, float]:
+    """Run a basic no-op throughput benchmark for one handler mode."""
+    bus = EventBus(
+        name=f'ThroughputFloor_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        middlewares=[],
+    )
+
+    processed = 0
+
+    async def handler(event: SimpleEvent) -> None:
+        nonlocal processed
+        processed += 1
+
+    bus.on(SimpleEvent, handler)
+
+    pending: list[BaseEvent[Any]] = []
+    start = time.time()
+    try:
+        for _ in range(total_events):
+            pending.append(bus.dispatch(SimpleEvent()))
+            if len(pending) >= batch_size:
+                await asyncio.gather(*pending)
+                pending.clear()
+
+        if pending:
+            await asyncio.gather(*pending)
+
+        await bus.wait_until_idle()
+    finally:
+        await bus.stop(timeout=0, clear=True)
+
+    duration = time.time() - start
+    throughput = total_events / max(duration, 1e-9)
+    return processed, throughput
+
+
+async def run_io_fanout_benchmark(
+    *,
+    parallel_handlers: bool,
+    total_events: int = 800,
+    handlers_per_event: int = 4,
+    sleep_seconds: float = 0.0015,
+    batch_size: int = 40,
+) -> tuple[int, float]:
+    """Benchmark I/O-bound fanout to compare serial vs parallel handler mode."""
+    bus = EventBus(
+        name=f'Fanout_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        middlewares=[],
+    )
+
+    handled = 0
+
+    for index in range(handlers_per_event):
+        async def handler(event: SimpleEvent) -> None:
+            nonlocal handled
+            await asyncio.sleep(sleep_seconds)
+            handled += 1
+
+        handler.__name__ = f'fanout_handler_{index}'
+        bus.on(SimpleEvent, handler)
+
+    pending: list[BaseEvent[Any]] = []
+    start = time.time()
+    try:
+        for _ in range(total_events):
+            pending.append(bus.dispatch(SimpleEvent()))
+            if len(pending) >= batch_size:
+                await asyncio.gather(*pending)
+                pending.clear()
+
+        if pending:
+            await asyncio.gather(*pending)
+
+        await bus.wait_until_idle()
+    finally:
+        await bus.stop(timeout=0, clear=True)
+
+    duration = time.time() - start
+    return handled, duration
+
+
+def throughput_floor_for_mode(parallel_handlers: bool) -> int:
+    """
+    Conservative per-mode floor to catch severe regressions while avoiding CI flakiness.
+    """
+    if parallel_handlers:
+        return 500
+    return 600
+
+
+def throughput_regression_floor(
+    first_run_throughput: float,
+    *,
+    min_fraction: float,
+    hard_floor: float,
+) -> float:
+    """
+    Scenario+mode regression threshold using same-run baseline + absolute safety floor.
+    """
+    return max(hard_floor, first_run_throughput * min_fraction)
+
+
+async def run_contention_round(
+    *,
+    parallel_handlers: bool,
+    bus_count: int = 10,
+    events_per_bus: int = 120,
+    batch_size: int = 20,
+) -> dict[str, float]:
+    """
+    Concurrently dispatch on many buses to stress global lock contention.
+    """
+    buses = [
+        EventBus(
+            name=f'LockContention_{i}_{"parallel" if parallel_handlers else "serial"}',
+            parallel_handlers=parallel_handlers,
+            middlewares=[],
+        )
+        for i in range(bus_count)
+    ]
+    counters = [0 for _ in range(bus_count)]
+    dispatch_latencies_ms: list[float] = []
+    done_latencies_ms: list[float] = []
+
+    for index, bus in enumerate(buses):
+        def make_handler(handler_index: int):
+            async def handler(event: SimpleEvent) -> None:
+                counters[handler_index] += 1
+
+            handler.__name__ = f'contention_handler_{handler_index}'
+            return handler
+
+        bus.on(SimpleEvent, make_handler(index))
+
+    async def wait_batch(batch: list[tuple[BaseEvent[Any], float]]) -> None:
+        async def wait_one(item: tuple[BaseEvent[Any], float]) -> None:
+            event, dispatch_done_at = item
+            await event
+            done_latencies_ms.append((time.perf_counter() - dispatch_done_at) * 1000)
+
+        await asyncio.gather(*(wait_one(item) for item in batch))
+
+    async def producer(bus: EventBus) -> None:
+        pending: list[tuple[BaseEvent[Any], float]] = []
+        for _ in range(events_per_bus):
+            t0 = time.perf_counter()
+            event = bus.dispatch(SimpleEvent())
+            dispatch_latencies_ms.append((time.perf_counter() - t0) * 1000)
+            pending.append((event, time.perf_counter()))
+            if len(pending) >= batch_size:
+                await wait_batch(pending)
+                pending.clear()
+
+        if pending:
+            await wait_batch(pending)
+        await bus.wait_until_idle()
+
+    total_events = bus_count * events_per_bus
+    start = time.perf_counter()
+    try:
+        await asyncio.gather(*(producer(bus) for bus in buses))
+    finally:
+        await asyncio.gather(*(bus.stop(timeout=0, clear=True) for bus in buses))
+
+    duration = time.perf_counter() - start
+    return {
+        'throughput': total_events / max(duration, 1e-9),
+        'dispatch_p50_ms': percentile(dispatch_latencies_ms, 0.50),
+        'dispatch_p95_ms': percentile(dispatch_latencies_ms, 0.95),
+        'done_p50_ms': percentile(done_latencies_ms, 0.50),
+        'done_p95_ms': percentile(done_latencies_ms, 0.95),
+        'fairness_min': float(min(counters)),
+        'fairness_max': float(max(counters)),
+    }
 
 
 class SimpleEvent(BaseEvent):
@@ -390,43 +631,102 @@ async def test_history_bound_is_strict_after_idle():
 
 
 @pytest.mark.asyncio
-async def test_basic_throughput_floor_regression_guard():
+@pytest.mark.parametrize(
+    'parallel_handlers',
+    [False, True],
+    ids=['serial_handlers', 'parallel_handlers'],
+)
+async def test_basic_throughput_floor_regression_guard(parallel_handlers: bool):
     """
-    Throughput regression guard (Python-specific floor).
+    Throughput regression guard across Python's handler concurrency modes.
     Keeps threshold conservative to avoid CI flakiness while still catching
     severe slowdowns.
     """
-    bus = EventBus(name='ThroughputFloor', middlewares=[])
+    processed, rate = await run_mode_throughput_benchmark(parallel_handlers=parallel_handlers)
 
-    processed = 0
+    assert processed == 5_000
+    minimum_rate = throughput_floor_for_mode(parallel_handlers)
+    mode = 'parallel' if parallel_handlers else 'serial'
+    assert rate >= minimum_rate, (
+        f'{mode} throughput regression: {rate:.0f} events/sec '
+        f'(expected >= {minimum_rate} events/sec)'
+    )
 
-    async def handler(event: SimpleEvent) -> None:
-        nonlocal processed
-        processed += 1
 
-    bus.on(SimpleEvent, handler)
+@pytest.mark.asyncio
+async def test_parallel_handlers_mode_improves_io_bound_fanout():
+    """
+    For I/O-bound workloads with multiple handlers per event, parallel mode should
+    provide a meaningful speedup versus serial mode.
+    """
+    serial_handled, serial_duration = await run_io_fanout_benchmark(parallel_handlers=False)
+    parallel_handled, parallel_duration = await run_io_fanout_benchmark(parallel_handlers=True)
 
-    total_events = 5_000
-    batch_size = 50
+    expected_total = 800 * 4
+    assert serial_handled == expected_total
+    assert parallel_handled == expected_total
+    assert parallel_duration < serial_duration * 0.8, (
+        f'Expected parallel handler mode to be faster for I/O fanout; '
+        f'serial={serial_duration:.2f}s parallel={parallel_duration:.2f}s'
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parallel_handlers',
+    [False, True],
+    ids=['serial_handlers', 'parallel_handlers'],
+)
+async def test_forwarding_throughput_floor_across_modes(parallel_handlers: bool):
+    """
+    Regression guard for forwarding path in both handler execution modes.
+    """
+    source_bus = EventBus(
+        name=f'ForwardSource_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        middlewares=[],
+    )
+    target_bus = EventBus(
+        name=f'ForwardTarget_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        middlewares=[],
+    )
+
+    handled = 0
+
+    async def sink_handler(event: SimpleEvent) -> None:
+        nonlocal handled
+        handled += 1
+
+    source_bus.on('*', target_bus.dispatch)
+    target_bus.on(SimpleEvent, sink_handler)
+
+    total_events = 3_000
     pending: list[BaseEvent[Any]] = []
-
+    batch_size = 40
     start = time.time()
     try:
         for _ in range(total_events):
-            pending.append(bus.dispatch(SimpleEvent()))
+            pending.append(source_bus.dispatch(SimpleEvent()))
             if len(pending) >= batch_size:
                 await asyncio.gather(*pending)
                 pending.clear()
 
         if pending:
             await asyncio.gather(*pending)
-
-        await bus.wait_until_idle()
+        await source_bus.wait_until_idle()
+        await target_bus.wait_until_idle()
     finally:
-        await bus.stop(timeout=0, clear=True)
+        await source_bus.stop(timeout=0, clear=True)
+        await target_bus.stop(timeout=0, clear=True)
 
     duration = time.time() - start
-    rate = total_events / duration
+    throughput = total_events / max(duration, 1e-9)
+    floor = 200
 
-    assert processed == total_events
-    assert rate >= 600, f'Throughput regression: {rate:.0f} events/sec (expected >= 600 events/sec)'
+    assert handled == total_events
+    mode = 'parallel' if parallel_handlers else 'serial'
+    assert throughput >= floor, (
+        f'{mode} forwarding throughput regression: {throughput:.0f} events/sec '
+        f'(expected >= {floor} events/sec)'
+    )
