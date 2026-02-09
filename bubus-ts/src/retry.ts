@@ -13,8 +13,10 @@ export interface RetryOptions {
   /** Multiplier applied to retry_after after each attempt for exponential backoff. Default: 1.0 (constant delay) */
   retry_backoff_factor?: number
 
-  /** Only retry when the thrown error is an instance of one of these classes. Default: undefined (retry on any error) */
-  retry_on_errors?: Array<new (...args: any[]) => Error>
+  /** Only retry when the thrown error matches one of these matchers. Accepts error class constructors,
+   *  string error names (matched against error.name), or RegExp patterns (tested against String(error)).
+   *  Default: undefined (retry on any error) */
+  retry_on_errors?: Array<(new (...args: any[]) => Error) | string | RegExp>
 
   /** Per-attempt timeout in seconds. Default: undefined (no per-attempt timeout) */
   timeout?: number | null
@@ -202,7 +204,13 @@ export function retry(options: RetryOptions = {}) {
           } catch (error) {
             // Check if this error type should trigger a retry
             if (retry_on_errors && retry_on_errors.length > 0) {
-              const is_retryable = retry_on_errors.some((ErrorClass) => error instanceof ErrorClass)
+              const is_retryable = retry_on_errors.some((matcher) =>
+                typeof matcher === 'string'
+                  ? (error as Error)?.name === matcher
+                  : matcher instanceof RegExp
+                    ? matcher.test(String(error))
+                    : error instanceof matcher
+              )
               if (!is_retryable) throw error
             }
 

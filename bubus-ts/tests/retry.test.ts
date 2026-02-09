@@ -146,6 +146,61 @@ test('retry: retry_on_errors does not retry non-matching errors', async () => {
   assert.equal(calls, 1)
 })
 
+test('retry: retry_on_errors accepts string error name', async () => {
+  let calls = 0
+  const fn = retry({ max_attempts: 3, retry_on_errors: ['NetworkError'] })(async () => {
+    calls++
+    if (calls < 3) throw new NetworkError()
+    return 'ok'
+  })
+  assert.equal(await fn(), 'ok')
+  assert.equal(calls, 3)
+})
+
+test('retry: retry_on_errors string matcher does not retry non-matching names', async () => {
+  let calls = 0
+  const fn = retry({ max_attempts: 3, retry_on_errors: ['NetworkError'] })(async () => {
+    calls++
+    throw new ValidationError()
+  })
+  await assert.rejects(fn, { name: 'ValidationError' })
+  assert.equal(calls, 1)
+})
+
+test('retry: retry_on_errors accepts RegExp pattern', async () => {
+  let calls = 0
+  const fn = retry({ max_attempts: 3, retry_on_errors: [/network/i] })(async () => {
+    calls++
+    if (calls < 3) throw new NetworkError('Network timeout occurred')
+    return 'ok'
+  })
+  assert.equal(await fn(), 'ok')
+  assert.equal(calls, 3)
+})
+
+test('retry: retry_on_errors RegExp does not retry non-matching errors', async () => {
+  let calls = 0
+  const fn = retry({ max_attempts: 3, retry_on_errors: [/network/i] })(async () => {
+    calls++
+    throw new ValidationError('bad input')
+  })
+  await assert.rejects(fn, { name: 'ValidationError' })
+  assert.equal(calls, 1)
+})
+
+test('retry: retry_on_errors mixes class, string, and RegExp matchers', async () => {
+  let calls = 0
+  const fn = retry({ max_attempts: 5, retry_on_errors: [TypeError, 'NetworkError', /timeout/i] })(async () => {
+    calls++
+    if (calls === 1) throw new TypeError('type error')
+    if (calls === 2) throw new NetworkError()
+    if (calls === 3) throw new Error('Connection timeout')
+    return 'ok'
+  })
+  assert.equal(await fn(), 'ok')
+  assert.equal(calls, 4)
+})
+
 test('retry: retry_on_errors with multiple error types', async () => {
   let calls = 0
   const fn = retry({ max_attempts: 5, retry_on_errors: [NetworkError, TypeError] })(async () => {
