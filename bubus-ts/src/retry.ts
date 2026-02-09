@@ -1,0 +1,323 @@
+import { AsyncSemaphore } from './lock_manager.js'
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+export interface RetryOptions {
+  /** Total number of attempts including the initial call (1 = no retry, 3 = up to 2 retries). Default: 1 */
+  max_attempts?: number
+
+  /** Seconds to wait between retries. Default: 0 */
+  retry_after?: number
+
+  /** Multiplier applied to retry_after after each attempt for exponential backoff. Default: 1.0 (constant delay) */
+  retry_backoff_factor?: number
+
+  /** Only retry when the thrown error is an instance of one of these classes. Default: undefined (retry on any error) */
+  retry_on_errors?: Array<new (...args: any[]) => Error>
+
+  /** Per-attempt timeout in seconds. Default: undefined (no per-attempt timeout) */
+  timeout?: number | null
+
+  /** Maximum concurrent executions sharing this semaphore. Default: undefined (no concurrency limit) */
+  semaphore_limit?: number | null
+
+  /** Semaphore identifier. Functions with the same name share the same concurrency slot pool. Default: function name */
+  semaphore_name?: string | null
+
+  /** If true, proceed without concurrency limit when semaphore acquisition times out. Default: true */
+  semaphore_lax?: boolean
+
+  /** Maximum seconds to wait for semaphore acquisition. Default: undefined → timeout * max(1, limit - 1) */
+  semaphore_timeout?: number | null
+}
+
+// ─── Errors ──────────────────────────────────────────────────────────────────
+
+/** Thrown when a single attempt exceeds the per-attempt timeout. */
+export class RetryTimeoutError extends Error {
+  timeout_seconds: number
+  attempt: number
+
+  constructor(message: string, params: { timeout_seconds: number; attempt: number }) {
+    super(message)
+    this.name = 'RetryTimeoutError'
+    this.timeout_seconds = params.timeout_seconds
+    this.attempt = params.attempt
+  }
+}
+
+/** Thrown (when semaphore_lax=false) if the semaphore cannot be acquired within the timeout. */
+export class SemaphoreTimeoutError extends Error {
+  semaphore_name: string
+  semaphore_limit: number
+  timeout_seconds: number
+
+  constructor(message: string, params: { semaphore_name: string; semaphore_limit: number; timeout_seconds: number }) {
+    super(message)
+    this.name = 'SemaphoreTimeoutError'
+    this.semaphore_name = params.semaphore_name
+    this.semaphore_limit = params.semaphore_limit
+    this.timeout_seconds = params.timeout_seconds
+  }
+}
+
+// ─── Re-entrancy tracking via AsyncLocalStorage ──────────────────────────────
+//
+// Prevents deadlocks when a retry()-wrapped function calls another retry()-wrapped
+// function that shares the same semaphore (or calls itself recursively).
+//
+// Each async call stack tracks which semaphore names it currently holds. When a
+// nested call encounters a semaphore it already holds, it skips acquisition and
+// runs directly within the parent's slot.
+
+type ReentrantStore = Set<string>
+
+type AsyncLocalStorageLike = {
+  getStore(): ReentrantStore | undefined
+  run<T>(store: ReentrantStore, callback: () => T): T
+}
+
+let retry_context_storage: AsyncLocalStorageLike | null = null
+
+declare const process: { versions?: { node?: string } } | undefined
+const is_node = typeof process !== 'undefined' && typeof process.versions !== 'undefined' && typeof process.versions?.node === 'string'
+
+if (is_node) {
+  try {
+    const importer = new Function('specifier', 'return import(specifier)') as (
+      specifier: string
+    ) => Promise<{ AsyncLocalStorage?: new () => AsyncLocalStorageLike }>
+    const mod = await importer('node:async_hooks')
+    if (mod?.AsyncLocalStorage) {
+      retry_context_storage = new mod.AsyncLocalStorage()
+    }
+  } catch {
+    retry_context_storage = null
+  }
+}
+
+function getHeldSemaphores(): ReentrantStore {
+  return retry_context_storage?.getStore() ?? new Set()
+}
+
+function runWithHeldSemaphores<T>(held: ReentrantStore, fn: () => T): T {
+  if (!retry_context_storage) return fn()
+  return retry_context_storage.run(held, fn)
+}
+
+// ─── Global semaphore registry ───────────────────────────────────────────────
+
+const SEMAPHORE_REGISTRY = new Map<string, AsyncSemaphore>()
+
+function getOrCreateSemaphore(name: string, limit: number): AsyncSemaphore {
+  const existing = SEMAPHORE_REGISTRY.get(name)
+  if (existing && existing.size === limit) return existing
+  const sem = new AsyncSemaphore(limit)
+  SEMAPHORE_REGISTRY.set(name, sem)
+  return sem
+}
+
+/** Reset the global semaphore registry. Useful in tests. */
+export function clearSemaphoreRegistry(): void {
+  SEMAPHORE_REGISTRY.clear()
+}
+
+// ─── retry() decorator / higher-order wrapper ────────────────────────────────
+//
+// Usage as a higher-order function (works on any async function):
+//
+//   const fetchWithRetry = retry({ max_attempts: 3, retry_after: 1 })(async (url: string) => {
+//     return await fetch(url)
+//   })
+//
+// Usage as a TC39 Stage 3 decorator on class methods (TS 5.0+):
+//
+//   class ApiClient {
+//     @retry({ max_attempts: 3, retry_after: 1 })
+//     async fetchData(): Promise<Data> { ... }
+//   }
+//
+// Usage on event bus handlers:
+//
+//   bus.on(MyEvent, retry({ max_attempts: 3 })(async (event) => {
+//     await riskyOperation(event.data)
+//   }))
+
+export function retry(options: RetryOptions = {}) {
+  const {
+    max_attempts = 1,
+    retry_after = 0,
+    retry_backoff_factor = 1.0,
+    retry_on_errors,
+    timeout,
+    semaphore_limit,
+    semaphore_name: semaphore_name_option,
+    semaphore_lax = true,
+    semaphore_timeout,
+  } = options
+
+  return function decorator<T extends (...args: any[]) => any>(target: T, _context?: ClassMethodDecoratorContext): T {
+    const fn_name = target.name || (_context?.name as string) || 'anonymous'
+    const sem_name = semaphore_name_option ?? fn_name
+    const effective_max_attempts = Math.max(1, max_attempts)
+    const effective_retry_after = Math.max(0, retry_after)
+
+    async function retryWrapper(this: any, ...args: any[]): Promise<any> {
+      // ── Check re-entrancy: skip semaphore if we already hold it in this async context ──
+      const held = getHeldSemaphores()
+      const needs_semaphore = semaphore_limit != null && semaphore_limit > 0
+      const is_reentrant = needs_semaphore && held.has(sem_name)
+
+      // ── Semaphore acquisition (held across all retry attempts, skipped if re-entrant) ──
+      let semaphore: AsyncSemaphore | null = null
+      let semaphore_acquired = false
+
+      if (needs_semaphore && !is_reentrant) {
+        semaphore = getOrCreateSemaphore(sem_name, semaphore_limit!)
+
+        const effective_sem_timeout =
+          semaphore_timeout != null
+            ? semaphore_timeout
+            : timeout != null
+              ? timeout * Math.max(1, semaphore_limit! - 1)
+              : null
+
+        if (effective_sem_timeout != null && effective_sem_timeout > 0) {
+          semaphore_acquired = await acquireWithTimeout(semaphore, effective_sem_timeout * 1000)
+          if (!semaphore_acquired) {
+            if (!semaphore_lax) {
+              throw new SemaphoreTimeoutError(
+                `Failed to acquire semaphore "${sem_name}" within ${effective_sem_timeout}s (limit=${semaphore_limit})`,
+                { semaphore_name: sem_name, semaphore_limit: semaphore_limit!, timeout_seconds: effective_sem_timeout }
+              )
+            }
+            // lax mode: proceed without concurrency limit
+          }
+        } else {
+          // No timeout configured: wait indefinitely for a slot
+          await semaphore.acquire()
+          semaphore_acquired = true
+        }
+      }
+
+      // ── Build the set of held semaphores for nested calls ──
+      const new_held = new Set(held)
+      if (semaphore_acquired) {
+        new_held.add(sem_name)
+      }
+
+      // ── Retry loop (runs inside the semaphore and re-entrancy context) ──
+      const run_retry_loop = async (): Promise<any> => {
+        for (let attempt = 1; attempt <= effective_max_attempts; attempt++) {
+          try {
+            if (timeout != null && timeout > 0) {
+              return await withTimeout(() => Promise.resolve(target.apply(this, args)), timeout * 1000, attempt)
+            } else {
+              return await Promise.resolve(target.apply(this, args))
+            }
+          } catch (error) {
+            // Check if this error type should trigger a retry
+            if (retry_on_errors && retry_on_errors.length > 0) {
+              const is_retryable = retry_on_errors.some((ErrorClass) => error instanceof ErrorClass)
+              if (!is_retryable) throw error
+            }
+
+            // Last attempt: rethrow
+            if (attempt >= effective_max_attempts) throw error
+
+            // Wait before next attempt with exponential backoff
+            const delay_seconds = effective_retry_after * Math.pow(retry_backoff_factor, attempt - 1)
+            if (delay_seconds > 0) {
+              await sleep(delay_seconds * 1000)
+            }
+          }
+        }
+
+        // Unreachable, but satisfies the type checker
+        throw new Error(`retry(${fn_name}): unexpected end of retry loop`)
+      }
+
+      try {
+        return await runWithHeldSemaphores(new_held, run_retry_loop)
+      } finally {
+        if (semaphore_acquired && semaphore) {
+          semaphore.release()
+        }
+      }
+    }
+
+    Object.defineProperty(retryWrapper, 'name', { value: fn_name, configurable: true })
+    return retryWrapper as unknown as T
+  }
+}
+
+// ─── Internal helpers ────────────────────────────────────────────────────────
+
+/**
+ * Try to acquire a semaphore within a timeout. Returns true if acquired, false if timed out.
+ * If the semaphore is acquired after the timeout (due to the waiter remaining queued),
+ * it is immediately released to avoid leaking slots.
+ */
+async function acquireWithTimeout(semaphore: AsyncSemaphore, timeout_ms: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        resolve(false)
+      }
+    }, timeout_ms)
+
+    semaphore.acquire().then(() => {
+      if (!settled) {
+        settled = true
+        clearTimeout(timer)
+        resolve(true)
+      } else {
+        // Acquired after timeout fired — release immediately to avoid slot leak
+        semaphore.release()
+      }
+    })
+  })
+}
+
+/** Run fn() with a timeout. Rejects with RetryTimeoutError if the timeout fires first. */
+async function withTimeout<T>(fn: () => Promise<T>, timeout_ms: number, attempt: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        reject(
+          new RetryTimeoutError(`Timed out after ${timeout_ms / 1000}s (attempt ${attempt})`, {
+            timeout_seconds: timeout_ms / 1000,
+            attempt,
+          })
+        )
+      }
+    }, timeout_ms)
+
+    fn().then(
+      (value) => {
+        if (!settled) {
+          settled = true
+          clearTimeout(timer)
+          resolve(value)
+        }
+      },
+      (error) => {
+        if (!settled) {
+          settled = true
+          clearTimeout(timer)
+          reject(error)
+        }
+      }
+    )
+  })
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}

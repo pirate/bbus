@@ -343,3 +343,156 @@ The core contract is preserved:
 But the **implementation details are different** because JS needs browser compatibility and lacks Python's
 contextvars + asyncio primitives. The `LockManager` (runloop pause + semaphore coordination), `HandlerLock`
 (yield-and-reacquire), and `BusScopedEvent` proxy are the key differences that make the behavior match in practice.
+
+---
+
+## `retry()` Decorator
+
+`retry()` is a standalone higher-order function / decorator that adds retry logic and optional semaphore-based
+concurrency limiting to any async function. It works independently of the event bus — you can use it on plain
+functions, class methods, or event bus handlers.
+
+### Basic usage
+
+```ts
+import { retry } from 'bubus'
+
+// Higher-order function wrapper (works on any function)
+const fetchWithRetry = retry({ max_attempts: 3, retry_after: 1 })(async (url: string) => {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+})
+
+// On an event bus handler
+bus.on(MyEvent, retry({ max_attempts: 3, timeout: 10 })(async (event) => {
+  await riskyOperation(event.data)
+}))
+
+// On a class method (manual wrapping pattern)
+class ApiClient {
+  fetchData = retry({ max_attempts: 3, retry_after: 0.5 })(async function (this: ApiClient) {
+    return await this.doRequest()
+  })
+}
+```
+
+### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_attempts` | `number` | `1` | Total attempts including the initial call. `1` = no retry, `3` = up to 2 retries. |
+| `retry_after` | `number` | `0` | Seconds to wait between retries. |
+| `retry_backoff_factor` | `number` | `1.0` | Multiplier applied to `retry_after` after each attempt. `2.0` = exponential backoff. |
+| `retry_on_errors` | `ErrorClass[]` | `undefined` | Only retry when the error is an `instanceof` one of these classes. `undefined` = retry on any error. |
+| `timeout` | `number \| null` | `undefined` | Per-attempt timeout in seconds. Throws `RetryTimeoutError` if exceeded. |
+| `semaphore_limit` | `number \| null` | `undefined` | Max concurrent executions sharing this semaphore. |
+| `semaphore_name` | `string \| null` | fn name | Semaphore identifier. Functions with the same name share the same slot pool. |
+| `semaphore_lax` | `boolean` | `true` | If `true`, proceed without concurrency limit when semaphore acquisition times out. |
+| `semaphore_timeout` | `number \| null` | `undefined` | Max seconds to wait for semaphore. Default: `timeout * max(1, limit - 1)`. |
+
+### Error types
+
+- **`RetryTimeoutError`** — thrown when a single attempt exceeds `timeout`. Has `.timeout_seconds` and `.attempt` fields. Retryable by default (treated like any other error in the retry loop).
+- **`SemaphoreTimeoutError`** — thrown (when `semaphore_lax=false`) if the semaphore cannot be acquired within the timeout. Has `.semaphore_name`, `.semaphore_limit`, `.timeout_seconds` fields.
+
+### Semaphore concurrency control
+
+The semaphore is acquired **once** before the first attempt and held across all retries. This prevents other
+callers from stealing the slot between retry attempts.
+
+```ts
+// At most 3 concurrent calls to this function across the entire process
+const limited = retry({
+  max_attempts: 2,
+  semaphore_limit: 3,
+  semaphore_name: 'api_calls',
+})(async () => {
+  await callExternalApi()
+})
+```
+
+Functions that share a `semaphore_name` share the same slot pool — this is how you limit concurrency across
+different functions that access the same resource.
+
+### Re-entrancy and deadlock prevention
+
+The decorator uses `AsyncLocalStorage` (on Node.js) to track which semaphores are held in the current async
+call stack. When a nested call encounters a semaphore it already holds, it **skips acquisition** and runs
+directly within the parent's slot. This prevents deadlocks in recursive or nested scenarios:
+
+```ts
+const inner = retry({ semaphore_limit: 1, semaphore_name: 'shared' })(async () => 'ok')
+
+const outer = retry({ semaphore_limit: 1, semaphore_name: 'shared' })(async () => {
+  // Without re-entrancy tracking, this would deadlock:
+  // outer holds the semaphore, inner tries to acquire the same one.
+  // With re-entrancy, inner detects 'shared' is already held and skips acquisition.
+  return await inner()
+})
+
+await outer() // works, no deadlock
+```
+
+This also works for recursive calls (a function calling itself) and deeply nested chains (A → B → C all sharing
+a semaphore).
+
+In browsers (no `AsyncLocalStorage`), re-entrancy tracking is unavailable. Avoid recursive/nested calls through
+the same semaphore in browser environments, or use different `semaphore_name` values.
+
+### Interaction with `event_concurrency` and `event_handler_concurrency`
+
+`retry()` and the bus's concurrency modes are **orthogonal** and compose together:
+
+- **`event_concurrency`** controls how many events the bus processes at once (via the runloop + event semaphore).
+- **`event_handler_concurrency`** controls how many handlers run concurrently for a single event (via the handler semaphore).
+- **`retry()` semaphores** control how many concurrent invocations of a specific function are allowed (via a global semaphore registry).
+
+When you wrap an event handler with `retry()`, both layers apply:
+
+```ts
+// Bus enforces bus-serial handler ordering (default).
+// retry() additionally limits this specific handler to 2 concurrent invocations
+// and retries up to 3 times on failure.
+bus.on(
+  MyEvent,
+  retry({ max_attempts: 3, semaphore_limit: 2, semaphore_name: 'my_handler' })(
+    async (event) => { await doWork(event) }
+  )
+)
+```
+
+The execution order is:
+1. Bus acquires the **handler concurrency semaphore** (e.g. `bus-serial`)
+2. `retry()` acquires its own **retry semaphore** (if `semaphore_limit` is set)
+3. The handler function runs (with retries if it throws)
+4. `retry()` releases its semaphore
+5. Bus releases the handler concurrency semaphore
+
+The bus's `handler_timeout` and `retry()`'s `timeout` are independent:
+- `handler_timeout` (set via `bus.on()` options or bus defaults) applies to the **entire** wrapped handler call, including all retry attempts.
+- `retry({ timeout })` applies to **each individual attempt**.
+
+If you need per-attempt timeouts, use `retry({ timeout })`. If you need an overall deadline for the handler
+(including all retries), rely on the bus's `handler_timeout`.
+
+### Differences from the Python `@retry` decorator
+
+| Aspect | Python | TypeScript |
+|--------|--------|------------|
+| **Naming** | `retries=3` (retry count after first attempt) | `max_attempts=1` (total attempts including first) |
+| **Naming** | `wait=3` (seconds between retries) | `retry_after=0` (seconds between retries) |
+| **Naming** | `retry_on` | `retry_on_errors` |
+| **Default retries** | 3 retries (4 total attempts) | 1 attempt (no retries) |
+| **Default delay** | 3 seconds | 0 seconds |
+| **Default timeout** | 5 seconds per attempt | No timeout |
+| **Semaphore scopes** | `'global'`, `'class'`, `'self'`, `'multiprocess'` | Global only (by `semaphore_name`) |
+| **Multiprocess** | Supported via `portalocker` file locks | Not supported (single-process JS runtime) |
+| **System overload** | Tracks active operations, checks CPU/memory via `psutil` | Not implemented |
+| **Re-entrancy** | Not implemented (relies on Python's GIL + asyncio single-thread) | `AsyncLocalStorage`-based tracking to prevent deadlocks |
+| **Syntax** | `@retry(...)` decorator on `async def` | `retry({...})(fn)` HOF or `@retry({...})` on class methods (TC39 Stage 3) |
+| **Sync functions** | Not supported (async-only) | Supported (wrapper always returns a Promise) |
+
+The TS version intentionally starts with conservative defaults (1 attempt, no delay, no timeout) so that
+`retry()` with no options is a no-op wrapper. The Python version defaults to 3 retries with 3s delay and 5s
+timeout, which is more aggressive.
