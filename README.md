@@ -1,7 +1,6 @@
-# `bubus`: 📢 Production-ready multi-language event bus library
+# `bubus`: 📢 Production-ready multi-language event bus
 
 <img width="200" alt="image" src="https://github.com/user-attachments/assets/b3525c24-51ba-496c-b327-ccdfe46a7362" align="right" />
-
 
 Bubus is an in-memory event bus library for async Python and TS (node/browser).
 
