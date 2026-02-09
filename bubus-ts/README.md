@@ -12,6 +12,65 @@ gotchas we uncovered while matching behavior. It intentionally does **not** re-d
 - Outside a handler, `done()` just waits for completion (it does not jump the queue).
 - Inside a handler, `done()` triggers immediate processing (queue jump) on **all buses** where the event is queued.
 
+### 1b) Racing handlers: `event.first()`
+
+`event.first()` returns the first non-undefined handler result value, then cancels remaining handlers:
+
+```ts
+const ScreenshotEvent = BaseEvent.extend('ScreenshotEvent', {
+  page_id: z.string(),
+  event_result_schema: z.string(),
+})
+
+class ScreenshotService {
+  constructor(bus: InstanceType<typeof EventBus>) {
+    bus.on(ScreenshotEvent, this.on_fast.bind(this))
+    bus.on(ScreenshotEvent, this.on_slow.bind(this))
+  }
+
+  // Fast path: try an immediate screenshot, return undefined if it fails
+  async on_fast(event: InstanceType<typeof ScreenshotEvent>): Promise<string | undefined> {
+    try {
+      return await attemptImmediateScreenshot(event.data.page_id)
+    } catch {
+      return undefined // signal "I can't handle this"
+    }
+  }
+
+  // Slow path: retries with global semaphore to avoid VRAM contention
+  @retry({ max_attempts: 3, timeout: 15, semaphore_scope: 'global', semaphore_limit: 1, semaphore_name: 'Screenshots' })
+  async on_slow(event: InstanceType<typeof ScreenshotEvent>): Promise<string> {
+    return await takeScreenshotWithRetry(event.data.page_id)
+  }
+}
+
+// Returns first non-undefined result, cancels losing handlers
+const screenshot: string | undefined = await bus.emit(ScreenshotEvent({ page_id: 'p1' })).first()
+```
+
+**How it works with different concurrency modes:**
+
+- **`parallel`**: All handlers start simultaneously. When one returns a non-undefined value, remaining
+  started handlers are aborted (via `signalAbort()`, same mechanism as timeout cancellation) and pending
+  handlers are cancelled. Any child events emitted by losing handlers are also cancelled.
+- **`bus-serial` / `global-serial`**: Handlers run one at a time. After each handler completes, if it
+  returned a non-undefined value, remaining handlers are cancelled without being started.
+
+**Return value semantics:**
+- Returns the **temporally first** non-undefined result (not registration order)
+- `undefined` means "I don't have a result" — use it to signal pass/skip
+- `null`, `0`, `''`, `false` are all valid non-undefined results
+- If all handlers return undefined or throw errors, `first()` returns `undefined`
+
+**Compared to `done()`:**
+
+| | `done()` | `first()` |
+|---|---|---|
+| Waits for | All handlers | First non-undefined result |
+| Returns | `Promise<Event>` | `Promise<ResultType \| undefined>` |
+| Cancels remaining | No | Yes (abort + cancel descendants) |
+| Use case | Run all handlers, inspect results | Race handlers, take winner |
+
 ### 2) Cross-bus queue jump (forwarding)
 
 - Python uses a global re-entrant lock to let awaited events process immediately on every bus where they appear.

@@ -6,6 +6,7 @@ import { EventResult } from './event_result.js'
 import type { ConcurrencyMode, Deferred } from './lock_manager.js'
 import { CONCURRENCY_MODES, withResolvers } from './lock_manager.js'
 import { extractZodShape, getStringTypeName, isZodSchema, toJsonSchema } from './types.js'
+import type { EventResultType } from './types.js'
 
 export const BaseEventSchema = z
   .object({
@@ -123,6 +124,10 @@ export class BaseEvent {
 
   _event_done_signal: Deferred<this> | null
 
+  // first() mode: when set, processEvent cancels remaining handlers after the first non-undefined result
+  _first_mode: boolean
+  _first_result: unknown
+
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
     const ctor = this.constructor as typeof BaseEvent & {
       event_result_schema?: z.ZodTypeAny
@@ -194,6 +199,8 @@ export class BaseEvent {
 
     this._event_done_signal = null
     this._event_dispatch_context = undefined
+    this._first_mode = false
+    this._first_result = undefined
   }
 
   // "MyEvent#a48f"
@@ -380,6 +387,31 @@ export class BaseEvent {
     return this.done()
   }
 
+  // returns the first non-undefined handler result value, cancelling remaining handlers
+  // when any handler completes. Works with all event_handler_concurrency modes:
+  //   parallel: races all handlers, returns first non-undefined, aborts the rest
+  //   bus-serial/global-serial: runs handlers sequentially, returns first non-undefined, skips remaining
+  first(): Promise<EventResultType<this> | undefined> {
+    if (!this.bus) {
+      return Promise.reject(new Error('event has no bus attached'))
+    }
+    const original = this._event_original ?? this
+    original._first_mode = true
+    return this.done().then((completed_event) => {
+      const orig = completed_event._event_original ?? completed_event
+      if (orig._first_result !== undefined) {
+        return orig._first_result as EventResultType<this>
+      }
+      // fallback: scan results in registration order
+      for (const result of completed_event.event_results.values()) {
+        if (result.status === 'completed' && result.result !== undefined) {
+          return result.result as EventResultType<this>
+        }
+      }
+      return undefined
+    })
+  }
+
   // awaitable that waits for the event to be processed in normal queue order by the runloop
   waitForCompletion(): Promise<this> {
     if (this.event_status === 'completed') {
@@ -457,6 +489,7 @@ export class BaseEvent {
   _gc(): void {
     this._event_done_signal = null
     this._event_dispatch_context = null
+    this._first_result = undefined
     this.bus = undefined
     for (const result of this.event_results.values()) {
       result.event_children = []
