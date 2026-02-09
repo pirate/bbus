@@ -1,5 +1,7 @@
 import asyncio
+import functools
 import gc
+import inspect
 import math
 import os
 import time
@@ -9,6 +11,8 @@ import psutil
 import pytest
 
 from bubus import BaseEvent, EventBus
+import bubus.models as models_module
+import bubus.service as service_module
 
 
 def get_memory_usage_mb():
@@ -44,6 +48,11 @@ async def dispatch_and_measure(
     done_latencies_ms: list[float] = []
     pending: list[tuple[BaseEvent[Any], float]] = []
 
+    async def wait_one(item: tuple[BaseEvent[Any], float]) -> None:
+        event, t_dispatch_done = item
+        await event
+        done_latencies_ms.append((time.perf_counter() - t_dispatch_done) * 1000)
+
     start = time.perf_counter()
     for _ in range(total_events):
         t0 = time.perf_counter()
@@ -53,11 +62,6 @@ async def dispatch_and_measure(
         if len(pending) >= batch_size:
             await asyncio.gather(*(wait_one(item) for item in pending))
             pending.clear()
-
-    async def wait_one(item: tuple[BaseEvent[Any], float]) -> None:
-        event, t_dispatch_done = item
-        await event
-        done_latencies_ms.append((time.perf_counter() - t_dispatch_done) * 1000)
 
     if pending:
         await asyncio.gather(*(wait_one(item) for item in pending))
@@ -181,6 +185,59 @@ def throughput_regression_floor(
     Scenario+mode regression threshold using same-run baseline + absolute safety floor.
     """
     return max(hard_floor, first_run_throughput * min_fraction)
+
+
+class MethodProfiler:
+    """Lightweight monkeypatch profiler for selected class methods."""
+
+    def __init__(self) -> None:
+        self.stats: dict[str, dict[str, float]] = {}
+        self._restore: list[tuple[type[Any], str, Any]] = []
+
+    def instrument(self, owner: type[Any], method_name: str, label: str | None = None) -> None:
+        original = getattr(owner, method_name)
+        metric_name = label or f'{owner.__name__}.{method_name}'
+
+        if inspect.iscoroutinefunction(original):
+            @functools.wraps(original)
+            async def wrapped(*args: Any, **kwargs: Any) -> Any:
+                started = time.perf_counter()
+                try:
+                    return await original(*args, **kwargs)
+                finally:
+                    elapsed = time.perf_counter() - started
+                    metric = self.stats.setdefault(metric_name, {'calls': 0.0, 'total_s': 0.0})
+                    metric['calls'] += 1.0
+                    metric['total_s'] += elapsed
+        else:
+            @functools.wraps(original)
+            def wrapped(*args: Any, **kwargs: Any) -> Any:
+                started = time.perf_counter()
+                try:
+                    return original(*args, **kwargs)
+                finally:
+                    elapsed = time.perf_counter() - started
+                    metric = self.stats.setdefault(metric_name, {'calls': 0.0, 'total_s': 0.0})
+                    metric['calls'] += 1.0
+                    metric['total_s'] += elapsed
+
+        self._restore.append((owner, method_name, original))
+        setattr(owner, method_name, wrapped)
+
+    def restore(self) -> None:
+        for owner, method_name, original in reversed(self._restore):
+            setattr(owner, method_name, original)
+        self._restore.clear()
+
+    def top_lines(self, limit: int = 12) -> list[str]:
+        ranked = sorted(self.stats.items(), key=lambda item: item[1]['total_s'], reverse=True)
+        lines: list[str] = []
+        for name, metric in ranked[:limit]:
+            calls = int(metric['calls'])
+            total_s = metric['total_s']
+            avg_us = (total_s * 1_000_000.0) / max(calls, 1)
+            lines.append(f'{name}: calls={calls:,} total={total_s:.3f}s avg={avg_us:.1f}us')
+        return lines
 
 
 async def run_contention_round(
@@ -730,3 +787,607 @@ async def test_forwarding_throughput_floor_across_modes(parallel_handlers: bool)
         f'{mode} forwarding throughput regression: {throughput:.0f} events/sec '
         f'(expected >= {floor} events/sec)'
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parallel_handlers',
+    [False, True],
+    ids=['serial_handlers', 'parallel_handlers'],
+)
+async def test_global_lock_contention_multi_bus_matrix(parallel_handlers: bool):
+    """
+    High-contention benchmark: many buses dispatching concurrently under global lock.
+    """
+    phase1 = await run_contention_round(parallel_handlers=parallel_handlers)
+    phase2 = await run_contention_round(parallel_handlers=parallel_handlers)
+
+    expected_per_bus = 120.0
+    hard_floor = 120.0
+    regression_floor = throughput_regression_floor(
+        phase1['throughput'],
+        min_fraction=0.55,
+        hard_floor=90.0,
+    )
+
+    assert phase1['fairness_min'] == expected_per_bus
+    assert phase1['fairness_max'] == expected_per_bus
+    assert phase2['fairness_min'] == expected_per_bus
+    assert phase2['fairness_max'] == expected_per_bus
+    assert phase1['throughput'] >= hard_floor, (
+        f'lock-contention throughput too low: {phase1["throughput"]:.0f} events/sec '
+        f'(expected >= {hard_floor:.0f})'
+    )
+    assert phase2['throughput'] >= regression_floor, (
+        f'lock-contention regression: phase1={phase1["throughput"]:.0f} '
+        f'phase2={phase2["throughput"]:.0f} '
+        f'(required >= {regression_floor:.0f})'
+    )
+    assert phase2['dispatch_p95_ms'] < 25.0
+    assert phase2['done_p95_ms'] < 250.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handlers_per_event',
+    [10, 30],
+    ids=['fanout_10_handlers', 'fanout_30_handlers'],
+)
+async def test_parallel_handlers_mode_scales_with_high_fanout(handlers_per_event: int):
+    """
+    High fanout benchmark to catch regressions in parallel handler scheduling.
+    """
+    serial_handled, serial_duration = await run_io_fanout_benchmark(
+        parallel_handlers=False,
+        total_events=400,
+        handlers_per_event=handlers_per_event,
+        sleep_seconds=0.001,
+        batch_size=25,
+    )
+    parallel_handled, parallel_duration = await run_io_fanout_benchmark(
+        parallel_handlers=True,
+        total_events=400,
+        handlers_per_event=handlers_per_event,
+        sleep_seconds=0.001,
+        batch_size=25,
+    )
+
+    expected_total = 400 * handlers_per_event
+    speedup = serial_duration / max(parallel_duration, 1e-9)
+    minimum_speedup = 1.2 if handlers_per_event == 10 else 1.5
+
+    assert serial_handled == expected_total
+    assert parallel_handled == expected_total
+    assert speedup >= minimum_speedup, (
+        f'Parallel fanout speedup too small for {handlers_per_event} handlers/event: '
+        f'{speedup:.2f}x (expected >= {minimum_speedup:.2f}x)'
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parallel_handlers',
+    [False, True],
+    ids=['serial_handlers', 'parallel_handlers'],
+)
+async def test_queue_jump_perf_matrix_by_mode(parallel_handlers: bool):
+    """
+    Queue-jump throughput/latency matrix (parent awaits child on same bus) by mode.
+    """
+    class QueueJumpParentEvent(BaseEvent):
+        iteration: int = 0
+        event_timeout: float | None = 0.2
+
+    class QueueJumpChildEvent(BaseEvent):
+        iteration: int = 0
+        event_timeout: float | None = 0.2
+
+    bus = EventBus(
+        name=f'QueueJump_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        middlewares=[],
+    )
+
+    parent_count = 0
+    child_count = 0
+    phase_counter = 0
+
+    async def child_handler(event: QueueJumpChildEvent) -> None:
+        nonlocal child_count
+        child_count += 1
+        await asyncio.sleep(0.0005)
+
+    async def parent_handler(event: QueueJumpParentEvent) -> None:
+        nonlocal parent_count
+        parent_count += 1
+        child = bus.dispatch(QueueJumpChildEvent(iteration=event.iteration))
+        await child
+
+    bus.on(QueueJumpParentEvent, parent_handler)
+    bus.on(QueueJumpChildEvent, child_handler)
+
+    def parent_factory() -> QueueJumpParentEvent:
+        nonlocal phase_counter
+        event = QueueJumpParentEvent(iteration=phase_counter)
+        phase_counter += 1
+        return event
+
+    try:
+        phase1 = await dispatch_and_measure(bus, parent_factory, total_events=500, batch_size=20)
+        phase2 = await dispatch_and_measure(bus, parent_factory, total_events=500, batch_size=20)
+    finally:
+        await bus.stop(timeout=0, clear=True)
+
+    hard_floor = 60.0
+    regression_floor = throughput_regression_floor(phase1[0], min_fraction=0.50, hard_floor=50.0)
+
+    assert parent_count == 1_000
+    assert child_count == 1_000
+    assert phase1[0] >= hard_floor, (
+        f'queue-jump throughput too low: {phase1[0]:.0f} events/sec (expected >= {hard_floor:.0f})'
+    )
+    assert phase2[0] >= regression_floor, (
+        f'queue-jump regression: phase1={phase1[0]:.0f} phase2={phase2[0]:.0f} '
+        f'(required >= {regression_floor:.0f})'
+    )
+    assert phase2[2] < 15.0
+    assert phase2[4] < 120.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parallel_handlers',
+    [False, True],
+    ids=['serial_handlers', 'parallel_handlers'],
+)
+async def test_forwarding_chain_perf_matrix_by_mode(parallel_handlers: bool):
+    """
+    Forwarding chain A -> B -> C throughput/latency matrix by mode.
+    """
+    source_bus = EventBus(
+        name=f'ChainSource_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        max_history_size=120,
+        middlewares=[],
+    )
+    middle_bus = EventBus(
+        name=f'ChainMiddle_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        max_history_size=120,
+        middlewares=[],
+    )
+    sink_bus = EventBus(
+        name=f'ChainSink_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        max_history_size=120,
+        middlewares=[],
+    )
+
+    sink_count = 0
+
+    async def sink_handler(event: SimpleEvent) -> None:
+        nonlocal sink_count
+        sink_count += 1
+
+    async def forward_to_middle(event: BaseEvent[Any]) -> None:
+        while True:
+            try:
+                middle_bus.dispatch(event)
+                return
+            except asyncio.QueueFull:
+                await asyncio.sleep(0)
+            except RuntimeError as exc:
+                if 'EventBus at capacity' not in str(exc):
+                    raise
+                await asyncio.sleep(0)
+
+    async def forward_to_sink(event: BaseEvent[Any]) -> None:
+        while True:
+            try:
+                sink_bus.dispatch(event)
+                return
+            except asyncio.QueueFull:
+                await asyncio.sleep(0)
+            except RuntimeError as exc:
+                if 'EventBus at capacity' not in str(exc):
+                    raise
+                await asyncio.sleep(0)
+
+    source_bus.on('*', forward_to_middle)
+    middle_bus.on('*', forward_to_sink)
+    sink_bus.on(SimpleEvent, sink_handler)
+
+    try:
+        phase1 = await dispatch_and_measure(source_bus, SimpleEvent, total_events=500, batch_size=5)
+        phase2 = await dispatch_and_measure(source_bus, SimpleEvent, total_events=500, batch_size=5)
+        await source_bus.wait_until_idle()
+        await middle_bus.wait_until_idle()
+        await sink_bus.wait_until_idle()
+    finally:
+        await source_bus.stop(timeout=0, clear=True)
+        await middle_bus.stop(timeout=0, clear=True)
+        await sink_bus.stop(timeout=0, clear=True)
+
+    hard_floor = 35.0
+    regression_floor = throughput_regression_floor(phase1[0], min_fraction=0.45, hard_floor=20.0)
+
+    assert sink_count == 1_000
+    assert phase1[0] >= hard_floor
+    assert phase2[0] >= regression_floor
+    assert phase2[2] < 40.0
+    assert phase2[4] < 350.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parallel_handlers',
+    [False, True],
+    ids=['serial_handlers', 'parallel_handlers'],
+)
+async def test_timeout_churn_perf_matrix_by_mode(parallel_handlers: bool):
+    """
+    Timeout-heavy phase followed by healthy phase should keep throughput healthy.
+    """
+    class TimeoutChurnEvent(BaseEvent):
+        mode: str = 'slow'
+        iteration: int = 0
+        event_timeout: float | None = 0.01
+
+    bus = EventBus(
+        name=f'TimeoutChurn_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        middlewares=[],
+    )
+
+    timeout_phase_events: list[TimeoutChurnEvent] = []
+    recovery_phase_events: list[TimeoutChurnEvent] = []
+    timeout_counter = 0
+    recovery_counter = 0
+
+    async def handler(event: TimeoutChurnEvent) -> None:
+        if event.mode == 'slow':
+            await asyncio.sleep(0.006)
+        else:
+            await asyncio.sleep(0)
+
+    bus.on(TimeoutChurnEvent, handler)
+
+    def timeout_factory() -> TimeoutChurnEvent:
+        nonlocal timeout_counter
+        is_slow = (timeout_counter % 3) != 0
+        event = TimeoutChurnEvent(
+            mode='slow' if is_slow else 'fast',
+            iteration=timeout_counter,
+            event_timeout=0.001 if is_slow else 0.02,
+        )
+        timeout_phase_events.append(event)
+        timeout_counter += 1
+        return event
+
+    def recovery_factory() -> TimeoutChurnEvent:
+        nonlocal recovery_counter
+        event = TimeoutChurnEvent(
+            mode='fast',
+            iteration=10_000 + recovery_counter,
+            event_timeout=0.02,
+        )
+        recovery_phase_events.append(event)
+        recovery_counter += 1
+        return event
+
+    try:
+        timeout_phase = await dispatch_and_measure(bus, timeout_factory, total_events=180, batch_size=20)
+        recovery_phase = await dispatch_and_measure(bus, recovery_factory, total_events=500, batch_size=25)
+    finally:
+        await bus.stop(timeout=0, clear=True)
+
+    timeout_count = sum(
+        1
+        for event in timeout_phase_events
+        if event.mode == 'slow'
+        and any(isinstance(result.error, TimeoutError) for result in event.event_results.values())
+    )
+    recovery_errors = sum(
+        1
+        for event in recovery_phase_events
+        if any(result.error is not None for result in event.event_results.values())
+    )
+    hard_floor = 120.0
+    regression_floor = throughput_regression_floor(
+        timeout_phase[0],
+        min_fraction=0.45,
+        hard_floor=100.0,
+    )
+
+    assert timeout_count > 0
+    assert recovery_errors == 0
+    assert recovery_phase[0] >= hard_floor
+    assert recovery_phase[0] >= regression_floor
+    assert recovery_phase[2] < 12.0
+    assert recovery_phase[4] < 70.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parallel_handlers',
+    [False, True],
+    ids=['serial_handlers', 'parallel_handlers'],
+)
+async def test_memory_envelope_by_mode_for_capped_history(parallel_handlers: bool):
+    """
+    Mode-specific memory slope/envelope check with capped history.
+    """
+    bus = EventBus(
+        name=f'MemoryEnvelope_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        max_history_size=60,
+        middlewares=[],
+    )
+
+    async def handler(event: SimpleEvent) -> None:
+        return None
+
+    bus.on(SimpleEvent, handler)
+
+    gc.collect()
+    before_mb = get_memory_usage_mb()
+
+    try:
+        metrics = await dispatch_and_measure(bus, SimpleEvent, total_events=6_000, batch_size=40)
+        done_mb = get_memory_usage_mb()
+        gc.collect()
+        gc_mb = get_memory_usage_mb()
+        retained = len(bus.event_history)
+    finally:
+        await bus.stop(timeout=0, clear=True)
+
+    done_delta = done_mb - before_mb
+    gc_delta = gc_mb - before_mb
+    per_dispatched_kb = (max(done_delta, 0.0) * 1024.0) / 6_000
+    per_retained_mb = max(gc_delta, 0.0) / max(retained, 1)
+    done_budget = 130.0 if parallel_handlers else 110.0
+    gc_budget = 70.0 if parallel_handlers else 60.0
+
+    assert retained <= 60
+    assert metrics[0] >= 450.0
+    assert metrics[2] < 10.0
+    assert metrics[4] < 60.0
+    assert done_delta < done_budget
+    assert gc_delta < gc_budget
+    assert per_dispatched_kb < 32.0
+    assert per_retained_mb < 1.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parallel_handlers',
+    [False, True],
+    ids=['serial_handlers', 'parallel_handlers'],
+)
+async def test_max_history_none_single_bus_stress_matrix(parallel_handlers: bool):
+    """
+    Unlimited-history mode stress for single bus: throughput + memory envelope.
+    """
+    bus = EventBus(
+        name=f'UnlimitedSingle_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        max_history_size=None,
+        middlewares=[],
+    )
+    processed = 0
+
+    async def handler(event: SimpleEvent) -> None:
+        nonlocal processed
+        processed += 1
+
+    bus.on(SimpleEvent, handler)
+
+    gc.collect()
+    before_mb = get_memory_usage_mb()
+    try:
+        phase1 = await dispatch_and_measure(bus, SimpleEvent, total_events=1_500, batch_size=120)
+        phase2 = await dispatch_and_measure(bus, SimpleEvent, total_events=1_500, batch_size=120)
+        done_mb = get_memory_usage_mb()
+        gc.collect()
+        gc_mb = get_memory_usage_mb()
+        history_size = len(bus.event_history)
+    finally:
+        await bus.stop(timeout=0, clear=True)
+
+    done_delta = done_mb - before_mb
+    gc_delta = gc_mb - before_mb
+    per_event_mb = max(gc_delta, 0.0) / 3_000
+    hard_floor = 220.0
+    regression_floor = throughput_regression_floor(phase1[0], min_fraction=0.55, hard_floor=170.0)
+
+    assert processed == 3_000
+    assert history_size == 3_000
+    assert phase1[0] >= hard_floor
+    assert phase2[0] >= regression_floor
+    assert phase2[2] < 12.0
+    assert phase2[4] < 80.0
+    assert done_delta < 260.0
+    assert gc_delta < 220.0
+    assert per_event_mb < 0.08
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'parallel_handlers',
+    [False, True],
+    ids=['serial_handlers', 'parallel_handlers'],
+)
+async def test_max_history_none_forwarding_chain_stress_matrix(parallel_handlers: bool):
+    """
+    Unlimited-history forwarding chain (A -> B -> C) stress by mode.
+    """
+    source_bus = EventBus(
+        name=f'UnlimitedChainSource_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        max_history_size=None,
+        middlewares=[],
+    )
+    middle_bus = EventBus(
+        name=f'UnlimitedChainMiddle_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        max_history_size=None,
+        middlewares=[],
+    )
+    sink_bus = EventBus(
+        name=f'UnlimitedChainSink_{"parallel" if parallel_handlers else "serial"}',
+        parallel_handlers=parallel_handlers,
+        max_history_size=None,
+        middlewares=[],
+    )
+
+    sink_count = 0
+
+    async def sink_handler(event: SimpleEvent) -> None:
+        nonlocal sink_count
+        sink_count += 1
+
+    source_bus.on('*', middle_bus.dispatch)
+    middle_bus.on('*', sink_bus.dispatch)
+    sink_bus.on(SimpleEvent, sink_handler)
+
+    gc.collect()
+    before_mb = get_memory_usage_mb()
+    try:
+        phase1 = await dispatch_and_measure(source_bus, SimpleEvent, total_events=900, batch_size=100)
+        phase2 = await dispatch_and_measure(source_bus, SimpleEvent, total_events=900, batch_size=100)
+        done_mb = get_memory_usage_mb()
+        gc.collect()
+        gc_mb = get_memory_usage_mb()
+        source_hist = len(source_bus.event_history)
+        middle_hist = len(middle_bus.event_history)
+        sink_hist = len(sink_bus.event_history)
+    finally:
+        await source_bus.stop(timeout=0, clear=True)
+        await middle_bus.stop(timeout=0, clear=True)
+        await sink_bus.stop(timeout=0, clear=True)
+
+    gc_delta = gc_mb - before_mb
+    done_delta = done_mb - before_mb
+    hard_floor = 170.0
+    regression_floor = throughput_regression_floor(phase1[0], min_fraction=0.55, hard_floor=130.0)
+
+    assert sink_count == 1_800
+    assert source_hist == 1_800
+    assert middle_hist == 1_800
+    assert sink_hist == 1_800
+    assert phase1[0] >= hard_floor
+    assert phase2[0] >= regression_floor
+    assert phase2[2] < 15.0
+    assert phase2[4] < 100.0
+    assert done_delta < 320.0
+    assert gc_delta < 280.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv('BUBUS_PERF_DEBUG') != '1',
+    reason='Set BUBUS_PERF_DEBUG=1 to enable hot-path timing diagnostics',
+)
+async def test_perf_debug_hot_path_breakdown() -> None:
+    """
+    Debug-only perf test:
+    profiles key hot-path methods to confirm where time is spent before optimizing.
+    """
+    profiler = MethodProfiler()
+    instrumented = [
+        (service_module.ReentrantLock, '__aenter__'),
+        (service_module.ReentrantLock, '__aexit__'),
+        (service_module.EventBus, '_get_applicable_handlers'),
+        (service_module.EventBus, '_would_create_loop'),
+        (service_module.EventBus, '_execute_handlers'),
+        (service_module.EventBus, 'execute_handler'),
+        (service_module.EventBus, 'cleanup_event_history'),
+        (models_module.BaseEvent, 'event_create_pending_results'),
+        (models_module.BaseEvent, '_is_queued_on_any_bus'),
+        (models_module.BaseEvent, '_remove_self_from_queue'),
+        (models_module.BaseEvent, '_process_self_on_all_buses'),
+    ]
+    for owner, method_name in instrumented:
+        profiler.instrument(owner, method_name)
+
+    class DebugParentEvent(BaseEvent):
+        idx: int = 0
+        event_timeout: float | None = 0.2
+
+    class DebugChildEvent(BaseEvent):
+        idx: int = 0
+        event_timeout: float | None = 0.2
+
+    bus_a = EventBus(name='PerfDebugA', middlewares=[])
+    bus_b = EventBus(name='PerfDebugB', middlewares=[])
+
+    forwarded_simple_count = 0
+    child_count = 0
+    parent_counter = 0
+
+    async def forwarded_simple_handler(event: SimpleEvent) -> None:
+        nonlocal forwarded_simple_count
+        forwarded_simple_count += 1
+
+    async def child_handler(event: DebugChildEvent) -> None:
+        nonlocal child_count
+        child_count += 1
+        await asyncio.sleep(0)
+
+    async def parent_handler(event: DebugParentEvent) -> None:
+        child = bus_a.dispatch(DebugChildEvent(idx=event.idx))
+        bus_b.dispatch(child)
+        await child
+
+    bus_a.on('*', bus_b.dispatch)
+    bus_b.on(SimpleEvent, forwarded_simple_handler)
+    bus_a.on(DebugParentEvent, parent_handler)
+    bus_b.on(DebugChildEvent, child_handler)
+
+    def parent_factory() -> DebugParentEvent:
+        nonlocal parent_counter
+        event = DebugParentEvent(idx=parent_counter)
+        parent_counter += 1
+        return event
+
+    gc.collect()
+    before_mb = get_memory_usage_mb()
+    start = time.perf_counter()
+    try:
+        simple_metrics = await dispatch_and_measure(bus_a, SimpleEvent, total_events=2_000, batch_size=50)
+        parent_metrics = await dispatch_and_measure(bus_a, parent_factory, total_events=600, batch_size=20)
+        await bus_a.wait_until_idle()
+        await bus_b.wait_until_idle()
+    finally:
+        await bus_a.stop(timeout=0, clear=True)
+        await bus_b.stop(timeout=0, clear=True)
+        profiler.restore()
+    elapsed = time.perf_counter() - start
+    done_mb = get_memory_usage_mb()
+    gc.collect()
+    gc_mb = get_memory_usage_mb()
+
+    print('\n[perf-debug] scenario=global_fifo_forwarding_queue_jump')
+    print(f'[perf-debug] elapsed_s={elapsed:.3f}')
+    print(
+        '[perf-debug] simple throughput={:.0f}/s dispatch_p95={:.3f}ms done_p95={:.3f}ms'.format(
+            simple_metrics[0], simple_metrics[2], simple_metrics[4]
+        )
+    )
+    print(
+        '[perf-debug] queue_jump throughput={:.0f}/s dispatch_p95={:.3f}ms done_p95={:.3f}ms'.format(
+            parent_metrics[0], parent_metrics[2], parent_metrics[4]
+        )
+    )
+    print(
+        '[perf-debug] memory_mb before={:.1f} done={:.1f} gc={:.1f}'.format(
+            before_mb, done_mb, gc_mb
+        )
+    )
+    print(f'[perf-debug] forwarded_simple_count={forwarded_simple_count:,} child_count={child_count:,}')
+    print('[perf-debug] hot_path_top_total_time:')
+    for line in profiler.top_lines(limit=14):
+        print(f'[perf-debug]   {line}')
+
+    assert forwarded_simple_count == 2_000
+    assert child_count == 600

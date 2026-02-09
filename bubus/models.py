@@ -269,6 +269,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     # Completion signal
     _event_completed_signal: asyncio.Event | None = PrivateAttr(default=None)
+    _event_is_complete_flag: bool = PrivateAttr(default=False)
 
     # Dispatch-time context for ContextVar propagation to handlers
     # Captured when dispatch() is called, used when executing handlers via ctx.run()
@@ -279,16 +280,20 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         return hash(self.event_id)
 
     def __str__(self) -> str:
-        """BaseEvent#ab12⏳"""
-        icon = (
-            '⏳'
-            if self.event_status == 'pending'
-            else '✅'
-            if self.event_status == 'completed'
-            else '🏃'
+        """Compact O(1) summary for hot-path logging."""
+        completed_signal = self._event_completed_signal
+        is_complete = self._event_is_complete_flag or (
+            completed_signal is not None and completed_signal.is_set()
         )
-        # AuthBus≫DataBus▶ AuthLoginEvent#ab12 ⏳
-        return f'{"≫".join(self.event_path[1:] or "?")}▶ {self.event_type}#{self.event_id[-4:]} {icon}'
+        if is_complete:
+            icon = '✅'
+        elif self.event_processed_at is not None:
+            icon = '🏃'
+        else:
+            icon = '⏳'
+
+        bus_hint = self.event_path[-1] if self.event_path else '?'
+        return f'{bus_hint}▶ {self.event_type}#{self.event_id[-4:]} {icon}'
 
     def _remove_self_from_queue(self, bus: 'EventBus') -> bool:
         """Remove this event from the bus's queue if present. Returns True if removed."""
@@ -300,7 +305,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 return True
         return False
 
-    def _is_queued_on_any_bus(self) -> bool:
+    def _is_queued_on_any_bus(self, ignore_bus: 'EventBus | None' = None) -> bool:
         """
         Check whether this event is currently queued on any live EventBus.
 
@@ -310,7 +315,13 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         from bubus.service import EventBus
 
         for bus in list(EventBus.all_instances):
-            if not bus or not bus.event_queue or not hasattr(bus.event_queue, '_queue'):
+            if not bus:
+                continue
+            if self.event_id in getattr(bus, '_processing_event_ids', set()):
+                if ignore_bus is not None and bus is ignore_bus:
+                    continue
+                return True
+            if not bus.event_queue or not hasattr(bus.event_queue, '_queue'):
                 continue
             queue = cast(deque[BaseEvent[Any]], bus.event_queue._queue)  # type: ignore[attr-defined]
             if self in queue:
@@ -350,8 +361,12 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                     # Check if THIS event is in this bus's queue
                     if self._remove_self_from_queue(bus):
                         # Process only this event on this bus
-                        await bus.handle_event(self)
-                        bus.event_queue.task_done()
+                        bus._processing_event_ids.add(self.event_id)
+                        try:
+                            await bus.handle_event(self)
+                            bus.event_queue.task_done()
+                        finally:
+                            bus._processing_event_ids.discard(self.event_id)
                         processed_any = True
 
                         # Check if we're done after processing
@@ -366,7 +381,8 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                     await asyncio.sleep(0)
 
         except asyncio.CancelledError:
-            logger.debug(f'Polling loop cancelled for {self}')
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('Polling loop cancelled for %s', self)
             raise
 
     async def _wait_for_completion_inside_handler(self) -> None:
@@ -385,6 +401,8 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         Simply waits on the completion signal - the event loop's normal
         processing will handle the event.
         """
+        if self._event_is_complete_flag:
+            return
         assert self.event_completed_signal is not None
         await self.event_completed_signal.wait()
 
@@ -392,11 +410,13 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         """Wait for event to complete and return self"""
 
         async def wait_for_handlers_to_complete_then_return_event():
+            if self._event_is_complete_flag:
+                return self
             assert self.event_completed_signal is not None
             from bubus.service import holds_global_lock, inside_handler_context
 
             is_inside_handler = inside_handler_context.get() and holds_global_lock.get()
-            is_not_yet_complete = not self.event_completed_signal.is_set()
+            is_not_yet_complete = not self._event_is_complete_flag and not self.event_completed_signal.is_set()
 
             if is_not_yet_complete and is_inside_handler:
                 await self._wait_for_completion_inside_handler()
@@ -478,7 +498,13 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     @property
     def event_status(self) -> EventStatus:
         """Current status of this event in the lifecycle."""
-        return EventStatus.COMPLETED if self.event_completed_at else EventStatus.STARTED if self.event_started_at else EventStatus.PENDING
+        if self._event_is_complete_flag:
+            return EventStatus.COMPLETED
+        if self._event_completed_signal is not None and self._event_completed_signal.is_set():
+            return EventStatus.COMPLETED
+        if self.event_started_at is not None:
+            return EventStatus.STARTED
+        return EventStatus.PENDING
 
     @property
     def event_children(self) -> list['BaseEvent[Any]']:
@@ -491,27 +517,45 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     @property
     def event_started_at(self) -> datetime | None:
         """Timestamp when event first started being processed by any handler"""
-        started_times = [result.started_at for result in self.event_results.values() if result.started_at is not None]
-        # If no handlers but event was processed, use the processed timestamp
-        if not started_times and self.event_processed_at:
+        earliest_started: datetime | None = None
+        for result in self.event_results.values():
+            started_at = result.started_at
+            if started_at is None:
+                continue
+            if earliest_started is None or started_at < earliest_started:
+                earliest_started = started_at
+        # If no handlers but event was processed, use the processed timestamp.
+        if earliest_started is None and self.event_processed_at:
             return self.event_processed_at
-        return min(started_times) if started_times else None
+        return earliest_started
 
     @property
     def event_completed_at(self) -> datetime | None:
         """Timestamp when event was completed by all handlers"""
-        # If no handlers at all but event was processed, use the processed timestamp
+        # If no handlers at all but event was processed, use the processed timestamp.
+        # This supports manually deserialized/updated events in tests and tooling.
         if not self.event_results and self.event_processed_at:
             return self.event_processed_at
 
-        # All handlers must be done (completed or error)
-        all_done = all(result.status in ('completed', 'error') for result in self.event_results.values())
-        if not all_done:
+        if not self._event_is_complete_flag and not (
+            self._event_completed_signal is not None and self._event_completed_signal.is_set()
+        ):
+            # Fast negative path for in-flight events
             return None
 
-        # Return the latest completion time
-        completed_times = [result.completed_at for result in self.event_results.values() if result.completed_at is not None]
-        return max(completed_times) if completed_times else self.event_processed_at
+        if not self.event_results:
+            return self.event_processed_at
+
+        latest_completed: datetime | None = None
+        for result in self.event_results.values():
+            if result.status not in ('completed', 'error'):
+                return None
+            completed_at = result.completed_at
+            if completed_at is None:
+                continue
+            if latest_completed is None or completed_at > latest_completed:
+                latest_completed = completed_at
+        return latest_completed or self.event_processed_at
 
     def event_create_pending_results(
         self,
@@ -525,6 +569,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         Any stale timing/error data from prior runs is cleared so consumers immediately see a fresh pending state.
         """
         pending_results: dict[PythonIdStr, 'EventResult[T_EventResultType]'] = {}
+        self._event_is_complete_flag = False
         for handler_id, handler in handlers.items():
             event_result = self.event_result_update(
                 handler=handler,
@@ -828,46 +873,50 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         # Don't mark complete here - let the EventBus do it after all handlers are done
         return self.event_results[handler_id]
 
-    def event_mark_complete_if_all_handlers_completed(self) -> None:
+    def event_mark_complete_if_all_handlers_completed(self, current_bus: 'EventBus | None' = None) -> None:
         """Check if all handlers are done and signal completion"""
-        if self.event_completed_signal and not self.event_completed_signal.is_set():
-            # If there are no results at all, the event is complete
-            if not self.event_results:
-                if hasattr(self, 'event_processed_at'):
-                    self.event_processed_at = datetime.now(UTC)
-                self.event_completed_signal.set()
-                # Clear dispatch context to avoid memory leaks
-                self._event_dispatch_context = None
-                return
+        completed_signal = self._event_completed_signal
+        if completed_signal is not None and completed_signal.is_set():
+            self._event_is_complete_flag = True
+            return
 
-            # Check if all handler results are done
-            all_handlers_done = all(result.status in ('completed', 'error') for result in self.event_results.values())
-            if not all_handlers_done:
-                # logger.debug(
-                #     f'Event {self} not complete - waiting for handlers: {[r for r in self.event_results.values() if r.status not in ("completed", "error")]}'
-                # )
+        # If there are no results at all, the event is complete.
+        if not self.event_results:
+            # Even with no local handlers, forwarded copies may still be queued elsewhere.
+            if self._is_queued_on_any_bus(ignore_bus=current_bus):
                 return
-
-            # Forwarded events may still be waiting in another bus queue.
-            # Don't mark complete until all queue copies have been consumed.
-            if self._is_queued_on_any_bus():
-                return
-
-            # Recursively check if all child events are also complete
             if not self.event_are_all_children_complete():
-                # incomplete_children = [c for c in self.event_children if c.event_status != 'completed']
-                # logger.debug(
-                #     f'Event {self} not complete - waiting for {len(incomplete_children)} child events: {incomplete_children}'
-                # )
                 return
-
-            # All handlers and all child events are done
             if hasattr(self, 'event_processed_at'):
                 self.event_processed_at = datetime.now(UTC)
-            # logger.debug(f'Event {self} marking complete - all handlers and children done')
-            self.event_completed_signal.set()
-            # Clear dispatch context to avoid memory leaks (it holds references to ContextVars)
+            self._event_is_complete_flag = True
+            if completed_signal is not None:
+                completed_signal.set()
             self._event_dispatch_context = None
+            return
+
+        # Check if all handler results are done.
+        for result in self.event_results.values():
+            if result.status not in ('completed', 'error'):
+                return
+
+        # Forwarded events may still be waiting in another bus queue.
+        # Don't mark complete until all queue copies have been consumed.
+        if self._is_queued_on_any_bus(ignore_bus=current_bus):
+            return
+
+        # Recursively check if all child events are also complete
+        if not self.event_are_all_children_complete():
+            return
+
+        # All handlers and all child events are done.
+        if hasattr(self, 'event_processed_at'):
+            self.event_processed_at = datetime.now(UTC)
+        self._event_is_complete_flag = True
+        if completed_signal is not None:
+            completed_signal.set()
+        # Clear dispatch context to avoid memory leaks (it holds references to ContextVars)
+        self._event_dispatch_context = None
 
     def event_are_all_children_complete(self, _visited: set[str] | None = None) -> bool:
         """Recursively check if all child events and their descendants are complete"""
@@ -881,7 +930,8 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
         for child_event in self.event_children:
             if child_event.event_status != 'completed':
-                logger.debug(f'Event {self} has incomplete child {child_event}')
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug('Event %s has incomplete child %s', self, child_event)
                 return False
             # Recursively check child's children
             if not child_event.event_are_all_children_complete(_visited):

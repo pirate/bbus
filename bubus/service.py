@@ -304,6 +304,8 @@ class EventBus:
     _is_running: bool = False
     _runloop_task: asyncio.Task[None] | None = None
     _on_idle: asyncio.Event | None = None
+    _active_event_ids: set[str]
+    _processing_event_ids: set[str]
 
     def __init__(
         self,
@@ -351,6 +353,8 @@ class EventBus:
         self.parallel_handlers = parallel_handlers
         self._on_idle = None
         self.middlewares: list[EventBusMiddleware] = list(middlewares or [])
+        self._active_event_ids = set()
+        self._processing_event_ids = set()
 
         # Memory leak prevention settings
         self.max_history_size = max_history_size
@@ -378,20 +382,51 @@ class EventBus:
 
     def __str__(self) -> str:
         icon = '🟢' if self._is_running else '🔴'
-        return f'{self.name}{icon}(⏳ {len(self.events_pending or [])} | ▶️ {len(self.events_started or [])} | ✅ {len(self.events_completed or [])} ➡️ {len(self.handlers)} 👂)'
+        queue_size = self.event_queue.qsize() if self.event_queue else 0
+        return f'{self.name}{icon}(queue={queue_size} active={len(self._active_event_ids)} history={len(self.event_history)} handlers={len(self.handlers)})'
 
     def __repr__(self) -> str:
         return str(self)
 
     async def _on_event_change(self, event: BaseEvent[Any], status: EventStatus) -> None:
+        if not self.middlewares:
+            return
         for middleware in self.middlewares:
             await middleware.on_event_change(self, event, status)
 
     async def _on_event_result_change(
         self, event: BaseEvent[Any], event_result: EventResult[Any], status: EventStatus
     ) -> None:
+        if not self.middlewares:
+            return
         for middleware in self.middlewares:
             await middleware.on_event_result_change(self, event, event_result, status)
+
+    @staticmethod
+    def _is_event_complete_fast(event: BaseEvent[Any]) -> bool:
+        signal = event._event_completed_signal  # pyright: ignore[reportPrivateUsage]
+        if signal is not None:
+            return signal.is_set()
+        if getattr(event, '_event_is_complete_flag', False):  # pyright: ignore[reportPrivateUsage]
+            return True
+        return event.event_completed_at is not None
+
+    @staticmethod
+    def _is_event_started_fast(event: BaseEvent[Any]) -> bool:
+        for result in event.event_results.values():
+            if result.started_at is not None or result.status == 'started':
+                return True
+        return False
+
+    def _has_inflight_events_fast(self) -> bool:
+        return bool(self._active_event_ids)
+
+    @staticmethod
+    def _mark_event_complete_on_all_buses(event: BaseEvent[Any]) -> None:
+        event_id = event.event_id
+        for bus in list(EventBus.all_instances):
+            if bus:
+                bus._active_event_ids.discard(event_id)
 
     @property
     def events_pending(self) -> list[BaseEvent[Any]]:
@@ -399,7 +434,7 @@ class EventBus:
         return [
             event
             for event in self.event_history.values()
-            if event.event_started_at is None and event.event_completed_at is None
+            if not self._is_event_complete_fast(event) and not self._is_event_started_fast(event)
         ]
 
     @property
@@ -408,13 +443,13 @@ class EventBus:
         return [
             event
             for event in self.event_history.values()
-            if event.event_started_at is not None and event.event_completed_at is None
+            if not self._is_event_complete_fast(event) and self._is_event_started_fast(event)
         ]
 
     @property
     def events_completed(self) -> list[BaseEvent[Any]]:
         """Get events that have completed processing"""
-        return [event for event in self.event_history.values() if event.event_completed_at is not None]
+        return [event for event in self.event_history.values() if self._is_event_complete_fast(event)]
 
     # Overloads for typed event patterns with specific handler signatures
     # Order matters - more specific types must come before general ones
@@ -508,7 +543,13 @@ class EventBus:
 
         # Register handler
         self.handlers[event_key].append(handler)  # type: ignore
-        logger.debug(f'👂 {self}.on({event_key}, {get_handler_name(handler)}) Registered event handler')
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                '👂 %s.on(%s, %s) Registered event handler',
+                self,
+                event_key,
+                get_handler_name(handler),
+            )
 
     def dispatch(self, event: T_ExpectedEvent) -> T_ExpectedEvent:
         """
@@ -566,9 +607,13 @@ class EventBus:
             # NOT: event = event.model_copy(update={'event_path': event.event_path + [self.name]})
             event.event_path.append(self.name)
         else:
-            logger.debug(
-                f'⚠️ {self}.dispatch({event.event_type}) - Bus already in path, not adding again. Path: {event.event_path}'
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    '⚠️ %s.dispatch(%s) - Bus already in path, not adding again. Path: %s',
+                    self,
+                    event.event_type,
+                    event.event_path,
+                )
 
         assert event.event_path, 'Missing event.event_path: list[str] (with at least the origin function name recorded in it)'
         assert all(entry.isidentifier() for entry in event.event_path), (
@@ -579,9 +624,12 @@ class EventBus:
         # Only enforce if we have memory limits set
         if self.max_history_size is not None:
             queue_size = self.event_queue.qsize() if self.event_queue else 0
-            pending_in_history = sum(
-                1 for event in self.event_history.values() if event.event_status in ('pending', 'started')
-            )
+            pending_in_history = 0
+            for existing_event in self.event_history.values():
+                if not self._is_event_complete_fast(existing_event):
+                    pending_in_history += 1
+                    if queue_size + pending_in_history >= 100:
+                        break
             total_pending = queue_size + pending_in_history
 
             if total_pending >= 100:
@@ -600,13 +648,20 @@ class EventBus:
                 self.event_queue.put_nowait(event)
                 # Only add to history after successfully queuing
                 self.event_history[event.event_id] = event
-                loop = asyncio.get_running_loop()
-                loop.create_task(
-                    self._on_event_change(event, EventStatus.PENDING)
-                )
-                logger.info(
-                    f'🗣️ {self}.dispatch({event.event_type}) ➡️ {event.event_type}#{event.event_id[-4:]} (#{self.event_queue.qsize()} {event.event_status})'
-                )
+                self._active_event_ids.add(event.event_id)
+                if self.middlewares:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._on_event_change(event, EventStatus.PENDING))
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(
+                        '🗣️ %s.dispatch(%s) ➡️ %s#%s (#%d %s)',
+                        self,
+                        event.event_type,
+                        event.event_type,
+                        event.event_id[-4:],
+                        self.event_queue.qsize(),
+                        event.event_status,
+                    )
             except asyncio.QueueFull:
                 # Don't add to history if we can't queue it
                 logger.error(
@@ -614,15 +669,17 @@ class EventBus:
                 )
                 raise  # could also block indefinitely until queue has space, but dont drop silently or delete events
         else:
-            logger.warning(f'⚠️ {self}.dispatch() called but event_queue is None! Event not queued: {event.event_type}')
+            logger.warning('⚠️ %s.dispatch() called but event_queue is None! Event not queued: %s', self, event.event_type)
 
         # Note: We do NOT pre-create EventResults here anymore.
         # EventResults are created only when handlers actually start executing.
         # This avoids "orphaned" pending results for handlers that get filtered out later.
 
-        # Clean up if over the limit
-        if self.max_history_size and len(self.event_history) > self.max_history_size:
-            self.cleanup_event_history()
+        # Soft cleanup during enqueue to prevent unbounded growth while keeping hot dispatch fast.
+        if self.max_history_size:
+            soft_limit = max(self.max_history_size, int(self.max_history_size * 1.2))
+            if len(self.event_history) > soft_limit:
+                self.cleanup_event_history()
 
         return event
 
@@ -1094,10 +1151,14 @@ class EventBus:
                 pass
 
         queue_size = self.event_queue.qsize() if self.event_queue else 0
-        if queue_size or self.events_pending or self.events_started:
+        has_inflight = self._has_inflight_events_fast()
+        if queue_size or has_inflight:
             logger.debug(
-                f'⚠️ {self} stopping with pending events: Pending {len(self.events_pending) + queue_size} | Started {len(self.events_started)} | Completed {len(self.events_completed)}\n'
-                f'PENDING={str(self.events_pending)[:500]}\nSTARTED={str(self.events_started)[:500]}'
+                '⚠️ %s stopping with pending events: queue=%d inflight=%s history=%d',
+                self,
+                queue_size,
+                has_inflight,
+                len(self.event_history),
             )
 
         # Signal shutdown
@@ -1119,6 +1180,8 @@ class EventBus:
 
         # Clear references
         self._runloop_task = None
+        self._active_event_ids.clear()
+        self._processing_event_ids.clear()
         if self._on_idle:
             self._on_idle.set()
 
@@ -1131,6 +1194,7 @@ class EventBus:
         if clear:
             self.event_history.clear()
             self.handlers.clear()
+            self._active_event_ids.clear()
 
             # Remove from global instance tracking
             if self in EventBus.all_instances:
@@ -1145,9 +1209,9 @@ class EventBus:
                 # No running loop, that's fine
                 pass
 
-            logger.debug(f'🧹 {self} cleared event history and removed from global tracking')
+            logger.debug('🧹 %s cleared event history and removed from global tracking', self)
 
-        logger.debug(f'🛑 {self} shut down gracefully' if timeout is not None else f'🛑 {self} killed')
+        logger.debug('🛑 %s shut down %s', self, 'gracefully' if timeout is not None else 'immediately')
 
         # Check total memory usage across all instances
         try:
@@ -1185,7 +1249,7 @@ class EventBus:
             await asyncio.sleep(0)  # Yield to event loop
 
             # Double-check we're truly idle - if new events came in, wait again
-            while not self._on_idle.is_set() or self.events_started or self.events_pending:
+            while not self._on_idle.is_set() or self._has_inflight_events_fast():
                 if timeout is not None:
                     elapsed = asyncio.get_event_loop().time() - start_time
                     remaining_timeout = max(0, timeout - elapsed)
@@ -1200,7 +1264,10 @@ class EventBus:
 
         except TimeoutError:
             logger.warning(
-                f'⌛️ {self} Timeout waiting for event bus to be idle after {timeout}s (processing: {len(self.events_started)})'
+                '⌛️ %s Timeout waiting for event bus to be idle after %ss (history=%d)',
+                self,
+                timeout,
+                len(self.event_history),
             )
 
     async def _run_loop(self) -> None:
@@ -1211,7 +1278,7 @@ class EventBus:
                     _processed_event = await self.step()
                     # Check if we should set idle state after processing
                     if self._on_idle and self.event_queue:
-                        if not (self.events_pending or self.events_started or self.event_queue.qsize()):
+                        if not self._has_inflight_events_fast() and self.event_queue.qsize() == 0:
                             self._on_idle.set()
                 except QueueShutDown:
                     # Queue was shut down, exit cleanly
@@ -1221,10 +1288,10 @@ class EventBus:
                     if 'Event loop is closed' in str(e) or 'no running event loop' in str(e):
                         break
                     else:
-                        logger.exception(f'❌ {self} Runtime error in event loop: {type(e).__name__} {e}', exc_info=True)
+                        logger.exception('❌ %s Runtime error in event loop: %s %s', self, type(e).__name__, e, exc_info=True)
                         # Continue running even if there's an error
                 except Exception as e:
-                    logger.exception(f'❌ {self} Error in event loop: {type(e).__name__} {e}', exc_info=True)
+                    logger.exception('❌ %s Error in event loop: %s %s', self, type(e).__name__, e, exc_info=True)
                     # Continue running even if there's an error
         except asyncio.CancelledError:
             # Task was cancelled, clean exit
@@ -1269,7 +1336,7 @@ class EventBus:
                         if bus is None:
                             break
                         if bus._on_idle and bus.event_queue:
-                            if not (bus.events_pending or bus.events_started or bus.event_queue.qsize()):
+                            if not bus._has_inflight_events_fast() and bus.event_queue.qsize() == 0:
                                 bus._on_idle.set()
                         del bus
                         continue
@@ -1300,13 +1367,15 @@ class EventBus:
                     if bus._on_idle:
                         bus._on_idle.clear()
 
+                    if event is not None:
+                        bus._processing_event_ids.add(event.event_id)
                     async with _get_global_lock():
                         if event is not None:
                             await bus.handle_event(event)
                         queue.task_done()
 
                     if bus._on_idle and bus.event_queue:
-                        if not (bus.events_pending or bus.events_started or bus.event_queue.qsize()):
+                        if not bus._has_inflight_events_fast() and bus.event_queue.qsize() == 0:
                             bus._on_idle.set()
                 except QueueShutDown:
                     break
@@ -1319,6 +1388,8 @@ class EventBus:
                 except Exception as e:
                     logger.exception(f'❌ Weak run loop error: {type(e).__name__} {e}', exc_info=True)
                 finally:
+                    if event is not None:
+                        bus._processing_event_ids.discard(event.event_id)
                     del bus
         finally:
             bus = bus_ref()
@@ -1351,7 +1422,7 @@ class EventBus:
                 get_next_queued_event.cancel()
 
                 # Check if we're idle, if so, set the idle flag
-                if not (self.events_pending or self.events_started or self.event_queue.qsize()):
+                if not self._has_inflight_events_fast() and self.event_queue.qsize() == 0:
                     self._on_idle.set()
                 return None
 
@@ -1408,21 +1479,27 @@ class EventBus:
         if event is None:
             return None
 
-        logger.debug(f'🏃 {self}.step({event}) STARTING')
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('🏃 %s.step(%s) STARTING', self, event)
 
         # Clear idle state when we get an event
         self._on_idle.clear()
 
         # Always acquire the global lock (it's re-entrant across tasks)
-        async with _get_global_lock():
-            # Process the event
-            await self.handle_event(event, timeout=timeout)
+        self._processing_event_ids.add(event.event_id)
+        try:
+            async with _get_global_lock():
+                # Process the event
+                await self.handle_event(event, timeout=timeout)
 
-            # Mark task as done only if we got it from the queue
-            if from_queue:
-                self.event_queue.task_done()
+                # Mark task as done only if we got it from the queue
+                if from_queue:
+                    self.event_queue.task_done()
+        finally:
+            self._processing_event_ids.discard(event.event_id)
 
-        logger.debug(f'✅ {self}.step({event}) COMPLETE')
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('✅ %s.step(%s) COMPLETE', self, event)
         return event
 
     async def handle_event(self, event: BaseEvent[Any], timeout: float | None = None) -> None:
@@ -1467,19 +1544,15 @@ class EventBus:
         # Get applicable handlers
         applicable_handlers = self._get_applicable_handlers(event)
 
-        # Prepare EventResult placeholders ahead of execution
-        event.event_create_pending_results(
-            applicable_handlers, eventbus=self, timeout=timeout or event.event_timeout
-        )
-
         # Execute handlers
         await self._execute_handlers(event, handlers=applicable_handlers, timeout=timeout)
 
         # Mark event as complete and emit change if it just completed
-        was_complete = event.event_completed_signal and event.event_completed_signal.is_set()
-        event.event_mark_complete_if_all_handlers_completed()
-        just_completed = not was_complete and event.event_completed_signal and event.event_completed_signal.is_set()
+        was_complete = self._is_event_complete_fast(event)
+        event.event_mark_complete_if_all_handlers_completed(current_bus=self)
+        just_completed = (not was_complete) and self._is_event_complete_fast(event)
         if just_completed:
+            self._mark_event_complete_on_all_buses(event)
             await self._on_event_change(event, EventStatus.COMPLETED)
 
         # After processing this event, check if any parent events can now be marked complete
@@ -1504,18 +1577,19 @@ class EventBus:
                 break
 
             # Check if parent can be marked complete
-            was_complete = parent_event.event_completed_signal and parent_event.event_completed_signal.is_set()
+            was_complete = self._is_event_complete_fast(parent_event)
             if not was_complete:
-                parent_event.event_mark_complete_if_all_handlers_completed()
-            just_completed = not was_complete and parent_event.event_completed_signal and parent_event.event_completed_signal.is_set()
+                parent_event.event_mark_complete_if_all_handlers_completed(current_bus=parent_bus)
+            just_completed = (not was_complete) and self._is_event_complete_fast(parent_event)
             if parent_bus and just_completed:
+                self._mark_event_complete_on_all_buses(parent_event)
                 await parent_bus._on_event_change(parent_event, EventStatus.COMPLETED)
 
             # Move up the chain
             current = parent_event
 
         # Clean up excess events to prevent memory leaks
-        if self.max_history_size:
+        if self.max_history_size and len(self.event_history) > self.max_history_size:
             self.cleanup_event_history()
 
     def _get_applicable_handlers(self, event: BaseEvent[Any]) -> dict[str, EventHandler]:
@@ -1572,26 +1646,18 @@ class EventBus:
         pending_results = event.event_create_pending_results(
             applicable_handlers, eventbus=self, timeout=timeout or event.event_timeout
         )
-        for pending_result in pending_results.values():
-            await self._on_event_result_change(
-                event, pending_result, EventStatus.PENDING
-            )
+        if self.middlewares:
+            for pending_result in pending_results.values():
+                await self._on_event_result_change(event, pending_result, EventStatus.PENDING)
 
         # Execute all handlers in parallel
         if self.parallel_handlers:
-            handler_tasks: dict[PythonIdStr, tuple[asyncio.Task[Any], EventHandler]] = {}
-            # Copy the current context to ensure context vars are propagated
-            context = contextvars.copy_context()
-            for handler_id, handler in applicable_handlers.items():
-                task = asyncio.create_task(
-                    self.execute_handler(event, handler, timeout=timeout),
-                    name=f'{self}.execute_handler({event}, {get_handler_name(handler)})',
-                    context=context,
-                )
-                handler_tasks[handler_id] = (task, handler)
+            handler_tasks: list[asyncio.Task[Any]] = []
+            for handler in applicable_handlers.values():
+                handler_tasks.append(asyncio.create_task(self.execute_handler(event, handler, timeout=timeout)))
 
-            # Wait for all handlers to complete
-            for handler_id, (task, handler) in handler_tasks.items():
+            # Wait for all handlers to complete.
+            for task in handler_tasks:
                 try:
                     await task
                 except Exception:
@@ -1604,9 +1670,16 @@ class EventBus:
                     await self.execute_handler(event, handler, timeout=timeout)
                 except Exception as e:
                     # Error already logged and recorded in execute_handler
-                    logger.debug(
-                        f'❌ {self} Handler {get_handler_name(handler)}#{str(id(handler))[-4:]}({event}) failed with {type(e).__name__}: {e}'
-                    )
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            '❌ %s Handler %s#%s(%s) failed with %s: %s',
+                            self,
+                            get_handler_name(handler),
+                            str(id(handler))[-4:],
+                            event,
+                            type(e).__name__,
+                            e,
+                        )
                     pass
 
         # print('FINSIHED EXECUTING ALL HANDLERS')
@@ -1620,7 +1693,14 @@ class EventBus:
         """Safely execute a single handler with middleware support and EventResult orchestration."""
 
         handler_id = get_handler_id(handler, self)
-        logger.debug(f' ↳ {self}.execute_handler({event}, handler={get_handler_name(handler)}#{handler_id[-4:]})')
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                ' ↳ %s.execute_handler(%s, handler=%s#%s)',
+                self,
+                event,
+                get_handler_name(handler),
+                handler_id[-4:],
+            )
 
         if handler_id not in event.event_results:
             new_results = event.event_create_pending_results(
@@ -1655,9 +1735,13 @@ class EventBus:
             )
 
             result_type_name = type(result_value).__name__ if result_value is not None else 'None'
-            logger.debug(
-                f'    ↳ Handler {get_handler_name(handler)}#{handler_id[-4:]} returned: {result_type_name}'
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    '    ↳ Handler %s#%s returned: %s',
+                    get_handler_name(handler),
+                    handler_id[-4:],
+                    result_type_name,
+                )
 
             await self._on_event_result_change(
                 event, event_result, EventStatus.COMPLETED
@@ -1788,7 +1872,8 @@ class EventBus:
             del self.event_history[event_id]
 
         if event_ids_to_remove:
-            logger.debug(f'🧹 {self} Cleaned up {len(event_ids_to_remove)} excess events from history')
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('🧹 %s Cleaned up %d excess events from history', self, len(event_ids_to_remove))
 
         return len(event_ids_to_remove)
 
@@ -1809,12 +1894,12 @@ class EventBus:
         completed_events: list[tuple[str, BaseEvent[Any]]] = []
 
         for event_id, event in self.event_history.items():
-            if event.event_status == 'pending':
-                pending_events.append((event_id, event))
-            elif event.event_status == 'started':
-                started_events.append((event_id, event))
-            else:  # completed or error
+            if self._is_event_complete_fast(event):
                 completed_events.append((event_id, event))
+            elif self._is_event_started_fast(event):
+                started_events.append((event_id, event))
+            else:
+                pending_events.append((event_id, event))
 
         # Sort completed events by creation time (oldest first)
         completed_events.sort(key=lambda x: x[1].event_created_at.timestamp())  # pyright: ignore[reportUnknownMemberType, reportUnknownLambdaType]
