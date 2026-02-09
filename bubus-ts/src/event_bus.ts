@@ -35,18 +35,18 @@ type EventBusOptions = {
 
 // Global registry of all EventBus instances to allow for cross-bus coordination when global-serial concurrency mode is used
 class GlobalEventBusInstanceRegistry {
-  private _refs = new Set<WeakRef<EventBus>>()
+  private _event_buses = new Set<WeakRef<EventBus>>()
   private _lookup = new WeakMap<EventBus, WeakRef<EventBus>>()
   private _gc =
     typeof FinalizationRegistry !== 'undefined'
       ? new FinalizationRegistry<WeakRef<EventBus>>((ref) => {
-          this._refs.delete(ref)
+          this._event_buses.delete(ref)
         })
       : null
 
   add(bus: EventBus): void {
     const ref = new WeakRef(bus)
-    this._refs.add(ref)
+    this._event_buses.add(ref)
     this._lookup.set(bus, ref)
     this._gc?.register(bus, ref, bus)
   }
@@ -54,7 +54,7 @@ class GlobalEventBusInstanceRegistry {
   delete(bus: EventBus): void {
     const ref = this._lookup.get(bus)
     if (!ref) return
-    this._refs.delete(ref)
+    this._event_buses.delete(ref)
     this._lookup.delete(bus)
     this._gc?.unregister(bus)
   }
@@ -65,15 +65,15 @@ class GlobalEventBusInstanceRegistry {
 
   get size(): number {
     let n = 0
-    for (const ref of this._refs) ref.deref() ? n++ : this._refs.delete(ref)
+    for (const ref of this._event_buses) ref.deref() ? n++ : this._event_buses.delete(ref)
     return n
   }
 
   *[Symbol.iterator](): Iterator<EventBus> {
-    for (const ref of this._refs) {
+    for (const ref of this._event_buses) {
       const bus = ref.deref()
       if (bus) yield bus
-      else this._refs.delete(ref)
+      else this._event_buses.delete(ref)
     }
   }
 
