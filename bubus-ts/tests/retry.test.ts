@@ -611,3 +611,128 @@ test('retry: three-level nested re-entrancy does not deadlock', async () => {
 
   assert.equal(await level1(), 'level1>level2>level3')
 })
+
+// ─── Semaphore scope ─────────────────────────────────────────────────────────
+
+test('retry: semaphore_scope=class shares semaphore across instances of same class', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  class Worker {
+    run = retry({
+      max_attempts: 1,
+      semaphore_limit: 1,
+      semaphore_scope: 'class',
+      semaphore_name: 'work',
+    })(async function (this: Worker) {
+      active++
+      max_active = Math.max(max_active, active)
+      await delay(30)
+      active--
+      return 'done'
+    })
+  }
+
+  const a = new Worker()
+  const b = new Worker()
+  const c = new Worker()
+
+  await Promise.all([a.run(), b.run(), c.run()])
+  assert.equal(max_active, 1, 'class scope: all instances should share one semaphore')
+})
+
+test('retry: semaphore_scope=instance gives each instance its own semaphore', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  class Worker {
+    run = retry({
+      max_attempts: 1,
+      semaphore_limit: 1,
+      semaphore_scope: 'instance',
+      semaphore_name: 'work',
+    })(async function (this: Worker) {
+      active++
+      max_active = Math.max(max_active, active)
+      await delay(30)
+      active--
+      return 'done'
+    })
+  }
+
+  const a = new Worker()
+  const b = new Worker()
+
+  // Same instance: serialized (limit=1 per instance)
+  // Different instances: can run in parallel (separate semaphores)
+  await Promise.all([a.run(), b.run()])
+  assert.equal(max_active, 2, 'instance scope: different instances should get separate semaphores')
+})
+
+test('retry: semaphore_scope=instance serializes calls on same instance', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  class Worker {
+    run = retry({
+      max_attempts: 1,
+      semaphore_limit: 1,
+      semaphore_scope: 'instance',
+      semaphore_name: 'work',
+    })(async function (this: Worker) {
+      active++
+      max_active = Math.max(max_active, active)
+      await delay(20)
+      active--
+      return 'done'
+    })
+  }
+
+  const a = new Worker()
+  await Promise.all([a.run(), a.run(), a.run()])
+  assert.equal(max_active, 1, 'instance scope: same instance calls should serialize')
+})
+
+test('retry: semaphore_scope=class isolates different classes', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  class Alpha {
+    run = retry({
+      max_attempts: 1,
+      semaphore_limit: 1,
+      semaphore_scope: 'class',
+      semaphore_name: 'run',
+    })(async function (this: Alpha) {
+      active++
+      max_active = Math.max(max_active, active)
+      await delay(30)
+      active--
+    })
+  }
+
+  class Beta {
+    run = retry({
+      max_attempts: 1,
+      semaphore_limit: 1,
+      semaphore_scope: 'class',
+      semaphore_name: 'run',
+    })(async function (this: Beta) {
+      active++
+      max_active = Math.max(max_active, active)
+      await delay(30)
+      active--
+    })
+  }
+
+  await Promise.all([new Alpha().run(), new Beta().run()])
+  assert.equal(max_active, 2, 'class scope: different classes should get separate semaphores')
+})

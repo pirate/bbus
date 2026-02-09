@@ -389,6 +389,7 @@ class ApiClient {
 | `semaphore_limit` | `number \| null` | `undefined` | Max concurrent executions sharing this semaphore. |
 | `semaphore_name` | `string \| null` | fn name | Semaphore identifier. Functions with the same name share the same slot pool. |
 | `semaphore_lax` | `boolean` | `true` | If `true`, proceed without concurrency limit when semaphore acquisition times out. |
+| `semaphore_scope` | `'global' \| 'class' \| 'instance'` | `'global'` | `'global'`: one semaphore for all calls. `'class'`: one per class (keyed by `constructor.name`). `'instance'`: one per object instance (keyed by WeakMap identity). `'class'`/`'instance'` require `this` to be an object; they fall back to `'global'` for standalone calls. |
 | `semaphore_timeout` | `number \| null` | `undefined` | Max seconds to wait for semaphore. Default: `timeout * max(1, limit - 1)`. |
 
 ### Error types
@@ -487,8 +488,7 @@ If you need per-attempt timeouts, use `retry({ timeout })`. If you need an overa
 | **Default retries** | 3 retries (4 total attempts) | 1 attempt (no retries) |
 | **Default delay** | 3 seconds | 0 seconds |
 | **Default timeout** | 5 seconds per attempt | No timeout |
-| **Semaphore scopes** | `'global'`, `'class'`, `'self'`, `'multiprocess'` | Global only (by `semaphore_name`) |
-| **Multiprocess** | Supported via `portalocker` file locks | Not supported (single-process JS runtime) |
+| **Semaphore scopes** | `'global'`, `'class'`, `'self'`, `'multiprocess'` | `'global'`, `'class'`, `'instance'` (no multiprocess — single-process JS runtime) |
 | **System overload** | Tracks active operations, checks CPU/memory via `psutil` | Not implemented |
 | **Re-entrancy** | Not implemented (relies on Python's GIL + asyncio single-thread) | `AsyncLocalStorage`-based tracking to prevent deadlocks |
 | **Syntax** | `@retry(...)` decorator on `async def` | `retry({...})(fn)` HOF or `@retry({...})` on class methods (TC39 Stage 3) |

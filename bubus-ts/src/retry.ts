@@ -30,6 +30,13 @@ export interface RetryOptions {
   /** If true, proceed without concurrency limit when semaphore acquisition times out. Default: true */
   semaphore_lax?: boolean
 
+  /** Semaphore scoping strategy. Default: 'global'
+   *  - 'global': all calls share one semaphore (keyed by semaphore_name)
+   *  - 'class': all instances of the same class share one semaphore (keyed by className.semaphore_name)
+   *  - 'instance': each object instance gets its own semaphore (keyed by instanceId.semaphore_name)
+   *  'class' and 'instance' require `this` to be an object; they fall back to 'global' for standalone calls. */
+  semaphore_scope?: 'global' | 'class' | 'instance'
+
   /** Maximum seconds to wait for semaphore acquisition. Default: undefined → timeout * max(1, limit - 1) */
   semaphore_timeout?: number | null
 }
@@ -91,6 +98,26 @@ function runWithHeldSemaphores<T>(held: ReentrantStore, fn: () => T): T {
   return retry_context_storage.run(held, fn)
 }
 
+// ─── Semaphore scope helpers ─────────────────────────────────────────────────
+
+let _next_instance_id = 1
+const _instance_ids = new WeakMap<object, number>()
+
+function scopedSemaphoreKey(base_name: string, scope: 'global' | 'class' | 'instance', context: unknown): string {
+  if (scope === 'class' && context && typeof context === 'object') {
+    return `${(context as object).constructor?.name ?? 'Object'}.${base_name}`
+  }
+  if (scope === 'instance' && context && typeof context === 'object') {
+    let id = _instance_ids.get(context as object)
+    if (id === undefined) {
+      id = _next_instance_id++
+      _instance_ids.set(context as object, id)
+    }
+    return `${id}.${base_name}`
+  }
+  return base_name
+}
+
 // ─── Global semaphore registry ───────────────────────────────────────────────
 
 const SEMAPHORE_REGISTRY = new Map<string, AsyncSemaphore>()
@@ -139,6 +166,7 @@ export function retry(options: RetryOptions = {}) {
     semaphore_limit,
     semaphore_name: semaphore_name_option,
     semaphore_lax = true,
+    semaphore_scope = 'global',
     semaphore_timeout,
   } = options
 
@@ -149,17 +177,20 @@ export function retry(options: RetryOptions = {}) {
     const effective_retry_after = Math.max(0, retry_after)
 
     async function retryWrapper(this: any, ...args: any[]): Promise<any> {
+      // ── Resolve scoped semaphore key at call time (uses `this` for class/instance scopes) ──
+      const scoped_key = scopedSemaphoreKey(sem_name, semaphore_scope, this)
+
       // ── Check re-entrancy: skip semaphore if we already hold it in this async context ──
       const held = getHeldSemaphores()
       const needs_semaphore = semaphore_limit != null && semaphore_limit > 0
-      const is_reentrant = needs_semaphore && held.has(sem_name)
+      const is_reentrant = needs_semaphore && held.has(scoped_key)
 
       // ── Semaphore acquisition (held across all retry attempts, skipped if re-entrant) ──
       let semaphore: AsyncSemaphore | null = null
       let semaphore_acquired = false
 
       if (needs_semaphore && !is_reentrant) {
-        semaphore = getOrCreateSemaphore(sem_name, semaphore_limit!)
+        semaphore = getOrCreateSemaphore(scoped_key, semaphore_limit!)
 
         const effective_sem_timeout =
           semaphore_timeout != null
@@ -173,8 +204,8 @@ export function retry(options: RetryOptions = {}) {
           if (!semaphore_acquired) {
             if (!semaphore_lax) {
               throw new SemaphoreTimeoutError(
-                `Failed to acquire semaphore "${sem_name}" within ${effective_sem_timeout}s (limit=${semaphore_limit})`,
-                { semaphore_name: sem_name, semaphore_limit: semaphore_limit!, timeout_seconds: effective_sem_timeout }
+                `Failed to acquire semaphore "${scoped_key}" within ${effective_sem_timeout}s (limit=${semaphore_limit})`,
+                { semaphore_name: scoped_key, semaphore_limit: semaphore_limit!, timeout_seconds: effective_sem_timeout }
               )
             }
             // lax mode: proceed without concurrency limit
@@ -189,7 +220,7 @@ export function retry(options: RetryOptions = {}) {
       // ── Build the set of held semaphores for nested calls ──
       const new_held = new Set(held)
       if (semaphore_acquired) {
-        new_held.add(sem_name)
+        new_held.add(scoped_key)
       }
 
       // ── Retry loop (runs inside the semaphore and re-entrancy context) ──
