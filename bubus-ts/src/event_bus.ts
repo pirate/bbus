@@ -675,7 +675,22 @@ export class EventBus {
       const handler_entries = this.createPendingHandlerResults(event)
 
       const handler_promises = handler_entries.map((entry) => this.runEventHandler(event, entry.handler, entry.result))
-      await Promise.all(handler_promises)
+
+      if (event.event_handler_completion === 'first') {
+        // first() mode: cancel remaining handlers once any handler returns a non-undefined result
+        let first_found = false
+        const monitored = handler_entries.map((entry, i) =>
+          handler_promises[i].then(() => {
+            if (!first_found && entry.result.status === 'completed' && entry.result.result !== undefined) {
+              first_found = true
+              this.cancelEventHandlersForFirstMode(event, entry.result)
+            }
+          })
+        )
+        await Promise.all(monitored)
+      } else {
+        await Promise.all(handler_promises)
+      }
 
       event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
       event.markCompleted(false)
@@ -992,6 +1007,51 @@ export class EventBus {
 
     for (const child of event.event_children) {
       cancelChildEvent(child)
+    }
+  }
+
+  // Cancel all handler results for an event except the winner, used by first() mode.
+  // Cancels pending handlers immediately, aborts started handlers via signalAbort(),
+  // and cancels any child events emitted by the losing handlers.
+  private cancelEventHandlersForFirstMode(event: BaseEvent, winner: EventResult): void {
+    const cause = new Error('first() resolved: another handler returned a result first')
+
+    for (const result of event.event_results.values()) {
+      if (result === winner) continue
+      if (result.eventbus_name !== this.name) continue
+
+      if (result.status === 'pending') {
+        result.markError(
+          new EventHandlerCancelledError(`Cancelled: first() resolved`, {
+            event_result: result,
+            cause,
+          })
+        )
+      } else if (result.status === 'started') {
+        // Cancel child events emitted by this handler before aborting it
+        for (const child of result.event_children) {
+          const original_child = child._event_original ?? child
+          this.cancelPendingDescendants(original_child, cause)
+          const child_path = Array.isArray(original_child.event_path) ? original_child.event_path : []
+          for (const bus of EventBus._all_instances) {
+            if (child_path.includes(bus.name)) {
+              bus.cancelEvent(original_child, cause)
+            }
+          }
+          if (original_child.event_status !== 'completed') {
+            original_child.markCompleted()
+          }
+        }
+
+        // Abort the handler itself
+        result._lock?.exitHandlerRun()
+        const aborted_error = new EventHandlerAbortedError(`Aborted: first() resolved`, {
+          event_result: result,
+          cause,
+        })
+        result.markError(aborted_error)
+        result.signalAbort(aborted_error)
+      }
     }
   }
 

@@ -6,7 +6,10 @@ type AsyncLocalStorageLike = {
   enterWith?(store: unknown): void
 }
 
-export let async_local_storage: AsyncLocalStorageLike | null = null
+export type { AsyncLocalStorageLike }
+
+// Cache the AsyncLocalStorage constructor so multiple modules can create separate instances.
+let _AsyncLocalStorageClass: (new () => AsyncLocalStorageLike) | null = null
 
 const is_node = typeof process !== 'undefined' && typeof process.versions !== 'undefined' && typeof process.versions.node === 'string'
 
@@ -17,12 +20,21 @@ if (is_node) {
     ) => Promise<{ AsyncLocalStorage?: new () => AsyncLocalStorageLike }>
     const mod = await importer('node:async_hooks')
     if (mod?.AsyncLocalStorage) {
-      async_local_storage = new mod.AsyncLocalStorage()
+      _AsyncLocalStorageClass = mod.AsyncLocalStorage
     }
   } catch {
-    async_local_storage = null
+    _AsyncLocalStorageClass = null
   }
 }
+
+/** Create a new AsyncLocalStorage instance, or null if unavailable (e.g. in browsers). */
+export const createAsyncLocalStorage = (): AsyncLocalStorageLike | null => {
+  if (!_AsyncLocalStorageClass) return null
+  return new _AsyncLocalStorageClass()
+}
+
+// The primary AsyncLocalStorage instance used for event dispatch context propagation.
+export let async_local_storage: AsyncLocalStorageLike | null = _AsyncLocalStorageClass ? new _AsyncLocalStorageClass() : null
 
 export const captureAsyncContext = (): unknown | null => {
   if (!async_local_storage) {

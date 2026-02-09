@@ -27,6 +27,9 @@ export const withResolvers = <T>(): Deferred<T> => {
 
 export const CONCURRENCY_MODES = ['global-serial', 'bus-serial', 'parallel', 'auto'] as const
 export type ConcurrencyMode = (typeof CONCURRENCY_MODES)[number] // union type of the values in the CONCURRENCY_MODES array
+
+export const COMPLETION_MODES = ['all', 'first'] as const
+export type CompletionMode = (typeof COMPLETION_MODES)[number]
 export const DEFAULT_CONCURRENCY_MODE = 'bus-serial'
 
 export const resolveConcurrencyMode = (mode: ConcurrencyMode | undefined, fallback: ConcurrencyMode): ConcurrencyMode => {
