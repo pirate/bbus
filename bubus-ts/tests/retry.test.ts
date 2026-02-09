@@ -1095,3 +1095,57 @@ test('retry: HOF retry()(fn.bind(instance)) — scope falls back to global (bind
   await Promise.all([handler_a('event1'), handler_b('event2')])
   assert.equal(max_active, 1, 'bind-before-wrap: scoping falls back to global (serialized)')
 })
+
+// ─── retry wrapping an emit→done cycle (retrying entire event dispatch) ─────
+
+test('retry: retry wrapping emit→done retries the full dispatch cycle in parallel with other events', async () => {
+  const bus = new EventBus('RetryEmitBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
+
+  const TabsEvent = BaseEvent.extend('TabsEvent', {})
+  const DOMEvent = BaseEvent.extend('DOMEvent', {})
+  const ScreenshotEvent = BaseEvent.extend('ScreenshotEvent', {})
+
+  let tabs_attempts = 0
+  let dom_calls = 0
+  let screenshot_calls = 0
+
+  bus.on(TabsEvent, async (_event) => {
+    tabs_attempts++
+    if (tabs_attempts < 3) throw new Error(`tabs fail attempt ${tabs_attempts}`)
+    return 'tabs ok'
+  })
+
+  bus.on(DOMEvent, async (_event) => {
+    dom_calls++
+    return 'dom ok'
+  })
+
+  bus.on(ScreenshotEvent, async (_event) => {
+    screenshot_calls++
+    return 'screenshot ok'
+  })
+
+  const [tabs_event, dom_event, screenshot_event] = await Promise.all([
+    // retry wraps the full emit→done cycle — each retry dispatches a fresh event
+    retry({ max_attempts: 4 })(async () => {
+      const event = bus.emit(TabsEvent({}))
+      await event.done()
+      if (event.event_errors.length) throw event.event_errors[0]
+      return event
+    })(),
+
+    // these two race in parallel alongside the retrying tabs event
+    bus.emit(DOMEvent({})).done(),
+    bus.emit(ScreenshotEvent({})).done(),
+  ])
+
+  // tabs needed 3 attempts (2 failures + 1 success)
+  assert.equal(tabs_attempts, 3)
+  assert.equal(tabs_event.event_status, 'completed')
+
+  // dom and screenshot ran once each, in parallel with the tabs retries
+  assert.equal(dom_calls, 1)
+  assert.equal(screenshot_calls, 1)
+  assert.equal(dom_event.event_status, 'completed')
+  assert.equal(screenshot_event.event_status, 'completed')
+})
