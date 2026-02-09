@@ -84,6 +84,12 @@ The field is:
 | `event_handler_completion` | `'all'` (default) | `'first'` |
 | Use case | Run all handlers, inspect results | Race handlers, take winner |
 
+Note to run all handlers in parallel but only read the first non-undefined result you can always do:
+
+```typescript
+const first_result_from_all = await bus.emit(SomeEvent(...)).done().first_result
+```
+
 ### 2) Cross-bus queue jump (forwarding)
 
 - Python uses a global re-entrant lock to let awaited events process immediately on every bus where they appear.
