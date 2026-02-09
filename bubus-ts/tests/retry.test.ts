@@ -904,3 +904,194 @@ test('retry: semaphore_scope=instance falls back to global for standalone functi
   assert.deepEqual(results, ['ok', 'ok'])
   assert.equal(max_active, 1, 'instance scope on standalone fn should fall back to global and serialize')
 })
+
+// ─── Full usage patterns: @retry() decorator + bus.on via .bind(this) ───────
+
+test('retry: @retry(scope=class) + bus.on via .bind — serializes across instances', async () => {
+  clearSemaphoreRegistry()
+
+  const bus = new EventBus('ScopeClassBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
+  const SomeEvent = BaseEvent.extend('ScopeClassEvent', {})
+
+  let active = 0
+  let max_active = 0
+
+  class SomeService {
+    constructor(b: InstanceType<typeof EventBus>) {
+      b.on(SomeEvent, this.on_SomeEvent.bind(this))
+    }
+
+    @retry({ max_attempts: 1, semaphore_scope: 'class', semaphore_limit: 1, semaphore_name: 'on_SomeEvent' })
+    async on_SomeEvent(_event: InstanceType<typeof SomeEvent>): Promise<string> {
+      active++
+      max_active = Math.max(max_active, active)
+      await delay(30)
+      active--
+      return 'ok'
+    }
+  }
+
+  // Two instances register handlers on the same bus
+  // Small delay between registrations to ensure unique handler IDs (bus uses ms-precision timestamps in handler ID hash)
+  new SomeService(bus)
+  await delay(2)
+  new SomeService(bus)
+
+  const event = bus.dispatch(SomeEvent({}))
+  await event.done()
+
+  // class scope + limit=1: only 1 handler should run at a time across both instances
+  assert.equal(max_active, 1, 'class scope should serialize across instances')
+})
+
+test('retry: @retry(scope=instance) + bus.on via .bind — isolates per instance', async () => {
+  const bus = new EventBus('ScopeInstanceBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
+  const SomeEvent = BaseEvent.extend('ScopeInstanceEvent', {})
+
+  let active = 0
+  let max_active = 0
+
+  class SomeService {
+    constructor(b: InstanceType<typeof EventBus>) {
+      b.on(SomeEvent, this.on_SomeEvent.bind(this))
+    }
+
+    @retry({ max_attempts: 1, semaphore_scope: 'instance', semaphore_limit: 1, semaphore_name: 'on_SomeEvent_inst' })
+    async on_SomeEvent(_event: InstanceType<typeof SomeEvent>): Promise<string> {
+      active++
+      max_active = Math.max(max_active, active)
+      total_calls++
+      await delay(200)
+      active--
+      return 'ok'
+    }
+  }
+
+  let total_calls = 0
+
+  // Two instances register handlers — each gets its own semaphore
+  // Small delay between registrations to ensure unique handler IDs (bus uses ms-precision timestamps in handler ID hash)
+  new SomeService(bus)
+  await delay(2)
+  new SomeService(bus)
+
+  const event = bus.dispatch(SomeEvent({}))
+  await event.done()
+
+  // instance scope: 2 different instances can run in parallel
+  assert.equal(total_calls, 2, 'both handlers should have run')
+  assert.equal(max_active, 2, `instance scope should allow different instances to run in parallel (got max_active=${max_active}, total_calls=${total_calls})`)
+})
+
+test('retry: @retry(scope=global) + bus.on via .bind — all calls share one semaphore', async () => {
+  clearSemaphoreRegistry()
+
+  const bus = new EventBus('ScopeGlobalBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
+  const SomeEvent = BaseEvent.extend('ScopeGlobalEvent', {})
+
+  let active = 0
+  let max_active = 0
+
+  class SomeService {
+    constructor(b: InstanceType<typeof EventBus>) {
+      b.on(SomeEvent, this.on_SomeEvent.bind(this))
+    }
+
+    @retry({ max_attempts: 1, semaphore_scope: 'global', semaphore_limit: 1, semaphore_name: 'on_SomeEvent' })
+    async on_SomeEvent(_event: InstanceType<typeof SomeEvent>): Promise<string> {
+      active++
+      max_active = Math.max(max_active, active)
+      await delay(30)
+      active--
+      return 'ok'
+    }
+  }
+
+  // Small delay between registrations to ensure unique handler IDs
+  new SomeService(bus)
+  await delay(2)
+  new SomeService(bus)
+
+  const event = bus.dispatch(SomeEvent({}))
+  await event.done()
+
+  // global scope: all calls serialized
+  assert.equal(max_active, 1, 'global scope should serialize all calls')
+})
+
+// ─── HOF pattern: retry({...})(fn).bind(instance) — bind AFTER wrapping ─────
+
+test('retry: HOF retry()(fn).bind(instance) — instance scope works when bind is after wrap', async () => {
+  clearSemaphoreRegistry()
+
+  const bus = new EventBus('HOFBindBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
+  const SomeEvent = BaseEvent.extend('HOFBindEvent', {})
+
+  let active = 0
+  let max_active = 0
+
+  const some_instance_a = { name: 'a' }
+  const some_instance_b = { name: 'b' }
+
+  const handler = retry({
+    max_attempts: 1,
+    semaphore_scope: 'instance',
+    semaphore_limit: 1,
+    semaphore_name: 'handler',
+  })(async function (this: any, _event: InstanceType<typeof SomeEvent>): Promise<string> {
+    active++
+    max_active = Math.max(max_active, active)
+    await delay(30)
+    active--
+    return 'ok'
+  })
+
+  // bind AFTER wrapping → wrapper receives correct `this` for scoping
+  bus.on(SomeEvent, handler.bind(some_instance_a))
+  bus.on(SomeEvent, handler.bind(some_instance_b))
+
+  const event = bus.dispatch(SomeEvent({}))
+  await event.done()
+
+  // Two different instances → separate semaphores → can run in parallel
+  assert.equal(max_active, 2, 'bind-after-wrap: different instances should run in parallel')
+})
+
+// ─── HOF pattern: retry({...})(fn.bind(instance)) — bind BEFORE wrapping ────
+// NOTE: This falls back to global scope because JS cannot extract [[BoundThis]]
+// from a bound function. The handler works correctly (this is preserved inside
+// the handler), but the semaphore scoping cannot see the bound instance.
+// Recommendation: use retry({...})(fn).bind(instance) instead.
+
+test('retry: HOF retry()(fn.bind(instance)) — scope falls back to global (bind before wrap)', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  const instance_a = { name: 'a' }
+  const instance_b = { name: 'b' }
+
+  const make_handler = (inst: object) =>
+    retry({
+      max_attempts: 1,
+      semaphore_scope: 'instance',
+      semaphore_limit: 1,
+      semaphore_name: 'handler_bind_before',
+    })(
+      (async function (this: any, _event: any): Promise<string> {
+        active++
+        max_active = Math.max(max_active, active)
+        await delay(30)
+        active--
+        return 'ok'
+      }).bind(inst)
+    )
+
+  const handler_a = make_handler(instance_a)
+  const handler_b = make_handler(instance_b)
+
+  // Both handlers fall back to global scope (same semaphore), so they serialize
+  await Promise.all([handler_a('event1'), handler_b('event2')])
+  assert.equal(max_active, 1, 'bind-before-wrap: scoping falls back to global (serialized)')
+})

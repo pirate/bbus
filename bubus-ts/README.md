@@ -364,18 +364,41 @@ const fetchWithRetry = retry({ max_attempts: 3, retry_after: 1 })(async (url: st
   return res.json()
 })
 
-// On an event bus handler
+// TC39 Stage 3 decorator on class methods (TS 5.0+, no experimentalDecorators needed)
+class SomeService {
+  constructor(bus: EventBus) {
+    // IMPORTANT: use .bind(this) when passing decorated methods as callbacks,
+    // otherwise `this` is lost and semaphore_scope won't work correctly.
+    bus.on(SomeEvent, this.on_SomeEvent.bind(this))
+  }
+
+  @retry({ max_attempts: 3, semaphore_scope: 'class', semaphore_limit: 3 })
+  async on_SomeEvent(event: SomeEvent) {
+    // Across all instances of SomeService, at most 3 running at any given time
+    await riskyOperation(event.data)
+  }
+}
+
+// On a plain event bus handler
 bus.on(MyEvent, retry({ max_attempts: 3, timeout: 10 })(async (event) => {
   await riskyOperation(event.data)
 }))
 
-// On a class method (manual wrapping pattern)
-class ApiClient {
-  fetchData = retry({ max_attempts: 3, retry_after: 0.5 })(async function (this: ApiClient) {
-    return await this.doRequest()
-  })
-}
+// HOF pattern with instance scoping via .bind()
+const handler = retry({
+  max_attempts: 3,
+  semaphore_scope: 'instance',
+  semaphore_limit: 3,
+})(async function (this: any, event: SomeEvent) {
+  await processEvent(event)
+})
+// bind AFTER wrapping — the wrapper needs `this` for scoping
+bus.on(SomeEvent, handler.bind(some_instance))
 ```
+
+**`.bind()` ordering matters for semaphore scoping:**
+- `retry({...})(fn).bind(instance)` — correct: wrapper receives `this` for scope resolution
+- `retry({...})(fn.bind(instance))` — the inner bind works for `this` inside the handler, but the wrapper's `this` is unset, so `semaphore_scope` falls back to `'global'`
 
 ### Options
 
