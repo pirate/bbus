@@ -384,7 +384,7 @@ class ApiClient {
 | `max_attempts` | `number` | `1` | Total attempts including the initial call. `1` = no retry, `3` = up to 2 retries. |
 | `retry_after` | `number` | `0` | Seconds to wait between retries. |
 | `retry_backoff_factor` | `number` | `1.0` | Multiplier applied to `retry_after` after each attempt. `2.0` = exponential backoff. |
-| `retry_on_errors` | `ErrorClass[]` | `undefined` | Only retry when the error is an `instanceof` one of these classes. `undefined` = retry on any error. |
+| `retry_on_errors` | `(ErrorClass \| string \| RegExp)[]` | `undefined` | Only retry when the error matches a matcher. Accepts class constructors (`instanceof`), strings (matched against `error.name`), or RegExp (tested against `String(error)`). Can be mixed: `[TypeError, 'NetworkError', /timeout/i]`. `undefined` = retry on any error. |
 | `timeout` | `number \| null` | `undefined` | Per-attempt timeout in seconds. Throws `RetryTimeoutError` if exceeded. |
 | `semaphore_limit` | `number \| null` | `undefined` | Max concurrent executions sharing this semaphore. |
 | `semaphore_name` | `string \| null` | fn name | Semaphore identifier. Functions with the same name share the same slot pool. |
