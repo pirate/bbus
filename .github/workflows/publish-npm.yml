@@ -1,0 +1,52 @@
+name: publish-npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: npm dist-tag to publish under
+        required: false
+        default: latest
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish_to_npm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bubus-ts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: bubus-ts/pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+
+      - name: Publish release tag
+        if: github.event_name == 'release'
+        run: pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish manual tag
+        if: github.event_name == 'workflow_dispatch'
+        run: pnpm publish --access public --tag "${{ inputs.tag }}" --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

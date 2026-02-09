@@ -1,28 +1,38 @@
 {
-  "name": "bubus-ts",
-  "version": "1.0.0",
+  "name": "bubus",
+  "version": "1.7.3",
   "description": "Event bus library for browsers and ESM Node.js",
   "type": "module",
   "main": "./dist/esm/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "default": "./dist/esm/index.js"
+    }
+  },
   "files": [
     "dist/esm",
     "dist/types"
   ],
   "scripts": {
     "build": "pnpm run build:esm && pnpm run build:types",
-    "build:esm": "esbuild src/index.ts --bundle --format=esm --platform=neutral --target=es2022 --outdir=dist/esm",
+    "build:esm": "esbuild src/index.ts --bundle --format=esm --platform=neutral --target=es2022 --sourcemap --outdir=dist/esm",
     "build:types": "tsc -p tsconfig.json --emitDeclarationOnly",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint .",
+    "lint": "pnpm run format:check && eslint . && pnpm run typecheck",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "NODE_OPTIONS='--expose-gc' node --expose-gc --test --import tsx tests/**/*.test.ts"
+    "test": "NODE_OPTIONS='--expose-gc' node --expose-gc --test --import tsx tests/**/*.test.ts",
+    "prepack": "pnpm run build",
+    "release:dry-run": "pnpm publish --access public --dry-run --no-git-checks",
+    "release:check": "pnpm run typecheck && pnpm test && pnpm run build"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "packageManager": "pnpm@10.23.0",
   "dependencies": {
     "uuid": "^11.1.0",
@@ -36,5 +46,18 @@
     "prettier": "^3.8.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pirate/bbus.git",
+    "directory": "bubus-ts"
+  },
+  "bugs": {
+    "url": "https://github.com/pirate/bbus/issues"
+  },
+  "homepage": "https://github.com/pirate/bbus/tree/main/bubus-ts",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }
