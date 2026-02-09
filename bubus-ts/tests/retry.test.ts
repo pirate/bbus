@@ -736,3 +736,171 @@ test('retry: semaphore_scope=class isolates different classes', async () => {
   await Promise.all([new Alpha().run(), new Beta().run()])
   assert.equal(max_active, 2, 'class scope: different classes should get separate semaphores')
 })
+
+// ─── TC39 Stage 3 decorator syntax ──────────────────────────────────────────
+
+test('retry: @retry() TC39 decorator on class method retries on failure', async () => {
+  clearSemaphoreRegistry()
+
+  class ApiService {
+    calls = 0
+
+    @retry({ max_attempts: 3 })
+    async fetchData(): Promise<string> {
+      this.calls++
+      if (this.calls < 3) throw new Error('api error')
+      return 'data'
+    }
+  }
+
+  const svc = new ApiService()
+  assert.equal(await svc.fetchData(), 'data')
+  assert.equal(svc.calls, 3)
+})
+
+test('retry: @retry() TC39 decorator preserves this context', async () => {
+  class Config {
+    endpoint = 'https://api.example.com'
+
+    @retry({ max_attempts: 2 })
+    async getEndpoint(): Promise<string> {
+      return this.endpoint
+    }
+  }
+
+  const cfg = new Config()
+  assert.equal(await cfg.getEndpoint(), 'https://api.example.com')
+})
+
+test('retry: @retry() TC39 decorator with semaphore_scope=class', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  class Service {
+    @retry({
+      max_attempts: 1,
+      semaphore_limit: 1,
+      semaphore_scope: 'class',
+      semaphore_name: 'handle',
+    })
+    async handle(): Promise<string> {
+      active++
+      max_active = Math.max(max_active, active)
+      await delay(30)
+      active--
+      return 'ok'
+    }
+  }
+
+  const a = new Service()
+  const b = new Service()
+  await Promise.all([a.handle(), b.handle()])
+  assert.equal(max_active, 1, '@retry class scope: all instances share one semaphore')
+})
+
+test('retry: @retry() TC39 decorator with semaphore_scope=instance', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  class Service {
+    @retry({
+      max_attempts: 1,
+      semaphore_limit: 1,
+      semaphore_scope: 'instance',
+      semaphore_name: 'handle',
+    })
+    async handle(): Promise<string> {
+      active++
+      max_active = Math.max(max_active, active)
+      await delay(30)
+      active--
+      return 'ok'
+    }
+  }
+
+  const a = new Service()
+  const b = new Service()
+  await Promise.all([a.handle(), b.handle()])
+  assert.equal(max_active, 2, '@retry instance scope: different instances get separate semaphores')
+})
+
+test('retry: @retry() decorated method works with bus.on via bind', async () => {
+  const bus = new EventBus('DecoratorBus', { event_timeout: null })
+  const TestEvent = BaseEvent.extend('TestEvent', {})
+
+  class Handler {
+    calls = 0
+
+    @retry({ max_attempts: 3 })
+    async onTest(_event: InstanceType<typeof TestEvent>): Promise<string> {
+      this.calls++
+      if (this.calls < 3) throw new Error('handler fail')
+      return 'handler ok'
+    }
+  }
+
+  const handler = new Handler()
+  bus.on(TestEvent, handler.onTest.bind(handler))
+
+  const event = bus.dispatch(TestEvent({}))
+  await event.done()
+  assert.equal(handler.calls, 3)
+  const result = Array.from(event.event_results.values())[0]
+  assert.equal(result.result, 'handler ok')
+})
+
+// ─── Scope fallback to global ───────────────────────────────────────────────
+
+test('retry: semaphore_scope=class falls back to global for standalone functions', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  const fn = retry({
+    max_attempts: 1,
+    semaphore_limit: 1,
+    semaphore_scope: 'class',
+    semaphore_name: 'standalone_class',
+  })(async () => {
+    active++
+    max_active = Math.max(max_active, active)
+    await delay(30)
+    active--
+    return 'ok'
+  })
+
+  // Two concurrent calls should serialize since they share the same global-fallback semaphore
+  const results = await Promise.all([fn(), fn()])
+  assert.deepEqual(results, ['ok', 'ok'])
+  assert.equal(max_active, 1, 'class scope on standalone fn should fall back to global and serialize')
+})
+
+test('retry: semaphore_scope=instance falls back to global for standalone functions', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  const fn = retry({
+    max_attempts: 1,
+    semaphore_limit: 1,
+    semaphore_scope: 'instance',
+    semaphore_name: 'standalone_instance',
+  })(async () => {
+    active++
+    max_active = Math.max(max_active, active)
+    await delay(30)
+    active--
+    return 'ok'
+  })
+
+  // Two concurrent calls should serialize since they share the same global-fallback semaphore
+  const results = await Promise.all([fn(), fn()])
+  assert.deepEqual(results, ['ok', 'ok'])
+  assert.equal(max_active, 1, 'instance scope on standalone fn should fall back to global and serialize')
+})
