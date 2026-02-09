@@ -437,8 +437,9 @@ await outer() // works, no deadlock
 This also works for recursive calls (a function calling itself) and deeply nested chains (A → B → C all sharing
 a semaphore).
 
-In browsers (no `AsyncLocalStorage`), re-entrancy tracking is unavailable. Avoid recursive/nested calls through
-the same semaphore in browser environments, or use different `semaphore_name` values.
+In browsers (no `AsyncLocalStorage`), re-entrancy tracking is unavailable and the decorator gracefully degrades
+to a no-op (no deadlock detection). Avoid recursive/nested calls through the same semaphore in browser
+environments, or use different `semaphore_name` values.
 
 ### Interaction with `event_concurrency` and `event_handler_concurrency`
 

@@ -1,4 +1,5 @@
 import { AsyncSemaphore } from './lock_manager.js'
+import { createAsyncLocalStorage, type AsyncLocalStorageLike } from './async_context.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -69,35 +70,18 @@ export class SemaphoreTimeoutError extends Error {
 // Each async call stack tracks which semaphore names it currently holds. When a
 // nested call encounters a semaphore it already holds, it skips acquisition and
 // runs directly within the parent's slot.
+//
+// Uses the same AsyncLocalStorage polyfill as the rest of bubus (see async_context.ts)
+// so it works in Node.js and gracefully degrades to a no-op in browsers.
 
 type ReentrantStore = Set<string>
 
-type AsyncLocalStorageLike = {
-  getStore(): ReentrantStore | undefined
-  run<T>(store: ReentrantStore, callback: () => T): T
-}
-
-let retry_context_storage: AsyncLocalStorageLike | null = null
-
-declare const process: { versions?: { node?: string } } | undefined
-const is_node = typeof process !== 'undefined' && typeof process.versions !== 'undefined' && typeof process.versions?.node === 'string'
-
-if (is_node) {
-  try {
-    const importer = new Function('specifier', 'return import(specifier)') as (
-      specifier: string
-    ) => Promise<{ AsyncLocalStorage?: new () => AsyncLocalStorageLike }>
-    const mod = await importer('node:async_hooks')
-    if (mod?.AsyncLocalStorage) {
-      retry_context_storage = new mod.AsyncLocalStorage()
-    }
-  } catch {
-    retry_context_storage = null
-  }
-}
+// Separate AsyncLocalStorage instance for retry re-entrancy tracking.
+// Created via the shared factory in async_context.ts (returns null in browsers).
+const retry_context_storage: AsyncLocalStorageLike | null = createAsyncLocalStorage()
 
 function getHeldSemaphores(): ReentrantStore {
-  return retry_context_storage?.getStore() ?? new Set()
+  return (retry_context_storage?.getStore() as ReentrantStore | undefined) ?? new Set()
 }
 
 function runWithHeldSemaphores<T>(held: ReentrantStore, fn: () => T): T {
