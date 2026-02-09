@@ -348,57 +348,71 @@ contextvars + asyncio primitives. The `LockManager` (runloop pause + semaphore c
 
 ## `retry()` Decorator
 
-`retry()` is a standalone higher-order function / decorator that adds retry logic and optional semaphore-based
-concurrency limiting to any async function. It works independently of the event bus — you can use it on plain
-functions, class methods, or event bus handlers.
+`retry()` adds retry logic and optional semaphore-based concurrency limiting to any async function.
 
-### Basic usage
+### Why retry is a handler-level concept
+
+Retry and timeout belong on the **handler**, not on `emit()` or `done()`:
+
+- **Handlers fail, events don't.** An event has no error state — it's a message. Individual handlers
+  produce errors, timeouts, and exceptions that may need retrying. The handler knows *why* it failed
+  and whether retrying makes sense.
+
+- **Replayability.** When you replay an event log, each emit should produce exactly one event. If retry
+  lives on the handler, the log records one emit → one handler invocation → one result. The retry
+  attempts are invisible implementation details. If retry lives on `emit()`, the log contains multiple
+  separate events for the same logical operation, making replays non-deterministic.
+
+- **Separation of concerns.** Event-level concurrency (`event_concurrency`) and handler-level concurrency
+  (`event_handler_concurrency`) are bus-level scheduling concerns. Retry/timeout/semaphore limiting are
+  handler-level resilience concerns. They compose orthogonally — don't mix them.
+
+### Recommended pattern: `@retry()` on class methods
 
 ```ts
-import { retry } from 'bubus'
+import { retry, EventBus, BaseEvent } from 'bubus'
 
-// Higher-order function wrapper (works on any function)
-const fetchWithRetry = retry({ max_attempts: 3, retry_after: 1 })(async (url: string) => {
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
-})
-
-// TC39 Stage 3 decorator on class methods (TS 5.0+, no experimentalDecorators needed)
-class SomeService {
-  constructor(bus: EventBus) {
-    // IMPORTANT: use .bind(this) when passing decorated methods as callbacks,
-    // otherwise `this` is lost and semaphore_scope won't work correctly.
-    bus.on(SomeEvent, this.on_SomeEvent.bind(this))
+class ScreenshotService {
+  constructor(private bus: InstanceType<typeof EventBus>) {
+    bus.on(ScreenshotRequestEvent, this.on_ScreenshotRequest.bind(this))
   }
 
-  @retry({ max_attempts: 3, semaphore_scope: 'class', semaphore_limit: 3 })
-  async on_SomeEvent(event: SomeEvent) {
-    // Across all instances of SomeService, at most 3 running at any given time
-    await riskyOperation(event.data)
+  @retry({
+    max_attempts: 4,
+    retry_on_errors: [/timeout/i],
+    timeout: 5,
+    semaphore_scope: 'global',
+    semaphore_name: 'Screenshots',
+    semaphore_limit: 2,
+  })
+  async on_ScreenshotRequest(event: InstanceType<typeof ScreenshotRequestEvent>): Promise<Buffer> {
+    // At most 2 concurrent screenshot operations globally.
+    // Each attempt times out after 5s. Up to 4 total attempts.
+    // Only retries on timeout-related errors.
+    return await takeScreenshot(event.data.url)
   }
 }
 
-// On a plain event bus handler
+// Emit side stays clean — no retry/timeout concerns
+const event = bus.emit(ScreenshotRequestEvent({ url: 'https://example.com' }))
+await event.done()
+```
+
+This is the primary supported pattern. The `@retry()` decorator handles:
+- **Retry logic**: max attempts, backoff, error filtering
+- **Per-attempt timeout**: each attempt gets its own deadline
+- **Concurrency limiting**: semaphore-based, with global/class/instance scoping
+
+The emit site just dispatches events and awaits completion — it doesn't know or care about retries.
+
+### Also works: inline HOF for simple handlers
+
+```ts
+// For one-off handlers that don't need a class
 bus.on(MyEvent, retry({ max_attempts: 3, timeout: 10 })(async (event) => {
   await riskyOperation(event.data)
 }))
-
-// HOF pattern with instance scoping via .bind()
-const handler = retry({
-  max_attempts: 3,
-  semaphore_scope: 'instance',
-  semaphore_limit: 3,
-})(async function (this: any, event: SomeEvent) {
-  await processEvent(event)
-})
-// bind AFTER wrapping — the wrapper needs `this` for scoping
-bus.on(SomeEvent, handler.bind(some_instance))
 ```
-
-**`.bind()` ordering matters for semaphore scoping:**
-- `retry({...})(fn).bind(instance)` — correct: wrapper receives `this` for scope resolution
-- `retry({...})(fn.bind(instance))` — the inner bind works for `this` inside the handler, but the wrapper's `this` is unset, so `semaphore_scope` falls back to `'global'`
 
 ### Options
 
@@ -426,14 +440,17 @@ The semaphore is acquired **once** before the first attempt and held across all 
 callers from stealing the slot between retry attempts.
 
 ```ts
-// At most 3 concurrent calls to this function across the entire process
-const limited = retry({
-  max_attempts: 2,
-  semaphore_limit: 3,
-  semaphore_name: 'api_calls',
-})(async () => {
-  await callExternalApi()
-})
+class ApiService {
+  @retry({
+    max_attempts: 2,
+    semaphore_limit: 3,
+    semaphore_name: 'api_calls',
+  })
+  async callExternalApi(): Promise<Response> {
+    // At most 3 concurrent calls across all instances of ApiService
+    return await fetch('https://api.example.com')
+  }
+}
 ```
 
 Functions that share a `semaphore_name` share the same slot pool — this is how you limit concurrency across
@@ -465,29 +482,19 @@ In browsers (no `AsyncLocalStorage`), re-entrancy tracking is unavailable and th
 to a no-op (no deadlock detection). Avoid recursive/nested calls through the same semaphore in browser
 environments, or use different `semaphore_name` values.
 
-### Interaction with `event_concurrency` and `event_handler_concurrency`
+### Interaction with bus concurrency options
 
 `retry()` and the bus's concurrency modes are **orthogonal** and compose together:
 
 - **`event_concurrency`** controls how many events the bus processes at once (via the runloop + event semaphore).
 - **`event_handler_concurrency`** controls how many handlers run concurrently for a single event (via the handler semaphore).
-- **`retry()` semaphores** control how many concurrent invocations of a specific function are allowed (via a global semaphore registry).
+- **`retry()` semaphores** control how many concurrent invocations of a specific handler are allowed (via a global semaphore registry).
 
-When you wrap an event handler with `retry()`, both layers apply:
+These are separate concerns:
+- Bus concurrency = scheduling (how the bus orders event/handler execution)
+- Retry semaphores = resilience (how individual handlers manage concurrency and failure recovery)
 
-```ts
-// Bus enforces bus-serial handler ordering (default).
-// retry() additionally limits this specific handler to 2 concurrent invocations
-// and retries up to 3 times on failure.
-bus.on(
-  MyEvent,
-  retry({ max_attempts: 3, semaphore_limit: 2, semaphore_name: 'my_handler' })(
-    async (event) => { await doWork(event) }
-  )
-)
-```
-
-The execution order is:
+When you use `@retry()` on a bus handler, both layers apply. The execution order is:
 1. Bus acquires the **handler concurrency semaphore** (e.g. `bus-serial`)
 2. `retry()` acquires its own **retry semaphore** (if `semaphore_limit` is set)
 3. The handler function runs (with retries if it throws)
@@ -500,6 +507,35 @@ The bus's `handler_timeout` and `retry()`'s `timeout` are independent:
 
 If you need per-attempt timeouts, use `retry({ timeout })`. If you need an overall deadline for the handler
 (including all retries), rely on the bus's `handler_timeout`.
+
+### Discouraged: wrapping `emit()` → `done()` in `retry()`
+
+This pattern is technically supported but **not recommended**:
+
+```ts
+// DON'T DO THIS — retry belongs on the handler, not the emit site.
+const event = await retry({ max_attempts: 4 })(async () => {
+  const ev = bus.emit(ScreenshotRequestEvent({ full_page: false }))
+  await ev.done()
+  if (ev.event_errors.length) throw ev.event_errors[0]
+  return ev
+})()
+```
+
+Why this is worse:
+
+1. **Architecture**: the emit site doesn't know which handler failed or why. The handler is the right
+   place for retry logic because it has the context to decide whether retrying makes sense.
+
+2. **Replayability**: each retry dispatches a **new event**, producing multiple events in the log for
+   one logical operation. On replay, if the handler succeeds on the first attempt, you get a different
+   event topology than the original run. With handler-level retry, the log always shows one emit → one
+   handler result, regardless of how many retry attempts were needed internally.
+
+3. **Determinism**: the same emit may fan out to multiple handlers. Retrying the whole dispatch because
+   one handler failed also re-runs handlers that succeeded — wasteful and potentially side-effectful.
+
+Use the `@retry()` decorator on the handler method instead.
 
 ### Differences from the Python `@retry` decorator
 
@@ -514,7 +550,7 @@ If you need per-attempt timeouts, use `retry({ timeout })`. If you need an overa
 | **Semaphore scopes** | `'global'`, `'class'`, `'self'`, `'multiprocess'` | `'global'`, `'class'`, `'instance'` (no multiprocess — single-process JS runtime) |
 | **System overload** | Tracks active operations, checks CPU/memory via `psutil` | Not implemented |
 | **Re-entrancy** | Not implemented (relies on Python's GIL + asyncio single-thread) | `AsyncLocalStorage`-based tracking to prevent deadlocks |
-| **Syntax** | `@retry(...)` decorator on `async def` | `retry({...})(fn)` HOF or `@retry({...})` on class methods (TC39 Stage 3) |
+| **Syntax** | `@retry(...)` decorator on `async def` | `@retry({...})` on class methods (TC39 Stage 3), or `retry({...})(fn)` HOF |
 | **Sync functions** | Not supported (async-only) | Supported (wrapper always returns a Promise) |
 
 The TS version intentionally starts with conservative defaults (1 attempt, no delay, no timeout) so that

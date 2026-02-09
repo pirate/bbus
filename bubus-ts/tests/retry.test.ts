@@ -371,8 +371,11 @@ test('retry: wraps sync functions (result becomes a promise)', async () => {
 })
 
 // ─── Integration with EventBus ───────────────────────────────────────────────
+//
+// The recommended pattern is @retry() on the handler method + bus.on(Event, this.handler.bind(this))
+// These tests demonstrate the inline HOF form for simpler cases; the decorator form is tested below.
 
-test('retry: works as event bus handler wrapper', async () => {
+test('retry: works as event bus handler wrapper (inline HOF)', async () => {
   const bus = new EventBus('RetryBus', { event_timeout: null })
   const TestEvent = BaseEvent.extend('TestEvent', {})
 
@@ -395,7 +398,7 @@ test('retry: works as event bus handler wrapper', async () => {
   assert.equal(result.result, 'handler ok')
 })
 
-test('retry: bus handler with retry_on_errors only retries matching errors', async () => {
+test('retry: bus handler with retry_on_errors only retries matching errors (inline HOF)', async () => {
   const bus = new EventBus('RetryFilterBus', { event_timeout: null })
   const TestEvent = BaseEvent.extend('TestEvent', {})
 
@@ -737,7 +740,23 @@ test('retry: semaphore_scope=class isolates different classes', async () => {
   assert.equal(max_active, 2, 'class scope: different classes should get separate semaphores')
 })
 
-// ─── TC39 Stage 3 decorator syntax ──────────────────────────────────────────
+// ─── TC39 Stage 3 decorator syntax (RECOMMENDED PATTERN) ────────────────────
+//
+// The primary supported pattern for event bus handlers is:
+//
+//   class Service {
+//     constructor(bus) {
+//       bus.on(Event, this.on_Event.bind(this))
+//     }
+//
+//     @retry({ max_attempts: 3, ... })
+//     async on_Event(event) { ... }
+//   }
+//
+// Retry/timeout is a handler-level concern. Event processing itself has no error
+// state — only individual handlers produce errors/timeouts that need retrying.
+// Event-level and handler-level concurrency on the bus is still controllable via
+// event_concurrency / event_handler_concurrency options (those are separate).
 
 test('retry: @retry() TC39 decorator on class method retries on failure', async () => {
   clearSemaphoreRegistry()
@@ -905,7 +924,7 @@ test('retry: semaphore_scope=instance falls back to global for standalone functi
   assert.equal(max_active, 1, 'instance scope on standalone fn should fall back to global and serialize')
 })
 
-// ─── Full usage patterns: @retry() decorator + bus.on via .bind(this) ───────
+// ─── @retry() decorator + bus.on via .bind(this) — all three scopes ─────────
 
 test('retry: @retry(scope=class) + bus.on via .bind — serializes across instances', async () => {
   clearSemaphoreRegistry()
@@ -1019,7 +1038,7 @@ test('retry: @retry(scope=global) + bus.on via .bind — all calls share one sem
   assert.equal(max_active, 1, 'global scope should serialize all calls')
 })
 
-// ─── HOF pattern: retry({...})(fn).bind(instance) — bind AFTER wrapping ─────
+// ─── HOF pattern: retry({...})(fn).bind(instance) — alternative to decorator ─
 
 test('retry: HOF retry()(fn).bind(instance) — instance scope works when bind is after wrap', async () => {
   clearSemaphoreRegistry()
@@ -1096,9 +1115,25 @@ test('retry: HOF retry()(fn.bind(instance)) — scope falls back to global (bind
   assert.equal(max_active, 1, 'bind-before-wrap: scoping falls back to global (serialized)')
 })
 
-// ─── retry wrapping an emit→done cycle (retrying entire event dispatch) ─────
+// ─── retry wrapping emit→done (TECHNICALLY SUPPORTED, NOT RECOMMENDED) ──────
+//
+// This pattern wraps an entire emit→done cycle in retry(), so each retry
+// dispatches a brand new event. It works, but is discouraged because:
+//
+// 1. Architecture: retry/timeout belongs on the handler, not the emit site.
+//    The emitter doesn't know which handler failed or why — the handler does.
+//
+// 2. Replayability: each retry produces a separate event in the log, making
+//    replays non-deterministic. If the original run needed 3 attempts, a replay
+//    that succeeds on attempt 1 produces a different event topology.
+//
+// 3. Determinism: the same emit may reach different handlers with different
+//    failure modes; retrying the whole dispatch is a blunt instrument.
+//
+// Prefer: @retry() on the handler method, so retries are transparent to the
+// event log and controlled by the code that understands the failure.
 
-test('retry: retry wrapping emit→done retries the full dispatch cycle in parallel with other events', async () => {
+test('retry: retry wrapping emit→done retries the full dispatch cycle (discouraged pattern)', async () => {
   const bus = new EventBus('RetryEmitBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
 
   const TabsEvent = BaseEvent.extend('TabsEvent', {})
