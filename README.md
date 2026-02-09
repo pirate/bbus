@@ -1,12 +1,29 @@
-# `bubus`: 📢 Production-ready event bus library for Python
+# `bubus`: 📢 Production-ready event bus library for Python AND JS
 
-Bubus is a simple in-memory event bus library for async Python.
+Bubus is an in-memory event bus library for async Python and Typescript (both node & browser).
 
-It's designed for quickly building event-driven applications with Python in a way that "just works" with async support, proper support for nested events, and real concurrency control. It's very similar to `EventEmitter` or [`emittery`](https://github.com/sindresorhus/emittery) in JS.
+It's designed for quickly building resilient, predictable, complex event-driven applications in Python and JS.
 
-It provides a [pydantic](https://docs.pydantic.dev/latest/)-based API for implementing publish-subscribe patterns with type safety, async/sync handler support, and advanced features like event forwarding between buses, parent event tracking, multiple execution strategies, and more.
+It "just works" with an intuitive, but powerful event JSON format + dispatch API that's consistent across both languages and scales consistently from one even up to millions:
+```python
+bus.on(SomeEvent, some_function)
+bus.emit(SomeEvent({some_data: 132}))
+```
 
-♾️ It's inspired by the simplicity of async and events in `JS`, we aim to bring a fully type-checked [`EventTarget`](https://developer.mozilla.org/en-US/docs/Web/API/EventTarget)-style API to Python.
+It's async native, has proper automatic nested event tracking, and powerful concurrency control options. The API is inspired by `EventEmitter` or [`emittery`](https://github.com/sindresorhus/emittery) in JS, but it takes it a step further:
+
+- nice Pydantic / Zod schemas for events that can be exchanged between both languages
+- automatic UUIDv7s and monotonic nanosecond timestamps for ordering events globally
+- built in locking options to force strict global FIFO procesing or fully parallel processing
+
+---
+
+♾️ It's inspired by the simplicity of async and events in `JS` but with baked-in features that allow to eliminate most of the tedious repetitive complexity in event-driven codebases:
+
+- correct timeout enforcement across multiple levels of events, if a parent times out it correctly aborts all child event processing
+- ability to strongly type hint and enforce the return type of event handlers at compile-time
+- ability to queue events on the bus, or inline await them for immediate execution like a normal function call
+- handles ~5,000 events/sec/core in both languages, with ~2kb/event RAM consumed per event during active processing
 
 <br/>
 
@@ -15,7 +32,7 @@ It provides a [pydantic](https://docs.pydantic.dev/latest/)-based API for implem
 Install bubus and get started with a simple event-driven application:
 
 ```bash
-pip install bubus
+pip install bubus      # see ./bubus-ts/README.md for JS instructions
 ```
 
 ```python
