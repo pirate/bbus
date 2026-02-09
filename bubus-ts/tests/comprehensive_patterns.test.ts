@@ -1151,6 +1151,269 @@ test('queue-jump with fully-parallel forward bus starts immediately', async () =
   assert.ok(child_b_start < slow_end, `bus_b (fully parallel): child should start before slow finishes. ` + `Got: [${log.join(', ')}]`)
 })
 
+// =============================================================================
+// Parallel emit + Promise.all([...done()]) racing pattern
+//
+// Verifies the common usage pattern where multiple unrelated events are emitted
+// and then raced to completion in parallel via Promise.all:
+//
+//   const e1 = bus.emit(EventA({}))
+//   const e2 = bus.emit(EventB({}))
+//   const e3 = bus.emit(EventC({}))
+//   const results = await Promise.all([e1.done(), e2.done(), e3.done()])
+//
+// With parallel event concurrency, all three should process concurrently.
+// With bus-serial event concurrency, they still all complete but serialize.
+// =============================================================================
+
+test('parallel emit + Promise.all done(): events race to completion with parallel concurrency', async () => {
+  const bus = new EventBus('ParallelRaceBus', {
+    event_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
+  })
+
+  const TabsSummaryEvent = BaseEvent.extend('TabsSummaryEvent', {})
+  const DOMSummaryEvent = BaseEvent.extend('DOMSummaryEvent', {})
+  const ScreenshotEvent = BaseEvent.extend('ScreenshotEvent', {})
+
+  const log: string[] = []
+
+  // Handlers with different durations to prove parallel execution
+  bus.on(TabsSummaryEvent, async () => {
+    log.push('tabs_start')
+    await delay(30)
+    log.push('tabs_end')
+    return 'tabs_result'
+  })
+
+  bus.on(DOMSummaryEvent, async () => {
+    log.push('dom_start')
+    await delay(20)
+    log.push('dom_end')
+    return 'dom_result'
+  })
+
+  bus.on(ScreenshotEvent, async () => {
+    log.push('screenshot_start')
+    await delay(10)
+    log.push('screenshot_end')
+    return 'screenshot_result'
+  })
+
+  // Emit all three, then race them with Promise.all + done()
+  const tabs_event = bus.emit(TabsSummaryEvent({}))
+  const dom_event = bus.emit(DOMSummaryEvent({}))
+  const screenshot_event = bus.emit(ScreenshotEvent({}))
+
+  const [tabs, dom, screenshot] = await Promise.all([
+    tabs_event.done(),
+    dom_event.done(),
+    screenshot_event.done(),
+  ])
+
+  // All events completed
+  assert.equal(tabs.event_status, 'completed', 'tabs event should be completed')
+  assert.equal(dom.event_status, 'completed', 'dom event should be completed')
+  assert.equal(screenshot.event_status, 'completed', 'screenshot event should be completed')
+
+  // All handlers ran
+  assert.ok(log.includes('tabs_start'), 'tabs handler should have started')
+  assert.ok(log.includes('tabs_end'), 'tabs handler should have ended')
+  assert.ok(log.includes('dom_start'), 'dom handler should have started')
+  assert.ok(log.includes('dom_end'), 'dom handler should have ended')
+  assert.ok(log.includes('screenshot_start'), 'screenshot handler should have started')
+  assert.ok(log.includes('screenshot_end'), 'screenshot handler should have ended')
+
+  // Handler results are accessible
+  const tabs_results = Array.from(tabs.event_results.values())
+  const dom_results = Array.from(dom.event_results.values())
+  const screenshot_results = Array.from(screenshot.event_results.values())
+  assert.equal(tabs_results.length, 1)
+  assert.equal(dom_results.length, 1)
+  assert.equal(screenshot_results.length, 1)
+  assert.equal(tabs_results[0].result, 'tabs_result')
+  assert.equal(dom_results[0].result, 'dom_result')
+  assert.equal(screenshot_results[0].result, 'screenshot_result')
+
+  // With parallel concurrency, all three should start before any finishes.
+  // The fastest (screenshot, 10ms) should finish before the slowest (tabs, 30ms).
+  const screenshot_end_idx = log.indexOf('screenshot_end')
+  const tabs_end_idx = log.indexOf('tabs_end')
+  assert.ok(
+    screenshot_end_idx < tabs_end_idx,
+    `parallel: faster event should finish first. Got: [${log.join(', ')}]`
+  )
+
+  // All three should have started before screenshot (fastest) finishes
+  const tabs_start_idx = log.indexOf('tabs_start')
+  const dom_start_idx = log.indexOf('dom_start')
+  const screenshot_start_idx = log.indexOf('screenshot_start')
+  assert.ok(tabs_start_idx < screenshot_end_idx, `tabs should start before screenshot ends. Got: [${log.join(', ')}]`)
+  assert.ok(dom_start_idx < screenshot_end_idx, `dom should start before screenshot ends. Got: [${log.join(', ')}]`)
+  assert.ok(screenshot_start_idx < screenshot_end_idx, `screenshot should start before it ends. Got: [${log.join(', ')}]`)
+
+  await bus.waitUntilIdle()
+})
+
+test('parallel emit + Promise.all done(): works with bus-serial concurrency (serializes)', async () => {
+  const bus = new EventBus('SerialRaceBus', {
+    event_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
+  })
+
+  const EventA = BaseEvent.extend('SerialRaceA', {})
+  const EventB = BaseEvent.extend('SerialRaceB', {})
+  const EventC = BaseEvent.extend('SerialRaceC', {})
+
+  const log: string[] = []
+
+  bus.on(EventA, async () => {
+    log.push('a_start')
+    await delay(10)
+    log.push('a_end')
+    return 'result_a'
+  })
+
+  bus.on(EventB, async () => {
+    log.push('b_start')
+    await delay(10)
+    log.push('b_end')
+    return 'result_b'
+  })
+
+  bus.on(EventC, async () => {
+    log.push('c_start')
+    await delay(10)
+    log.push('c_end')
+    return 'result_c'
+  })
+
+  const event_a = bus.emit(EventA({}))
+  const event_b = bus.emit(EventB({}))
+  const event_c = bus.emit(EventC({}))
+
+  const [a, b, c] = await Promise.all([
+    event_a.done(),
+    event_b.done(),
+    event_c.done(),
+  ])
+
+  // All events completed despite serial processing
+  assert.equal(a.event_status, 'completed', 'event A should be completed')
+  assert.equal(b.event_status, 'completed', 'event B should be completed')
+  assert.equal(c.event_status, 'completed', 'event C should be completed')
+
+  // All handlers ran and returned results
+  assert.equal(Array.from(a.event_results.values())[0].result, 'result_a')
+  assert.equal(Array.from(b.event_results.values())[0].result, 'result_b')
+  assert.equal(Array.from(c.event_results.values())[0].result, 'result_c')
+
+  // With bus-serial, events serialize: each finishes before the next starts
+  const a_end_idx = log.indexOf('a_end')
+  const b_start_idx = log.indexOf('b_start')
+  const b_end_idx = log.indexOf('b_end')
+  const c_start_idx = log.indexOf('c_start')
+  assert.ok(a_end_idx < b_start_idx, `bus-serial: A should finish before B starts. Got: [${log.join(', ')}]`)
+  assert.ok(b_end_idx < c_start_idx, `bus-serial: B should finish before C starts. Got: [${log.join(', ')}]`)
+
+  await bus.waitUntilIdle()
+})
+
+test('parallel emit + Promise.all done(): inside a handler, multiple children race via queue-jump', async () => {
+  const bus = new EventBus('HandlerRaceBus', {
+    event_concurrency: 'bus-serial',
+    event_handler_concurrency: 'parallel',
+  })
+
+  const TriggerEvent = BaseEvent.extend('HandlerRaceTrigger', {})
+  const TabsEvent = BaseEvent.extend('HandlerRaceTabs', {})
+  const DOMEvent = BaseEvent.extend('HandlerRaceDOM', {})
+  const ScreenshotEvent = BaseEvent.extend('HandlerRaceScreenshot', {})
+
+  const log: string[] = []
+  let all_results: BaseEvent[] = []
+
+  bus.on(TabsEvent, async () => {
+    log.push('tabs_start')
+    await delay(30)
+    log.push('tabs_end')
+    return 'tabs_data'
+  })
+
+  bus.on(DOMEvent, async () => {
+    log.push('dom_start')
+    await delay(20)
+    log.push('dom_end')
+    return 'dom_data'
+  })
+
+  bus.on(ScreenshotEvent, async () => {
+    log.push('screenshot_start')
+    await delay(10)
+    log.push('screenshot_end')
+    return 'screenshot_data'
+  })
+
+  bus.on(TriggerEvent, async (event) => {
+    log.push('trigger_start')
+
+    // Emit three child events and race them all with Promise.all + done()
+    const tabs_event = event.bus!.emit(TabsEvent({}))
+    const dom_event = event.bus!.emit(DOMEvent({}))
+    const screenshot_event = event.bus!.emit(ScreenshotEvent({}))
+
+    const results = await Promise.all([
+      tabs_event.done(),
+      dom_event.done(),
+      screenshot_event.done(),
+    ])
+    all_results = results
+
+    log.push('trigger_end')
+    return 'trigger_done'
+  })
+
+  const trigger = bus.dispatch(TriggerEvent({ event_timeout: null }))
+  await trigger.done()
+  await bus.waitUntilIdle()
+
+  // The trigger and all children completed
+  assert.equal(trigger.event_status, 'completed')
+  assert.equal(all_results.length, 3)
+  assert.ok(all_results.every((e) => e.event_status === 'completed'))
+
+  // All child handlers ran
+  assert.ok(log.includes('tabs_start'))
+  assert.ok(log.includes('tabs_end'))
+  assert.ok(log.includes('dom_start'))
+  assert.ok(log.includes('dom_end'))
+  assert.ok(log.includes('screenshot_start'))
+  assert.ok(log.includes('screenshot_end'))
+
+  // Children are linked to the trigger event
+  const trigger_children = trigger.event_children
+  assert.equal(trigger_children.length, 3, 'trigger should have 3 child events')
+  assert.ok(trigger_children.every((child) => child.event_parent_id === trigger.event_id))
+
+  // Child results are accessible
+  for (const child of all_results) {
+    const results = Array.from(child.event_results.values())
+    assert.equal(results.length, 1)
+    assert.ok(
+      ['tabs_data', 'dom_data', 'screenshot_data'].includes(results[0].result as string),
+      `unexpected result: ${results[0].result}`
+    )
+  }
+
+  // Trigger handler bookends the child execution
+  const trigger_start_idx = log.indexOf('trigger_start')
+  const trigger_end_idx = log.indexOf('trigger_end')
+  assert.ok(trigger_start_idx < log.indexOf('tabs_start'))
+  assert.ok(trigger_end_idx > log.indexOf('tabs_end'))
+  assert.ok(trigger_end_idx > log.indexOf('dom_end'))
+  assert.ok(trigger_end_idx > log.indexOf('screenshot_end'))
+})
+
 test('queue-jump with parallel events and serial handlers on forward bus still overlaps across events', async () => {
   // When bus_b has parallel event concurrency but serial handler concurrency,
   // the child event can start processing immediately (event semaphore is parallel),
