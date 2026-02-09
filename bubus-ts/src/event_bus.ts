@@ -676,7 +676,7 @@ export class EventBus {
 
       const handler_promises = handler_entries.map((entry) => this.runEventHandler(event, entry.handler, entry.result))
 
-      if (event._first_mode) {
+      if (event.event_handler_completion === 'first') {
         // first() mode: cancel remaining handlers once any handler returns a non-undefined result
         let first_found = false
         const monitored = handler_entries.map((entry, i) =>

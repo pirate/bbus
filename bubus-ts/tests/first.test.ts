@@ -447,3 +447,66 @@ test('first: cancels child events emitted by losing handlers', async () => {
   await delay(50)
   // The child event emitted by the slow handler should have been cancelled
 })
+
+// ─── event_handler_completion field visibility ──────────────────────────────
+
+test('first: event_handler_completion is set to "first" after calling first()', async () => {
+  const bus = new EventBus('FirstFieldBus', { event_timeout: null })
+  const TestEvent = BaseEvent.extend('FirstFieldEvent', { event_result_schema: z.string() })
+
+  bus.on(TestEvent, async (_event) => {
+    return 'result'
+  })
+
+  const event = bus.emit(TestEvent({}))
+  const original = (event as any)._event_original ?? event
+
+  // before first(), completion mode is undefined (defaults to 'all')
+  assert.equal(original.event_handler_completion, undefined)
+
+  const result = await event.first()
+
+  // after first(), completion mode is 'first'
+  assert.equal(original.event_handler_completion, 'first')
+  assert.equal(result, 'result')
+})
+
+test('first: event_handler_completion appears in toJSON output', async () => {
+  const bus = new EventBus('FirstJsonBus', { event_timeout: null })
+  const TestEvent = BaseEvent.extend('FirstJsonEvent', { event_result_schema: z.string() })
+
+  bus.on(TestEvent, async (_event) => {
+    return 'json result'
+  })
+
+  const event = bus.emit(TestEvent({}))
+  await event.first()
+
+  const original = (event as any)._event_original ?? event
+  const json = original.toJSON()
+
+  assert.equal(json.event_handler_completion, 'first', 'toJSON should include event_handler_completion')
+})
+
+test('first: event_handler_completion can be set via event constructor', async () => {
+  const bus = new EventBus('FirstCtorBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
+  const TestEvent = BaseEvent.extend('FirstCtorEvent', { event_result_schema: z.string() })
+
+  bus.on(TestEvent, async (_event) => {
+    await delay(100)
+    return 'slow handler'
+  })
+
+  await delay(2)
+
+  bus.on(TestEvent, async (_event) => {
+    await delay(10)
+    return 'fast handler'
+  })
+
+  // Set event_handler_completion directly on the event data
+  const event = bus.emit(TestEvent({ event_handler_completion: 'first' } as any))
+  const result = await event.first()
+
+  assert.equal(result, 'fast handler', 'should still use first-mode when set via constructor')
+})

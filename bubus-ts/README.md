@@ -56,6 +56,18 @@ const screenshot: string | undefined = await bus.emit(ScreenshotEvent({ page_id:
 - **`bus-serial` / `global-serial`**: Handlers run one at a time. After each handler completes, if it
   returned a non-undefined value, remaining handlers are cancelled without being started.
 
+**`event_handler_completion` field:**
+
+Calling `.first()` sets `event.event_handler_completion = 'first'` on the event before processing. This
+field is orthogonal to `event_handler_concurrency` (which controls scheduling) — it controls the
+**completion strategy**: whether to wait for all handlers (`'all'`, the default) or to stop after the
+first non-undefined result (`'first'`).
+
+The field is:
+- Part of the event's Zod schema, so it's validated on construction
+- Included in `event.toJSON()`, so it's visible in replay logs and serialized event streams
+- Settable directly on the event data: `MyEvent({ event_handler_completion: 'first' })`
+
 **Return value semantics:**
 - Returns the **temporally first** non-undefined result (not registration order)
 - `undefined` means "I don't have a result" — use it to signal pass/skip
@@ -69,6 +81,7 @@ const screenshot: string | undefined = await bus.emit(ScreenshotEvent({ page_id:
 | Waits for | All handlers | First non-undefined result |
 | Returns | `Promise<Event>` | `Promise<ResultType \| undefined>` |
 | Cancels remaining | No | Yes (abort + cancel descendants) |
+| `event_handler_completion` | `'all'` (default) | `'first'` |
 | Use case | Run all handlers, inspect results | Race handlers, take winner |
 
 ### 2) Cross-bus queue jump (forwarding)

@@ -3,8 +3,8 @@ import { v7 as uuidv7 } from 'uuid'
 
 import type { EventBus } from './event_bus.js'
 import { EventResult } from './event_result.js'
-import type { ConcurrencyMode, Deferred } from './lock_manager.js'
-import { CONCURRENCY_MODES, withResolvers } from './lock_manager.js'
+import type { ConcurrencyMode, CompletionMode, Deferred } from './lock_manager.js'
+import { CONCURRENCY_MODES, COMPLETION_MODES, withResolvers } from './lock_manager.js'
 import { extractZodShape, getStringTypeName, isZodSchema, toJsonSchema } from './types.js'
 import type { EventResultType } from './types.js'
 
@@ -29,6 +29,7 @@ export const BaseEventSchema = z
     event_results: z.array(z.unknown()).optional(),
     event_concurrency: z.enum(CONCURRENCY_MODES).optional(),
     event_handler_concurrency: z.enum(CONCURRENCY_MODES).optional(),
+    event_handler_completion: z.enum(COMPLETION_MODES).optional(),
   })
   .loose()
 
@@ -54,6 +55,7 @@ type BaseEventFields = Pick<
   | 'event_results'
   | 'event_concurrency'
   | 'event_handler_concurrency'
+  | 'event_handler_completion'
 >
 
 export type BaseEventInit<TFields extends Record<string, unknown>> = TFields & Partial<BaseEventFields>
@@ -113,6 +115,7 @@ export class BaseEvent {
   event_completed_ts?: number // nanosecond monotonic version of event_completed_at
   event_concurrency?: ConcurrencyMode // concurrency mode for the event as a whole in relation to other events
   event_handler_concurrency?: ConcurrencyMode // concurrency mode for the handlers within the event
+  event_handler_completion?: CompletionMode // completion strategy: 'all' (default) waits for every handler, 'first' returns earliest non-undefined result and cancels the rest
 
   static event_type?: string // class name of the event, e.g. BaseEvent.extend("MyEvent").event_type === "MyEvent"
   static schema = BaseEventSchema // zod schema for the event data fields, used to parse and validate event data when creating a new event
@@ -123,9 +126,6 @@ export class BaseEvent {
   _event_dispatch_context?: unknown | null // captured AsyncLocalStorage context at dispatch site, used to restore that context when running handlers
 
   _event_done_signal: Deferred<this> | null
-
-  // first() mode: when set, processEvent cancels remaining handlers after the first non-undefined result
-  _first_mode: boolean
 
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
     const ctor = this.constructor as typeof BaseEvent & {
@@ -198,7 +198,6 @@ export class BaseEvent {
 
     this._event_done_signal = null
     this._event_dispatch_context = undefined
-    this._first_mode = false
   }
 
   // "MyEvent#a48f"
@@ -303,6 +302,7 @@ export class BaseEvent {
       event_results: Array.from(this.event_results.values()).map((result) => result.toJSON()),
       event_concurrency: this.event_concurrency,
       event_handler_concurrency: this.event_handler_concurrency,
+      event_handler_completion: this.event_handler_completion,
       event_result_schema: this.event_result_schema ? toJsonSchema(this.event_result_schema) : this.event_result_schema,
     }
   }
@@ -394,7 +394,7 @@ export class BaseEvent {
       return Promise.reject(new Error('event has no bus attached'))
     }
     const original = this._event_original ?? this
-    original._first_mode = true
+    original.event_handler_completion = 'first'
     return this.done().then((completed_event) => {
       const orig = completed_event._event_original ?? completed_event
       return orig.first_result as EventResultType<this> | undefined
