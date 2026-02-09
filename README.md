@@ -3,9 +3,9 @@
 <img width="200" alt="image" src="https://github.com/user-attachments/assets/b3525c24-51ba-496c-b327-ccdfe46a7362" align="right" />
 
 
-Bubus is an in-memory event bus library for async Python and Typescript (both node & browser).
+Bubus is an in-memory event bus library for async Python and TS (node/browser).
 
-It's designed for quickly building resilient, predictable, complex event-driven applications in Python and JS.
+It's designed for quickly building resilient, predictable, complex event-driven apps.
 
 It "just works" with an intuitive, but powerful event JSON format + dispatch API that's consistent across both languages and scales consistently from one even up to millions:
 ```python
