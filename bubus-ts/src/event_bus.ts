@@ -683,7 +683,6 @@ export class EventBus {
           handler_promises[i].then(() => {
             if (!first_found && entry.result.status === 'completed' && entry.result.result !== undefined) {
               first_found = true
-              event._first_result = entry.result.result
               this.cancelEventHandlersForFirstMode(event, entry.result)
             }
           })

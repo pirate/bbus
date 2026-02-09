@@ -126,7 +126,6 @@ export class BaseEvent {
 
   // first() mode: when set, processEvent cancels remaining handlers after the first non-undefined result
   _first_mode: boolean
-  _first_result: unknown
 
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
     const ctor = this.constructor as typeof BaseEvent & {
@@ -200,7 +199,6 @@ export class BaseEvent {
     this._event_done_signal = null
     this._event_dispatch_context = undefined
     this._first_mode = false
-    this._first_result = undefined
   }
 
   // "MyEvent#a48f"
@@ -399,16 +397,7 @@ export class BaseEvent {
     original._first_mode = true
     return this.done().then((completed_event) => {
       const orig = completed_event._event_original ?? completed_event
-      if (orig._first_result !== undefined) {
-        return orig._first_result as EventResultType<this>
-      }
-      // fallback: scan results in registration order
-      for (const result of completed_event.event_results.values()) {
-        if (result.status === 'completed' && result.result !== undefined) {
-          return result.result as EventResultType<this>
-        }
-      }
-      return undefined
+      return orig.first_result as EventResultType<this> | undefined
     })
   }
 
@@ -468,6 +457,17 @@ export class BaseEvent {
     return errors
   }
 
+  // Returns the first non-undefined completed handler result, sorted by completion time.
+  // Useful after first() or done() to get the winning result value.
+  get first_result(): EventResultType<this> | undefined {
+    const completed = Array.from(this.event_results.values())
+      .filter((r): r is EventResult<this> & { completed_ts: number } =>
+        r.status === 'completed' && r.result !== undefined && typeof r.completed_ts === 'number'
+      )
+      .sort((a, b) => a.completed_ts - b.completed_ts)
+    return completed.length > 0 ? completed[0].result as EventResultType<this> : undefined
+  }
+
   eventAreAllChildrenComplete(): boolean {
     for (const descendant of this.event_descendants) {
       if (descendant.event_status !== 'completed') {
@@ -489,7 +489,6 @@ export class BaseEvent {
   _gc(): void {
     this._event_done_signal = null
     this._event_dispatch_context = null
-    this._first_result = undefined
     this.bus = undefined
     for (const result of this.event_results.values()) {
       result.event_children = []
