@@ -46,8 +46,6 @@ def log_event_tree(
     connector = '└── ' if is_last else '├── '
 
     # Print this event's line
-    status_icon = '✅' if event.event_status == 'completed' else '🏃' if event.event_status == 'started' else '⏳'
-
     # Format timing info
     timing_str = f'[{format_timestamp(event.event_created_at)}'
     if event.event_completed_at and event.event_created_at:
@@ -57,7 +55,7 @@ def log_event_tree(
 
     lines: list[str] = []
 
-    event_line = f'{indent}{connector}{status_icon} {event.event_type}#{event.event_id[-4:]} {timing_str}'
+    event_line = f'{indent}{connector}{event.event_type}#{event.event_id[-4:]} {timing_str}'
     logger.warning(event_line)
     lines.append(event_line)
 

@@ -33,7 +33,7 @@ def test_log_history_tree_single_event(capsys: Any) -> None:
 
     # captured = capsys.readouterr()
     # captured_str = captured.out + captured.err
-    assert '└──' in captured_str and '✅' in captured_str and 'RootEvent' in captured_str
+    assert '└──' in captured_str and 'RootEvent' in captured_str
     # Should show start time and duration
     assert '[' in captured_str and ']' in captured_str
 
@@ -63,7 +63,7 @@ def test_log_history_tree_with_handlers(capsys: Any) -> None:
     bus.event_history[event.event_id] = event
     captured_str = bus.log_tree()
 
-    assert '└── ✅ RootEvent#' in captured_str
+    assert '└── RootEvent#' in captured_str
     assert '└── ✅ HandlerBus.test_handler#' in captured_str
     assert "'status: success'" in captured_str
 
@@ -170,11 +170,11 @@ def test_log_history_tree_complex_nested() -> None:
     output = bus.log_tree()
 
     # Check structure - note that events may appear both as handler children and in parent mapping
-    assert '└── ✅ RootEvent#' in output
+    assert '└── RootEvent#' in output
     assert '✅ ComplexBus.root_handler#' in output
-    assert '✅ ChildEvent#' in output
+    assert 'ChildEvent#' in output
     assert '✅ ComplexBus.child_handler#' in output
-    assert '✅ GrandchildEvent#' in output
+    assert 'GrandchildEvent#' in output
     assert '✅ ComplexBus.grandchild_handler#' in output
 
     # Check result formatting
@@ -200,8 +200,8 @@ def test_log_history_tree_multiple_roots(capsys: Any) -> None:
     captured_str = bus.log_tree()
 
     # Both roots should be shown
-    assert captured_str.count('├── ✅ RootEvent#') == 1  # First root
-    assert captured_str.count('└── ✅ RootEvent#') == 1  # Last root
+    assert captured_str.count('├── RootEvent#') == 1  # First root
+    assert captured_str.count('└── RootEvent#') == 1  # Last root
 
 
 def test_log_history_tree_timing_info(capsys: Any) -> None:
