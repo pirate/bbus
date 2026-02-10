@@ -702,14 +702,14 @@ timeout, which is more aggressive.
 
 ### Performance comparison (local run, per-event)
 
-Measured locally with:
+Measured locally on an `Apple M4 Pro` with:
 
-- `pnpm run perf:node`
-- `pnpm run perf:bun`
-- `pnpm run perf:deno`
-- `pnpm run perf:browser`
+- `pnpm run perf:node` (`node v22.21.1`)
+- `pnpm run perf:bun` (`bun v1.3.9`)
+- `pnpm run perf:deno` (`deno v2.6.8`)
+- `pnpm run perf:browser` (`chrome v145.0.7632.6`)
 
-| Runtime            | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k fixed handlers   | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
+| Runtime            | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
 | ------------------ | ------------------------------ | ----------------------------------- | -------------------------------------- | ----------------------------------------- | --------------------------------------------- |
 | Node               | `0.014ms/event`, `1.1kb/event` | `0.059ms/event`, `0.0kb/event`      | `1023.501ms/event`, `103120.0kb/event` | `0.029ms/event`, `0.0kb/event`            | `6.176ms/event`, `0.2kb/event`                |
 | Bun                | `0.014ms/event`, `2.9kb/event` | `0.067ms/event`, `0.1kb/event`      | `99.819ms/event`, `142816.0kb/event`   | `0.030ms/event`, `0.6kb/event`            | `6.396ms/event`, `0.2kb/event`                |
