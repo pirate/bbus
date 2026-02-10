@@ -276,7 +276,7 @@ export const runPerf50kEvents = async (input) => {
   const dispatchMs = tDispatch - t0
   const awaitMs = tDone - tDispatch
   const totalMs = tDone - t0
-  const msPerEvent = totalMs / (totalEvents * totalHandlers)
+  const msPerEvent = totalMs / totalEvents
   const ramKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
 
   assert(processedCount === totalEvents, `50k events processed ${processedCount}/${totalEvents}`)
@@ -375,8 +375,7 @@ export const runPerfEphemeralBuses = async (input) => {
     totalEvents,
     totalMs,
     msPerEvent,
-    msPerEventLabel: formatMsPerEvent(msPerEvent, 'event/handler'),
-    msPerEventUnit: 'event/handler',
+    msPerEventLabel: formatMsPerEvent(msPerEvent),
     ramKbPerEvent,
     ramKbPerEventLabel: ramKbPerEvent === null ? 'n/a' : formatKbPerEvent(ramKbPerEvent),
     throughput: Math.round(totalEvents / (totalMs / 1000)),
@@ -422,7 +421,7 @@ export const runPerfSingleEventManyFixedHandlers = async (input) => {
 
   const totalMs = hooks.now() - t0
   memory.sample()
-  const msPerEvent = totalMs / totalEvents
+  const msPerEvent = totalMs / (totalEvents * totalHandlers)
   const ramKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
 
   assert(processedCount === totalHandlers, `fixed-handlers processed ${processedCount}/${totalHandlers}`)
@@ -437,7 +436,8 @@ export const runPerfSingleEventManyFixedHandlers = async (input) => {
     totalEvents,
     totalMs,
     msPerEvent,
-    msPerEventLabel: formatMsPerEvent(msPerEvent),
+    msPerEventLabel: formatMsPerEvent(msPerEvent, 'event/handler'),
+    msPerEventUnit: 'event/handler',
     ramKbPerEvent,
     ramKbPerEventLabel: ramKbPerEvent === null ? 'n/a' : formatKbPerEvent(ramKbPerEvent),
     throughput: Math.round(totalEvents / (totalMs / 1000)),

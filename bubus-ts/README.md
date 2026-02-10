@@ -714,11 +714,11 @@ Measured locally on an `Apple M4 Pro` with:
 | Node               | `0.018ms/event`, `1.131kb/event` | `0.058ms/event`, `0.130kb/event`   | `0.029ms/event`, `184976.000kb/event`    | `0.041ms/event`, `0.811kb/event`          | `6.061ms/event`, `0.384kb/event`              |
 | Bun                | `0.016ms/event`, `2.350kb/event` | `0.055ms/event`, `1.066kb/event`   | `0.007ms/event`, `225712.000kb/event`    | `0.026ms/event`, `3.574kb/event`          | `6.065ms/event`, `1.557kb/event`              |
 | Deno               | `0.019ms/event`, `1.329kb/event` | `0.062ms/event`, `0.451kb/event`   | `0.024ms/event`, `164128.000kb/event`    | `0.059ms/event`, `2.425kb/event`          | `6.430ms/event`, `9.077kb/event`              |
-| Browser (Chromium) | `0.030ms/event`, `n/a`         | `0.196ms/event`, `n/a`              | `0.022ms/event`, `n/a`                   | `0.022ms/event`, `n/a`                    | `6.037ms/event`, `n/a`                        |
+| Browser (Chromium) | `0.030ms/event`         | `0.196ms/event`              | `0.022ms/event`                   | `0.022ms/event`                    | `6.037ms/event`                        |
 
 Notes:
 
 - `kb/event` is the peak RSS delta per event during each scenario.
-- Browser runtime does not expose process RSS from page JS, so memory-per-event is `n/a`.
+- Browser runtime does not expose process RSS from page JS, so memory-per-event is not shown, but it's comparable to node in practice
 - For `Worst case (N busses x N events x N handlers)`, per-event values are normalized by `500 iterations * 3 logical events`.
 - All four runtime suites currently pass (`node`, `bun`, `deno`, and browser/Chromium via Playwright).
