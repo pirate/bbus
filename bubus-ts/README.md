@@ -709,16 +709,16 @@ Measured locally with:
 - `pnpm run perf:deno`
 - `pnpm run perf:browser`
 
-| Runtime            | 50k events                     | 500 buses x 100 events         | 50k on/off churn               | Worst-case workload            |
-| ------------------ | ------------------------------ | ------------------------------ | ------------------------------ | ------------------------------ |
-| Node               | `0.046ms/event`, `5.9kb/event` | `0.033ms/event`, `0.0kb/event` | `0.035ms/event`, `0.2kb/event` | `6.045ms/event`, `0.0kb/event` |
-| Bun                | `0.007ms/event`, `8.7kb/event` | `0.029ms/event`, `0.2kb/event` | `0.023ms/event`, `1.6kb/event` | `6.061ms/event`, `0.1kb/event` |
-| Deno               | `0.050ms/event`, `6.8kb/event` | `0.037ms/event`, `0.1kb/event` | `0.073ms/event`, `1.5kb/event` | `6.404ms/event`, `0.0kb/event` |
-| Browser (Chromium) | `0.040ms/event`, `n/a`         | `0.103ms/event`, `n/a`         | `0.029ms/event`, `n/a`         | `6.041ms/event`, `n/a`         |
+| Runtime            | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k fixed handlers   | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
+| ------------------ | ------------------------------ | ----------------------------------- | -------------------------------------- | ----------------------------------------- | --------------------------------------------- |
+| Node               | `0.014ms/event`, `1.1kb/event` | `0.059ms/event`, `0.0kb/event`      | `1023.501ms/event`, `103120.0kb/event` | `0.029ms/event`, `0.0kb/event`            | `6.176ms/event`, `0.2kb/event`                |
+| Bun                | `0.014ms/event`, `2.9kb/event` | `0.067ms/event`, `0.1kb/event`      | `99.819ms/event`, `142816.0kb/event`   | `0.030ms/event`, `0.6kb/event`            | `6.396ms/event`, `0.2kb/event`                |
+| Deno               | `0.019ms/event`, `1.9kb/event` | `0.075ms/event`, `0.0kb/event`      | `1164.815ms/event`, `44896.0kb/event`  | `0.068ms/event`, `0.1kb/event`            | `6.726ms/event`, `0.1kb/event`                |
+| Browser (Chromium) | `0.032ms/event`, `n/a`         | `0.203ms/event`, `n/a`              | `919.600ms/event`, `n/a`               | `0.023ms/event`, `n/a`                    | `6.117ms/event`, `n/a`                        |
 
 Notes:
 
 - `kb/event` is the peak RSS delta per event during each scenario.
 - Browser runtime does not expose process RSS from page JS, so memory-per-event is `n/a`.
-- For `Worst-case workload`, per-event values are normalized by `500 iterations * 3 logical events`.
+- For `Worst case (N busses x N events x N handlers)`, per-event values are normalized by `500 iterations * 3 logical events`.
 - All four runtime suites currently pass (`node`, `bun`, `deno`, and browser/Chromium via Playwright).

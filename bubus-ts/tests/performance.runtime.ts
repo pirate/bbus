@@ -53,9 +53,7 @@ const main = async () => {
       worstCaseMs: 60_000,
       // Bun's heap accounting can be noisy; keep runtime harness tolerant.
       worstCaseMemoryDeltaMb: 150,
-      // Runtime harness focuses on comparative perf metrics; strict post-GC
-      // zero-delta checks are handled in the node:test suite.
-      enforceNonPositiveHeapDeltaAfterGc: false,
+      enforceNonPositiveHeapDeltaAfterGc: true,
     },
   })
 
