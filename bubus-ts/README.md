@@ -684,3 +684,41 @@ Use the `@retry()` decorator on the handler method instead.
 The TS version intentionally starts with conservative defaults (1 attempt, no delay, no timeout) so that
 `retry()` with no options is a no-op wrapper. The Python version defaults to 3 retries with 3s delay and 5s
 timeout, which is more aggressive.
+
+## Runtimes
+
+`bubus-ts` supports:
+
+- Node.js (default development and test runtime)
+- Bun
+- Deno
+- Browsers (ESM)
+
+### Runtime support notes
+
+- The package output is ESM (`dist/esm`) and works across Node/Bun/Deno.
+- `AsyncLocalStorage` is used when available (Node/Bun) and gracefully disabled when unavailable (for example in browsers).
+- Browser usage is supported for core event bus features; Node-specific tooling scripts (`pnpm test`, Node test runner flags) are not used in browser environments.
+
+### Performance comparison (local run, per-event)
+
+Measured locally with:
+
+- `pnpm run perf:node`
+- `pnpm run perf:bun`
+- `pnpm run perf:deno`
+- `pnpm run perf:browser`
+
+| Runtime            | 50k events                     | 500 buses x 100 events         | 50k on/off churn               | Worst-case workload            |
+| ------------------ | ------------------------------ | ------------------------------ | ------------------------------ | ------------------------------ |
+| Node               | `0.046ms/event`, `5.9kb/event` | `0.033ms/event`, `0.0kb/event` | `0.035ms/event`, `0.2kb/event` | `6.045ms/event`, `0.0kb/event` |
+| Bun                | `0.007ms/event`, `8.7kb/event` | `0.029ms/event`, `0.2kb/event` | `0.023ms/event`, `1.6kb/event` | `6.061ms/event`, `0.1kb/event` |
+| Deno               | `0.050ms/event`, `6.8kb/event` | `0.037ms/event`, `0.1kb/event` | `0.073ms/event`, `1.5kb/event` | `6.404ms/event`, `0.0kb/event` |
+| Browser (Chromium) | `0.040ms/event`, `n/a`         | `0.103ms/event`, `n/a`         | `0.029ms/event`, `n/a`         | `6.041ms/event`, `n/a`         |
+
+Notes:
+
+- `kb/event` is the peak RSS delta per event during each scenario.
+- Browser runtime does not expose process RSS from page JS, so memory-per-event is `n/a`.
+- For `Worst-case workload`, per-event values are normalized by `500 iterations * 3 logical events`.
+- All four runtime suites currently pass (`node`, `bun`, `deno`, and browser/Chromium via Playwright).
