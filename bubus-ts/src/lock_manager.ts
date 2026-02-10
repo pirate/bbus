@@ -1,5 +1,4 @@
 import type { BaseEvent } from './base_event.js'
-import type { EventHandler } from './event_handler.js'
 import type { EventResult } from './event_result.js'
 
 // ─── Deferred / withResolvers ────────────────────────────────────────────────
@@ -25,20 +24,14 @@ export const withResolvers = <T>(): Deferred<T> => {
 
 // ─── Concurrency modes ──────────────────────────────────────────────────────
 
-export const CONCURRENCY_MODES = ['global-serial', 'bus-serial', 'parallel', 'auto'] as const
-export type ConcurrencyMode = (typeof CONCURRENCY_MODES)[number] // union type of the values in the CONCURRENCY_MODES array
+export const EVENT_CONCURRENCY_MODES = ['global-serial', 'bus-serial', 'parallel'] as const
+export type EventConcurrencyMode = (typeof EVENT_CONCURRENCY_MODES)[number]
 
-export const COMPLETION_MODES = ['all', 'first'] as const
-export type CompletionMode = (typeof COMPLETION_MODES)[number]
-export const DEFAULT_CONCURRENCY_MODE = 'bus-serial'
+export const EVENT_HANDLER_CONCURRENCY_MODES = ['serial', 'parallel'] as const
+export type EventHandlerConcurrencyMode = (typeof EVENT_HANDLER_CONCURRENCY_MODES)[number]
 
-export const resolveConcurrencyMode = (mode: ConcurrencyMode | undefined, fallback: ConcurrencyMode): ConcurrencyMode => {
-  const normalized_fallback = fallback === 'auto' ? DEFAULT_CONCURRENCY_MODE : fallback
-  if (!mode || mode === 'auto') {
-    return normalized_fallback
-  }
-  return mode
-}
+export const EVENT_HANDLER_COMPLETION_MODES = ['all', 'first'] as const
+export type EventHandlerCompletionMode = (typeof EVENT_HANDLER_COMPLETION_MODES)[number]
 
 // ─── AsyncSemaphore ──────────────────────────────────────────────────────────
 
@@ -77,23 +70,6 @@ export class AsyncSemaphore {
       next()
     }
   }
-}
-
-export const semaphoreForMode = (
-  mode: ConcurrencyMode,
-  global_semaphore: AsyncSemaphore,
-  bus_semaphore: AsyncSemaphore
-): AsyncSemaphore | null => {
-  if (mode === 'parallel') {
-    return null
-  }
-  if (mode === 'global-serial') {
-    return global_semaphore
-  }
-  if (mode === 'bus-serial') {
-    return bus_semaphore
-  }
-  return bus_semaphore
 }
 
 export const runWithSemaphore = async <T>(semaphore: AsyncSemaphore | null, fn: () => Promise<T>): Promise<T> => {
@@ -149,7 +125,7 @@ export class HandlerLock {
     return true
   }
 
-  // used by EventBus.runEventHandler to exit the handler lock after the handler has finished executing
+  // used by EventResult.runHandler to exit the handler lock after the handler has finished executing
   exitHandlerRun(): void {
     if (this.state === 'closed') {
       return
@@ -179,20 +155,16 @@ export class HandlerLock {
 // Interface that must be implemented by the EventBus class to be used by the LockManager
 export type EventBusInterfaceForLockManager = {
   isIdleAndQueueEmpty: () => boolean
-  event_concurrency_default: ConcurrencyMode
-  event_handler_concurrency_default: ConcurrencyMode
+  event_concurrency_default: EventConcurrencyMode
 }
 
 // The LockManager is responsible for managing the concurrency of events and handlers
 export class LockManager {
-  static global_event_semaphore = new AsyncSemaphore(1) // used for the global-serial concurrency mode
-  static global_handler_semaphore = new AsyncSemaphore(1) // used for the global-serial concurrency mode
-
   private bus: EventBusInterfaceForLockManager // Live bus reference; used to read defaults and idle state.
-  readonly bus_event_semaphore: AsyncSemaphore // Per-bus event semaphore; created with LockManager and never swapped.
-  readonly bus_handler_semaphore: AsyncSemaphore // Per-bus handler semaphore; created with LockManager and never swapped.
 
-  private pause_depth: number // Re-entrant pause counter; increments on requestPause, decrements on release.
+  static global_event_semaphore = new AsyncSemaphore(1) // used for the global-serial concurrency mode
+  readonly bus_event_semaphore: AsyncSemaphore // Per-bus event semaphore; created with LockManager and never swapped.
+  private pause_depth: number // Re-entrant pause counter; increments on requestRunloopPause, decrements on release.
   private pause_waiters: Array<() => void> // Resolvers for waitUntilRunloopResumed; drained when pause_depth hits 0.
   private queue_jump_pause_releases: WeakMap<EventResult, () => void> // Per-handler pause release for queue-jump; cleared on handler exit.
   private active_handler_results: EventResult[] // Stack of active handler results for "inside handler" detection.
@@ -204,7 +176,6 @@ export class LockManager {
   constructor(bus: EventBusInterfaceForLockManager) {
     this.bus = bus
     this.bus_event_semaphore = new AsyncSemaphore(1) // used for the bus-serial concurrency mode
-    this.bus_handler_semaphore = new AsyncSemaphore(1) // used for the bus-serial concurrency mode
 
     this.pause_depth = 0
     this.pause_waiters = []
@@ -218,7 +189,7 @@ export class LockManager {
 
   // Low-level runloop pause: increments a re-entrant counter and returns a release
   // function. Used for broad, bus-scoped pauses (e.g. runImmediatelyAcrossBuses).
-  requestPause(): () => void {
+  requestRunloopPause(): () => void {
     this.pause_depth += 1
     let released = false
     return () => {
@@ -274,14 +245,14 @@ export class LockManager {
     return this.active_handler_results.length > 0
   }
 
-  // Queue-jump pause: wraps requestPause with per-handler deduping so repeated
+  // Queue-jump pause: wraps requestRunloopPause with per-handler deduping so repeated
   // calls during the same handler run don't stack pauses. Released via
   // releaseRunloopPauseForQueueJumpEvent when the handler finishes.
   requestRunloopPauseForQueueJumpEvent(result: EventResult): void {
     if (this.queue_jump_pause_releases.has(result)) {
       return
     }
-    this.queue_jump_pause_releases.set(result, this.requestPause())
+    this.queue_jump_pause_releases.set(result, this.requestRunloopPause())
   }
 
   // release the eventt bus runloop pause for a given event result if there is a pause request for it
@@ -296,9 +267,6 @@ export class LockManager {
   }
 
   waitForIdle(): Promise<void> {
-    if (this.bus.isIdleAndQueueEmpty()) {
-      return Promise.resolve()
-    }
     return new Promise((resolve) => {
       this.idle_waiters.push(resolve)
       this.scheduleIdleCheck()
@@ -339,19 +307,16 @@ export class LockManager {
     }
   }
 
+  // get the bus-level semaphore that prevents/allows multiple events to be processed concurrently on the same bus
   getSemaphoreForEvent(event: BaseEvent): AsyncSemaphore | null {
-    const resolved = resolveConcurrencyMode(event.event_concurrency, this.bus.event_concurrency_default)
-    return semaphoreForMode(resolved, LockManager.global_event_semaphore, this.bus_event_semaphore)
-  }
-
-  getSemaphoreForHandler(event: BaseEvent, handler?: Pick<EventHandler, 'event_handler_concurrency'>): AsyncSemaphore | null {
-    const event_override =
-      event.event_handler_concurrency && event.event_handler_concurrency !== 'auto' ? event.event_handler_concurrency : undefined
-    const handler_override =
-      handler?.event_handler_concurrency && handler.event_handler_concurrency !== 'auto' ? handler.event_handler_concurrency : undefined
-    const fallback = this.bus.event_handler_concurrency_default
-    const resolved = resolveConcurrencyMode(event_override ?? handler_override ?? fallback, fallback)
-    return semaphoreForMode(resolved, LockManager.global_handler_semaphore, this.bus_handler_semaphore)
+    const resolved = event.event_concurrency ?? this.bus.event_concurrency_default
+    if (resolved === 'parallel') {
+      return null
+    }
+    if (resolved === 'global-serial') {
+      return LockManager.global_event_semaphore
+    }
+    return this.bus_event_semaphore
   }
 
   // Schedules a debounced idle check to run after a short delay. Used to gate

@@ -7,7 +7,12 @@ export {
   EventHandlerAbortedError,
   EventHandlerResultSchemaError,
 } from './event_handler.js'
-export type { ConcurrencyMode, CompletionMode, EventBusInterfaceForLockManager } from './lock_manager.js'
+export type {
+  EventConcurrencyMode,
+  EventHandlerConcurrencyMode,
+  EventHandlerCompletionMode,
+  EventBusInterfaceForLockManager,
+} from './lock_manager.js'
 export type { EventClass, EventHandlerFunction as EventHandler, EventKey, EventStatus, FindOptions, FindWindow } from './types.js'
 export { retry, clearSemaphoreRegistry, RetryTimeoutError, SemaphoreTimeoutError } from './retry.js'
 export type { RetryOptions } from './retry.js'

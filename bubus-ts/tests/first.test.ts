@@ -63,7 +63,7 @@ test('first: cancels remaining parallel handlers after first result', async () =
 // ─── first() with serial handlers ───────────────────────────────────────────
 
 test('first: returns the first non-undefined result from serial handlers', async () => {
-  const bus = new EventBus('FirstSerialBus', { event_timeout: null, event_handler_concurrency: 'bus-serial' })
+  const bus = new EventBus('FirstSerialBus', { event_timeout: null, event_handler_concurrency: 'serial' })
   const TestEvent = BaseEvent.extend('FirstSerialEvent', { event_result_schema: z.string() })
 
   let second_handler_called = false
@@ -86,7 +86,7 @@ test('first: returns the first non-undefined result from serial handlers', async
 })
 
 test('first: serial mode skips first handler returning undefined, takes second', async () => {
-  const bus = new EventBus('FirstSerialSkipBus', { event_timeout: null, event_handler_concurrency: 'bus-serial' })
+  const bus = new EventBus('FirstSerialSkipBus', { event_timeout: null, event_handler_concurrency: 'serial' })
   const TestEvent = BaseEvent.extend('FirstSerialSkipEvent', { event_result_schema: z.string() })
 
   bus.on(TestEvent, async (_event) => {
@@ -259,7 +259,6 @@ test('first: screenshot-service pattern — fast path wins, slow path with retry
   })
 
   let fast_called = false
-  let slow_called = false
 
   class ScreenshotService {
     constructor(b: InstanceType<typeof EventBus>) {
@@ -280,7 +279,6 @@ test('first: screenshot-service pattern — fast path wins, slow path with retry
 
     @retry({ max_attempts: 3, timeout: 15, semaphore_scope: 'global', semaphore_limit: 1, semaphore_name: 'Screenshots' })
     async on_ScreenshotEvent_slow(_event: InstanceType<typeof ScreenshotEvent>): Promise<string> {
-      slow_called = true
       await delay(500)
       return 'slow_screenshot_data'
     }
@@ -418,10 +416,7 @@ test('first: cancels child events emitted by losing handlers', async () => {
   const ParentEvent = BaseEvent.extend('FirstChildParent', { event_result_schema: z.string() })
   const ChildEvent = BaseEvent.extend('FirstChildChild', {})
 
-  let child_handler_called = false
-
   bus.on(ChildEvent, async (_event) => {
-    child_handler_called = true
     await delay(500) // very slow
     return 'child result'
   })
@@ -461,8 +456,8 @@ test('first: event_handler_completion is set to "first" after calling first()', 
   const event = bus.emit(TestEvent({}))
   const original = (event as any)._event_original ?? event
 
-  // before first(), completion mode is undefined (defaults to 'all')
-  assert.equal(original.event_handler_completion, undefined)
+  // before first(), completion mode defaults to 'all'
+  assert.equal(original.event_handler_completion, 'all')
 
   const result = await event.first()
 

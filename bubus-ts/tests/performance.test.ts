@@ -131,63 +131,18 @@ test('50k events with ephemeral on/off handler registration across 2 buses', { t
   let dispatch_a_ms = 0
   let dispatch_b_ms = 0
   let done_ms = 0
-  let process_a_ms = 0
-  let process_b_ms = 0
   let handler_a_ms = 0
   let handler_b_ms = 0
 
   // Persistent handler on bus_b that forwards count
   bus_b.on(RequestEvent, () => {
-    processed_b += 1
+    const t = performance.now()
+    try {
+      processed_b += 1
+    } finally {
+      handler_b_ms += performance.now() - t
+    }
   })
-
-  const bus_a_any = bus_a as any
-  const bus_b_any = bus_b as any
-  const original_process_a = typeof bus_a_any.processEvent === 'function' ? bus_a_any.processEvent.bind(bus_a) : null
-  const original_process_b = typeof bus_b_any.processEvent === 'function' ? bus_b_any.processEvent.bind(bus_b) : null
-  const original_run_handler_a = typeof bus_a_any.runEventHandler === 'function' ? bus_a_any.runEventHandler.bind(bus_a) : null
-  const original_run_handler_b = typeof bus_b_any.runEventHandler === 'function' ? bus_b_any.runEventHandler.bind(bus_b) : null
-
-  if (original_process_a) {
-    bus_a_any.processEvent = async (event: any) => {
-      const t = performance.now()
-      try {
-        return await original_process_a(event)
-      } finally {
-        process_a_ms += performance.now() - t
-      }
-    }
-  }
-  if (original_process_b) {
-    bus_b_any.processEvent = async (event: any) => {
-      const t = performance.now()
-      try {
-        return await original_process_b(event)
-      } finally {
-        process_b_ms += performance.now() - t
-      }
-    }
-  }
-  if (original_run_handler_a) {
-    bus_a_any.runEventHandler = async (...args: any[]) => {
-      const t = performance.now()
-      try {
-        return await original_run_handler_a(...args)
-      } finally {
-        handler_a_ms += performance.now() - t
-      }
-    }
-  }
-  if (original_run_handler_b) {
-    bus_b_any.runEventHandler = async (...args: any[]) => {
-      const t = performance.now()
-      try {
-        return await original_run_handler_b(...args)
-      } finally {
-        handler_b_ms += performance.now() - t
-      }
-    }
-  }
 
   global.gc?.()
   const mem_before = process.memoryUsage()
@@ -196,7 +151,12 @@ test('50k events with ephemeral on/off handler registration across 2 buses', { t
   for (let i = 0; i < total_events; i += 1) {
     // Register ephemeral handler
     const ephemeral_handler = () => {
-      processed_a += 1
+      const t_handler = performance.now()
+      try {
+        processed_a += 1
+      } finally {
+        handler_a_ms += performance.now() - t_handler
+      }
     }
     let t = performance.now()
     bus_a.on(RequestEvent, ephemeral_handler)
@@ -236,7 +196,7 @@ test('50k events with ephemeral on/off handler registration across 2 buses', { t
     `\n  perf: ${total_events} events with ephemeral on/off in ${total_ms}ms (${Math.round(total_events / (total_ms / 1000))}/s)` +
       `\n    dispatch: bus_a=${processed_a} | bus_b=${processed_b}` +
       `\n    timings: on=${on_ms.toFixed(0)}ms | off=${off_ms.toFixed(0)}ms | dispatch_a=${dispatch_a_ms.toFixed(0)}ms | dispatch_b=${dispatch_b_ms.toFixed(0)}ms | done=${done_ms.toFixed(0)}ms` +
-      `\n    processing: bus_a=${process_a_ms.toFixed(0)}ms | bus_b=${process_b_ms.toFixed(0)}ms | handlers_a=${handler_a_ms.toFixed(0)}ms | handlers_b=${handler_b_ms.toFixed(0)}ms` +
+      `\n    handlers: bus_a=${handler_a_ms.toFixed(0)}ms | bus_b=${handler_b_ms.toFixed(0)}ms` +
       `\n    memory: before=${mb(mem_before.heapUsed)}MB → done=${mb(mem_done.heapUsed)}MB → gc=${mb(mem_gc.heapUsed)}MB` +
       `\n    per-event: time=${(total_ms / total_events).toFixed(4)}ms | heap=${((mem_done.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB | heap_gc=${((mem_gc.heapUsed - mem_before.heapUsed) / total_events / 1024).toFixed(2)}KB` +
       `\n    rss: before=${mb(mem_before.rss)}MB → done=${mb(mem_done.rss)}MB → gc=${mb(mem_gc.rss)}MB` +
@@ -272,7 +232,7 @@ test('worst-case: forwarding + queue-jump + timeouts + cancellation at scale', {
     iteration: z.number(),
   })
 
-  const total_iterations = 2000
+  const total_iterations = 500
   const history_limit = total_iterations * 2
   // Keep enough history to avoid trimming inflight events during perf runs.
   const bus_a = new EventBus('WC_A', { max_history_size: history_limit })

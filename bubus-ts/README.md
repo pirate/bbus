@@ -53,7 +53,7 @@ const screenshot: string | undefined = await bus.emit(ScreenshotEvent({ page_id:
 - **`parallel`**: All handlers start simultaneously. When one returns a non-undefined value, remaining
   started handlers are aborted (via `signalAbort()`, same mechanism as timeout cancellation) and pending
   handlers are cancelled. Any child events emitted by losing handlers are also cancelled.
-- **`bus-serial` / `global-serial`**: Handlers run one at a time. After each handler completes, if it
+- **`serial`**: Handlers run one at a time. After each handler completes, if it
   returned a non-undefined value, remaining handlers are cancelled without being started.
 
 **`event_handler_completion` field:**
@@ -64,11 +64,13 @@ field is orthogonal to `event_handler_concurrency` (which controls scheduling) �
 first non-undefined result (`'first'`).
 
 The field is:
+
 - Part of the event's Zod schema, so it's validated on construction
 - Included in `event.toJSON()`, so it's visible in replay logs and serialized event streams
 - Settable directly on the event data: `MyEvent({ event_handler_completion: 'first' })`
 
 **Return value semantics:**
+
 - Returns the **temporally first** non-undefined result (not registration order)
 - `undefined` means "I don't have a result" — use it to signal pass/skip
 - `null`, `0`, `''`, `false` are all valid non-undefined results
@@ -76,13 +78,13 @@ The field is:
 
 **Compared to `done()`:**
 
-| | `done()` | `first()` |
-|---|---|---|
-| Waits for | All handlers | First non-undefined result |
-| Returns | `Promise<Event>` | `Promise<ResultType \| undefined>` |
-| Cancels remaining | No | Yes (abort + cancel descendants) |
-| `event_handler_completion` | `'all'` (default) | `'first'` |
-| Use case | Run all handlers, inspect results | Race handlers, take winner |
+|                            | `done()`                          | `first()`                          |
+| -------------------------- | --------------------------------- | ---------------------------------- |
+| Waits for                  | All handlers                      | First non-undefined result         |
+| Returns                    | `Promise<Event>`                  | `Promise<ResultType \| undefined>` |
+| Cancels remaining          | No                                | Yes (abort + cancel descendants)   |
+| `event_handler_completion` | `'all'` (default)                 | `'first'`                          |
+| Use case                   | Run all handlers, inspect results | Race handlers, take winner         |
 
 Note to run all handlers in parallel but only read the first non-undefined result you can always do:
 
@@ -124,15 +126,18 @@ All options are passed to `new EventBus(name, options)`.
 
 - `max_history_size?: number | null` (default: `100`)
   - Max number of events kept in history. Set to `null` for unlimited history.
-- `event_concurrency?: "global-serial" | "bus-serial" | "parallel" | "auto"` (default: `"bus-serial"`)
+- `event_concurrency?: "global-serial" | "bus-serial" | "parallel" | null` (default: `"bus-serial"`)
   - Controls how many **events** can be processed at a time.
   - `"global-serial"` enforces FIFO across all buses.
   - `"bus-serial"` enforces FIFO per bus, allows cross-bus overlap.
   - `"parallel"` allows events to process concurrently.
-  - `"auto"` uses the bus default (mostly useful for overrides).
-- `event_handler_concurrency?: "global-serial" | "bus-serial" | "parallel" | "auto"` (default: `"bus-serial"`)
+  - `null` is treated as "unset" and falls back to the built-in default.
+- `event_handler_concurrency?: "serial" | "parallel" | null` (default: `"serial"`)
   - Controls how many **handlers** run at once for each event.
-  - Same semantics as `event_concurrency`, but applied to handler execution.
+  - `serial` means handlers run one at a time **per event**. Use `@retry({ semaphore_scope: 'global', semaphore_name: '...' })` if you need other locking options across multiple busses or events
+  - `null` is treated as "unset" and falls back to the built-in default.
+- `event_handler_completion?: "all" | "first"` (default: `"all"`)
+  - Controls whether the bus waits for all handlers (`"all"`) or cancels after the first non-undefined result (`"first"`).
 - `event_timeout?: number | null` (default: `60`)
   - Default handler timeout in seconds, applied when `event.event_timeout` is `null`.
   - Set to `null` to disable timeouts globally for the bus.
@@ -146,7 +151,7 @@ All options are passed to `new EventBus(name, options)`.
 
 ## Concurrency Overrides and Precedence
 
-You can override concurrency per event and per handler:
+You can override concurrency per event:
 
 ```ts
 const FastEvent = BaseEvent.extend('FastEvent', {
@@ -159,18 +164,14 @@ const event = FastEvent({
   event_concurrency: 'parallel',
   event_handler_concurrency: 'parallel',
 })
-
-// Per-handler override (lower precedence)
-bus.on(FastEvent, handler, { event_handler_concurrency: 'parallel' })
 ```
 
 Precedence order (highest → lowest):
 
 1. Event instance overrides (`event_concurrency`, `event_handler_concurrency`)
-2. Handler options (`event_handler_concurrency`)
-3. Bus defaults (`event_concurrency`, `event_handler_concurrency`)
+2. Bus defaults (`event_concurrency`, `event_handler_concurrency`)
 
-`"auto"` resolves to the bus default.
+`null` resolves to the bus default.
 
 ## Handler Options
 
@@ -178,13 +179,52 @@ Handlers can be configured at registration time:
 
 ```ts
 bus.on(SomeEvent, handler, {
-  event_handler_concurrency: 'parallel',
   handler_timeout: 10, // per-handler timeout in seconds
 })
 ```
 
-- `event_handler_concurrency` allows per-handler concurrency overrides.
-- `handler_timeout` sets a per-handler timeout in seconds (overrides the bus default when lower).
+- `handler_timeout` sets a per-handler timeout in seconds (highest precedence for handlers).
+  - Timeout resolution order: `handler_timeout` (bus.on) → `event.event_handler_timeout` → bus `event_timeout` default.
+  - The **effective** timeout for a handler is `min(event.event_timeout, handler_timeout)` unless either is `null`.
+  - There is no per-handler `event_handler_concurrency` override; use `@retry()` semaphores for fine-grained handler serialization.
+
+## Handler-Level Locks via `@retry`
+
+If you need per-handler serialization (or global locks) without changing event-level concurrency, use `@retry` semaphores:
+
+```ts
+const SomeEvent = BaseEvent.extend('SomeEvent', {
+  event_handler_concurrency: 'parallel',
+})
+
+class Handlers {
+  // Serialize these two handlers per event (instance scope + event_id key)
+  @retry({ semaphore_scope: 'instance', semaphore_limit: 1, semaphore_name: (event) => event.event_id })
+  async step1(event: InstanceType<typeof SomeEvent>) {
+    console.log(1)
+  }
+
+  @retry({ semaphore_scope: 'instance', semaphore_limit: 1, semaphore_name: (event) => event.event_id })
+  async step2(event: InstanceType<typeof SomeEvent>) {
+    console.log(2)
+  }
+
+  // This handler remains parallel
+  async parallel(event: InstanceType<typeof SomeEvent>) {
+    console.log('parallel')
+  }
+}
+
+const handlers = new Handlers()
+bus.on(SomeEvent, handlers.step1.bind(handlers))
+bus.on(SomeEvent, handlers.step2.bind(handlers))
+bus.on(SomeEvent, handlers.parallel.bind(handlers))
+```
+
+Notes:
+
+- `semaphore_name` can be a function; it receives the same arguments as the wrapped function.
+- Use `semaphore_scope: 'global'` to serialize across all instances/buses.
 
 ## TypeScript Return Type Enforcement (Edge Cases)
 
@@ -224,7 +264,7 @@ we describe what is enforced today, not theoretical best-case behavior.
   - Idle checks call `isIdle()`, which scans `event_history` and handler results.
   - There is a fast-path that skips idle scans when no idle waiters exist, which keeps normal dispatch/complete flows fast even with large history.
 - Concurrency settings are a direct throughput limiter:
-  - `global-serial` and `bus-serial` intentionally serialize work.
+  - `global-serial` / `bus-serial` (events) and `serial` (handlers) intentionally serialize work.
   - `parallel` increases throughput but can increase transient memory if producers outpace consumers.
 
 ### Memory model
@@ -262,12 +302,11 @@ we describe what is enforced today, not theoretical best-case behavior.
 
 ## Semaphores (how concurrency is enforced)
 
-We use four semaphores:
+We use two public semaphores and one per-event handler semaphore:
 
 - `LockManager.global_event_semaphore`
-- `LockManager.global_handler_semaphore`
 - `bus.locks.bus_event_semaphore`
-- `bus.locks.bus_handler_semaphore`
+- per-event handler semaphores (created on demand for each event when `event_handler_concurrency` is `serial`)
 
 They are applied centrally when scheduling events and handlers, so concurrency is controlled without scattering
 mutex checks throughout the code.
@@ -308,7 +347,6 @@ under different `event_concurrency` / `event_handler_concurrency` configurations
 - **`global-serial`**: events are serialized across _all_ buses using `LockManager.global_event_semaphore`.
 - **`bus-serial`**: events are serialized per bus; different buses can overlap.
 - **`parallel`**: no event semaphore; events can run concurrently on the same bus.
-- **`auto`**: resolves to the bus default.
 
 **Mixed buses:** each bus enforces its own event mode. Forwarding to another bus does not inherit the source bus’s mode.
 
@@ -316,14 +354,13 @@ under different `event_concurrency` / `event_handler_concurrency` configurations
 
 `event_handler_concurrency` controls how handlers run **for a single event**:
 
-- **`global-serial`**: only one handler at a time across all buses using `LockManager.global_handler_semaphore`.
-- **`bus-serial`**: handlers serialize per bus.
+- **`serial`**: handlers serialize per event.
 - **`parallel`**: handlers run concurrently for the event.
-- **`auto`**: resolves to the bus default.
+- **`null`**: resolves to the bus default.
 
 **Interaction with event concurrency:**
 Even if events are parallel, handlers can still be serialized:
-`event_concurrency: "parallel"` + `event_handler_concurrency: "bus-serial"` means events start concurrently but handler execution on a bus is serialized.
+`event_concurrency: "parallel"` + `event_handler_concurrency: "serial"` means events start concurrently but handler execution within each event is serialized.
 
 ### 4) Forwarding across buses (non-awaited)
 
@@ -348,17 +385,16 @@ When `event.done()` is awaited inside a handler, **queue-jump** happens:
 7. Paused runloops resume.
 
 **Important:** queue-jump bypasses event semaphores but **respects** handler semaphores via yield-and-reacquire.
-This means queue-jumped handlers run serially on a `bus-serial` bus, not in parallel.
+This means queue-jumped handlers still serialize **per event** when `event_handler_concurrency` is `serial`.
 
 ### 6) Precedence recap
 
 Highest → lowest:
 
 1. Event instance fields (`event_concurrency`, `event_handler_concurrency`)
-2. Handler options (`event_handler_concurrency`)
-3. Bus defaults
+2. Bus defaults
 
-`"auto"` always resolves to the bus default.
+`null` always resolves to the bus default.
 
 ## Gotchas and Design Choices (What surprised us)
 
@@ -378,7 +414,7 @@ propagates it via `event_emitted_by_handler_id`. This keeps parentage determinis
 When an event is awaited inside a handler, the event must **jump the queue**. If the runloop continues normally,
 it could process unrelated events ("overshoot"), breaking FIFO guarantees.
 
-The `LockManager` pause mechanism (`requestPause`/`waitUntilRunloopResumed`) pauses the runloop while we run the awaited
+The `LockManager` pause mechanism (`requestRunloopPause`/`waitUntilRunloopResumed`) pauses the runloop while we run the awaited
 event immediately. Once the queue-jump completes, the runloop resumes in FIFO order. This matches the Python behavior.
 
 ### C) BusScopedEvent: why it exists and how it works
@@ -433,7 +469,7 @@ contextvars + asyncio primitives. The `LockManager` (runloop pause + semaphore c
 Retry and timeout belong on the **handler**, not on `emit()` or `done()`:
 
 - **Handlers fail, events don't.** An event has no error state — it's a message. Individual handlers
-  produce errors, timeouts, and exceptions that may need retrying. The handler knows *why* it failed
+  produce errors, timeouts, and exceptions that may need retrying. The handler knows _why_ it failed
   and whether retrying makes sense.
 
 - **Replayability.** When you replay an event log, each emit should produce exactly one event. If retry
@@ -477,6 +513,7 @@ await event.done()
 ```
 
 This is the primary supported pattern. The `@retry()` decorator handles:
+
 - **Retry logic**: max attempts, backoff, error filtering
 - **Per-attempt timeout**: each attempt gets its own deadline
 - **Concurrency limiting**: semaphore-based, with global/class/instance scoping
@@ -487,25 +524,28 @@ The emit site just dispatches events and awaits completion — it doesn't know o
 
 ```ts
 // For one-off handlers that don't need a class
-bus.on(MyEvent, retry({ max_attempts: 3, timeout: 10 })(async (event) => {
-  await riskyOperation(event.data)
-}))
+bus.on(
+  MyEvent,
+  retry({ max_attempts: 3, timeout: 10 })(async (event) => {
+    await riskyOperation(event.data)
+  })
+)
 ```
 
 ### Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `max_attempts` | `number` | `1` | Total attempts including the initial call. `1` = no retry, `3` = up to 2 retries. |
-| `retry_after` | `number` | `0` | Seconds to wait between retries. |
-| `retry_backoff_factor` | `number` | `1.0` | Multiplier applied to `retry_after` after each attempt. `2.0` = exponential backoff. |
-| `retry_on_errors` | `(ErrorClass \| string \| RegExp)[]` | `undefined` | Only retry when the error matches a matcher. Accepts class constructors (`instanceof`), strings (matched against `error.name`), or RegExp (tested against `String(error)`). Can be mixed: `[TypeError, 'NetworkError', /timeout/i]`. `undefined` = retry on any error. |
-| `timeout` | `number \| null` | `undefined` | Per-attempt timeout in seconds. Throws `RetryTimeoutError` if exceeded. |
-| `semaphore_limit` | `number \| null` | `undefined` | Max concurrent executions sharing this semaphore. |
-| `semaphore_name` | `string \| null` | fn name | Semaphore identifier. Functions with the same name share the same slot pool. |
-| `semaphore_lax` | `boolean` | `true` | If `true`, proceed without concurrency limit when semaphore acquisition times out. |
-| `semaphore_scope` | `'global' \| 'class' \| 'instance'` | `'global'` | `'global'`: one semaphore for all calls. `'class'`: one per class (keyed by `constructor.name`). `'instance'`: one per object instance (keyed by WeakMap identity). `'class'`/`'instance'` require `this` to be an object; they fall back to `'global'` for standalone calls. |
-| `semaphore_timeout` | `number \| null` | `undefined` | Max seconds to wait for semaphore. Default: `timeout * max(1, limit - 1)`. |
+| Option                 | Type                                      | Default     | Description                                                                                                                                                                                                                                                                   |
+| ---------------------- | ----------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_attempts`         | `number`                                  | `1`         | Total attempts including the initial call. `1` = no retry, `3` = up to 2 retries.                                                                                                                                                                                             |
+| `retry_after`          | `number`                                  | `0`         | Seconds to wait between retries.                                                                                                                                                                                                                                              |
+| `retry_backoff_factor` | `number`                                  | `1.0`       | Multiplier applied to `retry_after` after each attempt. `2.0` = exponential backoff.                                                                                                                                                                                          |
+| `retry_on_errors`      | `(ErrorClass \| string \| RegExp)[]`      | `undefined` | Only retry when the error matches a matcher. Accepts class constructors (`instanceof`), strings (matched against `error.name`), or RegExp (tested against `String(error)`). Can be mixed: `[TypeError, 'NetworkError', /timeout/i]`. `undefined` = retry on any error.        |
+| `timeout`              | `number \| null`                          | `undefined` | Per-attempt timeout in seconds. Throws `RetryTimeoutError` if exceeded.                                                                                                                                                                                                       |
+| `semaphore_limit`      | `number \| null`                          | `undefined` | Max concurrent executions sharing this semaphore.                                                                                                                                                                                                                             |
+| `semaphore_name`       | `string \| ((...args) => string) \| null` | fn name     | Semaphore identifier. Functions with the same name share the same slot pool. If a function is provided, it receives the same arguments as the wrapped function.                                                                                                               |
+| `semaphore_lax`        | `boolean`                                 | `true`      | If `true`, proceed without concurrency limit when semaphore acquisition times out.                                                                                                                                                                                            |
+| `semaphore_scope`      | `'global' \| 'class' \| 'instance'`       | `'global'`  | `'global'`: one semaphore for all calls. `'class'`: one per class (keyed by `constructor.name`). `'instance'`: one per object instance (keyed by WeakMap identity). `'class'`/`'instance'` require `this` to be an object; they fall back to `'global'` for standalone calls. |
+| `semaphore_timeout`    | `number \| null`                          | `undefined` | Max seconds to wait for semaphore. Default: `timeout * max(1, limit - 1)`.                                                                                                                                                                                                    |
 
 ### Error types
 
@@ -516,6 +556,13 @@ bus.on(MyEvent, retry({ max_attempts: 3, timeout: 10 })(async (event) => {
 
 The semaphore is acquired **once** before the first attempt and held across all retries. This prevents other
 callers from stealing the slot between retry attempts.
+
+**Timeout interaction with event handlers:** if a handler uses `@retry({ timeout })` and the retry times out,
+the thrown `RetryTimeoutError` is treated like a handler timeout inside the event bus. It is wrapped as an
+`EventHandlerTimeoutError`, and pending descendants are cancelled just like a normal handler timeout.
+If a **handler-wide** timeout fires while retries are still in progress, the bus marks the handler as timed out
+and cancels descendants immediately; the in-flight attempt(s) may still finish in the background, but their
+results are ignored (JS cannot preempt an async function).
 
 ```ts
 class ApiService {
@@ -569,18 +616,21 @@ environments, or use different `semaphore_name` values.
 - **`retry()` semaphores** control how many concurrent invocations of a specific handler are allowed (via a global semaphore registry).
 
 These are separate concerns:
+
 - Bus concurrency = scheduling (how the bus orders event/handler execution)
 - Retry semaphores = resilience (how individual handlers manage concurrency and failure recovery)
 
 When you use `@retry()` on a bus handler, both layers apply. The execution order is:
-1. Bus acquires the **handler concurrency semaphore** (e.g. `bus-serial`)
+
+1. Bus acquires the **handler concurrency semaphore** (e.g. `serial`)
 2. `retry()` acquires its own **retry semaphore** (if `semaphore_limit` is set)
 3. The handler function runs (with retries if it throws)
 4. `retry()` releases its semaphore
 5. Bus releases the handler concurrency semaphore
 
 The bus's `handler_timeout` and `retry()`'s `timeout` are independent:
-- `handler_timeout` (set via `bus.on()` options or bus defaults) applies to the **entire** wrapped handler call, including all retry attempts.
+
+- `handler_timeout` (set via `bus.on()` options, `event.event_handler_timeout`, or bus defaults) applies to the **entire** wrapped handler call, including all retry attempts.
 - `retry({ timeout })` applies to **each individual attempt**.
 
 If you need per-attempt timeouts, use `retry({ timeout })`. If you need an overall deadline for the handler
@@ -617,19 +667,19 @@ Use the `@retry()` decorator on the handler method instead.
 
 ### Differences from the Python `@retry` decorator
 
-| Aspect | Python | TypeScript |
-|--------|--------|------------|
-| **Naming** | `retries=3` (retry count after first attempt) | `max_attempts=1` (total attempts including first) |
-| **Naming** | `wait=3` (seconds between retries) | `retry_after=0` (seconds between retries) |
-| **Naming** | `retry_on` | `retry_on_errors` |
-| **Default retries** | 3 retries (4 total attempts) | 1 attempt (no retries) |
-| **Default delay** | 3 seconds | 0 seconds |
-| **Default timeout** | 5 seconds per attempt | No timeout |
-| **Semaphore scopes** | `'global'`, `'class'`, `'self'`, `'multiprocess'` | `'global'`, `'class'`, `'instance'` (no multiprocess — single-process JS runtime) |
-| **System overload** | Tracks active operations, checks CPU/memory via `psutil` | Not implemented |
-| **Re-entrancy** | Not implemented (relies on Python's GIL + asyncio single-thread) | `AsyncLocalStorage`-based tracking to prevent deadlocks |
-| **Syntax** | `@retry(...)` decorator on `async def` | `@retry({...})` on class methods (TC39 Stage 3), or `retry({...})(fn)` HOF |
-| **Sync functions** | Not supported (async-only) | Supported (wrapper always returns a Promise) |
+| Aspect               | Python                                                           | TypeScript                                                                        |
+| -------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| **Naming**           | `retries=3` (retry count after first attempt)                    | `max_attempts=1` (total attempts including first)                                 |
+| **Naming**           | `wait=3` (seconds between retries)                               | `retry_after=0` (seconds between retries)                                         |
+| **Naming**           | `retry_on`                                                       | `retry_on_errors`                                                                 |
+| **Default retries**  | 3 retries (4 total attempts)                                     | 1 attempt (no retries)                                                            |
+| **Default delay**    | 3 seconds                                                        | 0 seconds                                                                         |
+| **Default timeout**  | 5 seconds per attempt                                            | No timeout                                                                        |
+| **Semaphore scopes** | `'global'`, `'class'`, `'self'`, `'multiprocess'`                | `'global'`, `'class'`, `'instance'` (no multiprocess — single-process JS runtime) |
+| **System overload**  | Tracks active operations, checks CPU/memory via `psutil`         | Not implemented                                                                   |
+| **Re-entrancy**      | Not implemented (relies on Python's GIL + asyncio single-thread) | `AsyncLocalStorage`-based tracking to prevent deadlocks                           |
+| **Syntax**           | `@retry(...)` decorator on `async def`                           | `@retry({...})` on class methods (TC39 Stage 3), or `retry({...})(fn)` HOF        |
+| **Sync functions**   | Not supported (async-only)                                       | Supported (wrapper always returns a Promise)                                      |
 
 The TS version intentionally starts with conservative defaults (1 attempt, no delay, no timeout) so that
 `retry()` with no options is a no-op wrapper. The Python version defaults to 3 retries with 3s delay and 5s

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { BaseEvent, EventBus } from '../src/index.js'
+import { BaseEvent, EventBus, retry } from '../src/index.js'
 
 const ParentEvent = BaseEvent.extend('ParentEvent', {})
 const ImmediateChildEvent = BaseEvent.extend('ImmediateChildEvent', {})
@@ -747,23 +747,23 @@ test('deeply nested awaited children', async () => {
 //   then awaits child.done(), which queue-jumps the child on both buses.
 // =============================================================================
 
-test('BUG: queue-jump two-bus bus-serial handlers should serialize on each bus', async () => {
+test('BUG: queue-jump two-bus serial handlers should serialize on each bus', async () => {
   const TriggerEvent = BaseEvent.extend('QJ2BS_Trigger', {})
   const ChildEvent = BaseEvent.extend('QJ2BS_Child', {})
 
   const bus_a = new EventBus('QJ2BS_A', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
   })
   const bus_b = new EventBus('QJ2BS_B', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
   })
 
   const log: string[] = []
 
   // Two handlers per bus. handler_1 is slow (15ms), handler_2 is fast (5ms).
-  // With bus-serial, handler_1 must finish before handler_2 starts ON EACH BUS.
+  // With serial handlers, handler_1 must finish before handler_2 starts ON EACH BUS.
   // With buggy parallel, both start simultaneously and handler_2 finishes first.
   const a_handler_1 = async () => {
     log.push('a1_start')
@@ -805,51 +805,51 @@ test('BUG: queue-jump two-bus bus-serial handlers should serialize on each bus',
   const a1_end = log.indexOf('a1_end')
   const a2_start = log.indexOf('a2_start')
   assert.ok(a1_end >= 0 && a2_start >= 0, 'bus_a handlers should have run')
-  assert.ok(a1_end < a2_start, `bus_a (bus-serial): a1 should finish before a2 starts. Got: [${log.join(', ')}]`)
+  assert.ok(a1_end < a2_start, `bus_a (serial handlers): a1 should finish before a2 starts. Got: [${log.join(', ')}]`)
 
   // Bus B: handlers must serialize (b1 finishes before b2 starts)
   const b1_end = log.indexOf('b1_end')
   const b2_start = log.indexOf('b2_start')
   assert.ok(b1_end >= 0 && b2_start >= 0, 'bus_b handlers should have run')
-  assert.ok(b1_end < b2_start, `bus_b (bus-serial): b1 should finish before b2 starts. Got: [${log.join(', ')}]`)
+  assert.ok(b1_end < b2_start, `bus_b (serial handlers): b1 should finish before b2 starts. Got: [${log.join(', ')}]`)
 })
 
-test('BUG: queue-jump two-bus global-serial handlers should serialize across both buses', async () => {
+test('BUG: queue-jump two-bus global handler lock should serialize across both buses', async () => {
   const TriggerEvent = BaseEvent.extend('QJ2GS_Trigger', {})
   const ChildEvent = BaseEvent.extend('QJ2GS_Child', {})
 
-  // Global-serial means ONE handler at a time GLOBALLY, across all buses.
+  // Global retry semaphore means ONE handler at a time GLOBALLY, across all buses.
   const bus_a = new EventBus('QJ2GS_A', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'serial',
   })
   const bus_b = new EventBus('QJ2GS_B', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'serial',
   })
 
   const log: string[] = []
 
-  const a_handler_1 = async () => {
+  const a_handler_1 = retry({ semaphore_scope: 'global', semaphore_name: 'qj2gs_handler', semaphore_limit: 1 })(async () => {
     log.push('a1_start')
     await delay(15)
     log.push('a1_end')
-  }
-  const a_handler_2 = async () => {
+  })
+  const a_handler_2 = retry({ semaphore_scope: 'global', semaphore_name: 'qj2gs_handler', semaphore_limit: 1 })(async () => {
     log.push('a2_start')
     await delay(5)
     log.push('a2_end')
-  }
-  const b_handler_1 = async () => {
+  })
+  const b_handler_1 = retry({ semaphore_scope: 'global', semaphore_name: 'qj2gs_handler', semaphore_limit: 1 })(async () => {
     log.push('b1_start')
     await delay(15)
     log.push('b1_end')
-  }
-  const b_handler_2 = async () => {
+  })
+  const b_handler_2 = retry({ semaphore_scope: 'global', semaphore_name: 'qj2gs_handler', semaphore_limit: 1 })(async () => {
     log.push('b2_start')
     await delay(5)
     log.push('b2_end')
-  }
+  })
 
   bus_a.on(TriggerEvent, async (event: InstanceType<typeof TriggerEvent>) => {
     const child = event.bus?.emit(ChildEvent({ event_timeout: null }))!
@@ -866,7 +866,7 @@ test('BUG: queue-jump two-bus global-serial handlers should serialize across bot
   await bus_a.waitUntilIdle()
   await bus_b.waitUntilIdle()
 
-  // With global-serial, no two handlers should overlap anywhere.
+  // With a global retry semaphore, no two handlers should overlap anywhere.
   // runImmediatelyAcrossBuses processes buses sequentially (bus_a first,
   // then bus_b), so the expected order is strictly serial:
   //   a1_start, a1_end, a2_start, a2_end, b1_start, b1_end, b2_start, b2_end
@@ -877,28 +877,28 @@ test('BUG: queue-jump two-bus global-serial handlers should serialize across bot
   // Check: within bus_a, handlers are serial
   const a1_end = log.indexOf('a1_end')
   const a2_start = log.indexOf('a2_start')
-  assert.ok(a1_end < a2_start, `global-serial: a1 should finish before a2 starts. Got: [${log.join(', ')}]`)
+  assert.ok(a1_end < a2_start, `global lock: a1 should finish before a2 starts. Got: [${log.join(', ')}]`)
 
   // Check: within bus_b, handlers are serial
   const b1_end = log.indexOf('b1_end')
   const b2_start = log.indexOf('b2_start')
-  assert.ok(b1_end < b2_start, `global-serial: b1 should finish before b2 starts. Got: [${log.join(', ')}]`)
+  assert.ok(b1_end < b2_start, `global lock: b1 should finish before b2 starts. Got: [${log.join(', ')}]`)
 
   // Check: bus_a handlers all finish before bus_b handlers start
-  // (because runImmediatelyAcrossBuses processes sequentially and
-  // all share LockManager.global_handler_semaphore)
+  // (runImmediatelyAcrossBuses processes sequentially and the retry
+  // semaphore enforces a global handler lock)
   const a2_end = log.indexOf('a2_end')
   const b1_start = log.indexOf('b1_start')
-  assert.ok(a2_end < b1_start, `global-serial: bus_a should finish before bus_b starts. Got: [${log.join(', ')}]`)
+  assert.ok(a2_end < b1_start, `global lock: bus_a should finish before bus_b starts. Got: [${log.join(', ')}]`)
 })
 
-test('BUG: queue-jump two-bus mixed: bus_a bus-serial, bus_b parallel', async () => {
+test('BUG: queue-jump two-bus mixed: bus_a serial, bus_b parallel', async () => {
   const TriggerEvent = BaseEvent.extend('QJ2Mix1_Trigger', {})
   const ChildEvent = BaseEvent.extend('QJ2Mix1_Child', {})
 
   const bus_a = new EventBus('QJ2Mix1_A', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
   })
   const bus_b = new EventBus('QJ2Mix1_B', {
     event_concurrency: 'bus-serial',
@@ -943,10 +943,10 @@ test('BUG: queue-jump two-bus mixed: bus_a bus-serial, bus_b parallel', async ()
   await bus_a.waitUntilIdle()
   await bus_b.waitUntilIdle()
 
-  // Bus A (bus-serial): a1 must finish before a2 starts
+  // Bus A (serial handlers): a1 must finish before a2 starts
   const a1_end = log.indexOf('a1_end')
   const a2_start = log.indexOf('a2_start')
-  assert.ok(a1_end < a2_start, `bus_a (bus-serial): a1 should finish before a2 starts. Got: [${log.join(', ')}]`)
+  assert.ok(a1_end < a2_start, `bus_a (serial handlers): a1 should finish before a2 starts. Got: [${log.join(', ')}]`)
 
   // Bus B (parallel): both handlers should start before the slower one finishes.
   // b2 (5ms) starts and finishes before b1 (15ms) finishes.
@@ -955,7 +955,7 @@ test('BUG: queue-jump two-bus mixed: bus_a bus-serial, bus_b parallel', async ()
   assert.ok(b2_start < b1_end, `bus_b (parallel): b2 should start before b1 finishes. Got: [${log.join(', ')}]`)
 })
 
-test('BUG: queue-jump two-bus mixed: bus_a parallel, bus_b bus-serial', async () => {
+test('BUG: queue-jump two-bus mixed: bus_a parallel, bus_b serial', async () => {
   const TriggerEvent = BaseEvent.extend('QJ2Mix2_Trigger', {})
   const ChildEvent = BaseEvent.extend('QJ2Mix2_Child', {})
 
@@ -965,7 +965,7 @@ test('BUG: queue-jump two-bus mixed: bus_a parallel, bus_b bus-serial', async ()
   })
   const bus_b = new EventBus('QJ2Mix2_B', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
   })
 
   const log: string[] = []
@@ -1011,10 +1011,10 @@ test('BUG: queue-jump two-bus mixed: bus_a parallel, bus_b bus-serial', async ()
   const a2_start = log.indexOf('a2_start')
   assert.ok(a2_start < a1_end, `bus_a (parallel): a2 should start before a1 finishes. Got: [${log.join(', ')}]`)
 
-  // Bus B (bus-serial): b1 must finish before b2 starts
+  // Bus B (serial handlers): b1 must finish before b2 starts
   const b1_end = log.indexOf('b1_end')
   const b2_start = log.indexOf('b2_start')
-  assert.ok(b1_end < b2_start, `bus_b (bus-serial): b1 should finish before b2 starts. Got: [${log.join(', ')}]`)
+  assert.ok(b1_end < b2_start, `bus_b (serial handlers): b1 should finish before b2 starts. Got: [${log.join(', ')}]`)
 })
 
 // =============================================================================
@@ -1037,11 +1037,11 @@ test('BUG: queue-jump should respect bus-serial event concurrency on forward bus
 
   const bus_a = new EventBus('QJEvt_A', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
   })
   const bus_b = new EventBus('QJEvt_B', {
     event_concurrency: 'bus-serial', // only one event at a time on bus_b
-    event_handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
   })
 
   const log: string[] = []
@@ -1110,7 +1110,7 @@ test('queue-jump with fully-parallel forward bus starts immediately', async () =
 
   const bus_a = new EventBus('QJFullPar_A', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
   })
   const bus_b = new EventBus('QJFullPar_B', {
     event_concurrency: 'parallel',
@@ -1151,8 +1151,8 @@ test('queue-jump with fully-parallel forward bus starts immediately', async () =
   assert.ok(child_b_start < slow_end, `bus_b (fully parallel): child should start before slow finishes. ` + `Got: [${log.join(', ')}]`)
 })
 
-test('queue-jump with parallel events but bus-serial handlers on forward bus serializes handlers', async () => {
-  // When bus_b has parallel event concurrency but bus-serial handler concurrency,
+test('queue-jump with parallel events and serial handlers on forward bus still overlaps across events', async () => {
+  // When bus_b has parallel event concurrency but serial handler concurrency,
   // the child event can start processing immediately (event semaphore is parallel),
   // but its handler must wait for the slow handler to release the handler semaphore.
 
@@ -1162,11 +1162,11 @@ test('queue-jump with parallel events but bus-serial handlers on forward bus ser
 
   const bus_a = new EventBus('QJEvtParHSer_A', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
   })
   const bus_b = new EventBus('QJEvtParHSer_B', {
     event_concurrency: 'parallel', // events can start concurrently
-    event_handler_concurrency: 'bus-serial', // but handlers serialize
+    event_handler_concurrency: 'serial', // but handlers serialize per event
   })
 
   const log: string[] = []
@@ -1197,12 +1197,9 @@ test('queue-jump with parallel events but bus-serial handlers on forward bus ser
   await bus_a.waitUntilIdle()
   await bus_b.waitUntilIdle()
 
-  // With bus-serial handler concurrency, child handler must wait for slow handler
+  // With per-event serial handler concurrency, different events can overlap
   const slow_end = log.indexOf('slow_end')
   const child_b_start = log.indexOf('child_b_start')
   assert.ok(child_b_start >= 0, 'child on bus_b should have run')
-  assert.ok(
-    child_b_start > slow_end,
-    `bus_b (bus-serial handlers): child handler should wait for slow handler. ` + `Got: [${log.join(', ')}]`
-  )
+  assert.ok(child_b_start < slow_end, `bus_b (per-event serial): child handler should overlap slow handler. ` + `Got: [${log.join(', ')}]`)
 })

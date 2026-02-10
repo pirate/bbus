@@ -1,14 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import {
-  BaseEvent,
-  EventBus,
-  retry,
-  clearSemaphoreRegistry,
-  RetryTimeoutError,
-  SemaphoreTimeoutError,
-} from '../src/index.js'
+import { BaseEvent, EventBus, retry, clearSemaphoreRegistry, RetryTimeoutError, SemaphoreTimeoutError } from '../src/index.js'
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -254,7 +247,7 @@ test('retry: timed-out attempts are retried when max_attempts > 1', async () => 
 
 // ─── Semaphore concurrency control ──────────────────────────────────────────
 
-test('retry: semaphore_limit controls max concurrent executions', async (t) => {
+test('retry: semaphore_limit controls max concurrent executions', async () => {
   clearSemaphoreRegistry()
 
   let active = 0
@@ -293,14 +286,11 @@ test('retry: semaphore_lax=false throws SemaphoreTimeoutError when slots are ful
   await delay(10)
 
   // Second call should timeout trying to acquire semaphore
-  await assert.rejects(
-    fn(),
-    (error: unknown) => {
-      assert.ok(error instanceof SemaphoreTimeoutError)
-      assert.equal(error.semaphore_name, 'test_sem_lax_false')
-      return true
-    }
-  )
+  await assert.rejects(fn(), (error: unknown) => {
+    assert.ok(error instanceof SemaphoreTimeoutError)
+    assert.equal(error.semaphore_name, 'test_sem_lax_false')
+    return true
+  })
 
   // Let the first call finish
   assert.equal(await first, 'ok')
@@ -702,6 +692,34 @@ test('retry: semaphore_scope=instance serializes calls on same instance', async 
   assert.equal(max_active, 1, 'instance scope: same instance calls should serialize')
 })
 
+test('retry: semaphore_name function uses call args for keying', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+
+  const work = retry({
+    max_attempts: 1,
+    semaphore_limit: 1,
+    semaphore_scope: 'global',
+    semaphore_name: (a: string, b: string) => `${a}-${b}`,
+  })(async (_a: string, _b: string) => {
+    active++
+    max_active = Math.max(max_active, active)
+    await delay(20)
+    active--
+    return 'done'
+  })
+
+  await Promise.all([work('a', 'b'), work('a', 'b')])
+  assert.equal(max_active, 1, 'semaphore_name(args): same args should serialize')
+
+  active = 0
+  max_active = 0
+  await Promise.all([work('a', 'b'), work('c', 'd')])
+  assert.ok(max_active >= 2, 'semaphore_name(args): different args should not share a semaphore')
+})
+
 test('retry: semaphore_scope=class isolates different classes', async () => {
   clearSemaphoreRegistry()
 
@@ -999,7 +1017,11 @@ test('retry: @retry(scope=instance) + bus.on via .bind — isolates per instance
 
   // instance scope: 2 different instances can run in parallel
   assert.equal(total_calls, 2, 'both handlers should have run')
-  assert.equal(max_active, 2, `instance scope should allow different instances to run in parallel (got max_active=${max_active}, total_calls=${total_calls})`)
+  assert.equal(
+    max_active,
+    2,
+    `instance scope should allow different instances to run in parallel (got max_active=${max_active}, total_calls=${total_calls})`
+  )
 })
 
 test('retry: @retry(scope=global) + bus.on via .bind — all calls share one semaphore', async () => {
@@ -1098,13 +1120,13 @@ test('retry: HOF retry()(fn.bind(instance)) — scope falls back to global (bind
       semaphore_limit: 1,
       semaphore_name: 'handler_bind_before',
     })(
-      (async function (this: any, _event: any): Promise<string> {
+      async function (this: any, _event: any): Promise<string> {
         active++
         max_active = Math.max(max_active, active)
         await delay(30)
         active--
         return 'ok'
-      }).bind(inst)
+      }.bind(inst)
     )
 
   const handler_a = make_handler(instance_a)

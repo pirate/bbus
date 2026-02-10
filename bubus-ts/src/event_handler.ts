@@ -1,11 +1,27 @@
+import { z } from 'zod'
 import { v5 as uuidv5 } from 'uuid'
 
-import type { ConcurrencyMode } from './lock_manager.js'
 import type { EventHandlerFunction } from './types.js'
 import { BaseEvent } from './base_event.js'
-import { EventResult } from './event_result.js'
+import type { EventResult } from './event_result.js'
 
 const HANDLER_ID_NAMESPACE = uuidv5('bubus-handler', uuidv5.DNS)
+
+export const EventHandlerJSONSchema = z
+  .object({
+    id: z.string(),
+    eventbus_name: z.string(),
+    event_key: z.union([z.string(), z.literal('*')]),
+    handler_name: z.string(),
+    handler_file_path: z.string().optional(),
+    handler_timeout: z.number().nullable().optional(),
+    handler_slow_timeout: z.number().nullable().optional(),
+    handler_registered_at: z.string(),
+    handler_registered_ts: z.number(),
+  })
+  .strict()
+
+export type EventHandlerJSON = z.infer<typeof EventHandlerJSONSchema>
 
 // an entry in the list of event handlers that are registered on a bus
 export class EventHandler {
@@ -13,8 +29,8 @@ export class EventHandler {
   handler: EventHandlerFunction // the handler function itself
   handler_name: string // name of the handler function, or 'anonymous' if the handler is an anonymous/arrow function
   handler_file_path?: string // ~/path/to/source/file.ts:123
-  handler_timeout: number | null // maximum time in seconds that the handler is allowed to run before it is aborted, defaults to event.event_timeout if not set
-  event_handler_concurrency?: ConcurrencyMode // per-handler concurrency override
+  handler_timeout?: number | null // maximum time in seconds that the handler is allowed to run before it is aborted, resolved at runtime if not set
+  handler_slow_timeout?: number | null // warning threshold in seconds for slow handler execution
   handler_registered_at: string // ISO datetime string version of handler_registered_ts
   handler_registered_ts: number // nanosecond monotonic version of handler_registered_at
   event_key: string | '*' // event_type string to match against, or '*' to match all events
@@ -25,8 +41,8 @@ export class EventHandler {
     handler: EventHandlerFunction
     handler_name: string
     handler_file_path?: string
-    handler_timeout: number | null
-    event_handler_concurrency?: ConcurrencyMode
+    handler_timeout?: number | null
+    handler_slow_timeout?: number | null
     handler_registered_at: string
     handler_registered_ts: number
     event_key: string | '*'
@@ -46,7 +62,7 @@ export class EventHandler {
     this.handler_name = params.handler_name
     this.handler_file_path = handler_file_path
     this.handler_timeout = params.handler_timeout
-    this.event_handler_concurrency = params.event_handler_concurrency
+    this.handler_slow_timeout = params.handler_slow_timeout
     this.handler_registered_at = params.handler_registered_at
     this.handler_registered_ts = params.handler_registered_ts
     this.event_key = params.event_key
@@ -71,6 +87,38 @@ export class EventHandler {
     const label = this.handler_name && this.handler_name !== 'anonymous' ? `${this.handler_name}()` : `function#${this.id.slice(-4)}()`
     const file_path = this.handler_file_path ?? 'unknown'
     return `${label} (${file_path})`
+  }
+
+  toJSON(): EventHandlerJSON {
+    return {
+      id: this.id,
+      eventbus_name: this.eventbus_name,
+      event_key: this.event_key,
+      handler_name: this.handler_name,
+      handler_file_path: this.handler_file_path,
+      handler_timeout: this.handler_timeout,
+      handler_slow_timeout: this.handler_slow_timeout,
+      handler_registered_at: this.handler_registered_at,
+      handler_registered_ts: this.handler_registered_ts,
+    }
+  }
+
+  static fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandler {
+    const record = EventHandlerJSONSchema.parse(data)
+    const handler_fn = handler ?? ((() => undefined) as EventHandlerFunction)
+    const handler_name = record.handler_name || handler_fn.name || 'deserialized_handler'
+    return new EventHandler({
+      id: record.id,
+      handler: handler_fn,
+      handler_name,
+      handler_file_path: record.handler_file_path,
+      handler_timeout: record.handler_timeout,
+      handler_slow_timeout: record.handler_slow_timeout,
+      handler_registered_at: record.handler_registered_at,
+      handler_registered_ts: record.handler_registered_ts,
+      event_key: record.event_key,
+      eventbus_name: record.eventbus_name,
+    })
   }
 
   // walk the stack trace at registration time to detect the location of the source code file that defines the handler function
@@ -187,5 +235,9 @@ export class EventHandlerResultSchemaError extends EventHandlerError {
     super(message, params)
     this.name = 'EventHandlerResultSchemaError'
     this.raw_value = params.raw_value
+  }
+
+  get expected_schema(): any {
+    return this.event_result.event.event_result_schema
   }
 }

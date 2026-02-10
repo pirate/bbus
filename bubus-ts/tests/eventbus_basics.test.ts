@@ -18,7 +18,8 @@ test('EventBus initializes with correct defaults', async () => {
   assert.equal(bus.name, 'DefaultsBus')
   assert.equal(bus.max_history_size, 100)
   assert.equal(bus.event_concurrency_default, 'bus-serial')
-  assert.equal(bus.event_handler_concurrency_default, 'bus-serial')
+  assert.equal(bus.event_handler_concurrency_default, 'serial')
+  assert.equal(bus.event_handler_completion_default, 'all')
   assert.equal(bus.event_timeout_default, 60)
   assert.equal(bus.event_history.size, 0)
   assert.ok(EventBus._all_instances.has(bus))
@@ -29,13 +30,15 @@ test('EventBus applies custom options', () => {
   const bus = new EventBus('CustomBus', {
     max_history_size: 500,
     event_concurrency: 'parallel',
-    event_handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'serial',
+    event_handler_completion: 'first',
     event_timeout: 30,
   })
 
   assert.equal(bus.max_history_size, 500)
   assert.equal(bus.event_concurrency_default, 'parallel')
-  assert.equal(bus.event_handler_concurrency_default, 'global-serial')
+  assert.equal(bus.event_handler_concurrency_default, 'serial')
+  assert.equal(bus.event_handler_completion_default, 'first')
   assert.equal(bus.event_timeout_default, 30)
 })
 
@@ -58,23 +61,22 @@ test('EventBus exposes locks API surface', () => {
   const bus = new EventBus('GateSurfaceBus')
   const locks = bus.locks as unknown as Record<string, unknown>
 
-  assert.equal(typeof locks.requestPause, 'function')
+  assert.equal(typeof locks.requestRunloopPause, 'function')
   assert.equal(typeof locks.waitUntilRunloopResumed, 'function')
   assert.equal(typeof locks.isPaused, 'function')
   assert.equal(typeof locks.waitForIdle, 'function')
   assert.equal(typeof locks.notifyIdleListeners, 'function')
   assert.equal(typeof locks.getSemaphoreForEvent, 'function')
-  assert.equal(typeof locks.getSemaphoreForHandler, 'function')
 })
 
 test('EventBus locks methods are callable and preserve semaphore resolution behavior', async () => {
   const bus = new EventBus('GateInvocationBus', {
     event_concurrency: 'bus-serial',
-    event_handler_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
   })
   const GateEvent = BaseEvent.extend('GateInvocationEvent', {})
 
-  const release_pause = bus.locks.requestPause()
+  const release_pause = bus.locks.requestRunloopPause()
   assert.equal(bus.locks.isPaused(), true)
 
   let resumed = false
@@ -90,20 +92,22 @@ test('EventBus locks methods are callable and preserve semaphore resolution beha
 
   const event_with_global = GateEvent({
     event_concurrency: 'global-serial',
-    event_handler_concurrency: 'global-serial',
+    event_handler_concurrency: 'serial',
   })
   assert.equal(bus.locks.getSemaphoreForEvent(event_with_global), LockManager.global_event_semaphore)
-  assert.equal(bus.locks.getSemaphoreForHandler(event_with_global), LockManager.global_handler_semaphore)
+  const handler_semaphore = event_with_global.getHandlerSemaphore(bus.event_handler_concurrency_default)
+  assert.ok(handler_semaphore)
 
   const event_with_parallel = GateEvent({
     event_concurrency: 'parallel',
     event_handler_concurrency: 'parallel',
   })
   assert.equal(bus.locks.getSemaphoreForEvent(event_with_parallel), null)
-  assert.equal(bus.locks.getSemaphoreForHandler(event_with_parallel), null)
+  assert.equal(event_with_parallel.getHandlerSemaphore(bus.event_handler_concurrency_default), null)
 
-  const event_using_handler_options = GateEvent({})
-  assert.equal(bus.locks.getSemaphoreForHandler(event_using_handler_options, { event_handler_concurrency: 'parallel' }), null)
+  const another_serial_event = GateEvent({ event_handler_concurrency: 'serial' })
+  const another_semaphore = another_serial_event.getHandlerSemaphore(bus.event_handler_concurrency_default)
+  assert.notEqual(handler_semaphore, another_semaphore)
 
   bus.dispatch(GateEvent({}))
   bus.locks.notifyIdleListeners()

@@ -24,8 +24,9 @@ export interface RetryOptions {
   /** Maximum concurrent executions sharing this semaphore. Default: undefined (no concurrency limit) */
   semaphore_limit?: number | null
 
-  /** Semaphore identifier. Functions with the same name share the same concurrency slot pool. Default: function name */
-  semaphore_name?: string | null
+  /** Semaphore identifier. Functions with the same name share the same concurrency slot pool. Default: function name.
+   *  If a function is provided, it receives the same arguments as the wrapped function. */
+  semaphore_name?: string | ((...args: any[]) => string) | null
 
   /** If true, proceed without concurrency limit when semaphore acquisition times out. Default: true */
   semaphore_lax?: boolean
@@ -172,11 +173,12 @@ export function retry(options: RetryOptions = {}) {
 
   return function decorator<T extends (...args: any[]) => any>(target: T, _context?: ClassMethodDecoratorContext): T {
     const fn_name = target.name || (_context?.name as string) || 'anonymous'
-    const sem_name = semaphore_name_option ?? fn_name
     const effective_max_attempts = Math.max(1, max_attempts)
     const effective_retry_after = Math.max(0, retry_after)
 
     async function retryWrapper(this: any, ...args: any[]): Promise<any> {
+      const base_name = typeof semaphore_name_option === 'function' ? semaphore_name_option(...args) : (semaphore_name_option ?? fn_name)
+      const sem_name = typeof base_name === 'string' ? base_name : String(base_name)
       // ── Resolve scoped semaphore key at call time (uses `this` for class/instance scopes) ──
       const scoped_key = scopedSemaphoreKey(sem_name, semaphore_scope, this)
 
@@ -193,11 +195,7 @@ export function retry(options: RetryOptions = {}) {
         semaphore = getOrCreateSemaphore(scoped_key, semaphore_limit!)
 
         const effective_sem_timeout =
-          semaphore_timeout != null
-            ? semaphore_timeout
-            : timeout != null
-              ? timeout * Math.max(1, semaphore_limit! - 1)
-              : null
+          semaphore_timeout != null ? semaphore_timeout : timeout != null ? timeout * Math.max(1, semaphore_limit! - 1) : null
 
         if (effective_sem_timeout != null && effective_sem_timeout > 0) {
           semaphore_acquired = await acquireWithTimeout(semaphore, effective_sem_timeout * 1000)
