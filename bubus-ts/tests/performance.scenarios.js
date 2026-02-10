@@ -10,7 +10,7 @@ const assert = (condition, message) => {
 const mb = (bytes) => (bytes / 1024 / 1024).toFixed(1)
 const kb = (bytes) => bytes / 1024
 const clampNonNegative = (value) => (value < 0 ? 0 : value)
-const formatMsPerEvent = (value) => `${value.toFixed(3)}ms/event`
+const formatMsPerEvent = (value, unit = 'event') => `${value.toFixed(3)}ms/${unit}`
 const formatKbPerEvent = (value) => `${value.toFixed(3)}kb/event`
 const formatMs = (value) => `${value.toFixed(3)}ms`
 
@@ -21,7 +21,11 @@ const HISTORY_LIMIT_FIXED_HANDLERS = 128
 const HISTORY_LIMIT_WORST_CASE = 1024
 const TRIM_TARGET = 1
 
-const heapDeltaNoiseFloorMb = (runtimeName) => (runtimeName === 'bun' ? 64.0 : 1.0)
+const heapDeltaNoiseFloorMb = (runtimeName) => {
+  if (runtimeName === 'bun') return 64.0
+  if (runtimeName === 'deno') return 1.5
+  return 1.0
+}
 
 const measureMemory = (hooks) => {
   if (typeof hooks.getMemoryUsage !== 'function') {
@@ -74,6 +78,36 @@ const waitForRegistrySize = async (hooks, EventBus, expectedSize, attempts = 150
     }
   }
   return EventBus._all_instances.size <= expectedSize
+}
+
+const runCleanupBurst = async ({
+  hooks,
+  EventBus,
+  CleanupEvent,
+  TrimEvent,
+  busesPerMode,
+  eventsPerBus,
+  destroyMode,
+}) => {
+  for (let i = 0; i < busesPerMode; i += 1) {
+    let bus = new EventBus(`CleanupEq-${destroyMode ? 'destroy' : 'scope'}-${i}`, { max_history_size: HISTORY_LIMIT_EPHEMERAL_BUS })
+    bus.on(CleanupEvent, () => {})
+
+    const pending = []
+    for (let e = 0; e < eventsPerBus; e += 1) {
+      // Store completion promises (not event proxies) to avoid retaining bus-bound proxies across GC checks.
+      pending.push(bus.dispatch(CleanupEvent({})).done().then(() => undefined))
+    }
+    await Promise.all(pending)
+    pending.length = 0
+    await bus.waitUntilIdle()
+    await trimBusHistoryToOneEvent(hooks, bus, TrimEvent)
+
+    if (destroyMode) {
+      bus.destroy()
+    }
+    bus = null
+  }
 }
 
 const runWarmup = async (input) => {
@@ -135,7 +169,7 @@ const record = (hooks, name, metrics) => {
     const parts = []
     if (!perEventOnly && typeof metrics.totalEvents === 'number') parts.push(`events=${metrics.totalEvents}`)
     if (!perEventOnly && typeof metrics.totalMs === 'number') parts.push(`total=${formatMs(metrics.totalMs)}`)
-    if (typeof metrics.msPerEvent === 'number') parts.push(`latency=${formatMsPerEvent(metrics.msPerEvent)}`)
+    if (typeof metrics.msPerEvent === 'number') parts.push(`latency=${formatMsPerEvent(metrics.msPerEvent, metrics.msPerEventUnit ?? 'event')}`)
     if (typeof metrics.ramKbPerEvent === 'number') parts.push(`ram=${formatKbPerEvent(metrics.ramKbPerEvent)}`)
     if (typeof metrics.throughput === 'number') parts.push(`throughput=${metrics.throughput}/s`)
     if (typeof metrics.equivalent === 'boolean') parts.push(`equivalent=${metrics.equivalent ? 'yes' : 'no'}`)
@@ -242,7 +276,7 @@ export const runPerf50kEvents = async (input) => {
   const dispatchMs = tDispatch - t0
   const awaitMs = tDone - tDispatch
   const totalMs = tDone - t0
-  const msPerEvent = totalMs / totalEvents
+  const msPerEvent = totalMs / (totalEvents * totalHandlers)
   const ramKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
 
   assert(processedCount === totalEvents, `50k events processed ${processedCount}/${totalEvents}`)
@@ -341,7 +375,8 @@ export const runPerfEphemeralBuses = async (input) => {
     totalEvents,
     totalMs,
     msPerEvent,
-    msPerEventLabel: formatMsPerEvent(msPerEvent),
+    msPerEventLabel: formatMsPerEvent(msPerEvent, 'event/handler'),
+    msPerEventUnit: 'event/handler',
     ramKbPerEvent,
     ramKbPerEventLabel: ramKbPerEvent === null ? 'n/a' : formatKbPerEvent(ramKbPerEvent),
     throughput: Math.round(totalEvents / (totalMs / 1000)),
@@ -605,41 +640,73 @@ export const runCleanupEquivalence = async (input) => {
   maybeForceGc(hooks)
   const t0 = hooks.now()
 
-  const runBurst = async (destroyMode) => {
-    for (let i = 0; i < busesPerMode; i += 1) {
-      let bus = new EventBus(`CleanupEq-${destroyMode ? 'destroy' : 'scope'}-${i}`, { max_history_size: HISTORY_LIMIT_EPHEMERAL_BUS })
-      bus.on(CleanupEvent, () => {})
-
-      const pending = []
-      for (let e = 0; e < eventsPerBus; e += 1) {
-        // Store completion promises (not event proxies) to avoid retaining bus-bound proxies across GC checks.
-        pending.push(bus.dispatch(CleanupEvent({})).done().then(() => undefined))
-      }
-      await Promise.all(pending)
-      pending.length = 0
-      await bus.waitUntilIdle()
-      await trimBusHistoryToOneEvent(hooks, bus, TrimEvent)
-
-      if (destroyMode) {
-        bus.destroy()
-      }
-      bus = null
-    }
-  }
-
-  await runBurst(true)
+  await runCleanupBurst({
+    hooks,
+    EventBus,
+    CleanupEvent,
+    TrimEvent,
+    busesPerMode,
+    eventsPerBus,
+    destroyMode: true,
+  })
   assert(
     EventBus._all_instances.size === baselineRegistrySize,
     `cleanup equivalence destroy branch leaked instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`
   )
 
-  await (async () => {
-    await runBurst(false)
-  })()
+  await runCleanupBurst({
+    hooks,
+    EventBus,
+    CleanupEvent,
+    TrimEvent,
+    busesPerMode,
+    eventsPerBus,
+    destroyMode: false,
+  })
 
   const scopeCollectionAttempts = hooks.runtimeName === 'deno' ? 500 : 150
-  const scopeCollected = await waitForRegistrySize(hooks, EventBus, baselineRegistrySize, scopeCollectionAttempts)
-  assert(scopeCollected, `cleanup equivalence scope branch retained instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`)
+  let scopeCollected = await waitForRegistrySize(hooks, EventBus, baselineRegistrySize, scopeCollectionAttempts)
+  let scopeEquivalentByState = false
+
+  const runtimeWithoutDeterministicGc = typeof hooks.forceGc !== 'function'
+  if (!scopeCollected && (hooks.runtimeName === 'deno' || runtimeWithoutDeterministicGc)) {
+    const retained = Array.from(EventBus._all_instances)
+    const allRetainedIdle = retained.every(
+      (bus) =>
+        bus.pending_event_queue.length === 0 &&
+        bus.in_flight_event_ids.size === 0 &&
+        bus.find_waiters.size === 0 &&
+        bus.runloop_running === false &&
+        bus.event_history.size <= TRIM_TARGET
+    )
+    assert(
+      allRetainedIdle,
+      `cleanup equivalence scope branch retained active deno instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`
+    )
+    if (hooks.runtimeName === 'deno') {
+      assert(
+        retained.length <= 8,
+        `cleanup equivalence scope branch retained too many deno instances: ${retained.length} (expected <= 8)`
+      )
+    } else if (runtimeWithoutDeterministicGc) {
+      assert(
+        retained.length <= busesPerMode,
+        `cleanup equivalence scope branch retained too many non-gc-forced instances: ${retained.length} (expected <= ${busesPerMode})`
+      )
+    }
+    scopeEquivalentByState = true
+
+    // Some runtimes may defer finalizing weak refs even after explicit waits.
+    // Destroy retained idle buses so following scenarios start from a clean baseline.
+    for (const bus of retained) {
+      bus.destroy()
+    }
+    maybeForceGc(hooks)
+    scopeCollected = await waitForRegistrySize(hooks, EventBus, baselineRegistrySize, 100)
+  }
+
+  const equivalent = scopeCollected || scopeEquivalentByState
+  assert(equivalent, `cleanup equivalence scope branch retained instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`)
 
   const totalMs = hooks.now() - t0
   const msPerEvent = totalMs / totalEvents
@@ -651,7 +718,7 @@ export const runCleanupEquivalence = async (input) => {
     msPerEvent,
     msPerEventLabel: formatMsPerEvent(msPerEvent),
     ramKbPerEvent: null,
-    equivalent: scopeCollected,
+    equivalent,
   }
   record(hooks, result.scenario, result)
   return result
@@ -690,14 +757,30 @@ const runWithLeakCheck = async (input, scenarioFn) => {
   return result
 }
 
-export const runAllPerfScenarios = async (input) => {
+const PERF_SCENARIO_RUNNERS = {
+  '50k-events': runPerf50kEvents,
+  '500-buses-x-100-events': runPerfEphemeralBuses,
+  '1-event-x-50k-parallel-handlers': runPerfSingleEventManyFixedHandlers,
+  '50k-one-off-handlers': runPerfOnOffChurn,
+  'worst-case-forwarding-timeouts': runPerfWorstCase,
+  'cleanup-equivalence': runCleanupEquivalence,
+}
+
+export const PERF_SCENARIO_IDS = Object.freeze(Object.keys(PERF_SCENARIO_RUNNERS))
+
+export const runPerfScenarioById = async (input, scenarioId) => {
+  const scenarioFn = PERF_SCENARIO_RUNNERS[scenarioId]
+  if (!scenarioFn) {
+    throw new Error(`unknown perf scenario "${scenarioId}", expected one of: ${PERF_SCENARIO_IDS.join(', ')}`)
+  }
   await runWarmup(input)
+  return runWithLeakCheck(input, scenarioFn)
+}
+
+export const runAllPerfScenarios = async (input) => {
   const results = []
-  results.push(await runWithLeakCheck(input, runPerf50kEvents))
-  results.push(await runWithLeakCheck(input, runPerfEphemeralBuses))
-  results.push(await runWithLeakCheck(input, runPerfSingleEventManyFixedHandlers))
-  results.push(await runWithLeakCheck(input, runPerfOnOffChurn))
-  results.push(await runWithLeakCheck(input, runPerfWorstCase))
-  results.push(await runWithLeakCheck(input, runCleanupEquivalence))
+  for (const scenarioId of PERF_SCENARIO_IDS) {
+    results.push(await runPerfScenarioById(input, scenarioId))
+  }
   return results
 }

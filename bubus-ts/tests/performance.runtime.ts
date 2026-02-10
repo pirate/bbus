@@ -1,5 +1,5 @@
 import { BaseEvent, EventBus, EventHandlerCancelledError, EventHandlerTimeoutError } from '../dist/esm/index.js'
-import { runAllPerfScenarios } from './performance.scenarios.js'
+import { PERF_SCENARIO_IDS, runAllPerfScenarios, runPerfScenarioById } from './performance.scenarios.js'
 
 declare const Bun: { gc?: (full?: boolean) => void } | undefined
 declare const Deno:
@@ -16,6 +16,29 @@ declare const process:
   | undefined
 
 const runtime = typeof Bun !== 'undefined' && Bun ? 'bun' : typeof Deno !== 'undefined' && Deno ? 'deno' : 'node'
+
+const getCliArgs = () => {
+  const processArgs = typeof process !== 'undefined' && process && Array.isArray(process.argv) ? process.argv.slice(2) : []
+  if (processArgs.length > 0) return processArgs
+  return typeof Deno !== 'undefined' && Deno && Array.isArray((Deno as { args?: string[] }).args) ? Deno.args ?? [] : []
+}
+
+const getScenarioArg = () => {
+  const args = getCliArgs()
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]
+    if (!arg) continue
+    if (arg.startsWith('--scenario=')) {
+      const value = arg.slice('--scenario='.length).trim()
+      return value.length > 0 ? value : null
+    }
+    if (arg === '--scenario') {
+      const value = args[i + 1]?.trim()
+      return value && value.length > 0 ? value : null
+    }
+  }
+  return null
+}
 
 const getDenoInternalCore = () => {
   if (typeof Deno === 'undefined' || !Deno) return null
@@ -70,9 +93,10 @@ const forceGc = () => {
 }
 
 const main = async () => {
+  const scenario = getScenarioArg()
   console.log(`[${runtime}] runtime perf harness starting`)
 
-  await runAllPerfScenarios({
+  const input = {
     runtimeName: runtime,
     api: { BaseEvent, EventBus, EventHandlerTimeoutError, EventHandlerCancelledError },
     now: () => performance.now(),
@@ -87,7 +111,16 @@ const main = async () => {
       worstCaseMemoryDeltaMb: 150,
       enforceNonPositiveHeapDeltaAfterGc: true,
     },
-  })
+  }
+
+  if (scenario) {
+    if (!PERF_SCENARIO_IDS.includes(scenario)) {
+      throw new Error(`Unknown --scenario value "${scenario}". Expected one of: ${PERF_SCENARIO_IDS.join(', ')}`)
+    }
+    await runPerfScenarioById(input, scenario)
+  } else {
+    await runAllPerfScenarios(input)
+  }
 
   console.log(`[${runtime}] runtime perf harness complete`)
 }

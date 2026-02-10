@@ -711,10 +711,10 @@ Measured locally on an `Apple M4 Pro` with:
 
 | Runtime            | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
 | ------------------ | ------------------------------ | ----------------------------------- | -------------------------------------- | ----------------------------------------- | --------------------------------------------- |
-| Node               | `0.014ms/event`, `1.1kb/event` | `0.059ms/event`, `0.0kb/event`      | `1023.501ms/event`, `103120.0kb/event` | `0.029ms/event`, `0.0kb/event`            | `6.176ms/event`, `0.2kb/event`                |
-| Bun                | `0.014ms/event`, `2.9kb/event` | `0.067ms/event`, `0.1kb/event`      | `99.819ms/event`, `142816.0kb/event`   | `0.030ms/event`, `0.6kb/event`            | `6.396ms/event`, `0.2kb/event`                |
-| Deno               | `0.019ms/event`, `1.9kb/event` | `0.075ms/event`, `0.0kb/event`      | `1164.815ms/event`, `44896.0kb/event`  | `0.068ms/event`, `0.1kb/event`            | `6.726ms/event`, `0.1kb/event`                |
-| Browser (Chromium) | `0.032ms/event`, `n/a`         | `0.203ms/event`, `n/a`              | `919.600ms/event`, `n/a`               | `0.023ms/event`, `n/a`                    | `6.117ms/event`, `n/a`                        |
+| Node               | `0.018ms/event`, `1.131kb/event` | `0.058ms/event`, `0.130kb/event`   | `0.029ms/event`, `184976.000kb/event`    | `0.041ms/event`, `0.811kb/event`          | `6.061ms/event`, `0.384kb/event`              |
+| Bun                | `0.016ms/event`, `2.350kb/event` | `0.055ms/event`, `1.066kb/event`   | `0.007ms/event`, `225712.000kb/event`    | `0.026ms/event`, `3.574kb/event`          | `6.065ms/event`, `1.557kb/event`              |
+| Deno               | `0.019ms/event`, `1.329kb/event` | `0.062ms/event`, `0.451kb/event`   | `0.024ms/event`, `164128.000kb/event`    | `0.059ms/event`, `2.425kb/event`          | `6.430ms/event`, `9.077kb/event`              |
+| Browser (Chromium) | `0.030ms/event`, `n/a`         | `0.196ms/event`, `n/a`              | `0.022ms/event`, `n/a`                   | `0.022ms/event`, `n/a`                    | `6.037ms/event`, `n/a`                        |
 
 Notes:
 

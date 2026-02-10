@@ -379,10 +379,17 @@ export class BaseEvent {
   }
 
   // Run all pending handler results for the current bus context.
-  async processEvent(): Promise<void> {
+  async processEvent(
+    pending_entries?: Array<{
+      handler: EventHandler
+      result: EventResult
+    }>
+  ): Promise<void> {
     const original = this._event_original ?? this
     const bus_id = this.bus?.id
-    const pending_results = Array.from(original.event_results.values()).filter((result) => !bus_id || result.eventbus_id === bus_id)
+    const pending_results =
+      pending_entries?.map((entry) => entry.result) ??
+      Array.from(original.event_results.values()).filter((result) => !bus_id || result.eventbus_id === bus_id)
     if (pending_results.length === 0) {
       return
     }

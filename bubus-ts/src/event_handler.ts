@@ -60,19 +60,19 @@ export class EventHandler {
     eventbus_name: string
     eventbus_id: string
   }) {
-    const handler_file_path = EventHandler.detectHandlerFilePath(params.handler_file_path)
     this.id =
       params.id ??
       EventHandler.computeHandlerId({
         eventbus_id: params.eventbus_id,
         handler_name: params.handler_name,
-        handler_file_path,
+        handler_file_path: params.handler_file_path,
         handler_registered_at: params.handler_registered_at,
+        handler_registered_ts: params.handler_registered_ts,
         event_key: params.event_key,
       })
     this.handler = params.handler
     this.handler_name = params.handler_name
-    this.handler_file_path = handler_file_path
+    this.handler_file_path = params.handler_file_path
     this.handler_timeout = params.handler_timeout
     this.handler_slow_timeout = params.handler_slow_timeout
     this.handler_registered_at = params.handler_registered_at
@@ -88,18 +88,49 @@ export class EventHandler {
     handler_name: string
     handler_file_path?: string
     handler_registered_at: string
+    handler_registered_ts: number
     event_key: string | '*'
   }): string {
-    const file_path = EventHandler.detectHandlerFilePath(params.handler_file_path, 'unknown') ?? 'unknown'
-    const seed = `${params.eventbus_id}|${params.handler_name}|${file_path}|${params.handler_registered_at}|${params.event_key}`
+    const file_path = params.handler_file_path ?? 'unknown'
+    const seed = `${params.eventbus_id}|${params.handler_name}|${file_path}|${params.handler_registered_at}|${params.handler_registered_ts}|${params.event_key}`
     return uuidv5(seed, HANDLER_ID_NAMESPACE)
   }
 
-  // "someHandlerName() (~/path/to/source/file.ts:123)"
+  // "someHandlerName() (~/path/to/source/file.ts:123)"  <- best case when file path is available and its a named function
+  // "function#1234()"  <- worst case when no file path is available and its an anonymous/arrow function defined inline
   toString(): string {
     const label = this.handler_name && this.handler_name !== 'anonymous' ? `${this.handler_name}()` : `function#${this.id.slice(-4)}()`
-    const file_path = this.handler_file_path ?? 'unknown'
-    return `${label} (${file_path})`
+    return this.handler_file_path ? `${label} (${this.handler_file_path})` : label
+  }
+
+  // autodetect the path/to/source/file.ts:lineno where the handler is defined for better logs
+  // optional (controlled by EventBus.event_handler_detect_file_paths) because it can slow down performance to introspect stack traces and find file paths
+  detectHandlerFilePath(): void {
+    const line = new Error().stack
+      ?.split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)[4]
+    if (!line) return
+    const resolved_path =
+      line.trim().match(/\(([^)]+)\)$/)?.[1] ??
+      line.trim().match(/^\s*at\s+(.+)$/)?.[1] ??
+      line.trim().match(/^[^@]+@(.+)$/)?.[1] ??
+      line.trim()
+    const match = resolved_path.match(/^(.*?):(\d+)(?::\d+)?$/)
+    let normalized = match ? match[1] : resolved_path
+    const line_number = match?.[2]
+    if (normalized.startsWith('file://')) {
+      let path = normalized.slice('file://'.length)
+      if (path.startsWith('localhost/')) path = path.slice('localhost'.length)
+      if (!path.startsWith('/')) path = `/${path}`
+      try {
+        normalized = decodeURIComponent(path)
+      } catch {
+        normalized = path
+      }
+    }
+    normalized = normalized.replace(/\/users\/[^/]+\//i, '~/').replace(/\/home\/[^/]+\//i, '~/')
+    this.handler_file_path = line_number ? `${normalized}:${line_number}` : normalized
   }
 
   toJSON(): EventHandlerJSON {
@@ -120,7 +151,7 @@ export class EventHandler {
   static fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandler {
     const record = EventHandlerJSONSchema.parse(data)
     const handler_fn = handler ?? ((() => undefined) as EventHandlerFunction)
-    const handler_name = record.handler_name || handler_fn.name || 'deserialized_handler'
+    const handler_name = record.handler_name || handler_fn.name || 'anonymous'  // 'anonymous' is the default name for anonymous/arrow functions
     return new EventHandler({
       id: record.id,
       handler: handler_fn,
@@ -134,40 +165,6 @@ export class EventHandler {
       eventbus_name: record.eventbus_name,
       eventbus_id: record.eventbus_id,
     })
-  }
-
-  // walk the stack trace at registration time to detect the location of the source code file that defines the handler function
-  // and return the file path and line number as a string, or 'unknown' if the file path cannot be determined
-  private static detectHandlerFilePath(file_path?: string, fallback: string = 'unknown'): string | undefined {
-    const extract = (value: string): string =>
-      value.trim().match(/\(([^)]+)\)$/)?.[1] ??
-      value.trim().match(/^\s*at\s+(.+)$/)?.[1] ??
-      value.trim().match(/^[^@]+@(.+)$/)?.[1] ??
-      value.trim()
-    let resolved_path = file_path ? extract(file_path) : file_path
-    if (!resolved_path) {
-      const line = new Error().stack
-        ?.split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean)[4]
-      if (line) resolved_path = extract(line)
-    }
-    if (!resolved_path) return fallback
-    const match = resolved_path.match(/^(.*?):(\d+)(?::\d+)?$/)
-    let normalized = match ? match[1] : resolved_path
-    const line_number = match?.[2]
-    if (normalized.startsWith('file://')) {
-      let path = normalized.slice('file://'.length)
-      if (path.startsWith('localhost/')) path = path.slice('localhost'.length)
-      if (!path.startsWith('/')) path = `/${path}`
-      try {
-        normalized = decodeURIComponent(path)
-      } catch {
-        normalized = path
-      }
-    }
-    normalized = normalized.replace(/\/users\/[^/]+\//i, '~/').replace(/\/home\/[^/]+\//i, '~/')
-    return line_number ? `${normalized}:${line_number}` : normalized
   }
 }
 

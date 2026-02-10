@@ -28,6 +28,7 @@ type EventBusOptions = {
   event_handler_concurrency?: EventHandlerConcurrencyMode | null
   event_handler_completion?: EventHandlerCompletionMode
   event_handler_slow_timeout?: number | null // threshold before a warning is logged about slow handler execution
+  event_handler_detect_file_paths?: boolean  // autodetect source code file and lineno where handlers are defined for better logs (slightly slower because Error().stack introspection to fine files is expensive)
 }
 
 // Global registry of all EventBus instances to allow for cross-bus coordination when global-serial concurrency mode is used
@@ -103,6 +104,7 @@ export class EventBus {
   event_concurrency_default: EventConcurrencyMode
   event_handler_concurrency_default: EventHandlerConcurrencyMode
   event_handler_completion_default: EventHandlerCompletionMode
+  event_handler_detect_file_paths: boolean
 
   // slow processing warning timeout settings
   event_handler_slow_timeout: number | null
@@ -110,6 +112,7 @@ export class EventBus {
 
   // public runtime state
   handlers: Map<string, EventHandler> // map of handler uuidv5 ids to EventHandler objects
+  handlers_by_key: Map<string, string[]> // map of normalized event_key to ordered handler ids
   event_history: Map<string, BaseEvent> // map of event uuidv7 ids to processed BaseEvent objects
 
   // internal runtime state
@@ -128,6 +131,7 @@ export class EventBus {
     this.event_concurrency_default = options.event_concurrency ?? 'bus-serial'
     this.event_handler_concurrency_default = options.event_handler_concurrency ?? 'serial'
     this.event_handler_completion_default = options.event_handler_completion ?? 'all'
+    this.event_handler_detect_file_paths = options.event_handler_detect_file_paths ?? true
     this.event_timeout_default = options.event_timeout === undefined ? 60 : options.event_timeout
     this.event_handler_slow_timeout = options.event_handler_slow_timeout === undefined ? 30 : options.event_handler_slow_timeout
     this.event_slow_timeout = options.event_slow_timeout === undefined ? 300 : options.event_slow_timeout
@@ -135,6 +139,7 @@ export class EventBus {
     // initialize runtime state
     this.runloop_running = false
     this.handlers = new Map()
+    this.handlers_by_key = new Map()
     this.find_waiters = new Set()
     this.event_history = new Map()
     this.pending_event_queue = []
@@ -159,6 +164,7 @@ export class EventBus {
   destroy(): void {
     EventBus._all_instances.delete(this)
     this.handlers.clear()
+    this.handlers_by_key.clear()
     for (const event of this.event_history.values()) {
       event._gc()
     }
@@ -189,8 +195,16 @@ export class EventBus {
       eventbus_id: this.id,
       ...options,
     })
+    if (this.event_handler_detect_file_paths) {
+      // optionally peform (expensive) file path detection for the handler using Error().stack introspection
+      // makes logs much more useful for debugging, but is expensive to do if not needed
+      handler_entry.detectHandlerFilePath()
+    }
 
     this.handlers.set(handler_entry.id, handler_entry)
+    const ids = this.handlers_by_key.get(handler_entry.event_key)
+    if (ids) ids.push(handler_entry.id)
+    else this.handlers_by_key.set(handler_entry.event_key, [handler_entry.id])
     return handler_entry
   }
 
@@ -207,6 +221,7 @@ export class EventBus {
       const handler_id = entry.id
       if (handler === undefined || (match_by_id ? handler_id === handler : entry.handler === (handler as EventHandlerFunction))) {
         this.handlers.delete(handler_id)
+        this.removeIndexedHandler(entry.event_key, handler_id)
       }
     }
   }
@@ -346,60 +361,6 @@ export class EventBus {
     })
   }
 
-  // Called when a handler does `await child.done()` — processes the child event
-  // immediately ("queue-jump") instead of waiting for the runloop to pick it up.
-  //
-  // Yield-and-reacquire: if the calling handler holds a handler concurrency semaphore,
-  // we temporarily release it so child handlers on the same bus can acquire it
-  // (preventing deadlock for serial handler mode). We re-acquire after
-  // the child completes so the parent handler can continue with the semaphore held.
-  async processEventImmediately<T extends BaseEvent>(event: T, handler_result?: EventResult): Promise<T> {
-    const original_event = event._event_original ?? event
-    // Find the parent handler's result: prefer the proxy-provided one (only if
-    // the handler is still running), then this bus's stack, then walk up the
-    // parent event tree (cross-bus case). If none found, we're not inside a
-    // handler and should fall back to waitForCompletion.
-    const proxy_result = handler_result?.status === 'started' ? handler_result : undefined
-    const currently_active_event_result =
-      proxy_result ?? this.locks.getActiveHandlerResult() ?? this.getParentEventResultAcrossAllBusses(original_event) ?? undefined
-    if (!currently_active_event_result) {
-      // Not inside any handler scope — avoid queue-jump, but if this event is
-      // next in line we can process it immediately without waiting on the runloop.
-      const queue_index = this.pending_event_queue.indexOf(original_event)
-      const can_process_now =
-        queue_index === 0 &&
-        !this.locks.isPaused() &&
-        !this.in_flight_event_ids.has(original_event.event_id) &&
-        !this.hasProcessedEvent(original_event)
-      if (can_process_now) {
-        this.pending_event_queue.shift()
-        this.in_flight_event_ids.add(original_event.event_id)
-        await this.processEvent(original_event)
-        if (original_event.event_status !== 'completed') {
-          await original_event.waitForCompletion()
-        }
-        return event
-      }
-      await original_event.waitForCompletion()
-      return event
-    }
-
-    // ensure a pause request is set so the bus runloop pauses and (will resume when the handler exits)
-    currently_active_event_result.ensureQueueJumpPause(this)
-    if (original_event.event_status === 'completed') {
-      return event
-    }
-
-    // re-endter event-level handler lock if needed
-    if (currently_active_event_result._lock) {
-      await currently_active_event_result._lock.runQueueJump(this.processEventImmediatelyAcrossBuses.bind(this, original_event))
-      return event
-    }
-
-    await this.processEventImmediatelyAcrossBuses(original_event)
-    return event
-  }
-
   async waitUntilIdle(): Promise<void> {
     await this.locks.waitForIdle()
   }
@@ -475,6 +436,115 @@ export class EventBus {
     }
     return null
   }
+
+  private startRunloop(): void {
+    if (this.runloop_running) {
+      return
+    }
+    this.runloop_running = true
+    queueMicrotask(() => {
+      void this.runloop()
+    })
+  }
+
+  // schedule the processing of an event on the event bus by its normal runloop
+  // optionally using a pre-acquired semaphore if we're inside handling of a parent event
+  private async processEvent(
+    event: BaseEvent,
+    options: {
+      bypass_event_semaphores?: boolean
+      pre_acquired_semaphore?: AsyncSemaphore | null
+    } = {}
+  ): Promise<void> {
+    try {
+      if (this.hasProcessedEvent(event)) {
+        return
+      }
+      event.markStarted()
+      this.notifyFindListeners(event)
+      const slow_event_warning_timer = event.createSlowEventWarningTimer()
+      const semaphore = options.bypass_event_semaphores ? null : this.locks.getSemaphoreForEvent(event)
+      const pre_acquired_semaphore = options.pre_acquired_semaphore ?? null
+      try {
+        if (pre_acquired_semaphore) {
+          const pending_entries = event.createPendingHandlerResults(this)
+          await this.getEventProxyScopedToThisBus(event).processEvent(pending_entries)
+        } else {
+          await runWithSemaphore(semaphore, async () => {
+            const pending_entries = event.createPendingHandlerResults(this)
+            await this.getEventProxyScopedToThisBus(event).processEvent(pending_entries)
+          })
+        }
+        event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
+        event.markCompleted(false)
+      } finally {
+        if (slow_event_warning_timer) {
+          clearTimeout(slow_event_warning_timer)
+        }
+      }
+    } finally {
+      if (options.pre_acquired_semaphore) {
+        options.pre_acquired_semaphore.release()
+      }
+      this.in_flight_event_ids.delete(event.event_id)
+      this.locks.notifyIdleListeners()
+    }
+  }
+
+  // Called when a handler does `await child.done()` — processes the child event
+  // immediately ("queue-jump") instead of waiting for the runloop to pick it up.
+  //
+  // Yield-and-reacquire: if the calling handler holds a handler concurrency semaphore,
+  // we temporarily release it so child handlers on the same bus can acquire it
+  // (preventing deadlock for serial handler mode). We re-acquire after
+  // the child completes so the parent handler can continue with the semaphore held.
+  async processEventImmediately<T extends BaseEvent>(event: T, handler_result?: EventResult): Promise<T> {
+    const original_event = event._event_original ?? event
+    // Find the parent handler's result: prefer the proxy-provided one (only if
+    // the handler is still running), then this bus's stack, then walk up the
+    // parent event tree (cross-bus case). If none found, we're not inside a
+    // handler and should fall back to waitForCompletion.
+    const proxy_result = handler_result?.status === 'started' ? handler_result : undefined
+    const currently_active_event_result =
+      proxy_result ?? this.locks.getActiveHandlerResult() ?? this.getParentEventResultAcrossAllBusses(original_event) ?? undefined
+    if (!currently_active_event_result) {
+      // Not inside any handler scope — avoid queue-jump, but if this event is
+      // next in line we can process it immediately without waiting on the runloop.
+      const queue_index = this.pending_event_queue.indexOf(original_event)
+      const can_process_now =
+        queue_index === 0 &&
+        !this.locks.isPaused() &&
+        !this.in_flight_event_ids.has(original_event.event_id) &&
+        !this.hasProcessedEvent(original_event)
+      if (can_process_now) {
+        this.pending_event_queue.shift()
+        this.in_flight_event_ids.add(original_event.event_id)
+        await this.processEvent(original_event)
+        if (original_event.event_status !== 'completed') {
+          await original_event.waitForCompletion()
+        }
+        return event
+      }
+      await original_event.waitForCompletion()
+      return event
+    }
+
+    // ensure a pause request is set so the bus runloop pauses and (will resume when the handler exits)
+    currently_active_event_result.ensureQueueJumpPause(this)
+    if (original_event.event_status === 'completed') {
+      return event
+    }
+
+    // re-endter event-level handler lock if needed
+    if (currently_active_event_result._lock) {
+      await currently_active_event_result._lock.runQueueJump(this.processEventImmediatelyAcrossBuses.bind(this, original_event))
+      return event
+    }
+
+    await this.processEventImmediatelyAcrossBuses(original_event)
+    return event
+  }
+
 
   // Processes a queue-jumped event across all buses that have it dispatched.
   // Called from processEventImmediately after the parent handler's semaphore has been yielded.
@@ -553,60 +623,6 @@ export class EventBus {
       for (const release of pause_releases) {
         release()
       }
-    }
-  }
-
-  private startRunloop(): void {
-    if (this.runloop_running) {
-      return
-    }
-    this.runloop_running = true
-    queueMicrotask(() => {
-      void this.runloop()
-    })
-  }
-
-  // schedule the processing of an event on the event bus by its normal runloop
-  // optionally using a pre-acquired semaphore if we're inside handling of a parent event
-  private async processEvent(
-    event: BaseEvent,
-    options: {
-      bypass_event_semaphores?: boolean
-      pre_acquired_semaphore?: AsyncSemaphore | null
-    } = {}
-  ): Promise<void> {
-    try {
-      if (this.hasProcessedEvent(event)) {
-        return
-      }
-      event.markStarted()
-      this.notifyFindListeners(event)
-      const slow_event_warning_timer = event.createSlowEventWarningTimer()
-      const semaphore = options.bypass_event_semaphores ? null : this.locks.getSemaphoreForEvent(event)
-      const pre_acquired_semaphore = options.pre_acquired_semaphore ?? null
-      try {
-        if (pre_acquired_semaphore) {
-          event.createPendingHandlerResults(this)
-          await this.getEventProxyScopedToThisBus(event).processEvent()
-        } else {
-          await runWithSemaphore(semaphore, async () => {
-            event.createPendingHandlerResults(this)
-            await this.getEventProxyScopedToThisBus(event).processEvent()
-          })
-        }
-        event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
-        event.markCompleted(false)
-      } finally {
-        if (slow_event_warning_timer) {
-          clearTimeout(slow_event_warning_timer)
-        }
-      }
-    } finally {
-      if (options.pre_acquired_semaphore) {
-        options.pre_acquired_semaphore.release()
-      }
-      this.in_flight_event_ids.delete(event.event_id)
-      this.locks.notifyIdleListeners()
     }
   }
 
@@ -746,20 +762,23 @@ export class EventBus {
 
   getHandlersForEvent(event: BaseEvent): EventHandler[] {
     const handlers: EventHandler[] = []
-
-    // Exact-match handlers first, then wildcard — preserves original ordering
-    for (const entry of this.handlers.values()) {
-      if (entry.event_key === event.event_type) {
-        handlers.push(entry)
+    for (const key of [event.event_type, '*']) {
+      const ids = this.handlers_by_key.get(key)
+      if (!ids) continue
+      for (const id of ids) {
+        const entry = this.handlers.get(id)
+        if (entry) handlers.push(entry)
       }
     }
-    for (const entry of this.handlers.values()) {
-      if (entry.event_key === '*') {
-        handlers.push(entry)
-      }
-    }
-
     return handlers
+  }
+
+  private removeIndexedHandler(event_key: string | '*', handler_id: string): void {
+    const ids = this.handlers_by_key.get(event_key)
+    if (!ids) return
+    const idx = ids.indexOf(handler_id)
+    if (idx >= 0) ids.splice(idx, 1)
+    if (ids.length === 0) this.handlers_by_key.delete(event_key)
   }
 
   private eventMatchesKey(event: BaseEvent, event_key: EventKey): boolean {
