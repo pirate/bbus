@@ -184,12 +184,12 @@ export const buildResultLine = (
   const extension = is_last ? '    ' : '│   '
   const new_indent = indent + extension
 
-  if (result.event_children.length === 0) {
+  const direct_children = result.event_children ?? []
+  if (direct_children.length === 0) {
     return line
   }
 
   const child_lines: string[] = []
-  const direct_children = result.event_children
   const parent_children = parent_to_children.get(result.event_id) ?? []
   const emitted_children = parent_children.filter((child) => child.event_emitted_by_handler_id === result.handler_id)
   const children_by_id = new Map<string, BaseEvent>()

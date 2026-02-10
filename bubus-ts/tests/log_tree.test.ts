@@ -118,6 +118,9 @@ test('logTree: complex nested', () => {
   child.event_parent_id = root.event_id
   child.event_status = 'completed'
   child.event_completed_at = child.event_created_at
+  if (!root_result.event_children) {
+    root_result.event_children = []
+  }
   root_result.event_children.push(child)
 
   const child_handler_id = 'handler-child'
@@ -133,6 +136,9 @@ test('logTree: complex nested', () => {
   grandchild.event_parent_id = child.event_id
   grandchild.event_status = 'completed'
   grandchild.event_completed_at = grandchild.event_created_at
+  if (!child_result.event_children) {
+    child_result.event_children = []
+  }
   child_result.event_children.push(grandchild)
 
   const grandchild_handler_id = 'handler-grandchild'

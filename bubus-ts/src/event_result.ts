@@ -50,7 +50,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   completed_ts?: number // nanosecond monotonic version of completed_at
   result?: EventResultType<TEvent> // parsed return value from the event handler
   error?: unknown // error object thrown by the event handler, or null if the handler completed successfully
-  event_children: BaseEvent[] // any child events that were emitted during handler execution are captured automatically and stored here to track hierarchy
+  event_children: BaseEvent[] | undefined // lazily allocated list of emitted child events
 
   // Abort signal: created when handler starts, rejected by signalAbort() to
   // interrupt runHandler's await via Promise.race.
@@ -67,7 +67,6 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     this.status = 'pending'
     this.event = params.event
     this.handler = params.handler
-    this.event_children = []
     this.result = undefined
     this.error = undefined
     this._abort = null
@@ -126,8 +125,10 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     if (!original_child.event_emitted_by_handler_id) {
       original_child.event_emitted_by_handler_id = this.handler_id
     }
-    if (!this.event_children.some((child) => child.event_id === original_child.event_id)) {
-      this.event_children.push(original_child)
+    // Performance: most handlers emit no children, so keep this undefined until first use.
+    const children = this.event_children ?? (this.event_children = [])
+    if (!children.some((child) => child.event_id === original_child.event_id)) {
+      children.push(original_child)
     }
   }
 
@@ -254,7 +255,8 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     // exit the handler lock if it is already held
     if (this._lock) this._lock.exitHandlerRun()
     // create a new handler lock to track ownership of the semaphore during handler execution
-    this._lock = new HandlerLock(semaphore)
+    // Performance: skip HandlerLock allocation when no semaphore is active.
+    this._lock = semaphore ? new HandlerLock(semaphore) : null
     if (bus) {
       bus.locks.enterActiveHandlerContext(this)
     }
@@ -400,7 +402,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       completed_ts: this.completed_ts,
       result: this.result,
       error: this.error,
-      event_children: this.event_children.map((child) => child.event_id),
+      event_children: this.event_children?.map((child) => child.event_id) ?? [],
     }
   }
 
@@ -421,7 +423,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     if ('error' in record) {
       result.error = record.error
     }
-    result.event_children = []
+    result.event_children = undefined
     return result
   }
 }

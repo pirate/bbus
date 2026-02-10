@@ -53,6 +53,6 @@ test.describe('browser runtime perf', () => {
       console.log(line)
     }
 
-    expect(result.results.length).toBe(5)
+    expect(result.results.length).toBe(6)
   })
 })

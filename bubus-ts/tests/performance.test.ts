@@ -3,6 +3,7 @@ import { test } from 'node:test'
 
 import { BaseEvent, EventBus, EventHandlerCancelledError, EventHandlerTimeoutError } from '../src/index.js'
 import {
+  runCleanupEquivalence,
   runPerf50kEvents,
   runPerfEphemeralBuses,
   runPerfSingleEventManyFixedHandlers,
@@ -36,9 +37,9 @@ test('500 ephemeral buses with 100 events each', { timeout: 30_000 }, async () =
   assert.equal(result.scenario, '500 buses x 100 events')
 })
 
-test('1 event with 50k fixed handlers', { timeout: 30_000 }, async () => {
+test('1 event with 50k parallel handlers', { timeout: 30_000 }, async () => {
   const result = await runPerfSingleEventManyFixedHandlers(nodePerfInput)
-  assert.equal(result.scenario, '1 event x 50k fixed handlers')
+  assert.equal(result.scenario, '1 event x 50k parallel handlers')
 })
 
 test('50k events with 50k one-off handlers on a single bus', { timeout: 30_000 }, async () => {
@@ -49,4 +50,10 @@ test('50k events with 50k one-off handlers on a single bus', { timeout: 30_000 }
 test('worst-case: forwarding + queue-jump + timeouts + cancellation at scale', { timeout: 60_000 }, async () => {
   const result = await runPerfWorstCase(nodePerfInput)
   assert.equal(result.scenario, 'worst-case forwarding + timeouts')
+})
+
+test('cleanup equivalence: destroy() vs out-of-scope collection', { timeout: 60_000 }, async () => {
+  const result = await runCleanupEquivalence(nodePerfInput)
+  assert.equal(result.scenario, 'cleanup destroy vs scope equivalence')
+  assert.equal(result.equivalent, true)
 })

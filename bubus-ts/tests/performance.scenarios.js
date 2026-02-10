@@ -58,8 +58,9 @@ const measureHeapDeltaAfterGc = async (hooks, baselineHeapUsed) => {
 
 const trimBusHistoryToOneEvent = async (hooks, bus, TrimEvent) => {
   bus.max_history_size = TRIM_TARGET
-  const trimEvent = bus.dispatch(TrimEvent({}))
+  let trimEvent = bus.dispatch(TrimEvent({}))
   await trimEvent.done()
+  trimEvent = null
   await bus.waitUntilIdle()
   assert(bus.event_history.size <= TRIM_TARGET, `trim-to-1 failed for ${bus.toString()}: ${bus.event_history.size}/${TRIM_TARGET}`)
 }
@@ -200,6 +201,7 @@ export const runPerf50kEvents = async (input) => {
   const bus = new EventBus('PerfBus', { max_history_size: HISTORY_LIMIT_STREAM })
 
   let processedCount = 0
+  const sampledEarlyEvents = []
   bus.on(SimpleEvent, () => {
     processedCount += 1
   })
@@ -213,7 +215,12 @@ export const runPerf50kEvents = async (input) => {
     const pending = []
     const thisBatch = Math.min(batchSize, totalEvents - dispatched)
     for (let i = 0; i < thisBatch; i += 1) {
-      pending.push(bus.dispatch(SimpleEvent({})))
+      const dispatchedEvent = bus.dispatch(SimpleEvent({}))
+      pending.push(dispatchedEvent)
+      if (sampledEarlyEvents.length < 64) {
+        const original = dispatchedEvent._event_original ?? dispatchedEvent
+        sampledEarlyEvents.push(original)
+      }
       dispatched += 1
     }
 
@@ -245,6 +252,21 @@ export const runPerf50kEvents = async (input) => {
     `50k events history exceeded limit: ${bus.event_history.size}/${bus.max_history_size}`
   )
 
+  assert(sampledEarlyEvents.length > 0, 'expected sampled early events to be captured')
+
+  let sampledEvictedCount = 0
+  for (const event of sampledEarlyEvents) {
+    const isStillInHistory = bus.event_history.has(event.event_id)
+    assert(!isStillInHistory, `expected sampled early event to be evicted from history: ${event.event_id}`)
+    sampledEvictedCount += 1
+    assert(event.event_results.size === 0, `trimmed event still has event_results: ${event.event_id} (${event.event_results.size})`)
+    assert(event.bus === undefined, `trimmed event still has bus reference: ${event.event_id}`)
+  }
+  assert(
+    sampledEvictedCount === sampledEarlyEvents.length,
+    `expected all sampled events to be evicted: ${sampledEvictedCount}/${sampledEarlyEvents.length}`
+  )
+
   const result = {
     scenario: '50k events',
     totalEvents,
@@ -257,6 +279,7 @@ export const runPerf50kEvents = async (input) => {
     ramKbPerEventLabel: ramKbPerEvent === null ? 'n/a' : formatKbPerEvent(ramKbPerEvent),
     throughput: Math.round(totalEvents / (totalMs / 1000)),
     processedCount,
+    sampledEvictedCount,
   }
 
   if (memory.baseline && memDone && memGc) {
@@ -334,7 +357,10 @@ export const runPerfSingleEventManyFixedHandlers = async (input) => {
   const totalEvents = 1
   const totalHandlers = 50_000
   const { PerfFixedHandlersEvent: FixedHandlersEvent, PerfTrimEventFixedHandlers: TrimEvent } = getEventClasses(BaseEvent)
-  const bus = new EventBus('FixedHandlersBus', { max_history_size: HISTORY_LIMIT_FIXED_HANDLERS })
+  const bus = new EventBus('FixedHandlersBus', {
+    max_history_size: HISTORY_LIMIT_FIXED_HANDLERS,
+    event_handler_concurrency: 'parallel',
+  })
 
   let processedCount = 0
   for (let i = 0; i < totalHandlers; i += 1) {
@@ -372,7 +398,7 @@ export const runPerfSingleEventManyFixedHandlers = async (input) => {
   bus.destroy()
 
   const result = {
-    scenario: '1 event x 50k fixed handlers',
+    scenario: '1 event x 50k parallel handlers',
     totalEvents,
     totalMs,
     msPerEvent,
@@ -581,20 +607,23 @@ export const runCleanupEquivalence = async (input) => {
 
   const runBurst = async (destroyMode) => {
     for (let i = 0; i < busesPerMode; i += 1) {
-      const bus = new EventBus(`CleanupEq-${destroyMode ? 'destroy' : 'scope'}-${i}`, { max_history_size: HISTORY_LIMIT_EPHEMERAL_BUS })
+      let bus = new EventBus(`CleanupEq-${destroyMode ? 'destroy' : 'scope'}-${i}`, { max_history_size: HISTORY_LIMIT_EPHEMERAL_BUS })
       bus.on(CleanupEvent, () => {})
 
       const pending = []
       for (let e = 0; e < eventsPerBus; e += 1) {
-        pending.push(bus.dispatch(CleanupEvent({})))
+        // Store completion promises (not event proxies) to avoid retaining bus-bound proxies across GC checks.
+        pending.push(bus.dispatch(CleanupEvent({})).done().then(() => undefined))
       }
-      await Promise.all(pending.map((event) => event.done()))
+      await Promise.all(pending)
+      pending.length = 0
       await bus.waitUntilIdle()
       await trimBusHistoryToOneEvent(hooks, bus, TrimEvent)
 
       if (destroyMode) {
         bus.destroy()
       }
+      bus = null
     }
   }
 
@@ -608,7 +637,8 @@ export const runCleanupEquivalence = async (input) => {
     await runBurst(false)
   })()
 
-  const scopeCollected = await waitForRegistrySize(hooks, EventBus, baselineRegistrySize)
+  const scopeCollectionAttempts = hooks.runtimeName === 'deno' ? 500 : 150
+  const scopeCollected = await waitForRegistrySize(hooks, EventBus, baselineRegistrySize, scopeCollectionAttempts)
   assert(scopeCollected, `cleanup equivalence scope branch retained instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`)
 
   const totalMs = hooks.now() - t0
@@ -668,5 +698,6 @@ export const runAllPerfScenarios = async (input) => {
   results.push(await runWithLeakCheck(input, runPerfSingleEventManyFixedHandlers))
   results.push(await runWithLeakCheck(input, runPerfOnOffChurn))
   results.push(await runWithLeakCheck(input, runPerfWorstCase))
+  results.push(await runWithLeakCheck(input, runCleanupEquivalence))
   return results
 }

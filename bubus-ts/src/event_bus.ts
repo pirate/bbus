@@ -33,31 +33,33 @@ type EventBusOptions = {
 // Global registry of all EventBus instances to allow for cross-bus coordination when global-serial concurrency mode is used
 class GlobalEventBusInstanceRegistry {
   private _event_buses = new Set<WeakRef<EventBus>>()
-  private _lookup = new WeakMap<EventBus, WeakRef<EventBus>>()
-  private _gc =
-    typeof FinalizationRegistry !== 'undefined'
-      ? new FinalizationRegistry<WeakRef<EventBus>>((ref) => {
-          this._event_buses.delete(ref)
-        })
-      : null
 
   add(bus: EventBus): void {
     const ref = new WeakRef(bus)
     this._event_buses.add(ref)
-    this._lookup.set(bus, ref)
-    this._gc?.register(bus, ref, bus)
   }
 
   delete(bus: EventBus): void {
-    const ref = this._lookup.get(bus)
-    if (!ref) return
-    this._event_buses.delete(ref)
-    this._lookup.delete(bus)
-    this._gc?.unregister(bus)
+    for (const ref of this._event_buses) {
+      const current = ref.deref()
+      if (!current || current === bus) {
+        this._event_buses.delete(ref)
+      }
+    }
   }
 
   has(bus: EventBus): boolean {
-    return this._lookup.get(bus)?.deref() !== undefined
+    for (const ref of this._event_buses) {
+      const current = ref.deref()
+      if (!current) {
+        this._event_buses.delete(ref)
+        continue
+      }
+      if (current === bus) {
+        return true
+      }
+    }
+    return false
   }
 
   get size(): number {

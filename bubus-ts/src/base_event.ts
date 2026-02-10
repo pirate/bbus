@@ -431,7 +431,7 @@ export class BaseEvent {
     const children: BaseEvent[] = []
     const seen = new Set<string>()
     for (const result of this.event_results.values()) {
-      for (const child of result.event_children) {
+      for (const child of result.event_children ?? []) {
         if (!seen.has(child.event_id)) {
           seen.add(child.event_id)
           children.push(child)
@@ -533,7 +533,7 @@ export class BaseEvent {
         )
       } else if (result.status === 'started') {
         // Cancel child events emitted by this handler before aborting it
-        for (const child of result.event_children) {
+        for (const child of result.event_children ?? []) {
           const original_child = child._event_original ?? child
           original_child.cancelPendingDescendants(cause)
           original_child.markCancelled(cause)
@@ -790,7 +790,7 @@ export class BaseEvent {
     this.bus = undefined
     this._event_handler_semaphore = null
     for (const result of this.event_results.values()) {
-      result.event_children = []
+      result.event_children = undefined
     }
     this.event_results.clear()
   }
