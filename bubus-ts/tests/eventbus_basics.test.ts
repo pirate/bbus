@@ -178,9 +178,9 @@ test('dispatch returns pending event with correct initial state', async () => {
   assert.ok(event.event_created_at)
   assert.equal((event as any).data, 'hello')
 
-  // event_path should include the bus name
+  // event_path should include the bus label
   const original = event._event_original ?? event
-  assert.ok(original.event_path.includes('LifecycleBus'))
+  assert.ok(original.event_path.includes(bus.label))
 
   await bus.waitUntilIdle()
 })
@@ -510,9 +510,9 @@ test('circular forwarding does not cause infinite loop', async () => {
 
   // event_path should contain all three buses
   const original = event._event_original ?? event
-  assert.ok(original.event_path.includes('CircA'))
-  assert.ok(original.event_path.includes('CircB'))
-  assert.ok(original.event_path.includes('CircC'))
+  assert.ok(original.event_path.includes(bus_a.label))
+  assert.ok(original.event_path.includes(bus_b.label))
+  assert.ok(original.event_path.includes(bus_c.label))
 })
 
 // ─── EventBus GC / memory leak ───────────────────────────────────────────────

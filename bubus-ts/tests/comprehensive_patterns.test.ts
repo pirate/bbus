@@ -41,7 +41,7 @@ test('comprehensive patterns: forwarding, async/sync dispatch, parent tracking',
     const child_event_sync = await event.bus?.emit(ImmediateChildEvent({})).done()!
     assert.equal(child_event_sync.event_status, 'completed')
 
-    assert.ok(child_event_sync.event_path.includes('bus2'))
+    assert.ok(child_event_sync.event_path.includes(bus_2.label))
     assert.ok(Array.from(child_event_sync.event_results.values()).some((result) => result.handler_name.includes('dispatch')))
 
     assert.equal(child_event_async.event_parent_id, event.event_id)
@@ -90,10 +90,10 @@ test('race condition stress', async () => {
   const results: string[] = []
 
   const child_handler = async (event: BaseEvent): Promise<string> => {
-    const bus_name = event.event_path[event.event_path.length - 1] ?? 'unknown'
-    results.push(`child_${bus_name}`)
+    const bus_label = event.event_path[event.event_path.length - 1] ?? 'unknown'
+    results.push(`child_${bus_label}`)
     await delay(1)
-    return `child_done_${bus_name}`
+    return `child_done_${bus_label}`
   }
 
   const parent_handler = async (event: BaseEvent): Promise<string> => {
@@ -132,14 +132,14 @@ test('race condition stress', async () => {
     await bus_2.waitUntilIdle()
 
     assert.equal(
-      results.filter((value) => value === 'child_bus1').length,
+      results.filter((value) => value === `child_${bus_1.label}`).length,
       6,
-      `Run ${run}: Expected 6 child_bus1, got ${results.filter((value) => value === 'child_bus1').length}`
+      `Run ${run}: Expected 6 child_${bus_1.label}, got ${results.filter((value) => value === `child_${bus_1.label}`).length}`
     )
     assert.equal(
-      results.filter((value) => value === 'child_bus2').length,
+      results.filter((value) => value === `child_${bus_2.label}`).length,
       6,
-      `Run ${run}: Expected 6 child_bus2, got ${results.filter((value) => value === 'child_bus2').length}`
+      `Run ${run}: Expected 6 child_${bus_2.label}, got ${results.filter((value) => value === `child_${bus_2.label}`).length}`
     )
   }
 })
@@ -722,7 +722,7 @@ test('deeply nested awaited children', async () => {
 // =============================================================================
 // Queue-Jump Concurrency Tests (Two-Bus)
 //
-// BUG: runImmediatelyAcrossBuses passes { bypass_handler_semaphores: true,
+// BUG: processEventImmediately (queue-jump across buses) passes { bypass_handler_semaphores: true,
 // bypass_event_semaphores: true } for ALL buses. This causes:
 //   1. Handlers to run in parallel regardless of configured concurrency
 //   2. Event semaphores on remote buses to be skipped
@@ -867,7 +867,7 @@ test('BUG: queue-jump two-bus global handler lock should serialize across both b
   await bus_b.waitUntilIdle()
 
   // With a global retry semaphore, no two handlers should overlap anywhere.
-  // runImmediatelyAcrossBuses processes buses sequentially (bus_a first,
+  // processEventImmediately processes buses sequentially (bus_a first,
   // then bus_b), so the expected order is strictly serial:
   //   a1_start, a1_end, a2_start, a2_end, b1_start, b1_end, b2_start, b2_end
   //
@@ -885,7 +885,7 @@ test('BUG: queue-jump two-bus global handler lock should serialize across both b
   assert.ok(b1_end < b2_start, `global lock: b1 should finish before b2 starts. Got: [${log.join(', ')}]`)
 
   // Check: bus_a handlers all finish before bus_b handlers start
-  // (runImmediatelyAcrossBuses processes sequentially and the retry
+  // (processEventImmediately processes sequentially and the retry
   // semaphore enforces a global handler lock)
   const a2_end = log.indexOf('a2_end')
   const b1_start = log.indexOf('b1_start')

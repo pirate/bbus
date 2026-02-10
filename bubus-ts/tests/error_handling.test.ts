@@ -168,17 +168,13 @@ test('error in forwarded event handler does not block source bus', async () => {
   assert.equal(event.event_status, 'completed')
 
   // bus_a's handler succeeded
-  const bus_a_result = Array.from(event.event_results.values()).find(
-    (r) => r.eventbus_name === 'ErrorForwardA' && r.handler_name !== 'dispatch'
-  )
+  const bus_a_result = Array.from(event.event_results.values()).find((r) => r.eventbus_id === bus_a.id && r.handler_name !== 'dispatch')
   assert.ok(bus_a_result)
   assert.equal(bus_a_result.status, 'completed')
   assert.equal(bus_a_result.result, 'bus_a ok')
 
   // bus_b's handler errored
-  const bus_b_result = Array.from(event.event_results.values()).find(
-    (r) => r.eventbus_name === 'ErrorForwardB' && r.handler_name !== 'dispatch'
-  )
+  const bus_b_result = Array.from(event.event_results.values()).find((r) => r.eventbus_id === bus_b.id && r.handler_name !== 'dispatch')
   assert.ok(bus_b_result)
   assert.equal(bus_b_result.status, 'error')
 

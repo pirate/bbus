@@ -116,7 +116,7 @@ export class BaseEvent {
   event_handler_timeout?: number | null // optional per-event handler timeout override in seconds
   event_handler_slow_timeout?: number | null // optional per-event slow handler warning threshold in seconds
   event_parent_id?: string // id of the parent event that triggered this event, if this event was emitted during handling of another event
-  event_path!: string[] // list of bus names that the event has been dispatched to, including the current bus
+  event_path!: string[] // list of bus labels (name#id) that the event has been dispatched to, including the current bus
   event_result_schema?: z.ZodTypeAny // optional zod schema to enforce the shape of return values from handlers
   event_result_type?: string // optional string identifier of the type of the return values from handlers, to make it easier to reference common shapes across networkboundaries e.g. ScreenshotEventResultType
   event_results!: Map<string, EventResult<this>> // map of handler ids to EventResult objects for the event
@@ -378,6 +378,31 @@ export class BaseEvent {
     })
   }
 
+  // Run all pending handler results for the current bus context.
+  async processEvent(): Promise<void> {
+    const original = this._event_original ?? this
+    const bus_id = this.bus?.id
+    const pending_results = Array.from(original.event_results.values()).filter((result) => !bus_id || result.eventbus_id === bus_id)
+    if (pending_results.length === 0) {
+      return
+    }
+    const handler_promises = pending_results.map((entry) => entry.runHandler())
+    if (original.event_handler_completion === 'first') {
+      let first_found = false
+      const monitored = pending_results.map((entry, i) =>
+        handler_promises[i].then(() => {
+          if (!first_found && entry.status === 'completed' && entry.result !== undefined) {
+            first_found = true
+            original.cancelEventHandlersForFirstMode(entry)
+          }
+        })
+      )
+      await Promise.all(monitored)
+    } else {
+      await Promise.all(handler_promises)
+    }
+  }
+
   getHandlerSemaphore(default_concurrency?: EventHandlerConcurrencyMode): AsyncSemaphore | null {
     const original = this._event_original ?? this
     const resolved =
@@ -491,13 +516,13 @@ export class BaseEvent {
   // Cancel all handler results for an event except the winner, used by first() mode.
   // Cancels pending handlers immediately, aborts started handlers via signalAbort(),
   // and cancels any child events emitted by the losing handlers.
-  cancelRemainingEventHandlersForFirstMode(winner: EventResult): void {
+  cancelEventHandlersForFirstMode(winner: EventResult): void {
     const cause = new Error('first() resolved: another handler returned a result first')
-    const bus_name = winner.eventbus_name
+    const bus_id = winner.eventbus_id
 
     for (const result of this.event_results.values()) {
       if (result === winner) continue
-      if (result.eventbus_name !== bus_name) continue
+      if (result.eventbus_id !== bus_id) continue
 
       if (result.status === 'pending') {
         result.markError(
@@ -534,12 +559,13 @@ export class BaseEvent {
     const buses_to_cancel = new Set<string>(path)
     for (const bus of registry as Iterable<{
       name?: string
+      label?: string
       pending_event_queue?: BaseEvent[]
       in_flight_event_ids?: Set<string>
       createPendingHandlerResults?: (event: BaseEvent) => Array<{ result: EventResult }>
       getHandlersForEvent?: (event: BaseEvent) => unknown
     }>) {
-      if (!bus?.name || !buses_to_cancel.has(bus.name)) {
+      if (!bus?.label || !buses_to_cancel.has(bus.label)) {
         continue
       }
 
@@ -547,10 +573,10 @@ export class BaseEvent {
       let updated = false
       for (const entry of handler_entries) {
         if (entry.result.status === 'pending') {
-          const cancelled_error = new EventHandlerCancelledError(
-            `Cancelled pending handler due to parent error: ${cause.message}`,
-            { event_result: entry.result, cause }
-          )
+          const cancelled_error = new EventHandlerCancelledError(`Cancelled pending handler due to parent error: ${cause.message}`, {
+            event_result: entry.result,
+            cause,
+          })
           entry.result.markError(cancelled_error)
           updated = true
         } else if (entry.result.status === 'started') {

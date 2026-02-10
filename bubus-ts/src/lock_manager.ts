@@ -166,7 +166,6 @@ export class LockManager {
   readonly bus_event_semaphore: AsyncSemaphore // Per-bus event semaphore; created with LockManager and never swapped.
   private pause_depth: number // Re-entrant pause counter; increments on requestRunloopPause, decrements on release.
   private pause_waiters: Array<() => void> // Resolvers for waitUntilRunloopResumed; drained when pause_depth hits 0.
-  private queue_jump_pause_releases: WeakMap<EventResult, () => void> // Per-handler pause release for queue-jump; cleared on handler exit.
   private active_handler_results: EventResult[] // Stack of active handler results for "inside handler" detection.
 
   private idle_waiters: Array<() => void> // Resolvers waiting for stable idle; cleared when idle confirmed.
@@ -179,7 +178,6 @@ export class LockManager {
 
     this.pause_depth = 0
     this.pause_waiters = []
-    this.queue_jump_pause_releases = new WeakMap()
     this.active_handler_results = []
 
     this.idle_waiters = []
@@ -188,7 +186,7 @@ export class LockManager {
   }
 
   // Low-level runloop pause: increments a re-entrant counter and returns a release
-  // function. Used for broad, bus-scoped pauses (e.g. runImmediatelyAcrossBuses).
+  // function. Used for broad, bus-scoped pauses during queue-jump across buses.
   requestRunloopPause(): () => void {
     this.pause_depth += 1
     let released = false
@@ -243,27 +241,6 @@ export class LockManager {
   // to processEventImmediately so it can yield/reacquire the correct semaphore.
   isAnyHandlerActive(): boolean {
     return this.active_handler_results.length > 0
-  }
-
-  // Queue-jump pause: wraps requestRunloopPause with per-handler deduping so repeated
-  // calls during the same handler run don't stack pauses. Released via
-  // releaseRunloopPauseForQueueJumpEvent when the handler finishes.
-  requestRunloopPauseForQueueJumpEvent(result: EventResult): void {
-    if (this.queue_jump_pause_releases.has(result)) {
-      return
-    }
-    this.queue_jump_pause_releases.set(result, this.requestRunloopPause())
-  }
-
-  // release the eventt bus runloop pause for a given event result if there is a pause request for it
-  // i.e. if it was a queue-jump event that was processed immediately, notify the runloop to resume
-  releaseRunloopPauseForQueueJumpEvent(result: EventResult): void {
-    const release_pause = this.queue_jump_pause_releases.get(result)
-    if (!release_pause) {
-      return
-    }
-    this.queue_jump_pause_releases.delete(result)
-    release_pause()
   }
 
   waitForIdle(): Promise<void> {
@@ -336,7 +313,6 @@ export class LockManager {
   clear(): void {
     this.pause_depth = 0
     this.pause_waiters = []
-    this.queue_jump_pause_releases = new WeakMap()
     this.active_handler_results = []
     this.idle_waiters = []
     this.idle_check_pending = false

@@ -382,7 +382,7 @@ test('forwarded event timeouts apply across buses', async () => {
   await event.done()
 
   const results = Array.from(event.event_results.values())
-  const bus_b_result = results.find((result) => result.eventbus_name === 'TimeoutForwardB')
+  const bus_b_result = results.find((result) => result.eventbus_id === bus_b.id)
   assert.ok(bus_b_result)
   assert.equal(bus_b_result?.status, 'error')
   assert.ok(bus_b_result?.error instanceof EventHandlerTimeoutError)
@@ -1042,7 +1042,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 //           └── 1 handler: never runs, CANCELLED when top_handler_main times out
 //
 // KEY MECHANIC: When a child event is awaited via event.done() inside a handler,
-// it triggers "queue-jumping" via processEventImmediately → runImmediatelyAcrossBuses.
+// it triggers "queue-jumping" via processEventImmediately (cross-bus).
 // Queue-jumped events use yield-and-reacquire: the parent handler's semaphore is
 // temporarily released so child handlers can acquire it normally. This means
 // child handlers run SERIALLY on a serial handler bus (respecting concurrency limits).

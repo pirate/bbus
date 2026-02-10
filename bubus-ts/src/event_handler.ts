@@ -1,16 +1,26 @@
 import { z } from 'zod'
 import { v5 as uuidv5 } from 'uuid'
 
-import type { EventHandlerFunction } from './types.js'
+import type { EventHandlerFunction, EventKey } from './types.js'
 import { BaseEvent } from './base_event.js'
 import type { EventResult } from './event_result.js'
 
 const HANDLER_ID_NAMESPACE = uuidv5('bubus-handler', uuidv5.DNS)
 
+export type EphemeralFindEventHandler = {
+  // Similar to a handler, except it's for .find() calls.
+  // Resolved on dispatch, ephemeral, and never shows up in the processing tree.
+  event_key: EventKey
+  matches: (event: BaseEvent) => boolean
+  resolve: (event: BaseEvent) => void
+  timeout_id?: ReturnType<typeof setTimeout>
+}
+
 export const EventHandlerJSONSchema = z
   .object({
     id: z.string(),
     eventbus_name: z.string(),
+    eventbus_id: z.string().uuid(),
     event_key: z.union([z.string(), z.literal('*')]),
     handler_name: z.string(),
     handler_file_path: z.string().optional(),
@@ -35,6 +45,7 @@ export class EventHandler {
   handler_registered_ts: number // nanosecond monotonic version of handler_registered_at
   event_key: string | '*' // event_type string to match against, or '*' to match all events
   eventbus_name: string // name of the event bus that the handler is registered on
+  eventbus_id: string // uuidv7 identifier of the event bus that the handler is registered on
 
   constructor(params: {
     id?: string
@@ -47,12 +58,13 @@ export class EventHandler {
     handler_registered_ts: number
     event_key: string | '*'
     eventbus_name: string
+    eventbus_id: string
   }) {
     const handler_file_path = EventHandler.detectHandlerFilePath(params.handler_file_path)
     this.id =
       params.id ??
       EventHandler.computeHandlerId({
-        eventbus_name: params.eventbus_name,
+        eventbus_id: params.eventbus_id,
         handler_name: params.handler_name,
         handler_file_path,
         handler_registered_at: params.handler_registered_at,
@@ -67,18 +79,19 @@ export class EventHandler {
     this.handler_registered_ts = params.handler_registered_ts
     this.event_key = params.event_key
     this.eventbus_name = params.eventbus_name
+    this.eventbus_id = params.eventbus_id
   }
 
   // compute globally unique handler uuid as a hash of the bus name, handler name, handler file path, registered at timestamp, and event key
   static computeHandlerId(params: {
-    eventbus_name: string
+    eventbus_id: string
     handler_name: string
     handler_file_path?: string
     handler_registered_at: string
     event_key: string | '*'
   }): string {
     const file_path = EventHandler.detectHandlerFilePath(params.handler_file_path, 'unknown') ?? 'unknown'
-    const seed = `${params.eventbus_name}|${params.handler_name}|${file_path}|${params.handler_registered_at}|${params.event_key}`
+    const seed = `${params.eventbus_id}|${params.handler_name}|${file_path}|${params.handler_registered_at}|${params.event_key}`
     return uuidv5(seed, HANDLER_ID_NAMESPACE)
   }
 
@@ -93,6 +106,7 @@ export class EventHandler {
     return {
       id: this.id,
       eventbus_name: this.eventbus_name,
+      eventbus_id: this.eventbus_id,
       event_key: this.event_key,
       handler_name: this.handler_name,
       handler_file_path: this.handler_file_path,
@@ -118,6 +132,7 @@ export class EventHandler {
       handler_registered_ts: record.handler_registered_ts,
       event_key: record.event_key,
       eventbus_name: record.eventbus_name,
+      eventbus_id: record.eventbus_id,
     })
   }
 

@@ -1,4 +1,4 @@
-name: test
+name: test-py
 permissions:
   actions: read
   contents: write
@@ -17,7 +17,7 @@ on:
       - '*'
   pull_request:
   workflow_dispatch:
-    
+
 jobs:
   find_tests:
     runs-on: ubuntu-latest
@@ -68,7 +68,7 @@ jobs:
       - run: uv sync --dev --all-extras
 
       - run: pytest -x tests/${{ matrix.test_filename }}.py --cov=bubus --cov-report=term
-      
+
       - name: Check coverage files
         run: |
           echo "Looking for coverage files..."
@@ -76,7 +76,7 @@ jobs:
           if [ -f .coverage ]; then
             echo "Found .coverage file, size: $(stat -f%z .coverage 2>/dev/null || stat -c%s .coverage) bytes"
           fi
-      
+
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
@@ -91,20 +91,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
           activate-environment: true
-      
+
       - run: uv sync --dev --all-extras
-      
+
       - name: Download all coverage data
         uses: actions/download-artifact@v4
         with:
           pattern: coverage-*
           path: coverage-data/
-      
+
       - name: Combine coverage data
         run: |
           # Find all .coverage files and copy them with unique names
@@ -113,7 +113,7 @@ jobs:
             cp "$coverage_file" ".coverage.$counter"
             counter=$((counter + 1))
           done
-      
+
       - name: Combine coverage & fail if it's <80%
         run: |
           uv tool install 'coverage[toml]'
@@ -126,7 +126,7 @@ jobs:
 
           # Report again and fail if under 80%.
           coverage report --fail-under=80
-      
+
       - name: Upload combined coverage report
         uses: actions/upload-artifact@v4
         with:
@@ -135,10 +135,3 @@ jobs:
             htmlcov/
             coverage.xml
           retention-days: 7
-      
-      - name: Upload coverage to Codecov (optional)
-        uses: codecov/codecov-action@v4
-        with:
-          file: ./coverage.xml
-          fail_ci_if_error: false
-        continue-on-error: true

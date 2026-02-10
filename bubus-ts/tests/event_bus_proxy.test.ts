@@ -77,7 +77,7 @@ test('event.bus reflects the currently-processing bus when forwarded', async () 
 
   // The handler on bus2 should see bus2 as event.bus, not bus1
   assert.equal(bus2_handler_bus_name, 'Bus2')
-  assert.deepEqual(event.event_path, ['Bus1', 'Bus2'])
+  assert.deepEqual(event.event_path, [bus1.label, bus2.label])
 })
 
 test('event.bus in nested handlers sees the same bus', async () => {

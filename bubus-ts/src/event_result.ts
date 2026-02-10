@@ -59,6 +59,8 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   // during handler execution. Set by runHandler(), used by
   // processEventImmediately for yield-and-reacquire during queue-jumps.
   _lock: HandlerLock | null
+  // Runloop pause releases keyed by bus for queue-jump; released when handler exits.
+  _queue_jump_pause_releases: Map<EventBus, () => void> | null
 
   constructor(params: { event: TEvent; handler: EventHandler }) {
     this.id = uuidv7()
@@ -70,6 +72,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     this.error = undefined
     this._abort = null
     this._lock = null
+    this._queue_jump_pause_releases = null
   }
 
   toString(): string {
@@ -98,6 +101,14 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
 
   get eventbus_name(): string {
     return this.handler.eventbus_name
+  }
+
+  get eventbus_id(): string {
+    return this.handler.eventbus_id
+  }
+
+  get eventbus_label(): string {
+    return `${this.handler.eventbus_name}#${this.handler.eventbus_id.slice(-4)}`
   }
 
   // shortcut for the result value so users can do event_result.value instead of event_result.result
@@ -199,6 +210,26 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     }, warn_ms)
   }
 
+  ensureQueueJumpPause(bus: EventBus): void {
+    if (!this._queue_jump_pause_releases) {
+      this._queue_jump_pause_releases = new Map()
+    }
+    if (this._queue_jump_pause_releases.has(bus)) {
+      return
+    }
+    this._queue_jump_pause_releases.set(bus, bus.locks.requestRunloopPause())
+  }
+
+  releaseQueueJumpPauses(): void {
+    if (!this._queue_jump_pause_releases) {
+      return
+    }
+    for (const release of this._queue_jump_pause_releases.values()) {
+      release()
+    }
+    this._queue_jump_pause_releases.clear()
+  }
+
   // Run the handler end-to-end, including concurrency locks, timeouts, and result tracking.
   async runHandler(): Promise<void> {
     if (this.status === 'error' && this.error instanceof EventHandlerCancelledError) {
@@ -259,7 +290,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
           }
         }
 
-        const bus_label = bus?.toString() ?? this.handler.eventbus_name
+        const bus_label = bus?.toString() ?? this.eventbus_label
         const timer = setTimeout(() => {
           finalize(reject)(
             new EventHandlerTimeoutError(
@@ -282,7 +313,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
         if (parsed.success) {
           this.markCompleted(parsed.data as EventResultType<TEvent>)
         } else {
-          const bus_label = bus?.toString() ?? this.handler.eventbus_name
+          const bus_label = bus?.toString() ?? this.eventbus_label
           const error = new EventHandlerResultSchemaError(
             `${bus_label}.on(${event.toString()}, ${this.handler.toString()}) return value ${JSON.stringify(handler_result).slice(0, 20)}... did not match event_result_schema ${event.event_result_type}: ${parsed.error.message}`,
             { event_result: this, cause: parsed.error, raw_value: handler_result }
@@ -308,7 +339,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       this._lock?.exitHandlerRun()
       if (bus) {
         bus.locks.exitActiveHandlerContext(this)
-        bus.locks.releaseRunloopPauseForQueueJumpEvent(this)
+        this.releaseQueueJumpPauses()
       }
       if (slow_handler_warning_timer) {
         clearTimeout(slow_handler_warning_timer)

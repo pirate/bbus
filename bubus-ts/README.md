@@ -259,7 +259,7 @@ we describe what is enforced today, not theoretical best-case behavior.
 - The major hot-path operations are linear in collection sizes:
   - Per event, handler matching is `O(total handlers on bus)` (`exact` scan + `*` scan).
   - `.off()` is `O(total handlers on bus)` for matching/removal.
-  - Queue-jump (`await event.done()` inside handlers) does cross-bus discovery by walking `event_path` and iterating `EventBus._all_instances`, so cost grows with buses and forwarding depth.
+- Queue-jump (`await event.done()` inside handlers) does cross-bus discovery by walking `event_path` (bus labels) and iterating `EventBus._all_instances`, so cost grows with buses and forwarding depth.
 - `waitUntilIdle()` is best used at batch boundaries, not per event:
   - Idle checks call `isIdle()`, which scans `event_history` and handler results.
   - There is a fast-path that skips idle scans when no idle waiters exist, which keeps normal dispatch/complete flows fast even with large history.
@@ -324,7 +324,7 @@ under different `event_concurrency` / `event_handler_concurrency` configurations
 2. Captures `_dispatch_context` (AsyncLocalStorage if available).
 3. Applies `event_timeout_default` if `event.event_timeout === null`.
 4. If this bus is already in `event_path` (or `bus.hasProcessedEvent()`), return a BusScopedEvent without queueing.
-5. Append bus name to `event_path`, record child relationship (if `event_parent_id` is set).
+5. Append bus label (`name#id`) to `event_path`, record child relationship (if `event_parent_id` is set).
 6. Add to `event_history` (a `Map<string, BaseEvent>` keyed by event id).
 7. Increment `event_pending_bus_count`.
 8. Push to `pending_event_queue` and `startRunloop()`.
@@ -333,9 +333,9 @@ under different `event_concurrency` / `event_handler_concurrency` configurations
 
 1. `runloop()` drains `pending_event_queue`.
 2. Adds event id to `in_flight_event_ids`.
-3. Calls `scheduleEventProcessing()` (async).
-4. `scheduleEventProcessing()` selects the event semaphore and runs `processEvent()`.
-5. `processEvent()`:
+3. Calls `EventBus.processEvent()` (async).
+4. `EventBus.processEvent()` selects the event semaphore and runs `BaseEvent.processEvent()` (the event-level handler runner).
+5. `EventBus.processEvent()`:
    - `event.markStarted()`
    - `notifyFindListeners(event)`
    - creates handler results (`event_results`)
@@ -377,8 +377,8 @@ When `event.done()` is awaited inside a handler, **queue-jump** happens:
 1. `BaseEvent.done()` delegates to `bus.processEventImmediately()`, which detects whether we're inside a handler
    (via `getActiveHandlerResult()` / `getParentEventResultAcrossAllBusses()`). If not inside a handler, it falls back to `waitForCompletion()`.
 2. `processEventImmediately()` **yields** the parent handler's concurrency semaphore (if held) so child handlers can acquire it.
-3. `processEventImmediately()` removes the event from the pending queue (if present).
-4. `runImmediatelyAcrossBuses()` processes the event immediately on all buses where it is queued.
+3. `processEventImmediately()` removes the event from pending queues on buses that own it.
+4. `processEventImmediately()` processes the event immediately on all buses where it is queued.
 5. While immediate processing is active, each affected bus's runloop is paused to prevent unrelated events from running.
 6. Once immediate processing completes, `processEventImmediately()` **re-acquires** the parent handler's semaphore
    (unless the parent timed out while the child was processing).
@@ -433,7 +433,7 @@ To prevent that:
 
 When you `await event.done()` inside a handler:
 
-- the system finds all buses that have this event queued (using `EventBus._all_instances` + `event_path`)
+- the system finds all buses that have this event queued (using `EventBus._all_instances` + `event_path` labels)
 - pauses their runloops
 - processes the event immediately on each bus
 - then resumes the runloops

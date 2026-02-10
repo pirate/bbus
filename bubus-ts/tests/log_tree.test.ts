@@ -30,6 +30,7 @@ const createHandlerEntry = (bus: EventBus, handler_id: string, handler_name: str
     handler_registered_ts,
     event_key,
     eventbus_name: bus.name,
+    eventbus_id: bus.id,
   })
 }
 
@@ -69,7 +70,7 @@ test('logTree: with handler results', () => {
   const output = bus.logTree()
 
   assert.ok(output.includes('└── ✅ RootEvent#'))
-  assert.ok(output.includes('HandlerBus.test_handler#'))
+  assert.ok(output.includes(`${bus.label}.test_handler#`))
   assert.ok(output.includes('"status: success"'))
 })
 
@@ -93,7 +94,7 @@ test('logTree: with handler errors', () => {
 
   const output = bus.logTree()
 
-  assert.ok(output.includes('ErrorBus.error_handler#'))
+  assert.ok(output.includes(`${bus.label}.error_handler#`))
   assert.ok(output.includes('ValueError: Test error message'))
 })
 
@@ -150,11 +151,11 @@ test('logTree: complex nested', () => {
   const output = bus.logTree()
 
   assert.ok(output.includes('✅ RootEvent#'))
-  assert.ok(output.includes('✅ ComplexBus.root_handler#'))
+  assert.ok(output.includes(`✅ ${bus.label}.root_handler#`))
   assert.ok(output.includes('✅ ChildEvent#'))
-  assert.ok(output.includes('✅ ComplexBus.child_handler#'))
+  assert.ok(output.includes(`✅ ${bus.label}.child_handler#`))
   assert.ok(output.includes('✅ GrandchildEvent#'))
-  assert.ok(output.includes('✅ ComplexBus.grandchild_handler#'))
+  assert.ok(output.includes(`✅ ${bus.label}.grandchild_handler#`))
   assert.ok(output.includes('"Root processed"'))
   assert.ok(output.includes('list(3 items)'))
   assert.ok(output.includes('None'))
@@ -222,6 +223,6 @@ test('logTree: running handler', () => {
 
   const output = bus.logTree()
 
-  assert.ok(output.includes('RunningBus.running_handler#'))
+  assert.ok(output.includes(`${bus.label}.running_handler#`))
   assert.ok(output.includes('RootEvent#'))
 })

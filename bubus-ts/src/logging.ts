@@ -5,6 +5,7 @@ import { EventHandlerCancelledError, EventHandlerTimeoutError } from './event_ha
 type LogTreeBus = {
   name: string
   event_history: Map<string, BaseEvent>
+  toString?: () => string
 }
 
 export const logTree = (bus: LogTreeBus): string => {
@@ -57,7 +58,8 @@ export const logTree = (bus: LogTreeBus): string => {
   }
 
   const lines: string[] = []
-  lines.push(`📊 Event History Tree for ${bus.name}`)
+  const bus_label = typeof bus.toString === 'function' ? bus.toString() : bus.name
+  lines.push(`📊 Event History Tree for ${bus_label}`)
   lines.push('='.repeat(80))
 
   root_events.sort((a, b) => (a.event_created_at < b.event_created_at ? -1 : a.event_created_at > b.event_created_at ? 1 : 0))
@@ -149,7 +151,7 @@ export const buildResultLine = (
       : result.handler_file_path
         ? result.handler_file_path
         : 'anonymous'
-  const handler_display = `${result.eventbus_name}.${handler_label}#${result.handler_id.slice(-4)}`
+  const handler_display = `${result.eventbus_label}.${handler_label}#${result.handler_id.slice(-4)}`
   let line = `${indent}${connector}${status_icon} ${handler_display}`
 
   if (result.started_at) {

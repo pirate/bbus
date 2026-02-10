@@ -45,7 +45,36 @@ test('events forward between buses without duplication', async () => {
   assert.equal(seen_b[0], event.event_id)
   assert.equal(seen_c[0], event.event_id)
 
-  assert.deepEqual(event.event_path, ['BusA', 'BusB', 'BusC'])
+  assert.deepEqual(event.event_path, [bus_a.label, bus_b.label, bus_c.label])
+})
+
+test('forwarding disambiguates buses that share the same name', async () => {
+  const bus_a = new EventBus('SharedName')
+  const bus_b = new EventBus('SharedName')
+
+  const seen_a: string[] = []
+  const seen_b: string[] = []
+
+  bus_a.on(PingEvent, (event) => {
+    seen_a.push(event.event_id)
+  })
+
+  bus_b.on(PingEvent, (event) => {
+    seen_b.push(event.event_id)
+  })
+
+  bus_a.on('*', bus_b.dispatch)
+
+  const event = bus_a.dispatch(PingEvent({ value: 99 }))
+
+  await bus_a.waitUntilIdle()
+  await bus_b.waitUntilIdle()
+
+  assert.equal(seen_a.length, 1)
+  assert.equal(seen_b.length, 1)
+  assert.equal(seen_a[0], event.event_id)
+  assert.equal(seen_b[0], event.event_id)
+  assert.deepEqual(event.event_path, [bus_a.label, bus_b.label])
 })
 
 test('await event.done waits for handlers on forwarded buses', async () => {
@@ -127,7 +156,7 @@ test('circular forwarding A->B->C->A does not loop', async () => {
   assert.equal(events_at_peer3[0], event.event_id)
 
   // event_path shows propagation order without looping back
-  assert.deepEqual(event.event_path, ['Peer1', 'Peer2', 'Peer3'])
+  assert.deepEqual(event.event_path, [peer1.label, peer2.label, peer3.label])
 
   // --- Start from a different peer in the same cycle ---
   events_at_peer1.length = 0
@@ -146,7 +175,7 @@ test('circular forwarding A->B->C->A does not loop', async () => {
   assert.equal(events_at_peer3.length, 1)
 
   // Path starts at Peer2, goes to Peer3, then Peer1 (stops before looping back to Peer2)
-  assert.deepEqual(event2.event_path, ['Peer2', 'Peer3', 'Peer1'])
+  assert.deepEqual(event2.event_path, [peer2.label, peer3.label, peer1.label])
 })
 
 test('await event.done waits when forwarding handler is async-delayed', async () => {
@@ -182,5 +211,5 @@ test('await event.done waits when forwarding handler is async-delayed', async ()
   assert.equal(bus_a_done, true)
   assert.equal(bus_b_done, true)
   assert.equal(event.event_pending_bus_count, 0)
-  assert.deepEqual(event.event_path, ['BusA', 'BusB'])
+  assert.deepEqual(event.event_path, [bus_a.label, bus_b.label])
 })

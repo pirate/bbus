@@ -1,0 +1,74 @@
+name: test-ts
+
+on:
+  push:
+    branches:
+      - main
+      - stable
+      - 'releases/**'
+    tags:
+      - '*'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  find_ts_tests:
+    runs-on: ubuntu-latest
+    outputs:
+      TS_TEST_FILENAMES: ${{ steps.lsgrep.outputs.TS_TEST_FILENAMES }}
+      # ["eventbus_basics", ...]
+    steps:
+      - uses: actions/checkout@v4
+      - id: lsgrep
+        run: |
+          TS_TEST_FILENAMES="$(ls bubus-ts/tests/*.test.ts | sed 's|^bubus-ts/tests/||' | sed 's|\\.test\\.ts$||' | jq -R -s -c 'split("\n")[:-1]')"
+          echo "TS_TEST_FILENAMES=${TS_TEST_FILENAMES}" >> "$GITHUB_OUTPUT"
+          echo "$TS_TEST_FILENAMES"
+      - name: Check that at least one test file is found
+        run: |
+          if [ -z "${{ steps.lsgrep.outputs.TS_TEST_FILENAMES }}" ]; then
+            echo "Failed to find any *.test.ts files in bubus-ts/tests/ folder!" > /dev/stderr
+            exit 1
+          fi
+
+  tests:
+    needs: find_ts_tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test_filename: ${{ fromJson(needs.find_ts_tests.outputs.TS_TEST_FILENAMES || '["FAILED_TO_DISCOVER_TESTS"]') }}
+        # autodiscovers all the files in bubus-ts/tests/*.test.ts
+        # - eventbus_basics
+        # ... and more
+    name: ts-${{ matrix.test_filename }}
+    defaults:
+      run:
+        working-directory: bubus-ts
+    steps:
+      - name: Check that the previous step managed to find some test files for us to run
+        run: |
+          if [[ "${{ matrix.test_filename }}" == "FAILED_TO_DISCOVER_TESTS" ]]; then
+            echo "Failed get list of test files in bubus-ts/tests/*.test.ts from find_ts_tests job" > /dev/stderr
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: bubus-ts/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - name: Run tests with coverage
+        run: |
+          NODE_OPTIONS='--expose-gc' node --expose-gc --test --experimental-test-coverage --import tsx tests/${{ matrix.test_filename }}.test.ts | tee coverage-output.txt
+      - name: Append coverage report to summary
+        run: |
+          echo "### TypeScript coverage: ${{ matrix.test_filename }}" >> "$GITHUB_STEP_SUMMARY"
+          awk '/# start of coverage report/{flag=1} flag{print} /# end of coverage report/{flag=0}' coverage-output.txt >> "$GITHUB_STEP_SUMMARY"

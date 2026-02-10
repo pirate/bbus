@@ -941,7 +941,7 @@ test('fifo: forwarded events preserve order on target bus (bus-serial)', async (
   })
 
   bus_b.on(OrderedEvent, async (event) => {
-    const bus_b_results = Array.from(event.event_results.values()).filter((result) => result.eventbus_name === 'ForwardOrderB')
+    const bus_b_results = Array.from(event.event_results.values()).filter((result) => result.eventbus_id === bus_b.id)
     const in_flight = bus_b_results.filter((result) => result.status === 'pending' || result.status === 'started')
     assert.ok(in_flight.length <= 1)
     order_b.push(event.order)
@@ -957,11 +957,11 @@ test('fifo: forwarded events preserve order on target bus (bus-serial)', async (
   const history_orders = Array.from(bus_b.event_history.values()).map((event) => (event as { order?: number }).order)
   const results_sizes = Array.from(bus_b.event_history.values()).map((event) => event.event_results.size)
   const bus_b_result_counts = Array.from(bus_b.event_history.values()).map(
-    (event) => Array.from(event.event_results.values()).filter((result) => result.eventbus_name === 'ForwardOrderB').length
+    (event) => Array.from(event.event_results.values()).filter((result) => result.eventbus_id === bus_b.id).length
   )
   const processed_flags = Array.from(bus_b.event_history.values()).map((event) =>
     Array.from(event.event_results.values())
-      .filter((result) => result.eventbus_name === 'ForwardOrderB')
+      .filter((result) => result.eventbus_id === bus_b.id)
       .every((result) => result.status === 'completed' || result.status === 'error')
   )
   const pending_counts = Array.from(bus_b.event_history.values()).map(
