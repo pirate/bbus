@@ -31,7 +31,7 @@ class ScreenshotService {
   // Fast path: try an immediate screenshot, return undefined if it fails
   async on_fast(event: InstanceType<typeof ScreenshotEvent>): Promise<string | undefined> {
     try {
-      return await attemptImmediateScreenshot(event.data.page_id)
+      return await takeFastScreenshot(event.data.page_id)
     } catch {
       return undefined // signal "I can't handle this"
     }
@@ -40,7 +40,7 @@ class ScreenshotService {
   // Slow path: retries with global semaphore to avoid VRAM contention
   @retry({ max_attempts: 3, timeout: 15, semaphore_scope: 'global', semaphore_limit: 1, semaphore_name: 'Screenshots' })
   async on_slow(event: InstanceType<typeof ScreenshotEvent>): Promise<string> {
-    return await takeScreenshotWithRetry(event.data.page_id)
+    return await takeFlakySlowScreenshot(event.data.page_id)
   }
 }
 
