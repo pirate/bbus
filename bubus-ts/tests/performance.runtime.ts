@@ -5,6 +5,7 @@ declare const Bun: { gc?: (full?: boolean) => void } | undefined
 declare const Deno:
   | {
       memoryUsage?: () => { rss: number; heapUsed: number }
+      [key: symbol]: unknown
     }
   | undefined
 declare const process:
@@ -15,6 +16,18 @@ declare const process:
   | undefined
 
 const runtime = typeof Bun !== 'undefined' && Bun ? 'bun' : typeof Deno !== 'undefined' && Deno ? 'deno' : 'node'
+
+const getDenoInternalCore = () => {
+  if (typeof Deno === 'undefined' || !Deno) return null
+  try {
+    const sym = Object.getOwnPropertySymbols(Deno).find((key) => String(key).includes('Deno.internal'))
+    if (!sym) return null
+    const denoWithInternal = Deno as unknown as Record<symbol, { core?: Record<string, (...args: unknown[]) => unknown> }>
+    return denoWithInternal[sym]?.core ?? null
+  } catch {
+    return null
+  }
+}
 
 const getMemoryUsage = () => {
   if (typeof process !== 'undefined' && typeof process.memoryUsage === 'function') {
@@ -28,12 +41,31 @@ const getMemoryUsage = () => {
 
 const forceGc = () => {
   const maybeGc = (globalThis as { gc?: () => void }).gc
-  if (typeof maybeGc === 'function') {
-    maybeGc()
-    return
-  }
-  if (typeof Bun !== 'undefined' && Bun && typeof Bun.gc === 'function') {
-    Bun.gc(true)
+  const denoCore = getDenoInternalCore()
+
+  for (let i = 0; i < 16; i += 1) {
+    try {
+      maybeGc?.()
+    } catch {
+      // ignored on runtimes without exposed V8 GC.
+    }
+    try {
+      if (typeof Bun !== 'undefined' && Bun && typeof Bun.gc === 'function') {
+        Bun.gc(true)
+      }
+    } catch {
+      // ignored on non-Bun runtimes.
+    }
+    try {
+      denoCore?.runImmediateCallbacks?.()
+    } catch {
+      // best effort only
+    }
+    try {
+      denoCore?.eventLoopTick?.()
+    } catch {
+      // best effort only
+    }
   }
 }
 

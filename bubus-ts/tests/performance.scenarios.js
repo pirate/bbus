@@ -608,7 +608,7 @@ export const runCleanupEquivalence = async (input) => {
     await runBurst(false)
   })()
 
-  const scopeCollected = await waitForRegistrySize(hooks, EventBus, baselineRegistrySize, 30)
+  const scopeCollected = await waitForRegistrySize(hooks, EventBus, baselineRegistrySize)
   assert(scopeCollected, `cleanup equivalence scope branch retained instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`)
 
   const totalMs = hooks.now() - t0
