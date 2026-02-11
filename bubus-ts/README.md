@@ -761,16 +761,16 @@ Measured locally on an `Apple M4 Pro` with:
 
 | Runtime            | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
 | ------------------ | ------------------------------ | ----------------------------------- | --------------------------------------- | ----------------------------------------- | --------------------------------------------- |
-| Node               | `0.015ms/event`, `0.6kb/event` | `0.058ms/event`, `0.1kb/event`      | `0.021ms/handler`, `189792.0kb/event`   | `0.028ms/event`, `0.6kb/event`            | `0.442ms/event`, `0.9kb/event`                |
-| Bun                | `0.011ms/event`, `2.5kb/event` | `0.054ms/event`, `1.0kb/event`      | `0.006ms/handler`, `223296.0kb/event`   | `0.019ms/event`, `2.8kb/event`            | `0.441ms/event`, `3.1kb/event`                |
-| Deno               | `0.018ms/event`, `1.2kb/event` | `0.063ms/event`, `0.4kb/event`      | `0.024ms/handler`, `156752.0kb/event`   | `0.064ms/event`, `2.6kb/event`            | `0.461ms/event`, `7.9kb/event`                |
+| Node               | `0.015ms/event`, `0.6kb/event` | `0.058ms/event`, `0.1kb/event`      | `0.021ms/handler`, `3.8kb/handler`      | `0.028ms/event`, `0.6kb/event`            | `0.442ms/event`, `0.9kb/event`                |
+| Bun                | `0.011ms/event`, `2.5kb/event` | `0.054ms/event`, `1.0kb/event`      | `0.006ms/handler`, `4.5kb/handler`      | `0.019ms/event`, `2.8kb/event`            | `0.441ms/event`, `3.1kb/event`                |
+| Deno               | `0.018ms/event`, `1.2kb/event` | `0.063ms/event`, `0.4kb/event`      | `0.024ms/handler`, `3.1kb/handler`      | `0.064ms/event`, `2.6kb/event`            | `0.461ms/event`, `7.9kb/event`                |
 | Browser (Chromium) | `0.030ms/event`                | `0.197ms/event`                     | `0.022ms/handler`                       | `0.022ms/event`                           | `1.566ms/event`                               |
 
 Notes:
 
 - `kb/event` is peak RSS delta per event during active processing (most representative of OS-visible RAM in Activity Monitor / Task Manager, with `EventBus.max_history_size=1`)
 - In `1 bus x 1 event x 50k parallel handlers` stats are shown per-handler for clarity, `0.02ms/handler * 50k handlers ~= 1000ms` for the entire event
-- Browser runtime does not expose memory usage easily, in practice memory performance in-browser is comparable to Node (they both use V8)
+- Browser runtime does not expose memory usage directly, in practice memory performance in-browser is comparable to Node (they both use V8)
 
 <br/>
 
