@@ -23,7 +23,7 @@ const delay = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
-test('find past returns most recent completed event', async () => {
+test('find past returns most recent dispatched event', async () => {
   const bus = new EventBus('FindPastBus')
 
   const first_event = bus.dispatch(ParentEvent({}))
@@ -111,6 +111,22 @@ test('find future ignores past events', async () => {
   assert.equal(found_event, null)
 })
 
+test('find future ignores already-dispatched in-flight events when past=false', async () => {
+  const bus = new EventBus('FindFutureIgnoresInflightBus')
+
+  bus.on(ParentEvent, async () => {
+    await delay(80)
+  })
+
+  const inflight = bus.dispatch(ParentEvent({}))
+  await delay(5)
+
+  const found_event = await bus.find(ParentEvent, { past: false, future: 0.05 })
+  assert.equal(found_event, null)
+
+  await inflight.done()
+})
+
 test('find future times out when no event arrives', async () => {
   const bus = new EventBus('FindFutureTimeoutBus')
 
@@ -127,6 +143,21 @@ test('find past=false future=false returns null immediately', async () => {
 
   assert.equal(found_event, null)
   assert.ok(elapsed_ms < 100)
+})
+
+test('find defaults to past=true future=false when both are undefined', async () => {
+  const bus = new EventBus('FindDefaultWindowBus')
+
+  const start = Date.now()
+  const missing = await bus.find(ParentEvent)
+  const elapsed_ms = Date.now() - start
+  assert.equal(missing, null)
+  assert.ok(elapsed_ms < 100)
+
+  const dispatched = bus.dispatch(ParentEvent({}))
+  const found = await bus.find(ParentEvent)
+  assert.ok(found)
+  assert.equal(found.event_id, dispatched.event_id)
 })
 
 test('find past+future returns past event immediately', async () => {
@@ -232,6 +263,50 @@ test('find respects where filter', async () => {
   assert.equal(found_event.event_id, event_b.event_id)
 })
 
+test('find supports event_* filters like event_status', async () => {
+  const bus = new EventBus('FindEventStatusFilterBus')
+  const release_pause = bus.locks.requestRunloopPause()
+
+  const pending_event = bus.dispatch(ParentEvent({}))
+
+  const found_pending = await bus.find(ParentEvent, { past: true, future: false, event_status: 'pending' })
+  assert.ok(found_pending)
+  assert.equal(found_pending.event_id, pending_event.event_id)
+
+  release_pause()
+  await pending_event.done()
+
+  const found_completed = await bus.find(ParentEvent, { past: true, future: false, event_status: 'completed' })
+  assert.ok(found_completed)
+  assert.equal(found_completed.event_id, pending_event.event_id)
+})
+
+test('find supports event_* equality filters like event_id and event_timeout', async () => {
+  const bus = new EventBus('FindEventFieldFilterBus')
+
+  const event_a = bus.dispatch(ParentEvent({ event_timeout: 11 }))
+  const event_b = bus.dispatch(ParentEvent({ event_timeout: 22 }))
+  await event_a.done()
+  await event_b.done()
+
+  const found_a = await bus.find(ParentEvent, {
+    past: true,
+    future: false,
+    event_id: event_a.event_id,
+    event_timeout: 11,
+  })
+  assert.ok(found_a)
+  assert.equal(found_a.event_id, event_a.event_id)
+
+  const mismatch = await bus.find(ParentEvent, {
+    past: true,
+    future: false,
+    event_id: event_a.event_id,
+    event_timeout: 22,
+  })
+  assert.equal(mismatch, null)
+})
+
 test('find where filter works with future waiting', async () => {
   const bus = new EventBus('FindWhereFutureBus')
 
@@ -245,6 +320,46 @@ test('find where filter works with future waiting', async () => {
   const found_event = await find_promise
   assert.ok(found_event)
   assert.equal(found_event.user_id, 'user123')
+})
+
+test('find wildcard "*" with where filter matches across event types in history', async () => {
+  const bus = new EventBus('FindWildcardPastBus')
+
+  const user_event = bus.dispatch(UserActionEvent({ action: 'login', user_id: 'u-1' }))
+  const system_event = bus.dispatch(SystemEvent({}))
+  await user_event.done()
+  await system_event.done()
+
+  const found_event = await bus.find(
+    '*',
+    (event) => event.event_type === 'UserActionEvent' && (event as InstanceType<typeof UserActionEvent>).user_id === 'u-1',
+    { past: true, future: false }
+  )
+
+  assert.ok(found_event)
+  assert.equal(found_event.event_id, user_event.event_id)
+  assert.equal(found_event.event_type, 'UserActionEvent')
+})
+
+test('find wildcard "*" with where filter works for future waiting', async () => {
+  const bus = new EventBus('FindWildcardFutureBus')
+
+  const find_promise = bus.find(
+    '*',
+    (event) => event.event_type === 'UserActionEvent' && (event as InstanceType<typeof UserActionEvent>).action === 'special',
+    { past: false, future: 0.3 }
+  )
+
+  setTimeout(() => {
+    bus.dispatch(SystemEvent({}))
+    bus.dispatch(UserActionEvent({ action: 'normal', user_id: 'u-x' }))
+    bus.dispatch(UserActionEvent({ action: 'special', user_id: 'u-y' }))
+  }, 40)
+
+  const found_event = await find_promise
+  assert.ok(found_event)
+  assert.equal(found_event.event_type, 'UserActionEvent')
+  assert.equal((found_event as InstanceType<typeof UserActionEvent>).action, 'special')
 })
 
 test('find with multiple concurrent waiters resolves correct events', async () => {
@@ -475,8 +590,8 @@ test('find with all parameters combined', async () => {
   assert.equal(found_child.event_id, child_event_id)
 })
 
-test('find past ignores in-progress events but returns after completion', async () => {
-  const bus = new EventBus('FindCompletedOnlyBus')
+test('find past includes in-progress dispatched events', async () => {
+  const bus = new EventBus('FindDispatchedPastBus')
 
   bus.on(ParentEvent, async () => {
     await delay(80)
@@ -485,18 +600,17 @@ test('find past ignores in-progress events but returns after completion', async 
   const dispatched = bus.dispatch(ParentEvent({}))
   await delay(10)
 
-  const early_find = await bus.find(ParentEvent, { past: true, future: false })
-  assert.equal(early_find, null)
+  const found = await bus.find(ParentEvent, { past: true, future: false })
+  assert.ok(found)
+  assert.equal(found.event_id, dispatched.event_id)
+  assert.notEqual(found.event_status, 'completed')
 
   await dispatched.done()
-
-  const later_find = await bus.find(ParentEvent, { past: true, future: false })
-  assert.ok(later_find)
-  assert.equal(later_find.event_id, dispatched.event_id)
 })
 
-test('find future resolves before handlers complete', async () => {
-  const bus = new EventBus('FindBeforeCompleteBus')
+test('find future resolves on dispatch before completion', async () => {
+  const bus = new EventBus('FindOnDispatchBus')
+  const release_pause = bus.locks.requestRunloopPause()
 
   bus.on(ParentEvent, async () => {
     await delay(80)
@@ -510,8 +624,9 @@ test('find future resolves before handlers complete', async () => {
 
   const found_event = await find_promise
   assert.ok(found_event)
-  assert.equal(found_event.event_status, 'started')
+  assert.equal(found_event.event_status, 'pending')
 
+  release_pause()
   await found_event.done()
   assert.equal(found_event.event_status, 'completed')
 })

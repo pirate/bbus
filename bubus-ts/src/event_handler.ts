@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { v5 as uuidv5 } from 'uuid'
 
-import type { EventHandlerFunction, EventKey } from './types.js'
+import { normalizeEventKey, type EventHandlerFunction, type EventKey } from './types.js'
 import { BaseEvent } from './base_event.js'
 import type { EventResult } from './event_result.js'
 
@@ -14,6 +14,58 @@ export type EphemeralFindEventHandler = {
   matches: (event: BaseEvent) => boolean
   resolve: (event: BaseEvent) => void
   timeout_id?: ReturnType<typeof setTimeout>
+}
+
+export const FindWaiterJSONSchema = z
+  .object({
+    event_key: z.union([z.string(), z.literal('*')]),
+    has_timeout: z.boolean(),
+  })
+  .strict()
+
+export type FindWaiterJSON = z.infer<typeof FindWaiterJSONSchema>
+
+export class FindWaiter {
+  static toJSON(waiter: EphemeralFindEventHandler): FindWaiterJSON {
+    return {
+      event_key: normalizeEventKey(waiter.event_key),
+      has_timeout: waiter.timeout_id !== undefined,
+    }
+  }
+
+  static fromJSON(
+    data: unknown,
+    overrides: {
+      matches?: (event: BaseEvent) => boolean
+      resolve?: (event: BaseEvent) => void
+    } = {}
+  ): EphemeralFindEventHandler {
+    const record = FindWaiterJSONSchema.parse(data)
+    const event_key = record.event_key
+    const default_matches = (event: BaseEvent): boolean => event_key === '*' || event.event_type === event_key
+    return {
+      event_key,
+      matches: overrides.matches ?? default_matches,
+      resolve: overrides.resolve ?? (() => {}),
+    }
+  }
+
+  static toJSONArray(waiters: Iterable<EphemeralFindEventHandler>): FindWaiterJSON[] {
+    return Array.from(waiters, (waiter) => FindWaiter.toJSON(waiter))
+  }
+
+  static fromJSONArray(
+    data: unknown,
+    overrides: {
+      matches?: (event: BaseEvent) => boolean
+      resolve?: (event: BaseEvent) => void
+    } = {}
+  ): EphemeralFindEventHandler[] {
+    if (!Array.isArray(data)) {
+      return []
+    }
+    return data.map((item) => FindWaiter.fromJSON(item, overrides))
+  }
 }
 
 export const EventHandlerJSONSchema = z
@@ -165,6 +217,17 @@ export class EventHandler {
       eventbus_name: record.eventbus_name,
       eventbus_id: record.eventbus_id,
     })
+  }
+
+  static toJSONArray(handlers: Iterable<EventHandler>): EventHandlerJSON[] {
+    return Array.from(handlers, (handler) => handler.toJSON())
+  }
+
+  static fromJSONArray(data: unknown, handler?: EventHandlerFunction): EventHandler[] {
+    if (!Array.isArray(data)) {
+      return []
+    }
+    return data.map((item) => EventHandler.fromJSON(item, handler))
   }
 }
 

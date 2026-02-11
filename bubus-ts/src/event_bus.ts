@@ -1,4 +1,4 @@
-import { BaseEvent } from './base_event.js'
+import { BaseEvent, type BaseEventData } from './base_event.js'
 import { EventResult } from './event_result.js'
 import { captureAsyncContext } from './async_context.js'
 import {
@@ -9,7 +9,7 @@ import {
   LockManager,
   runWithSemaphore,
 } from './lock_manager.js'
-import { EventHandler, type EphemeralFindEventHandler } from './event_handler.js'
+import { EventHandler, FindWaiter, type EphemeralFindEventHandler, type EventHandlerJSON, type FindWaiterJSON } from './event_handler.js'
 import { logTree } from './logging.js'
 import { v7 as uuidv7 } from 'uuid'
 
@@ -29,6 +29,26 @@ type EventBusOptions = {
   event_handler_completion?: EventHandlerCompletionMode
   event_handler_slow_timeout?: number | null // threshold before a warning is logged about slow handler execution
   event_handler_detect_file_paths?: boolean // autodetect source code file and lineno where handlers are defined for better logs (slightly slower because Error().stack introspection to fine files is expensive)
+}
+
+export type EventBusJSON = {
+  id: string
+  name: string
+  max_history_size: number | null
+  event_concurrency: EventConcurrencyMode
+  event_timeout: number | null
+  event_slow_timeout: number | null
+  event_handler_concurrency: EventHandlerConcurrencyMode
+  event_handler_completion: EventHandlerCompletionMode
+  event_handler_slow_timeout: number | null
+  event_handler_detect_file_paths: boolean
+  handlers: EventHandlerJSON[]
+  handlers_by_key: Array<[string, string[]]>
+  event_history: BaseEventData[]
+  pending_event_queue: BaseEventData[]
+  in_flight_event_ids: string[]
+  runloop_running: boolean
+  find_waiters: FindWaiterJSON[]
 }
 
 // Global registry of all EventBus instances to allow for cross-bus coordination when global-serial concurrency mode is used
@@ -156,6 +176,120 @@ export class EventBus {
     return `${this.name}#${this.id.slice(-4)}`
   }
 
+  toJSON(): EventBusJSON {
+    return {
+      id: this.id,
+      name: this.name,
+      max_history_size: this.max_history_size,
+      event_concurrency: this.event_concurrency_default,
+      event_timeout: this.event_timeout_default,
+      event_slow_timeout: this.event_slow_timeout,
+      event_handler_concurrency: this.event_handler_concurrency_default,
+      event_handler_completion: this.event_handler_completion_default,
+      event_handler_slow_timeout: this.event_handler_slow_timeout,
+      event_handler_detect_file_paths: this.event_handler_detect_file_paths,
+      handlers: EventHandler.toJSONArray(this.handlers.values()),
+      handlers_by_key: Array.from(this.handlers_by_key.entries()).map(([key, ids]) => [key, [...ids]]),
+      event_history: BaseEvent.toJSONArray(this.event_history.values()),
+      pending_event_queue: BaseEvent.toJSONArray(this.pending_event_queue),
+      in_flight_event_ids: Array.from(this.in_flight_event_ids),
+      runloop_running: this.runloop_running,
+      find_waiters: FindWaiter.toJSONArray(this.find_waiters),
+    }
+  }
+
+  static fromJSON(data: unknown): EventBus {
+    if (!data || typeof data !== 'object') {
+      throw new Error('EventBus.fromJSON(data) requires an object')
+    }
+    const record = data as Record<string, unknown>
+    const name = typeof record.name === 'string' ? record.name : 'EventBus'
+    const options: EventBusOptions = {}
+
+    if (typeof record.id === 'string') options.id = record.id
+    if (typeof record.max_history_size === 'number' || record.max_history_size === null) options.max_history_size = record.max_history_size
+    if (record.event_concurrency === 'global-serial' || record.event_concurrency === 'bus-serial' || record.event_concurrency === 'parallel') {
+      options.event_concurrency = record.event_concurrency
+    }
+    if (typeof record.event_timeout === 'number' || record.event_timeout === null) options.event_timeout = record.event_timeout
+    else if (typeof record.event_timeout_default === 'number' || record.event_timeout_default === null) {
+      options.event_timeout = record.event_timeout_default
+    }
+    if (typeof record.event_slow_timeout === 'number' || record.event_slow_timeout === null) options.event_slow_timeout = record.event_slow_timeout
+    if (record.event_handler_concurrency === 'serial' || record.event_handler_concurrency === 'parallel') {
+      options.event_handler_concurrency = record.event_handler_concurrency
+    } else if (record.event_handler_concurrency_default === 'serial' || record.event_handler_concurrency_default === 'parallel') {
+      options.event_handler_concurrency = record.event_handler_concurrency_default
+    }
+    if (record.event_handler_completion === 'all' || record.event_handler_completion === 'first') {
+      options.event_handler_completion = record.event_handler_completion
+    } else if (record.event_handler_completion_default === 'all' || record.event_handler_completion_default === 'first') {
+      options.event_handler_completion = record.event_handler_completion_default
+    }
+    if (typeof record.event_handler_slow_timeout === 'number' || record.event_handler_slow_timeout === null) {
+      options.event_handler_slow_timeout = record.event_handler_slow_timeout
+    }
+    if (typeof record.event_handler_detect_file_paths === 'boolean') {
+      options.event_handler_detect_file_paths = record.event_handler_detect_file_paths
+    }
+    const bus = new EventBus(name, options)
+
+    const handler_entries = EventHandler.fromJSONArray(record.handlers)
+    for (const handler_entry of handler_entries) {
+      bus.handlers.set(handler_entry.id, handler_entry)
+    }
+
+    const raw_handlers_by_key = Array.isArray(record.handlers_by_key) ? record.handlers_by_key : []
+    if (raw_handlers_by_key.length > 0) {
+      bus.handlers_by_key.clear()
+      for (const entry of raw_handlers_by_key) {
+        if (!Array.isArray(entry) || entry.length !== 2) {
+          continue
+        }
+        const [raw_key, raw_ids] = entry
+        if (typeof raw_key !== 'string' || !Array.isArray(raw_ids)) {
+          continue
+        }
+        const ids = raw_ids.filter((id): id is string => typeof id === 'string')
+        bus.handlers_by_key.set(raw_key, ids)
+      }
+    } else {
+      for (const handler_entry of bus.handlers.values()) {
+        const ids = bus.handlers_by_key.get(handler_entry.event_key)
+        if (ids) ids.push(handler_entry.id)
+        else bus.handlers_by_key.set(handler_entry.event_key, [handler_entry.id])
+      }
+    }
+
+    const history_events = BaseEvent.fromJSONArray(record.event_history)
+    for (const event of history_events) {
+      event.bus = bus
+      bus.event_history.set(event.event_id, event)
+    }
+
+    const pending_queue_events = BaseEvent.fromJSONArray(record.pending_event_queue)
+    bus.pending_event_queue = pending_queue_events.map((event) => {
+      event.bus = bus
+      const existing = bus.event_history.get(event.event_id)
+      if (existing) {
+        return existing
+      }
+      bus.event_history.set(event.event_id, event)
+      return event
+    })
+
+    const raw_in_flight = Array.isArray(record.in_flight_event_ids) ? record.in_flight_event_ids : []
+    bus.in_flight_event_ids = new Set(raw_in_flight.filter((id): id is string => typeof id === 'string'))
+
+    // Reset runtime execution state after restore. Queue/history/handlers are restored,
+    // but lock/semaphore internals should always restart from a clean default state.
+    bus.runloop_running = false
+    bus.locks.clear()
+    bus.find_waiters = new Set(FindWaiter.fromJSONArray(record.find_waiters))
+
+    return bus
+  }
+
   get label(): string {
     return `${this.name}#${this.id.slice(-4)}`
   }
@@ -226,7 +360,7 @@ export class EventBus {
     }
   }
 
-  dispatch<T extends BaseEvent>(event: T, _event_key?: EventKey<T>): T {
+  dispatch<T extends BaseEvent>(event: T): T {
     const original_event = event._event_original ?? event // if event is a bus-scoped proxy already, get the original underlying event object
     if (!original_event.bus) {
       // if we are the first bus to dispatch this event, set the bus property on the original event object
@@ -265,6 +399,7 @@ export class EventBus {
 
     this.event_history.set(original_event.event_id, original_event)
     this.trimHistory()
+    this.notifyFindListeners(original_event)
 
     original_event.event_pending_bus_count += 1
     this.pending_event_queue.push(original_event)
@@ -274,24 +409,29 @@ export class EventBus {
   }
 
   // alias for dispatch
-  emit<T extends BaseEvent>(event: T, event_key?: EventKey<T>): T {
-    return this.dispatch(event, event_key)
+  emit<T extends BaseEvent>(event: T): T {
+    return this.dispatch(event)
   }
 
   // find a recent event or wait for a future event that matches some criteria
+  find(event_key: '*', options?: FindOptions): Promise<BaseEvent | null>
+  find(event_key: '*', where: (event: BaseEvent) => boolean, options?: FindOptions): Promise<BaseEvent | null>
   find<T extends BaseEvent>(event_key: EventKey<T>, options?: FindOptions): Promise<T | null>
   find<T extends BaseEvent>(event_key: EventKey<T>, where: (event: T) => boolean, options?: FindOptions): Promise<T | null>
   async find<T extends BaseEvent>(
-    event_key: EventKey<T>,
+    event_key: EventKey<T> | '*',
     where_or_options: ((event: T) => boolean) | FindOptions = {},
     maybe_options: FindOptions = {}
   ): Promise<T | null> {
     const where = typeof where_or_options === 'function' ? where_or_options : () => true
     const options = typeof where_or_options === 'function' ? maybe_options : where_or_options
 
-    const past = options.past ?? true
-    const future = options.future ?? true
+    const past = options.past === undefined && options.future === undefined ? true : (options.past ?? true)
+    const future = options.past === undefined && options.future === undefined ? false : (options.future ?? true)
     const child_of = options.child_of ?? null
+    const event_field_filters = Object.entries(options).filter(
+      ([key, value]) => key.startsWith('event_') && value !== undefined
+    ) as Array<[`event_${string}`, unknown]>
 
     if (past === false && future === false) {
       return null
@@ -307,11 +447,16 @@ export class EventBus {
       if (child_of && !this.eventIsChildOf(event, child_of)) {
         return false
       }
+      for (const [event_key, expected] of event_field_filters) {
+        if ((event as unknown as Record<string, unknown>)[event_key] !== expected) {
+          return false
+        }
+      }
       return true
     }
 
-    // find an event in the history that matches the criteria
-    if (past !== false || future !== false) {
+    // find a dispatched event in history that matches the criteria
+    if (past !== false) {
       const now_ms = performance.timeOrigin + performance.now()
       const cutoff_ms = past === true ? null : now_ms - Math.max(0, Number(past)) * 1000
 
@@ -321,18 +466,10 @@ export class EventBus {
         if (!matches(event)) {
           continue
         }
-        if (event.event_status === 'completed') {
-          if (past === false) {
-            continue
-          }
-          if (cutoff_ms !== null && Date.parse(event.event_created_at) < cutoff_ms) {
-            continue
-          }
-          return this.getEventProxyScopedToThisBus(event) as T
+        if (cutoff_ms !== null && Date.parse(event.event_created_at) < cutoff_ms) {
+          continue
         }
-        if (future !== false) {
-          return this.getEventProxyScopedToThisBus(event) as T
-        }
+        return this.getEventProxyScopedToThisBus(event) as T
       }
     }
 
@@ -386,14 +523,14 @@ export class EventBus {
     return this.pending_event_queue.length === 0 && this.in_flight_event_ids.size === 0 && this.isIdle() && !this.runloop_running
   }
 
-  eventIsChildOf(event: BaseEvent, ancestor: BaseEvent): boolean {
-    if (event.event_id === ancestor.event_id) {
+  eventIsChildOf(child_event: BaseEvent, parent_event: BaseEvent): boolean {
+    if (child_event.event_id === parent_event.event_id) {
       return false
     }
 
-    let current_parent_id = event.event_parent_id
+    let current_parent_id = child_event.event_parent_id
     while (current_parent_id) {
-      if (current_parent_id === ancestor.event_id) {
+      if (current_parent_id === parent_event.event_id) {
         return true
       }
       const parent = this.event_history.get(current_parent_id)
@@ -461,7 +598,6 @@ export class EventBus {
         return
       }
       event.markStarted()
-      this.notifyFindListeners(event)
       const slow_event_warning_timer = event.createSlowEventWarningTimer()
       const semaphore = options.bypass_event_semaphores ? null : this.locks.getSemaphoreForEvent(event)
       const pre_acquired_semaphore = options.pre_acquired_semaphore ?? null
@@ -697,7 +833,7 @@ export class EventBus {
           }
         }
         if (prop === 'dispatch' || prop === 'emit') {
-          return (child_event: BaseEvent, event_key?: EventKey) => {
+          return (child_event: BaseEvent) => {
             const original_child = child_event._event_original ?? child_event
             if (handler_result) {
               handler_result.linkEmittedChildEvent(original_child)
@@ -705,8 +841,8 @@ export class EventBus {
               // fallback for non-handler scoped dispatch
               original_child.event_parent_id = parent_event_id
             }
-            const dispatcher = Reflect.get(target, prop, receiver) as (event: BaseEvent, event_key?: EventKey) => BaseEvent
-            const dispatched = dispatcher.call(target, original_child, event_key)
+            const dispatcher = Reflect.get(target, prop, receiver) as (event: BaseEvent) => BaseEvent
+            const dispatched = dispatcher.call(target, original_child)
             return target.getEventProxyScopedToThisBus(dispatched, handler_result)
           }
         }

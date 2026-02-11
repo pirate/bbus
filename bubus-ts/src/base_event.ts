@@ -277,16 +277,11 @@ export class BaseEvent {
     return EventFactory as unknown as EventFactory<ZodShapeFrom<TShape>, ResultTypeFromShape<TShape>>
   }
 
-  // parse raw event data into a new event object
-  static parse<T extends typeof BaseEvent>(this: T, data: unknown): InstanceType<T> {
-    const schema = this.schema ?? BaseEventSchema
-    const parsed = schema.parse(data)
-    return new this(parsed) as InstanceType<T>
-  }
-
   static fromJSON<T extends typeof BaseEvent>(this: T, data: unknown): InstanceType<T> {
     if (!data || typeof data !== 'object') {
-      return this.parse(data)
+      const schema = this.schema ?? BaseEventSchema
+      const parsed = schema.parse(data)
+      return new this(parsed) as InstanceType<T>
     }
     const record = { ...(data as Record<string, unknown>) }
     if (record.event_result_schema && !isZodSchema(record.event_result_schema)) {
@@ -296,6 +291,20 @@ export class BaseEvent {
       }
     }
     return new this(record as BaseEventInit<Record<string, unknown>>) as InstanceType<T>
+  }
+
+  static toJSONArray(events: Iterable<BaseEvent>): BaseEventData[] {
+    return Array.from(events, (event) => {
+      const original = event._event_original ?? event
+      return original.toJSON()
+    })
+  }
+
+  static fromJSONArray(data: unknown): BaseEvent[] {
+    if (!Array.isArray(data)) {
+      return []
+    }
+    return data.map((item) => BaseEvent.fromJSON(item))
   }
 
   toJSON(): BaseEventData {

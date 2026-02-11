@@ -57,6 +57,76 @@ test('EventBus auto-generates name when not provided', () => {
   assert.equal(bus.name, 'EventBus')
 })
 
+test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
+  const bus = new EventBus('SerializableBus', {
+    id: '018f8e40-1234-7000-8000-000000001234',
+    max_history_size: 500,
+    event_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
+    event_handler_completion: 'first',
+    event_timeout: null,
+    event_handler_slow_timeout: 12,
+    event_slow_timeout: 34,
+    event_handler_detect_file_paths: false,
+  })
+  const SerializableEvent = BaseEvent.extend('SerializableEvent', {})
+
+  bus.on(SerializableEvent, async () => {
+    await delay(20)
+    return 'ok'
+  })
+
+  // keep one event pending so queue/in-flight related state is serializable
+  const release_pause = bus.locks.requestRunloopPause()
+  const pending_event = bus.dispatch(SerializableEvent({ event_timeout: 11 }))
+  await Promise.resolve()
+
+  assert.equal(bus.toString(), 'SerializableBus#1234')
+
+  const json = bus.toJSON()
+  assert.equal(json.id, '018f8e40-1234-7000-8000-000000001234')
+  assert.equal(json.name, 'SerializableBus')
+  assert.equal(json.max_history_size, 500)
+  assert.equal(json.event_concurrency, 'parallel')
+  assert.equal(json.event_handler_concurrency, 'parallel')
+  assert.equal(json.event_handler_completion, 'first')
+  assert.equal(json.event_timeout, null)
+  assert.equal(json.event_handler_slow_timeout, 12)
+  assert.equal(json.event_slow_timeout, 34)
+  assert.equal(json.event_handler_detect_file_paths, false)
+  assert.equal(json.handlers.length, 1)
+  assert.equal(json.handlers_by_key.length, 1)
+  assert.ok(json.handlers_by_key.some(([event_key]) => event_key === 'SerializableEvent'))
+  assert.equal(json.event_history.length, 1)
+  assert.equal(json.event_history[0].event_id, pending_event.event_id)
+  assert.equal(json.pending_event_queue.length, 1)
+  assert.equal(json.pending_event_queue[0].event_id, pending_event.event_id)
+  assert.deepEqual(json.in_flight_event_ids, [])
+  assert.equal(json.runloop_running, true)
+  assert.ok(Array.isArray(json.find_waiters))
+
+  const restored = EventBus.fromJSON(json)
+  assert.equal(restored.id, '018f8e40-1234-7000-8000-000000001234')
+  assert.equal(restored.name, 'SerializableBus')
+  assert.equal(restored.max_history_size, 500)
+  assert.equal(restored.event_concurrency_default, 'parallel')
+  assert.equal(restored.event_handler_concurrency_default, 'parallel')
+  assert.equal(restored.event_handler_completion_default, 'first')
+  assert.equal(restored.event_timeout_default, null)
+  assert.equal(restored.event_handler_slow_timeout, 12)
+  assert.equal(restored.event_slow_timeout, 34)
+  assert.equal(restored.event_handler_detect_file_paths, false)
+  assert.equal(restored.handlers.size, 1)
+  assert.equal(restored.handlers_by_key.get('SerializableEvent')?.length, 1)
+  assert.equal(restored.event_history.size, 1)
+  assert.equal(restored.pending_event_queue.length, 1)
+  assert.equal(restored.pending_event_queue[0].event_id, pending_event.event_id)
+  assert.equal(restored.runloop_running, false)
+
+  release_pause()
+  await pending_event.done()
+})
+
 test('EventBus exposes locks API surface', () => {
   const bus = new EventBus('GateSurfaceBus')
   const locks = bus.locks as unknown as Record<string, unknown>

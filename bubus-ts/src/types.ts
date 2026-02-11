@@ -21,10 +21,28 @@ export type UntypedEventHandlerFunction<T extends BaseEvent = BaseEvent> = (even
 
 export type FindWindow = boolean | number
 
+type FindEventFieldFilters = {
+  [K in keyof BaseEvent as K extends `event_${string}` ? K : never]?: BaseEvent[K]
+}
+
 export type FindOptions = {
   past?: FindWindow
   future?: FindWindow
   child_of?: BaseEvent | null
+} & FindEventFieldFilters
+
+export const normalizeEventKey = (event_key: EventKey | '*'): string | '*' => {
+  if (event_key === '*') {
+    return '*'
+  }
+  if (typeof event_key === 'string') {
+    return event_key
+  }
+  const event_type = (event_key as { event_type?: unknown }).event_type
+  if (typeof event_type === 'string' && event_type.length > 0 && event_type !== 'BaseEvent') {
+    return event_type
+  }
+  throw new Error(`Invalid event key: expected event type string, "*", or BaseEvent class, got: ${JSON.stringify(event_key).slice(0, 80)}`)
 }
 
 const WRAPPER_TYPES = new Set(['optional', 'nullable', 'default', 'catch', 'prefault', 'readonly', 'nonoptional', 'exact_optional'])
