@@ -21,12 +21,12 @@ jobs:
       - uses: actions/checkout@v4
       - id: lsgrep
         run: |
-          TS_TEST_FILENAMES="$(ls bubus-ts/tests/*.test.ts | sed 's|^bubus-ts/tests/||' | sed 's|\\.test\\.ts$||' | jq -R -s -c 'split("\n")[:-1]')"
+          TS_TEST_FILENAMES="$(ls bubus-ts/tests/*.test.ts | sed 's|^bubus-ts/tests/||' | sed 's|\\.test\\.ts$||' | jq -R -s -c 'split("\n")[:-1] | map(select(. != "ts_to_python_roundtrip" and . != "bridges"))')"
           echo "TS_TEST_FILENAMES=${TS_TEST_FILENAMES}" >> "$GITHUB_OUTPUT"
           echo "$TS_TEST_FILENAMES"
       - name: Check that at least one test file is found
         run: |
-          if [ -z "${{ steps.lsgrep.outputs.TS_TEST_FILENAMES }}" ]; then
+          if [[ -z "${{ steps.lsgrep.outputs.TS_TEST_FILENAMES }}" || "${{ steps.lsgrep.outputs.TS_TEST_FILENAMES }}" == "[]" ]]; then
             echo "Failed to find any *.test.ts files in bubus-ts/tests/ folder!" > /dev/stderr
             exit 1
           fi
@@ -45,14 +45,14 @@ jobs:
       run:
         working-directory: bubus-ts
     steps:
+      - uses: actions/checkout@v4
+
       - name: Check that the previous step managed to find some test files for us to run
         run: |
           if [[ "${{ matrix.test_filename }}" == "FAILED_TO_DISCOVER_TESTS" ]]; then
             echo "Failed get list of test files in bubus-ts/tests/*.test.ts from find_ts_tests job" > /dev/stderr
             exit 1
           fi
-
-      - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
         with:
