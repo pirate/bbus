@@ -23,7 +23,7 @@ import asyncio
 import importlib
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from uuid_extensions import uuid7str
@@ -151,13 +151,16 @@ class RedisEventBridge:
                     break
                 if not isinstance(message, dict):
                     continue
-                if message.get('type') != 'message':
+                message_dict = cast(dict[str, Any], message)
+                if message_dict.get('type') != 'message':
                     continue
 
-                data = message.get('data')
-                if isinstance(data, bytes):
-                    data = data.decode('utf-8')
-                if not isinstance(data, str):
+                raw_data = message_dict.get('data')
+                if isinstance(raw_data, bytes):
+                    data = raw_data.decode('utf-8')
+                elif isinstance(raw_data, str):
+                    data = raw_data
+                else:
                     continue
 
                 try:

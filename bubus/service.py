@@ -1963,7 +1963,9 @@ class EventBus:
         if self.max_history_size is None:
             return 0
         if self.max_history_size == 0:
-            completed_event_ids = [event_id for event_id, event in self.event_history.items() if self._is_event_complete_fast(event)]
+            completed_event_ids = [
+                event_id for event_id, event in self.event_history.items() if self._is_event_complete_fast(event)
+            ]
             for event_id in completed_event_ids:
                 del self.event_history[event_id]
             return len(completed_event_ids)

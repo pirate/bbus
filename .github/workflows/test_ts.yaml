@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  quality:
+  lint:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -77,7 +77,7 @@ jobs:
 
   tests:
     needs:
-      - quality
+      - lint
       - find_ts_tasks
     runs-on: ubuntu-latest
     strategy:
