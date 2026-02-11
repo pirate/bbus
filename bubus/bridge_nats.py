@@ -60,6 +60,7 @@ class NATSEventBridge:
                 return
             await self._dispatch_inbound_payload(payload)
 
+        assert self._nc is not None
         await self._nc.subscribe(self.subject, cb=_on_msg)
         self._running = True
 

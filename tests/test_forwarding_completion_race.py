@@ -63,10 +63,7 @@ async def test_forwarded_event_does_not_leave_stale_active_ids():
         try:
             await wait_all_idle()
         except TimeoutError:
-            pytest.fail(
-                'Forwarding completion race left bus(es) non-idle.\n'
-                f'{_dump_bus_state(buses)}'
-            )
+            pytest.fail(f'Forwarding completion race left bus(es) non-idle.\n{_dump_bus_state(buses)}')
 
         assert second.event_status == 'completed'
         for bus in buses:

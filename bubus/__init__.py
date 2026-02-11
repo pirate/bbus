@@ -1,7 +1,7 @@
 """Event bus for the browser-use agent."""
 
-from .event_history import EventHistory, InMemoryEventHistory
 from .bridges import HTTPEventBridge, SocketEventBridge
+from .event_history import EventHistory, InMemoryEventHistory
 from .middlewares import (
     EventBusMiddleware,
     LoggerEventBusMiddleware,

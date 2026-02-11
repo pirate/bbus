@@ -10,7 +10,6 @@ from typing import Any, Callable
 
 from bubus import BaseEvent, EventBus
 
-
 try:
     import psutil
 except ImportError:  # pragma: no cover
@@ -199,9 +198,7 @@ def _scenario_result(
         'ms_per_event_unit': ms_per_event_unit,
         'ms_per_event_label': _format_ms_per_event(ms_per_event, ms_per_event_unit),
         'peak_rss_kb_per_event': peak_rss_kb_per_event,
-        'peak_rss_kb_per_event_label': (
-            None if peak_rss_kb_per_event is None else _format_kb_per_event(peak_rss_kb_per_event)
-        ),
+        'peak_rss_kb_per_event_label': (None if peak_rss_kb_per_event is None else _format_kb_per_event(peak_rss_kb_per_event)),
         'throughput': throughput,
     }
     if extra:
@@ -211,18 +208,18 @@ def _scenario_result(
 
 def _record(hooks: PerfInput, metrics: dict[str, Any]) -> None:
     parts = [
-        f"events={metrics.get('total_events', 'n/a')}",
-        f"total={_format_ms(float(metrics.get('total_ms', 0.0)))}",
-        f"latency={_format_ms_per_event(float(metrics.get('ms_per_event', 0.0)), str(metrics.get('ms_per_event_unit', 'event')))}",
+        f'events={metrics.get("total_events", "n/a")}',
+        f'total={_format_ms(float(metrics.get("total_ms", 0.0)))}',
+        f'latency={_format_ms_per_event(float(metrics.get("ms_per_event", 0.0)), str(metrics.get("ms_per_event_unit", "event")))}',
     ]
     peak_rss = metrics.get('peak_rss_kb_per_event')
     if isinstance(peak_rss, (int, float)):
         parts.append(f'peak_rss={_format_kb_per_event(float(peak_rss))}')
-    parts.append(f"throughput={int(metrics.get('throughput', 0))}/s")
-    parts.append(f"ok={'yes' if metrics.get('ok', False) else 'no'}")
+    parts.append(f'throughput={int(metrics.get("throughput", 0))}/s')
+    parts.append(f'ok={"yes" if metrics.get("ok", False) else "no"}')
     if metrics.get('error'):
-        parts.append(f"error={metrics['error']}")
-    hooks.log(f"[{hooks.runtime_name}] {metrics['scenario']}: " + ' '.join(parts))
+        parts.append(f'error={metrics["error"]}')
+    hooks.log(f'[{hooks.runtime_name}] {metrics["scenario"]}: ' + ' '.join(parts))
 
 
 async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
@@ -256,11 +253,7 @@ async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
     queued, dispatch_error = await _dispatch_naive(
         bus,
         events,
-        on_dispatched=(
-            lambda ev: sampled_early_event_ids.append(ev.event_id)
-            if len(sampled_early_event_ids) < 64
-            else None
-        ),
+        on_dispatched=(lambda ev: sampled_early_event_ids.append(ev.event_id) if len(sampled_early_event_ids) < 64 else None),
     )
 
     await _trim_bus_history_to_one_event(bus, PerfTrimEvent)
@@ -529,7 +522,12 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
     peak_rss_kb_per_event = memory.peak_rss_kb_per_event(ms_denominator)
     throughput = int(round(processed_count / max(total_ms / 1000.0, 1e-9)))
 
-    ok = error is None and processed_count == total_events and checksum == expected_checksum and len(bus.handlers.get(event_key, [])) == 0
+    ok = (
+        error is None
+        and processed_count == total_events
+        and checksum == expected_checksum
+        and len(bus.handlers.get(event_key, [])) == 0
+    )
 
     result = _scenario_result(
         scenario=scenario,
@@ -730,7 +728,7 @@ async def run_perf_scenario_by_id(input: PerfInput, scenario_id: str) -> dict[st
     heap_delta_after_gc_mb = await _measure_heap_delta_after_gc(input)
     if heap_delta_after_gc_mb is not None:
         result['heap_delta_after_gc_mb'] = round(heap_delta_after_gc_mb, 3)
-        input.log(f"[{input.runtime_name}] {result['scenario']}: heap_delta_after_gc={result['heap_delta_after_gc_mb']:.3f}mb")
+        input.log(f'[{input.runtime_name}] {result["scenario"]}: heap_delta_after_gc={result["heap_delta_after_gc_mb"]:.3f}mb')
 
     return result
 

@@ -183,8 +183,8 @@ class TestEventEnqueueing:
         assert handled_event_ids == [event.event_id]
         assert eventbus.label in completed.event_path
 
-    async def test_unbounded_history_disables_capacity_limit(self):
-        """When max_history_size=None, dispatch should not enforce the 100-event cap."""
+    async def test_unbounded_history_disables_history_rejection(self):
+        """When max_history_size=None, dispatch should not reject on history size."""
         bus = EventBus(name='NoLimitBus', max_history_size=None)
 
         processed = 0
@@ -714,10 +714,9 @@ class TestEdgeCases:
 
     async def test_concurrent_emit_calls(self, eventbus):
         """Test multiple concurrent emit calls"""
-        # Create many events concurrently, but respect the max_pending_events limit
-        # We'll create them in batches to avoid hitting the limit
+        # Create many events concurrently in batches to keep this test deterministic.
         total_events = 100
-        batch_size = 50  # Stay well under the default limit of 100
+        batch_size = 50
         all_tasks = []
 
         for batch_start in range(0, total_events, batch_size):
@@ -1080,9 +1079,7 @@ class TestSQLiteHistoryMirror:
             await bus.wait_until_idle()
 
             conn = sqlite3.connect(db_path)
-            events = conn.execute(
-                'SELECT phase, event_status FROM events_log ORDER BY id'
-            ).fetchall()
+            events = conn.execute('SELECT phase, event_status FROM events_log ORDER BY id').fetchall()
             assert [phase for phase, _ in events] == ['pending', 'started', 'completed']
             assert [status for _, status in events] == ['pending', 'started', 'completed']
 
@@ -1153,9 +1150,7 @@ class TestLoggerMiddleware:
             await bus.wait_until_idle()
 
             conn = sqlite3.connect(db_path)
-            result_rows = conn.execute(
-                'SELECT phase, status, error_repr FROM event_results_log ORDER BY id'
-            ).fetchall()
+            result_rows = conn.execute('SELECT phase, status, error_repr FROM event_results_log ORDER BY id').fetchall()
             events = conn.execute('SELECT phase, event_status FROM events_log ORDER BY id').fetchall()
             conn.close()
 
@@ -1584,9 +1579,7 @@ class TestDebouncePatterns:
         assert resolved is not None
         assert resolved.event_id == initial.event_id
 
-        total_events = sum(
-            1 for event in eventbus.event_history.values() if isinstance(event, self.DebounceEvent)
-        )
+        total_events = sum(1 for event in eventbus.event_history.values() if isinstance(event, self.DebounceEvent))
         assert total_events == 1
 
     async def test_debounce_dispatches_when_recent_missing(self, eventbus):
@@ -1602,9 +1595,7 @@ class TestDebouncePatterns:
 
         await eventbus.wait_until_idle()
 
-        total_events = sum(
-            1 for event in eventbus.event_history.values() if isinstance(event, self.DebounceEvent)
-        )
+        total_events = sum(1 for event in eventbus.event_history.values() if isinstance(event, self.DebounceEvent))
         assert total_events == 1
 
     async def test_expect_with_complex_predicate(self, eventbus):

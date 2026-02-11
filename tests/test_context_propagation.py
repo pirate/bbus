@@ -20,7 +20,6 @@ import pytest
 
 from bubus import BaseEvent, EventBus
 
-
 # Test context variables (simulating user-defined context like request_id)
 request_id_var: ContextVar[str] = ContextVar('request_id', default='<unset>')
 user_id_var: ContextVar[str] = ContextVar('user_id', default='<unset>')
@@ -29,11 +28,13 @@ trace_id_var: ContextVar[str] = ContextVar('trace_id', default='<unset>')
 
 class SimpleEvent(BaseEvent[str]):
     """Simple event for context propagation tests."""
+
     pass
 
 
 class ChildEvent(BaseEvent[str]):
     """Child event for nested context tests."""
+
     pass
 
 
@@ -66,10 +67,8 @@ class TestContextPropagation:
             event = await bus.dispatch(SimpleEvent())
 
             # Handler should have seen the context values
-            assert captured_values['request_id'] == 'req-12345', \
-                f"Expected 'req-12345', got '{captured_values['request_id']}'"
-            assert captured_values['user_id'] == 'user-abc', \
-                f"Expected 'user-abc', got '{captured_values['user_id']}'"
+            assert captured_values['request_id'] == 'req-12345', f"Expected 'req-12345', got '{captured_values['request_id']}'"
+            assert captured_values['user_id'] == 'user-abc', f"Expected 'user-abc', got '{captured_values['user_id']}'"
 
         finally:
             await bus.stop(clear=True)
@@ -216,10 +215,8 @@ class TestContextPropagation:
             await bus1.dispatch(SimpleEvent())
             await bus2.wait_until_idle()
 
-            assert captured_bus1['request_id'] == 'req-forwarded', \
-                f"Bus1 handler didn't see context: {captured_bus1}"
-            assert captured_bus2['request_id'] == 'req-forwarded', \
-                f"Bus2 handler didn't see context: {captured_bus2}"
+            assert captured_bus1['request_id'] == 'req-forwarded', f"Bus1 handler didn't see context: {captured_bus1}"
+            assert captured_bus2['request_id'] == 'req-forwarded', f"Bus2 handler didn't see context: {captured_bus2}"
 
         finally:
             await bus1.stop(clear=True)
@@ -258,8 +255,9 @@ class TestContextPropagation:
             await bus.dispatch(SimpleEvent())
 
             # Parent should still see its own value, not child's modification
-            assert parent_value_after_child == 'parent-value', \
+            assert parent_value_after_child == 'parent-value', (
                 f"Parent context was modified by child: got '{parent_value_after_child}'"
+            )
 
         finally:
             await bus.stop(clear=True)
@@ -298,10 +296,11 @@ class TestContextPropagation:
             await bus.dispatch(SimpleEvent())
 
             # Verify parent ID tracking works
-            assert parent_event_id is not None, "Parent event ID was not captured"
-            assert child_event_parent_id is not None, "Child event parent ID was not set"
-            assert child_event_parent_id == parent_event_id, \
+            assert parent_event_id is not None, 'Parent event ID was not captured'
+            assert child_event_parent_id is not None, 'Child event parent ID was not set'
+            assert child_event_parent_id == parent_event_id, (
                 f"Child's parent_id ({child_event_parent_id}) doesn't match parent's id ({parent_event_id})"
+            )
 
         finally:
             await bus.stop(clear=True)
@@ -338,14 +337,17 @@ class TestContextPropagation:
             await bus.dispatch(SimpleEvent())
 
             # User context should propagate
-            assert results['parent_request_id'] == 'req-combined-test', \
+            assert results['parent_request_id'] == 'req-combined-test', (
                 f"Parent didn't see user context: {results['parent_request_id']}"
-            assert results['child_request_id'] == 'req-combined-test', \
+            )
+            assert results['child_request_id'] == 'req-combined-test', (
                 f"Child didn't see user context: {results['child_request_id']}"
+            )
 
             # Internal parent tracking should also work
-            assert results['child_event_parent_id'] == results['parent_event_id'], \
-                f"Parent ID tracking broken: child.parent_id={results['child_event_parent_id']}, parent.id={results['parent_event_id']}"
+            assert results['child_event_parent_id'] == results['parent_event_id'], (
+                f'Parent ID tracking broken: child.parent_id={results["child_event_parent_id"]}, parent.id={results["parent_event_id"]}'
+            )
 
         finally:
             await bus.stop(clear=True)
@@ -364,32 +366,38 @@ class TestContextPropagation:
             pass
 
         async def level1_handler(event: SimpleEvent) -> str:
-            results.append({
-                'level': 1,
-                'request_id': request_id_var.get(),
-                'event_id': event.event_id,
-                'parent_id': event.event_parent_id,
-            })
+            results.append(
+                {
+                    'level': 1,
+                    'request_id': request_id_var.get(),
+                    'event_id': event.event_id,
+                    'parent_id': event.event_parent_id,
+                }
+            )
             await bus.dispatch(Level2Event())
             return 'level1_done'
 
         async def level2_handler(event: Level2Event) -> str:
-            results.append({
-                'level': 2,
-                'request_id': request_id_var.get(),
-                'event_id': event.event_id,
-                'parent_id': event.event_parent_id,
-            })
+            results.append(
+                {
+                    'level': 2,
+                    'request_id': request_id_var.get(),
+                    'event_id': event.event_id,
+                    'parent_id': event.event_parent_id,
+                }
+            )
             await bus.dispatch(Level3Event())
             return 'level2_done'
 
         async def level3_handler(event: Level3Event) -> str:
-            results.append({
-                'level': 3,
-                'request_id': request_id_var.get(),
-                'event_id': event.event_id,
-                'parent_id': event.event_parent_id,
-            })
+            results.append(
+                {
+                    'level': 3,
+                    'request_id': request_id_var.get(),
+                    'event_id': event.event_id,
+                    'parent_id': event.event_parent_id,
+                }
+            )
             return 'level3_done'
 
         bus.on(SimpleEvent, level1_handler)
@@ -402,17 +410,18 @@ class TestContextPropagation:
             await bus.dispatch(SimpleEvent())
 
             # All levels should see the user context
-            assert len(results) == 3, f"Expected 3 levels, got {len(results)}"
+            assert len(results) == 3, f'Expected 3 levels, got {len(results)}'
             for r in results:
-                assert r['request_id'] == 'req-deep-nesting', \
-                    f"Level {r['level']} didn't see user context: {r['request_id']}"
+                assert r['request_id'] == 'req-deep-nesting', f"Level {r['level']} didn't see user context: {r['request_id']}"
 
             # Parent chain should be correct
-            assert results[0]['parent_id'] is None, "Level 1 should have no parent"
-            assert results[1]['parent_id'] == results[0]['event_id'], \
-                f"Level 2 parent mismatch: {results[1]['parent_id']} != {results[0]['event_id']}"
-            assert results[2]['parent_id'] == results[1]['event_id'], \
-                f"Level 3 parent mismatch: {results[2]['parent_id']} != {results[1]['event_id']}"
+            assert results[0]['parent_id'] is None, 'Level 1 should have no parent'
+            assert results[1]['parent_id'] == results[0]['event_id'], (
+                f'Level 2 parent mismatch: {results[1]["parent_id"]} != {results[0]["event_id"]}'
+            )
+            assert results[2]['parent_id'] == results[1]['event_id'], (
+                f'Level 3 parent mismatch: {results[2]["parent_id"]} != {results[1]["event_id"]}'
+            )
 
         finally:
             await bus.stop(clear=True)

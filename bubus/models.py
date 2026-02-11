@@ -41,9 +41,10 @@ class EventStatus(StrEnum):
     Using StrEnum ensures backwards compatibility - comparisons like
     `status == 'pending'` still work since EventStatus.PENDING == 'pending'.
     """
+
     PENDING = 'pending'
     STARTED = 'started'
-    COMPLETED = 'completed'   # errored events are also considered completed
+    COMPLETED = 'completed'  # errored events are also considered completed
 
 
 def validate_event_name(s: str) -> str:
@@ -233,12 +234,12 @@ def _to_result_type_json_schema(result_type: Any) -> dict[str, Any] | None:
 
     try:
         if inspect.isclass(result_type) and issubclass(result_type, BaseModel):
-            return cast(dict[str, Any], result_type.model_json_schema())
+            return result_type.model_json_schema()
     except TypeError:
         pass
 
     try:
-        return cast(dict[str, Any], TypeAdapter(result_type).json_schema())
+        return TypeAdapter(result_type).json_schema()
     except Exception:
         return None
 
@@ -331,9 +332,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     def __str__(self) -> str:
         """Compact O(1) summary for hot-path logging."""
         completed_signal = self._event_completed_signal
-        is_complete = self._event_is_complete_flag or (
-            completed_signal is not None and completed_signal.is_set()
-        )
+        is_complete = self._event_is_complete_flag or (completed_signal is not None and completed_signal.is_set())
         if is_complete:
             icon = '✅'
         elif self.event_processed_at is not None:
@@ -363,20 +362,26 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         """
         from bubus.service import EventBus
 
+        empty_event_ids: set[str] = set()
         for bus in list(EventBus.all_instances):
             if not bus:
                 continue
+            if ignore_bus is not None and bus is ignore_bus:
+                continue
+            active_event_ids = cast(set[str], getattr(bus, '_active_event_ids', empty_event_ids))
+            processing_event_ids = cast(set[str], getattr(bus, '_processing_event_ids', empty_event_ids))
             # Another bus can claim queue.get() before marking processing.
             # `_active_event_ids` bridges that handoff gap for completion checks.
-            if ignore_bus is not None and bus is not ignore_bus and self.event_id in getattr(bus, '_active_event_ids', set()):
+            if self.event_id in active_event_ids:
                 return True
-            if self.event_id in getattr(bus, '_processing_event_ids', set()) and bus is not ignore_bus:
+            if self.event_id in processing_event_ids:
                 return True
             if not bus.event_queue or not hasattr(bus.event_queue, '_queue'):
                 continue
             queue = cast(deque[BaseEvent[Any]], bus.event_queue._queue)  # type: ignore[attr-defined]
-            if self in queue:
-                return True
+            for queued_event in queue:
+                if queued_event.event_id == self.event_id:
+                    return True
         return False
 
     async def _process_self_on_all_buses(self) -> None:
@@ -399,6 +404,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         completed_signal = self.event_completed_signal
         assert completed_signal is not None, 'event_completed_signal should exist in async context'
         claimed_processed_bus_ids: set[int] = set()
+        empty_event_ids: set[str] = set()
 
         try:
             while not completed_signal.is_set() and iterations < max_iterations:
@@ -413,20 +419,25 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
                     if self._remove_self_from_queue(bus):
                         # Fast path: event is still in the queue, claim and process it.
-                        bus._processing_event_ids.add(self.event_id)
+                        processing_event_ids = cast(set[str], getattr(bus, '_processing_event_ids'))
+                        processing_event_ids.add(self.event_id)
                         try:
                             await bus.handle_event(self)
                             bus.event_queue.task_done()
                         finally:
-                            bus._processing_event_ids.discard(self.event_id)
-                            bus._active_event_ids.discard(self.event_id)
+                            processing_event_ids.discard(self.event_id)
+                            active_event_ids = cast(set[str], getattr(bus, '_active_event_ids'))
+                            active_event_ids.discard(self.event_id)
                         processed_on_bus = True
                     else:
                         # Slow path: another task already claimed queue.get() and set
                         # processing state, but may be blocked on the global lock held
                         # by the awaiting parent handler. Process once here to make progress.
                         bus_key = id(bus)
-                        if self.event_id in getattr(bus, '_processing_event_ids', set()) and bus_key not in claimed_processed_bus_ids:
+                        if (
+                            self.event_id in cast(set[str], getattr(bus, '_processing_event_ids', empty_event_ids))
+                            and bus_key not in claimed_processed_bus_ids
+                        ):
                             await bus.handle_event(self)
                             claimed_processed_bus_ids.add(bus_key)
                             processed_on_bus = True
@@ -1248,9 +1259,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         def _default_format_exception_for_log(exc: BaseException) -> str:
             from traceback import TracebackException
 
-            return ''.join(
-                TracebackException.from_exception(exc, capture_locals=False).format()
-            )
+            return ''.join(TracebackException.from_exception(exc, capture_locals=False).format())
 
         _enter_handler_context_callable = enter_handler_context or _default_enter_handler_context
         _exit_handler_context_callable = exit_handler_context or _default_exit_handler_context
@@ -1288,6 +1297,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         async def async_handler_with_context() -> Any:
             """Wrapper that sets up internal context before calling async handler."""
             from bubus.service import holds_global_lock
+
             # Set holds_global_lock since we're running inside a handler that holds the lock
             # (ReentrantLock set this in the parent context, but dispatch_context is from before that)
             holds_global_lock.set(True)
@@ -1300,6 +1310,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         def sync_handler_with_context() -> Any:
             """Wrapper that sets up internal context before calling sync handler."""
             from bubus.service import holds_global_lock
+
             holds_global_lock.set(True)
             tokens = _enter_handler_context_callable(event, self.handler_id)
             try:
@@ -1331,9 +1342,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                 else:
                     handler_return_value = handler(event)
                 if isinstance(handler_return_value, BaseEvent):
-                    logger.debug(
-                        f'Handler {self.handler_name} returned BaseEvent, not awaiting to avoid circular dependency'
-                    )
+                    logger.debug(f'Handler {self.handler_name} returned BaseEvent, not awaiting to avoid circular dependency')
             else:
                 raise ValueError(f'Handler {get_handler_name(handler)} must be a sync or async function, got: {type(handler)}')
 
@@ -1354,9 +1363,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             if monitor_task:
                 monitor_task.cancel()
             children = (
-                f' and interrupted any processing of {len(event.event_children)} child events'
-                if event.event_children
-                else ''
+                f' and interrupted any processing of {len(event.event_children)} child events' if event.event_children else ''
             )
             timeout_error = TimeoutError(
                 f'Event handler {self.handler_name}#{self.handler_id[-4:]}({event}) timed out after {self.timeout}s{children}'

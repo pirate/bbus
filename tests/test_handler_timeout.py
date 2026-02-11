@@ -363,9 +363,7 @@ async def test_forwarded_timeout_path_does_not_stall_followup_events():
         assert parent_result.status == 'completed'
 
         assert child_ref is not None
-        assert any(
-            isinstance(result.error, TimeoutError) for result in child_ref.event_results.values()
-        ), child_ref.event_results
+        assert any(isinstance(result.error, TimeoutError) for result in child_ref.event_results.values()), child_ref.event_results
 
         # Lock/queue state should remain healthy after timeout.
         tail = bus_a.dispatch(TailEvent())

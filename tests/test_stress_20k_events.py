@@ -10,9 +10,9 @@ from typing import Any
 import psutil
 import pytest
 
-from bubus import BaseEvent, EventBus
 import bubus.models as models_module
 import bubus.service as service_module
+from bubus import BaseEvent, EventBus
 
 
 def get_memory_usage_mb():
@@ -138,6 +138,7 @@ async def run_io_fanout_benchmark(
     handled = 0
 
     for index in range(handlers_per_event):
+
         async def handler(event: SimpleEvent) -> None:
             nonlocal handled
             await asyncio.sleep(sleep_seconds)
@@ -199,6 +200,7 @@ class MethodProfiler:
         metric_name = label or f'{owner.__name__}.{method_name}'
 
         if inspect.iscoroutinefunction(original):
+
             @functools.wraps(original)
             async def wrapped(*args: Any, **kwargs: Any) -> Any:
                 started = time.perf_counter()
@@ -210,6 +212,7 @@ class MethodProfiler:
                     metric['calls'] += 1.0
                     metric['total_s'] += elapsed
         else:
+
             @functools.wraps(original)
             def wrapped(*args: Any, **kwargs: Any) -> Any:
                 started = time.perf_counter()
@@ -263,6 +266,7 @@ async def run_contention_round(
     done_latencies_ms: list[float] = []
 
     for index, bus in enumerate(buses):
+
         def make_handler(handler_index: int):
             async def handler(event: SimpleEvent) -> None:
                 counters[handler_index] += 1
@@ -351,27 +355,16 @@ async def test_20k_events_with_memory_control():
     memory_samples: list[float] = []
     max_memory = initial_memory
 
-    # Dispatch all events as fast as possible
+    # Dispatch all events as fast as possible (naive flood).
     dispatched = 0
     pending_events: list[BaseEvent[Any]] = []
 
     while dispatched < total_events:
-        try:
-            event = bus.dispatch(SimpleEvent())
-            pending_events.append(event)
-            dispatched += 1
-            if dispatched <= 5:
-                print(f'Dispatched event {dispatched}')
-        except RuntimeError as e:
-            if 'EventBus at capacity' in str(e):
-                # Queue is full, complete the oldest pending events to make room
-                # Complete first 10 events to free up space
-                if pending_events:
-                    to_complete = pending_events[:10]
-                    await asyncio.gather(*to_complete)
-                    pending_events = pending_events[10:]
-            else:
-                raise
+        event = bus.dispatch(SimpleEvent())
+        pending_events.append(event)
+        dispatched += 1
+        if dispatched <= 5:
+            print(f'Dispatched event {dispatched}')
 
         # Sample memory every 10k events
         if dispatched % 10_000 == 0 and dispatched > 0:
@@ -455,8 +448,13 @@ async def test_20k_events_with_memory_control():
 
 @pytest.mark.asyncio
 async def test_hard_limit_enforcement():
-    """Test that hard limit of 100 pending events is enforced"""
-    bus = EventBus(name='HardLimitTest', middlewares=[])
+    """Test that max_history_drop=False rejects dispatches at max_history_size."""
+    bus = EventBus(
+        name='HardLimitTest',
+        max_history_size=100,
+        max_history_drop=False,
+        middlewares=[],
+    )
 
     try:
         # Create a slow handler to keep events pending
@@ -465,7 +463,7 @@ async def test_hard_limit_enforcement():
 
         bus.on('SimpleEvent', slow_handler)
 
-        # Try to dispatch more than the pending limit
+        # Try to dispatch more than the configured history limit
         events_dispatched = 0
         errors = 0
 
@@ -474,15 +472,15 @@ async def test_hard_limit_enforcement():
                 bus.dispatch(SimpleEvent())
                 events_dispatched += 1
             except RuntimeError as e:
-                if 'EventBus at capacity' in str(e):
+                if 'history limit reached' in str(e):
                     errors += 1
                 else:
                     raise
 
         print(f'\nDispatched {events_dispatched} events')
-        print(f'Hit capacity error {errors} times')
+        print(f'Hit history-limit error {errors} times')
 
-        # Should hit the limit
+        # Should reject once limit is reached
         assert bus.max_history_size is not None
         assert events_dispatched <= bus.max_history_size
         assert errors > 0
@@ -600,6 +598,7 @@ async def test_forwarding_queue_jump_timeout_mix_stays_stable():
     Stress a mixed path in Python:
     parent handler awaits forwarded child events, with intermittent child timeouts.
     """
+
     class MixedParentEvent(BaseEvent):
         iteration: int = 0
         event_timeout: float | None = 0.2
@@ -657,9 +656,7 @@ async def test_forwarding_queue_jump_timeout_mix_stays_stable():
     assert parent_handled == total_iterations
     assert child_handled == total_iterations
     timeout_count = sum(
-        1
-        for child in child_events
-        if any(isinstance(result.error, TimeoutError) for result in child.event_results.values())
+        1 for child in child_events if any(isinstance(result.error, TimeoutError) for result in child.event_results.values())
     )
     assert timeout_count > 0
     assert len(bus_a.event_history) <= history_limit
@@ -704,10 +701,7 @@ async def test_basic_throughput_floor_regression_guard(parallel_handlers: bool):
     assert processed == 5_000
     minimum_rate = throughput_floor_for_mode(parallel_handlers)
     mode = 'parallel' if parallel_handlers else 'serial'
-    assert rate >= minimum_rate, (
-        f'{mode} throughput regression: {rate:.0f} events/sec '
-        f'(expected >= {minimum_rate} events/sec)'
-    )
+    assert rate >= minimum_rate, f'{mode} throughput regression: {rate:.0f} events/sec (expected >= {minimum_rate} events/sec)'
 
 
 @pytest.mark.asyncio
@@ -784,8 +778,7 @@ async def test_forwarding_throughput_floor_across_modes(parallel_handlers: bool)
     assert handled == total_events
     mode = 'parallel' if parallel_handlers else 'serial'
     assert throughput >= floor, (
-        f'{mode} forwarding throughput regression: {throughput:.0f} events/sec '
-        f'(expected >= {floor} events/sec)'
+        f'{mode} forwarding throughput regression: {throughput:.0f} events/sec (expected >= {floor} events/sec)'
     )
 
 
@@ -815,8 +808,7 @@ async def test_global_lock_contention_multi_bus_matrix(parallel_handlers: bool):
     assert phase2['fairness_min'] == expected_per_bus
     assert phase2['fairness_max'] == expected_per_bus
     assert phase1['throughput'] >= hard_floor, (
-        f'lock-contention throughput too low: {phase1["throughput"]:.0f} events/sec '
-        f'(expected >= {hard_floor:.0f})'
+        f'lock-contention throughput too low: {phase1["throughput"]:.0f} events/sec (expected >= {hard_floor:.0f})'
     )
     assert phase2['throughput'] >= regression_floor, (
         f'lock-contention regression: phase1={phase1["throughput"]:.0f} '
@@ -874,6 +866,7 @@ async def test_queue_jump_perf_matrix_by_mode(parallel_handlers: bool):
     """
     Queue-jump throughput/latency matrix (parent awaits child on same bus) by mode.
     """
+
     class QueueJumpParentEvent(BaseEvent):
         iteration: int = 0
         event_timeout: float | None = 0.2
@@ -923,12 +916,9 @@ async def test_queue_jump_perf_matrix_by_mode(parallel_handlers: bool):
 
     assert parent_count == 1_000
     assert child_count == 1_000
-    assert phase1[0] >= hard_floor, (
-        f'queue-jump throughput too low: {phase1[0]:.0f} events/sec (expected >= {hard_floor:.0f})'
-    )
+    assert phase1[0] >= hard_floor, f'queue-jump throughput too low: {phase1[0]:.0f} events/sec (expected >= {hard_floor:.0f})'
     assert phase2[0] >= regression_floor, (
-        f'queue-jump regression: phase1={phase1[0]:.0f} phase2={phase2[0]:.0f} '
-        f'(required >= {regression_floor:.0f})'
+        f'queue-jump regression: phase1={phase1[0]:.0f} phase2={phase2[0]:.0f} (required >= {regression_floor:.0f})'
     )
     assert phase2[2] < 15.0
     assert phase2[4] < 120.0
@@ -977,7 +967,7 @@ async def test_forwarding_chain_perf_matrix_by_mode(parallel_handlers: bool):
             except asyncio.QueueFull:
                 await asyncio.sleep(0)
             except RuntimeError as exc:
-                if 'EventBus at capacity' not in str(exc):
+                if 'history limit reached' not in str(exc):
                     raise
                 await asyncio.sleep(0)
 
@@ -989,7 +979,7 @@ async def test_forwarding_chain_perf_matrix_by_mode(parallel_handlers: bool):
             except asyncio.QueueFull:
                 await asyncio.sleep(0)
             except RuntimeError as exc:
-                if 'EventBus at capacity' not in str(exc):
+                if 'history limit reached' not in str(exc):
                     raise
                 await asyncio.sleep(0)
 
@@ -1028,6 +1018,7 @@ async def test_timeout_churn_perf_matrix_by_mode(parallel_handlers: bool):
     """
     Timeout-heavy phase followed by healthy phase should keep throughput healthy.
     """
+
     class TimeoutChurnEvent(BaseEvent):
         mode: str = 'slow'
         iteration: int = 0
@@ -1084,13 +1075,10 @@ async def test_timeout_churn_perf_matrix_by_mode(parallel_handlers: bool):
     timeout_count = sum(
         1
         for event in timeout_phase_events
-        if event.mode == 'slow'
-        and any(isinstance(result.error, TimeoutError) for result in event.event_results.values())
+        if event.mode == 'slow' and any(isinstance(result.error, TimeoutError) for result in event.event_results.values())
     )
     recovery_errors = sum(
-        1
-        for event in recovery_phase_events
-        if any(result.error is not None for result in event.event_results.values())
+        1 for event in recovery_phase_events if any(result.error is not None for result in event.event_results.values())
     )
     hard_floor = 120.0
     regression_floor = throughput_regression_floor(
@@ -1379,11 +1367,7 @@ async def test_perf_debug_hot_path_breakdown() -> None:
             parent_metrics[0], parent_metrics[2], parent_metrics[4]
         )
     )
-    print(
-        '[perf-debug] memory_mb before={:.1f} done={:.1f} gc={:.1f}'.format(
-            before_mb, done_mb, gc_mb
-        )
-    )
+    print('[perf-debug] memory_mb before={:.1f} done={:.1f} gc={:.1f}'.format(before_mb, done_mb, gc_mb))
     print(f'[perf-debug] forwarded_simple_count={forwarded_simple_count:,} child_count={child_count:,}')
     print('[perf-debug] hot_path_top_total_time:')
     for line in profiler.top_lines(limit=14):

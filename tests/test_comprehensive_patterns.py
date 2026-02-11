@@ -377,16 +377,12 @@ async def test_awaited_child_jumps_queue_no_overshoot():
         assert child_end_idx < event1_end_idx, 'Child should complete before Event1 ends'
 
         # KEY ASSERTION 2: Event2 and Event3 did NOT execute yet (no overshoot)
-        assert 'Event2_start' not in execution_order, \
-            f'Event2 should NOT have started (no overshoot). Order: {execution_order}'
-        assert 'Event3_start' not in execution_order, \
-            f'Event3 should NOT have started (no overshoot). Order: {execution_order}'
+        assert 'Event2_start' not in execution_order, f'Event2 should NOT have started (no overshoot). Order: {execution_order}'
+        assert 'Event3_start' not in execution_order, f'Event3 should NOT have started (no overshoot). Order: {execution_order}'
 
         # KEY ASSERTION 3: Event2 and Event3 are still pending
-        assert event2.event_status == 'pending', \
-            f'Event2 should be pending, got {event2.event_status}'
-        assert event3.event_status == 'pending', \
-            f'Event3 should be pending, got {event3.event_status}'
+        assert event2.event_status == 'pending', f'Event2 should be pending, got {event2.event_status}'
+        assert event3.event_status == 'pending', f'Event3 should be pending, got {event3.event_status}'
 
         # Now let the remaining events process
         await bus.wait_until_idle()
@@ -418,10 +414,12 @@ async def test_awaited_child_jumps_queue_no_overshoot():
         assert event2_from_history.event_started_at is not None, 'Event2 should have started_at timestamp'
         assert event3_from_history.event_started_at is not None, 'Event3 should have started_at timestamp'
 
-        assert child_event.event_started_at < event2_from_history.event_started_at, \
+        assert child_event.event_started_at < event2_from_history.event_started_at, (
             f'Child should have started before Event2. Child: {child_event.event_started_at}, E2: {event2_from_history.event_started_at}'
-        assert child_event.event_started_at < event3_from_history.event_started_at, \
+        )
+        assert child_event.event_started_at < event3_from_history.event_started_at, (
             f'Child should have started before Event3. Child: {child_event.event_started_at}, E3: {event3_from_history.event_started_at}'
+        )
 
         print(f'Child started_at: {child_event.event_started_at}')
         print(f'Event2 started_at: {event2_from_history.event_started_at}')
@@ -545,22 +543,18 @@ async def test_dispatch_multiple_await_one_skips_others():
         # They may have executed after Event1 completed (via background task), which is fine
         if 'ChildA_start' in execution_order:
             child_a_start_idx = execution_order.index('ChildA_start')
-            assert child_a_start_idx > event1_end_idx, \
-                f'ChildA should NOT start before Event1 ends. Order: {execution_order}'
+            assert child_a_start_idx > event1_end_idx, f'ChildA should NOT start before Event1 ends. Order: {execution_order}'
         if 'ChildC_start' in execution_order:
             child_c_start_idx = execution_order.index('ChildC_start')
-            assert child_c_start_idx > event1_end_idx, \
-                f'ChildC should NOT start before Event1 ends. Order: {execution_order}'
+            assert child_c_start_idx > event1_end_idx, f'ChildC should NOT start before Event1 ends. Order: {execution_order}'
 
         # E2 and E3 should NOT have executed BEFORE Event1 ended (no overshoot)
         if 'Event2_start' in execution_order:
             event2_start_idx = execution_order.index('Event2_start')
-            assert event2_start_idx > event1_end_idx, \
-                f'Event2 should NOT start before Event1 ends. Order: {execution_order}'
+            assert event2_start_idx > event1_end_idx, f'Event2 should NOT start before Event1 ends. Order: {execution_order}'
         if 'Event3_start' in execution_order:
             event3_start_idx = execution_order.index('Event3_start')
-            assert event3_start_idx > event1_end_idx, \
-                f'Event3 should NOT start before Event1 ends. Order: {execution_order}'
+            assert event3_start_idx > event1_end_idx, f'Event3 should NOT start before Event1 ends. Order: {execution_order}'
 
         # Now process remaining events
         await bus.wait_until_idle()
@@ -682,14 +676,11 @@ async def test_multi_bus_forwarding_with_queued_events():
         assert child_end_idx < event1_end_idx, 'Child should complete before Event1 ends'
 
         # E2 on Bus1 should NOT have executed yet
-        assert 'Bus1_Event2_start' not in execution_order, \
-            f'E2 on Bus1 should NOT have started. Order: {execution_order}'
+        assert 'Bus1_Event2_start' not in execution_order, f'E2 on Bus1 should NOT have started. Order: {execution_order}'
 
         # E3 and E4 on Bus2 should NOT have executed yet
-        assert 'Bus2_Event3_start' not in execution_order, \
-            f'E3 on Bus2 should NOT have started. Order: {execution_order}'
-        assert 'Bus2_Event4_start' not in execution_order, \
-            f'E4 on Bus2 should NOT have started. Order: {execution_order}'
+        assert 'Bus2_Event3_start' not in execution_order, f'E3 on Bus2 should NOT have started. Order: {execution_order}'
+        assert 'Bus2_Event4_start' not in execution_order, f'E4 on Bus2 should NOT have started. Order: {execution_order}'
 
         # Now process remaining events on both buses
         await bus1.wait_until_idle()
@@ -753,8 +744,7 @@ async def test_await_already_completed_event():
 
         # E2 should NOT have executed yet (we didn't trigger processing)
         # The second await on completed E1 should just return without processing queue
-        assert event2.event_status == 'pending', \
-            f'E2 should still be pending, got {event2.event_status}'
+        assert event2.event_status == 'pending', f'E2 should still be pending, got {event2.event_status}'
 
         # Complete E2
         await bus.wait_until_idle()
@@ -855,8 +845,7 @@ async def test_multiple_awaits_same_event():
         assert len(child_ref.event_results) == 1
 
         # E2 should NOT have executed yet
-        assert 'Event2_start' not in execution_order, \
-            f'E2 should NOT have started. Order: {execution_order}'
+        assert 'Event2_start' not in execution_order, f'E2 should NOT have started. Order: {execution_order}'
 
         await bus.wait_until_idle()
 
@@ -939,8 +928,7 @@ async def test_deeply_nested_awaited_children():
         assert child2_end_idx < child1_end_idx < event1_end_idx
 
         # E2 should NOT have started
-        assert 'Event2_start' not in execution_order, \
-            f'E2 should NOT have started. Order: {execution_order}'
+        assert 'Event2_start' not in execution_order, f'E2 should NOT have started. Order: {execution_order}'
 
         await bus.wait_until_idle()
 

@@ -88,7 +88,7 @@ async def run_generator(args: argparse.Namespace) -> None:
 
     async def auditing_handler(event: RandomTestEvent) -> str:
         await asyncio.sleep(random.uniform(0.25, 0.6))
-        return f"route:{event.route_hint or 'default'}|category:{event.xyz_category_field}"
+        return f'route:{event.route_hint or "default"}|category:{event.xyz_category_field}'
 
     async def followup_handler(event: FollowUpEvent) -> str:
         await asyncio.sleep(random.uniform(0.3, 0.65))

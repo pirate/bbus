@@ -58,7 +58,6 @@ T_QueryEvent = TypeVar('T_QueryEvent', bound=BaseEvent[Any])
 EventPatternType = PythonIdentifierStr | Literal['*'] | type[BaseEvent[Any]]
 
 
-
 class EventBusMiddleware:
     """Hookable lifecycle interface for observing or extending EventBus execution.
 
@@ -69,9 +68,7 @@ class EventBusMiddleware:
     Status values: EventStatus.PENDING, STARTED, COMPLETED, ERROR
     """
 
-    async def on_event_change(
-        self, eventbus: 'EventBus', event: BaseEvent[Any], status: EventStatus
-    ) -> None:
+    async def on_event_change(self, eventbus: 'EventBus', event: BaseEvent[Any], status: EventStatus) -> None:
         """Called on event state transitions (pending, started, completed, error)."""
 
     async def on_event_result_change(
@@ -294,6 +291,7 @@ class EventBus:
     # Class Attributes
     name: PythonIdentifierStr = 'EventBus'
     parallel_handlers: bool = False
+    max_history_drop: bool = True
 
     # Runtime State
     id: UUIDStr = '00000000-0000-0000-0000-000000000000'
@@ -306,12 +304,14 @@ class EventBus:
     _on_idle: asyncio.Event | None = None
     _active_event_ids: set[str]
     _processing_event_ids: set[str]
+    _warned_about_dropping_uncompleted_events: bool
 
     def __init__(
         self,
         name: PythonIdentifierStr | None = None,
         parallel_handlers: bool = False,
         max_history_size: int | None = 50,  # Keep only 50 events in history
+        max_history_drop: bool = True,
         middlewares: Sequence[EventBusMiddleware] | None = None,
     ):
         self.id = uuid7str()
@@ -355,9 +355,11 @@ class EventBus:
         self.middlewares: list[EventBusMiddleware] = list(middlewares or [])
         self._active_event_ids = set()
         self._processing_event_ids = set()
+        self._warned_about_dropping_uncompleted_events = False
 
         # Memory leak prevention settings
         self.max_history_size = max_history_size
+        self.max_history_drop = max_history_drop
 
         # Register this instance
         EventBus.all_instances.add(self)
@@ -398,9 +400,7 @@ class EventBus:
         for middleware in self.middlewares:
             await middleware.on_event_change(self, event, status)
 
-    async def _on_event_result_change(
-        self, event: BaseEvent[Any], event_result: EventResult[Any], status: EventStatus
-    ) -> None:
+    async def _on_event_result_change(self, event: BaseEvent[Any], event_result: EventResult[Any], status: EventStatus) -> None:
         if not self.middlewares:
             return
         for middleware in self.middlewares:
@@ -626,28 +626,20 @@ class EventBus:
             and entry.rsplit('#', 1)[1].isalnum()
             and len(entry.rsplit('#', 1)[1]) == 4
             for entry in event.event_path
-        ), (
-            f'Event.event_path must be a list of EventBus labels BusName#abcd, got: {event.event_path}'
-        )
+        ), f'Event.event_path must be a list of EventBus labels BusName#abcd, got: {event.event_path}'
 
-        # Check hard limit on total pending events (queue + in-progress)
-        # Only enforce if we have memory limits set
-        if self.max_history_size is not None:
-            queue_size = self.event_queue.qsize() if self.event_queue else 0
-            pending_in_history = 0
-            for existing_event in self.event_history.values():
-                if not self._is_event_complete_fast(existing_event):
-                    pending_in_history += 1
-                    if queue_size + pending_in_history >= 100:
-                        break
-            total_pending = queue_size + pending_in_history
-
-            if total_pending >= 100:
-                raise RuntimeError(
-                    f'EventBus at capacity: {total_pending} pending events (100 max). '
-                    f'Queue: {queue_size}, Processing: {pending_in_history}. '
-                    f'Cannot accept new events until some complete.'
-                )
+        # NOTE:
+        # dispatch() is intentionally synchronous and runs on the same event-loop
+        # thread as the runloop task. Blocking here for "pressure" would deadlock
+        # naive flood loops because the runloop cannot progress until dispatch() returns.
+        # So pressure is handled by policy:
+        #   - max_history_drop=True  -> absorb and trim oldest history entries
+        #   - max_history_drop=False -> reject new dispatches at max_history_size
+        if self.max_history_size is not None and not self.max_history_drop and len(self.event_history) >= self.max_history_size:
+            raise RuntimeError(
+                f'{self} history limit reached ({len(self.event_history)}/{self.max_history_size}); '
+                'set max_history_drop=True to drop old history instead of rejecting new events'
+            )
 
         # Auto-start if needed
         self._start()
@@ -685,8 +677,9 @@ class EventBus:
         # EventResults are created only when handlers actually start executing.
         # This avoids "orphaned" pending results for handlers that get filtered out later.
 
-        # Soft cleanup during enqueue to prevent unbounded growth while keeping hot dispatch fast.
-        if self.max_history_size:
+        # Amortize cleanup work by trimming only after a soft overage; this keeps
+        # hot dispatch fast under large naive floods while still bounding memory.
+        if self.max_history_size and self.max_history_drop:
             soft_limit = max(self.max_history_size, int(self.max_history_size * 1.2))
             if len(self.event_history) > soft_limit:
                 self.cleanup_event_history()
@@ -1128,9 +1121,9 @@ class EventBus:
 
                 # Create async objects if needed
                 if self.event_queue is None:
-                    # Set queue size based on whether we have limits
-                    queue_size = 50 if self.max_history_size is not None else 0  # 0 = unlimited
-                    self.event_queue = CleanShutdownQueue[BaseEvent[Any]](maxsize=queue_size)
+                    # Keep queue unbounded so naive dispatch floods can enqueue without
+                    # artificial queue caps; queue stores event object references.
+                    self.event_queue = CleanShutdownQueue[BaseEvent[Any]](maxsize=0)
                     self._on_idle = asyncio.Event()
                     self._on_idle.clear()  # Start in a busy state unless we confirm queue is empty by running step() at least once
 
@@ -1385,12 +1378,11 @@ class EventBus:
                     if bus._on_idle:
                         bus._on_idle.clear()
 
-                    if event is not None:
-                        bus._processing_event_ids.add(event.event_id)
+                    bus._processing_event_ids.add(event.event_id)
                     async with _get_global_lock():
                         # If a competing path already completed this claimed queue item,
                         # skip duplicate handler execution and just drain queue bookkeeping.
-                        if event is not None and not bus._is_event_complete_fast(event):
+                        if not bus._is_event_complete_fast(event):
                             await bus.handle_event(event)
                         queue.task_done()
 
@@ -1408,10 +1400,9 @@ class EventBus:
                 except Exception as e:
                     logger.exception(f'❌ Weak run loop error: {type(e).__name__} {e}', exc_info=True)
                 finally:
-                    if event is not None:
-                        bus._processing_event_ids.discard(event.event_id)
-                        # Local bus has finished processing this event instance.
-                        bus._active_event_ids.discard(event.event_id)
+                    bus._processing_event_ids.discard(event.event_id)
+                    # Local bus has finished processing this event instance.
+                    bus._active_event_ids.discard(event.event_id)
                     del bus
         finally:
             bus = bus_ref()
@@ -1623,7 +1614,7 @@ class EventBus:
             current = parent_event
 
         # Clean up excess events to prevent memory leaks
-        if self.max_history_size and len(self.event_history) > self.max_history_size:
+        if self.max_history_size and self.max_history_drop and len(self.event_history) > self.max_history_size:
             self.cleanup_event_history()
 
     def _get_applicable_handlers(self, event: BaseEvent[Any]) -> dict[str, EventHandler]:
@@ -1699,7 +1690,7 @@ class EventBus:
                     pass
         else:
             # otherwise, execute handlers serially, wait until each one completes before moving on to the next
-            for handler_id, handler in applicable_handlers.items():
+            for handler in applicable_handlers.values():
                 try:
                     await self.execute_handler(event, handler, timeout=timeout)
                 except Exception as e:
@@ -1741,9 +1732,7 @@ class EventBus:
                 {handler_id: handler}, eventbus=self, timeout=timeout or event.event_timeout
             )
             for pending_result in new_results.values():
-                await self._on_event_result_change(
-                    event, pending_result, EventStatus.PENDING
-                )
+                await self._on_event_result_change(event, pending_result, EventStatus.PENDING)
 
         event_result = event.event_results[handler_id]
 
@@ -1777,20 +1766,14 @@ class EventBus:
                     result_type_name,
                 )
 
-            await self._on_event_result_change(
-                event, event_result, EventStatus.COMPLETED
-            )
+            await self._on_event_result_change(event, event_result, EventStatus.COMPLETED)
             return cast(T_EventResultType, result_value)
 
         except asyncio.CancelledError:
-            await self._on_event_result_change(
-                event, event_result, EventStatus.COMPLETED
-            )
+            await self._on_event_result_change(event, event_result, EventStatus.COMPLETED)
             raise
         except Exception:
-            await self._on_event_result_change(
-                event, event_result, EventStatus.COMPLETED
-            )
+            await self._on_event_result_change(event, event_result, EventStatus.COMPLETED)
             raise
 
     def _would_create_loop(self, event: BaseEvent[Any], handler: EventHandler) -> bool:
@@ -1967,9 +1950,19 @@ class EventBus:
             del self.event_history[event_id]
 
         if events_to_remove:
+            completed_event_ids = {event_id for event_id, _ in completed_events}
+            dropped_uncompleted = sum(1 for event_id in events_to_remove if event_id not in completed_event_ids)
             logger.debug(
                 f'🧹 {self} Cleaned up {len(events_to_remove)} events from history (kept {len(self.event_history)}/{self.max_history_size})'
             )
+            if dropped_uncompleted > 0 and not self._warned_about_dropping_uncompleted_events:
+                self._warned_about_dropping_uncompleted_events = True
+                logger.warning(
+                    '[bubus] ⚠️ Bus %s has exceeded max_history_size=%s and is dropping oldest history entries '
+                    '(even uncompleted events). Increase max_history_size or set max_history_drop=False to reject.',
+                    self,
+                    self.max_history_size,
+                )
 
         return len(events_to_remove)
 

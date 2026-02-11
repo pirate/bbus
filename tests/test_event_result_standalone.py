@@ -1,8 +1,7 @@
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-
-from typing import Any, cast
 
 from bubus.models import BaseEvent, EventHandler, EventResult, get_handler_id
 from bubus.service import EventBus

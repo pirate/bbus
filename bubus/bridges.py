@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from anyio import Path as AnyPath
 from uuid_extensions import uuid7str
 
 from bubus.models import BaseEvent
@@ -145,17 +146,19 @@ class EventBridge:
             return
 
         async with self._start_lock:
-            if self.listen_on is None or self._server is not None:
+            if self._server is not None:
                 return
 
             endpoint = self.listen_on
+            assert endpoint is not None
             if endpoint.scheme == 'unix':
                 socket_path = Path(endpoint.path or '')
                 if not socket_path.is_absolute():
                     raise ValueError(f'unix listen_on path must be absolute, got: {endpoint.raw}')
                 socket_path.parent.mkdir(parents=True, exist_ok=True)
-                if socket_path.exists():
-                    socket_path.unlink()
+                async_socket_path = AnyPath(socket_path)
+                if await async_socket_path.exists():
+                    await async_socket_path.unlink()
                 self._listen_socket_path = socket_path
                 self._server = await asyncio.start_unix_server(self._handle_unix_client, path=str(socket_path))
                 return

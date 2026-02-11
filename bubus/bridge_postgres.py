@@ -2,24 +2,14 @@
 
 Optional dependency: asyncpg
 
-Usage:
-    # table and channel both default to "bubus_events"
-    bridge = PostgresEventBridge('postgresql://user:pass@localhost:5432/mydb')
-
-    # explicit channel override
-    bridge = PostgresEventBridge(
-        'postgresql://user:pass@localhost:5432/mydb/events_table',
-        channel='events_custom',
-    )
-
 Connection URL format:
     postgresql://user:pass@host:5432/dbname[/tablename]?sslmode=require
 
-The optional trailing path segment is treated as the table name (defaults to
-"bubus_events"). The bridge auto-creates
-that table and auto-adds columns for new event fields as TEXT columns.
-Each field value is stored as JSON text in its own column (flat row, no payload
-JSON column).
+Schema shape (flat):
+- event_id (PRIMARY KEY)
+- event_created_at (indexed)
+- event_type (indexed)
+- one TEXT column per event field storing JSON-serialized values
 """
 
 from __future__ import annotations
@@ -38,7 +28,6 @@ from bubus.models import BaseEvent
 from bubus.service import EventBus, EventPatternType, inside_handler_context
 
 _IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
-_INTERNAL_COLUMNS = {'row_id', 'inserted_at'}
 _DEFAULT_POSTGRES_TABLE = 'bubus_events'
 _DEFAULT_POSTGRES_CHANNEL = 'bubus_events'
 
@@ -50,14 +39,6 @@ def _validate_identifier(identifier: str, *, label: str) -> str:
 
 
 def _parse_table_url(table_url: str) -> tuple[str, str]:
-    """Split a postgres URL into (dsn_without_table, table_name).
-
-    Example:
-      postgresql://u:p@h:5432/mydb/mytable?sslmode=require
-        -> (postgresql://u:p@h:5432/mydb?sslmode=require, mytable)
-      postgresql://u:p@h:5432/mydb?sslmode=require
-        -> (postgresql://u:p@h:5432/mydb?sslmode=require, bubus_events)
-    """
     parsed = urlsplit(table_url)
     segments = [segment for segment in parsed.path.split('/') if segment]
     if len(segments) < 1:
@@ -74,6 +55,10 @@ def _parse_table_url(table_url: str) -> tuple[str, str]:
     return dsn, table_name
 
 
+def _index_name(table: str, suffix: str) -> str:
+    return _validate_identifier(f'{table}_{suffix}'[:63], label='index name')
+
+
 class PostgresEventBridge:
     def __init__(self, table_url: str, channel: str | None = None, *, name: str | None = None):
         self.table_url = table_url
@@ -85,7 +70,7 @@ class PostgresEventBridge:
         self._running = False
         self._conn: Any | None = None
         self._listener_callback: Any | None = None
-        self._table_columns: set[str] = {'event_id'}
+        self._table_columns: set[str] = {'event_id', 'event_created_at', 'event_type'}
 
     def on(self, event_pattern: EventPatternType, handler: Callable[[BaseEvent[Any]], Any]) -> None:
         self._ensure_started()
@@ -113,13 +98,13 @@ class PostgresEventBridge:
             )
         else:
             upsert_sql = (
-                f'INSERT INTO "{self.table}" ({columns_sql}) VALUES ({placeholders_sql}) '
-                'ON CONFLICT ("event_id") DO NOTHING'
+                f'INSERT INTO "{self.table}" ({columns_sql}) VALUES ({placeholders_sql}) ON CONFLICT ("event_id") DO NOTHING'
             )
 
         assert self._conn is not None
         await self._conn.execute(upsert_sql, *values)
-        await self._conn.execute('SELECT pg_notify($1, $2)', self.channel, event.event_id)
+        event_id_payload = json.dumps(payload['event_id'], separators=(',', ':'))
+        await self._conn.execute('SELECT pg_notify($1, $2)', self.channel, event_id_payload)
 
         if inside_handler_context.get():
             return None
@@ -136,6 +121,8 @@ class PostgresEventBridge:
         self._conn = await asyncpg.connect(self.dsn)
         await self._ensure_table_exists()
         await self._refresh_column_cache()
+        await self._ensure_columns(['event_id', 'event_created_at', 'event_type'])
+        await self._ensure_base_indexes()
 
         async def _dispatch_event_id(event_id: str) -> None:
             try:
@@ -147,6 +134,7 @@ class PostgresEventBridge:
             asyncio.create_task(_dispatch_event_id(payload))
 
         self._listener_callback = _listener
+        assert self._conn is not None
         await self._conn.add_listener(self.channel, _listener)
         self._running = True
 
@@ -180,7 +168,7 @@ class PostgresEventBridge:
 
         payload: dict[str, Any] = {}
         for key, raw_value in dict(row).items():
-            if key in _INTERNAL_COLUMNS or raw_value is None:
+            if raw_value is None:
                 continue
             try:
                 payload[key] = json.loads(raw_value)
@@ -205,21 +193,29 @@ class PostgresEventBridge:
         await self._conn.execute(
             f'''
             CREATE TABLE IF NOT EXISTS "{self.table}" (
-                "row_id" BIGSERIAL PRIMARY KEY,
-                "inserted_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                "event_id" TEXT NOT NULL UNIQUE
+                "event_id" TEXT PRIMARY KEY,
+                "event_created_at" TEXT,
+                "event_type" TEXT
             )
             '''
         )
 
+    async def _ensure_base_indexes(self) -> None:
+        assert self._conn is not None
+        event_created_at_idx = _index_name(self.table, 'event_created_at_idx')
+        event_type_idx = _index_name(self.table, 'event_type_idx')
+
+        await self._conn.execute(f'CREATE INDEX IF NOT EXISTS "{event_created_at_idx}" ON "{self.table}" ("event_created_at")')
+        await self._conn.execute(f'CREATE INDEX IF NOT EXISTS "{event_type_idx}" ON "{self.table}" ("event_type")')
+
     async def _refresh_column_cache(self) -> None:
         assert self._conn is not None
         rows = await self._conn.fetch(
-            '''
+            """
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = 'public' AND table_name = $1
-            ''',
+            """,
             self.table,
         )
         self._table_columns = {str(row['column_name']) for row in rows}

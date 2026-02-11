@@ -8,7 +8,6 @@ from typing import Any
 
 from performance_scenarios import PERF_SCENARIO_IDS, PerfInput, run_all_perf_scenarios, run_perf_scenario_by_id
 
-
 TABLE_MATRIX = [
     ('50k-events', '1 bus x 50k events x 1 handler'),
     ('500-buses-x-100-events', '500 busses x 100 events x 1 handler'),

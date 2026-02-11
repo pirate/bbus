@@ -419,9 +419,7 @@ class TestFindFutureOnly:
                 await asyncio.sleep(0.05)
                 return await bus.dispatch(ParentEvent())
 
-            find_task = asyncio.create_task(
-                bus.find(ParentEvent, past=False, future=1)
-            )
+            find_task = asyncio.create_task(bus.find(ParentEvent, past=False, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
 
             found, dispatched = await asyncio.gather(find_task, dispatch_task)
@@ -627,9 +625,7 @@ class TestFindPastAndFuture:
                 await asyncio.sleep(0.05)
                 return await bus.dispatch(ChildEvent())
 
-            find_task = asyncio.create_task(
-                bus.find(ChildEvent, past=True, future=1)
-            )
+            find_task = asyncio.create_task(bus.find(ChildEvent, past=True, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
 
             found, dispatched = await asyncio.gather(find_task, dispatch_task)
@@ -700,9 +696,7 @@ class TestFindPastAndFuture:
                 await asyncio.sleep(0.05)
                 return await bus.dispatch(ParentEvent())
 
-            find_task = asyncio.create_task(
-                bus.find(ParentEvent, past=0.05, future=1)
-            )
+            find_task = asyncio.create_task(bus.find(ParentEvent, past=0.05, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
 
             found, dispatched = await asyncio.gather(find_task, dispatch_task)
@@ -762,9 +756,7 @@ class TestFindWithChildOf:
             await bus.dispatch(UnrelatedEvent())
 
             # Should not find UnrelatedEvent as child of parent
-            found = await bus.find(
-                UnrelatedEvent, child_of=parent, past=True, future=False
-            )
+            found = await bus.find(UnrelatedEvent, child_of=parent, past=True, future=False)
 
             assert found is None
 
@@ -795,9 +787,7 @@ class TestFindWithChildOf:
             await bus.wait_until_idle()
 
             # Find grandchild of parent
-            found = await bus.find(
-                GrandchildEvent, child_of=parent, past=True, future=False
-            )
+            found = await bus.find(GrandchildEvent, child_of=parent, past=True, future=False)
 
             assert found is not None
             assert found.event_id == grandchild_ref[0].event_id
@@ -831,9 +821,7 @@ class TestFindWithChildOf:
             await auth_bus.wait_until_idle()
 
             # Find child event on auth_bus using parent from main_bus
-            found = await auth_bus.find(
-                ChildEvent, child_of=parent, past=5, future=5
-            )
+            found = await auth_bus.find(ChildEvent, child_of=parent, past=5, future=5)
 
             assert found is not None
             assert found.event_id == child_ref[0].event_id
@@ -1076,9 +1064,7 @@ class TestDebouncingPattern:
             # Should be a new event (different ID)
             assert result is not None
             # Both events should be in history now
-            screenshots = [
-                e for e in bus.event_history.values() if isinstance(e, ScreenshotEvent)
-            ]
+            screenshots = [e for e in bus.event_history.values() if isinstance(e, ScreenshotEvent)]
             assert len(screenshots) == 2
 
         finally:
@@ -1274,9 +1260,7 @@ class TestRaceConditionFix:
 
             # By now TabCreatedEvent has already fired
             # Using find(past=True) should catch it
-            found = await bus.find(
-                TabCreatedEvent, child_of=nav_event, past=True, future=False
-            )
+            found = await bus.find(TabCreatedEvent, child_of=nav_event, past=True, future=False)
 
             assert found is not None
             assert found.event_id == tab_ref[0].event_id
@@ -1289,6 +1273,7 @@ class TestRaceConditionFix:
         bus = EventBus()
 
         try:
+
             async def navigate_handler(event: NavigateEvent) -> str:
                 await bus.dispatch(TabCreatedEvent(tab_id=f'tab_for_{event.url}'))
                 return 'navigate_done'
@@ -1301,14 +1286,10 @@ class TestRaceConditionFix:
             nav2 = await bus.dispatch(NavigateEvent(url='site2'))
 
             # Find tab created by nav1 specifically
-            tab1 = await bus.find(
-                TabCreatedEvent, child_of=nav1, past=True, future=False
-            )
+            tab1 = await bus.find(TabCreatedEvent, child_of=nav1, past=True, future=False)
 
             # Find tab created by nav2 specifically
-            tab2 = await bus.find(
-                TabCreatedEvent, child_of=nav2, past=True, future=False
-            )
+            tab2 = await bus.find(TabCreatedEvent, child_of=nav2, past=True, future=False)
 
             assert tab1 is not None
             assert tab2 is not None

@@ -1,18 +1,5 @@
 /**
  * PostgreSQL LISTEN/NOTIFY + flat-table bridge for forwarding events.
- *
- * Usage:
- *   // table and channel both default to "bubus_events"
- *   const bridge = new PostgresEventBridge('postgresql://user:pass@localhost:5432/mydb')
- *
- *   // explicit channel override
- *   const bridge2 = new PostgresEventBridge(
- *     'postgresql://user:pass@localhost:5432/mydb/events_table',
- *     'events_custom'
- *   )
- *
- * URL format:
- *   postgresql://user:pass@host:5432/<db>/[<table>]?sslmode=require
  */
 import { BaseEvent } from './base_event.js'
 import { EventBus } from './event_bus.js'
@@ -21,7 +8,6 @@ import type { EventClass, EventHandlerFunction, EventKey, UntypedEventHandlerFun
 
 const randomSuffix = (): string => Math.random().toString(36).slice(2, 10)
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-const INTERNAL_COLUMNS = new Set(['row_id', 'inserted_at'])
 const DEFAULT_POSTGRES_TABLE = 'bubus_events'
 const DEFAULT_POSTGRES_CHANNEL = 'bubus_events'
 
@@ -31,6 +17,8 @@ const validateIdentifier = (value: string, label: string): string => {
   }
   return value
 }
+
+const indexName = (table: string, suffix: string): string => validateIdentifier(`${table}_${suffix}`.slice(0, 63), 'index name')
 
 const parseTableUrl = (table_url: string): { dsn: string; table: string } => {
   let parsed: URL
@@ -84,7 +72,7 @@ export class PostgresEventBridge {
     this.inbound_bus = new EventBus(this.name)
     this.running = false
     this.client = null
-    this.table_columns = new Set(['event_id'])
+    this.table_columns = new Set(['event_id', 'event_created_at', 'event_type'])
     this.notification_handler = null
 
     this.dispatch = this.dispatch.bind(this)
@@ -125,7 +113,7 @@ export class PostgresEventBridge {
     }
 
     await this.client.query(upsert_sql, values)
-    await this.client.query('SELECT pg_notify($1, $2)', [this.channel, String(event.event_id)])
+    await this.client.query('SELECT pg_notify($1, $2)', [this.channel, JSON.stringify(String(event.event_id))])
   }
 
   async emit<T extends BaseEvent>(event: T): Promise<void> {
@@ -145,6 +133,8 @@ export class PostgresEventBridge {
 
     await this.ensureTableExists()
     await this.refreshColumnCache()
+    await this.ensureColumns(['event_id', 'event_created_at', 'event_type'])
+    await this.ensureBaseIndexes()
 
     this.notification_handler = (msg: { channel: string; payload?: string }) => {
       if (msg.channel !== this.channel || !msg.payload) return
@@ -189,7 +179,7 @@ export class PostgresEventBridge {
 
     const payload: Record<string, unknown> = {}
     for (const [key, raw_value] of Object.entries(row)) {
-      if (INTERNAL_COLUMNS.has(key) || raw_value === null || raw_value === undefined) continue
+      if (raw_value === null || raw_value === undefined) continue
       if (typeof raw_value !== 'string') {
         payload[key] = raw_value
         continue
@@ -214,8 +204,18 @@ export class PostgresEventBridge {
   private async ensureTableExists(): Promise<void> {
     if (!this.client) return
     await this.client.query(
-      `CREATE TABLE IF NOT EXISTS "${this.table}" ("row_id" BIGSERIAL PRIMARY KEY, "inserted_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(), "event_id" TEXT NOT NULL UNIQUE)`
+      `CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT)`
     )
+  }
+
+  private async ensureBaseIndexes(): Promise<void> {
+    if (!this.client) return
+
+    const event_created_at_idx = indexName(this.table, 'event_created_at_idx')
+    const event_type_idx = indexName(this.table, 'event_type_idx')
+
+    await this.client.query(`CREATE INDEX IF NOT EXISTS "${event_created_at_idx}" ON "${this.table}" ("event_created_at")`)
+    await this.client.query(`CREATE INDEX IF NOT EXISTS "${event_type_idx}" ON "${this.table}" ("event_type")`)
   }
 
   private async refreshColumnCache(): Promise<void> {

@@ -114,7 +114,7 @@ new EventBus(name?: string, options?: {
 | Option | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `id` | `string` | `uuidv7()` | Override bus UUID (mostly for serialization/tests). |
-| `max_history_size` | `number \| null` | `100` | Max events kept in `event_history`; `null` = unbounded. |
+| `max_history_size` | `number \| null` | `100` | Max events kept in `event_history`; `null` = unbounded. Current behavior is equivalent to `max_history_drop=true`: if `True`, drop oldest history entries (even uncompleted events). |
 | `event_concurrency` | `'global-serial' \| 'bus-serial' \| 'parallel' \| null` | `'bus-serial'` | Event-level scheduling policy. |
 | `event_handler_concurrency` | `'serial' \| 'parallel' \| null` | `'serial'` | Per-event handler scheduling policy. |
 | `event_handler_completion` | `'all' \| 'first'` | `'all'` | Event completion mode if event does not override it. |
@@ -548,6 +548,7 @@ EventHandler.fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandl
 
 - `max_history_size?: number | null` (default: `100`)
   - Max events kept in history. `null` = unlimited. `bus.find(...)` uses this log to query recently dispatched events
+  - Current TS behavior is equivalent to `max_history_drop=true`: if `True`, drop oldest history entries (even uncompleted events).
 - `event_concurrency?: 'global-serial' | 'bus-serial' | 'parallel' | null` (default: `'bus-serial'`)
   - Event-level scheduling policy (`global-serial`: FIFO across all buses, `bus-serial`: FIFO per bus, `parallel`: concurrent events per bus).
 - `event_handler_concurrency?: 'serial' | 'parallel' | null` (default: `'serial'`)
@@ -741,13 +742,13 @@ Emitting a new event for each retry is only recommended if you are using the log
 
 Each bridge is wired the same way: `bus.on('*', bridge.emit)` and `bridge.on('*', bus.emit)`.
 
-- `HTTPEventBridge`: `new HTTPEventBridge({ send_to: 'https://remote-host/events', listen_on: 'http://0.0.0.0:23424/events' })`
-- `SocketEventBridge`: `new SocketEventBridge('/tmp/bubus.sock')`
-- `NATSEventBridge`: `new NATSEventBridge('nats://localhost:4222', 'bubus_events')`
-- `RedisEventBridge`: `new RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
-- `PostgresEventBridge`: `new PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/tablename')`
-- `JSONLEventBridge`: `new JSONLEventBridge('/tmp/bubus.events.jsonl')`
-- `SQLiteEventBridge`: `new SQLiteEventBridge('/tmp/bubus.events.sqlite3')`
+- `new SocketEventBridge('/tmp/bubus_events.sock')`
+- `new HTTPEventBridge({ send_to: 'https://127.0.0.1:8001/bubus_events', listen_on: 'http://0.0.0.0:8002/bubus_events' })`
+- `new JSONLEventBridge('/tmp/bubus_events.jsonl')`
+- `new SQLiteEventBridge('/tmp/bubus_events.sqlite3')`
+- `new PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/bubus_events')`
+- `new RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
+- `new NATSEventBridge('nats://localhost:4222', 'bubus_events')`
 
 <br/>
 

@@ -83,9 +83,7 @@ async def test_sqlite_mirror_matches_inmemory_success(tmp_path: Path) -> None:
     assert sqlite_result == in_memory_result
 
     conn = sqlite3.connect(db_path)
-    event_phases = conn.execute(
-        'SELECT phase FROM events_log ORDER BY id'
-    ).fetchall()
+    event_phases = conn.execute('SELECT phase FROM events_log ORDER BY id').fetchall()
     conn.close()
     assert {phase for (phase,) in event_phases} >= {'pending', 'started', 'completed'}
 

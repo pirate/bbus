@@ -193,13 +193,13 @@ print(event.event_path)  # ['MainBus', 'AuthBus', 'DataBus']  # list of buses th
 
 Each bridge is wired the same way: `bus.on('*', bridge.emit)` and `bridge.on('*', bus.emit)`.
 
-- `HTTPEventBridge`: `HTTPEventBridge(send_to='https://remote-host/events', listen_on='http://0.0.0.0:23423/events')`
-- `SocketEventBridge`: `SocketEventBridge(path='/tmp/bubus.sock')`
-- `NATSEventBridge`: `NATSEventBridge('nats://localhost:4222', 'bubus_events')`
-- `RedisEventBridge`: `RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
-- `PostgresEventBridge`: `PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/tablename')`
-- `JSONLEventBridge`: `JSONLEventBridge('/tmp/bubus.events.jsonl')`
-- `SQLiteEventBridge`: `SQLiteEventBridge('/tmp/bubus.events.sqlite3')`
+- `SocketEventBridge('/tmp/bubus_events.sock')`
+- `HTTPEventBridge(send_to='https://127.0.0.1:8001/bubus_events', listen_on='http://0.0.0.0:8002/bubus_events')`
+- `JSONLEventBridge('/tmp/bubus_events.jsonl')`
+- `SQLiteEventBridge('/tmp/bubus_events.sqlite3')`
+- `PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/bubus_events')`
+- `RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
+- `NATSEventBridge('nats://localhost:4222', 'bubus_events')`
 
 <br/>
 
@@ -549,15 +549,19 @@ await event_b  # Still sees 'req-B'
 EventBus includes automatic memory management to prevent unbounded growth in long-running applications:
 
 ```python
-# Create a bus with memory limits (default: 100 events)
+# Create a bus with memory limits (default: 50 events)
 bus = EventBus(max_history_size=100)  # Keep max 100 events in history
 
 # Or disable memory limits for unlimited history
 bus = EventBus(max_history_size=None)
+
+# Or reject new dispatches when history is full (instead of dropping old history)
+bus = EventBus(max_history_size=100, max_history_drop=False)
 ```
 
 **Automatic Cleanup:**
-- When `max_history_size` is set, EventBus automatically removes old events when the limit is exceeded
+- When `max_history_size` is set and `max_history_drop=True` (default), EventBus removes old events when the limit is exceeded
+- If `max_history_drop=True`, the bus may drop oldest history entries even if they are uncompleted events
 - Completed events are removed first (oldest first), then started events, then pending events
 - This ensures active events are preserved while cleaning up old completed events
 
@@ -655,6 +659,7 @@ EventBus(
     name: str | None = None,
     parallel_handlers: bool = False,
     max_history_size: int | None = 50,
+    max_history_drop: bool = True,
     middlewares: Sequence[EventBusMiddleware | type[EventBusMiddleware]] | None = None,
 )
 ```
@@ -663,6 +668,8 @@ EventBus(
 
 - `name`: Optional unique name for the bus (auto-generated if not provided)
 - `parallel_handlers`: If `True`, handlers run concurrently for each event, otherwise serially if `False` (the default)
+- `max_history_size`: Maximum number of events to keep in history (default: 50, `None` = unlimited)
+- `max_history_drop`: If `True` (default), drop oldest history entries when full (even uncompleted events). If `False`, reject new dispatches once history reaches `max_history_size`
 - `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc.
 
 Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need:
@@ -690,8 +697,6 @@ from bubus import EventBus, SQLiteHistoryMirrorMiddleware
 
 bus = EventBus(middlewares=[SQLiteHistoryMirrorMiddleware('./events.sqlite')])
 ```
-- `max_history_size`: Maximum number of events to keep in history (default: 50, None = unlimited)
-
 #### `EventBus` Properties
 
 - `name`: The bus identifier
@@ -724,7 +729,9 @@ event = bus.dispatch(MyEvent(data="test"))
 result = await event  # await the pending Event to get the completed Event
 ```
 
-**Note:** When `max_history_size` is set, EventBus enforces a hard limit of 100 pending events (queue + processing) to prevent runaway memory usage. Dispatch will raise `RuntimeError` if this limit is exceeded.
+**Note:** Queueing is unbounded. History pressure is controlled by `max_history_size` + `max_history_drop`:
+- `max_history_drop=True`: absorb new events and trim old history entries (even uncompleted events).
+- `max_history_drop=False`: raise `RuntimeError` when history is full.
 
 ##### `query(event_type: str | Type[BaseEvent], *, include: Callable[[BaseEvent], bool] | None=None, exclude: Callable[[BaseEvent], bool] | None=None, since: timedelta | float | int | None=None) -> BaseEvent | None`
 

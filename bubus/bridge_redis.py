@@ -43,20 +43,14 @@ def _parse_redis_url(redis_url: str, channel: str | None) -> tuple[str, str]:
 
     path_segments = [segment for segment in parsed.path.split('/') if segment]
     if len(path_segments) > 2:
-        raise ValueError(
-            'RedisEventBridge URL path must be /<db> or /<db>/<channel>, '
-            f'got: {parsed.path or "/"}'
-        )
+        raise ValueError(f'RedisEventBridge URL path must be /<db> or /<db>/<channel>, got: {parsed.path or "/"}')
 
     db_index = '0'
     channel_from_url: str | None = None
     if path_segments:
         db_index = path_segments[0]
         if not db_index.isdigit():
-            raise ValueError(
-                'RedisEventBridge URL db path segment must be numeric, '
-                f'got: {db_index!r} in {redis_url}'
-            )
+            raise ValueError(f'RedisEventBridge URL db path segment must be numeric, got: {db_index!r} in {redis_url}')
         if len(path_segments) == 2:
             channel_from_url = path_segments[1]
 
@@ -107,11 +101,14 @@ class RedisEventBridge:
         redis_asyncio = self._load_redis_asyncio()
         self._redis_pub = redis_asyncio.from_url(self.url, decode_responses=True)
         self._redis_sub = redis_asyncio.from_url(self.url, decode_responses=True)
+        assert self._redis_pub is not None
+        assert self._redis_sub is not None
 
         # Redis logical DBs are created lazily; writing a short-lived key initializes/validates the selected DB.
         await self._redis_pub.set(_DB_INIT_KEY, '1', ex=60, nx=True)
 
         self._pubsub = self._redis_sub.pubsub()
+        assert self._pubsub is not None
         await self._pubsub.subscribe(self.channel)
 
         self._running = True
