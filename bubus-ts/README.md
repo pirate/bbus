@@ -108,16 +108,15 @@ const bus = new EventBus('MyBus', {
 Core methods:
 
 - `bus.emit(event)` aka `bus.dispatch(event)`
-- `bus.on(eventKey, handler, options?)`
-- `bus.off(eventKey, handler)`
-- `bus.find(eventKey, options?)`
+- `bus.on(event_type, handler, options?)`
+- `bus.off(event_type, handler)`
+- `bus.find(event_type, options?)`
 - `bus.waitUntilIdle()`
-- `bus.destroy()`
 
 Notes:
 
 - String matching of event types using `bus.on('SomeEvent', ...)` and `bus.on('*', ...)` wildcard matching is supported
-- Prefer passing event class to (`bus.on(MyEvent, handler)`) over string-based maching for strictest type inference
+- Prefer passing event class to (`bus.on(MyEvent, handler)`) over string-based maching for stricter type inference
 
 ### `BaseEvent`
 
