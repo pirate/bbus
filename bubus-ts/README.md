@@ -387,16 +387,7 @@ When `event.done()` is awaited inside a handler, **queue-jump** happens:
 **Important:** queue-jump bypasses event semaphores but **respects** handler semaphores via yield-and-reacquire.
 This means queue-jumped handlers still serialize **per event** when `event_handler_concurrency` is `serial`.
 
-### 6) Precedence recap
-
-Highest → lowest:
-
-1. Event instance fields (`event_concurrency`, `event_handler_concurrency`)
-2. Bus defaults
-
-`null` always resolves to the bus default.
-
-## Gotchas and Design Choices (What surprised us)
+## Design Choices (What surprised us)
 
 ### A) Handler attribution without AsyncLocalStorage
 
@@ -433,17 +424,12 @@ To prevent that:
 
 When you `await event.done()` inside a handler:
 
-- the system finds all buses that have this event queued (using `EventBus._all_instances` + `event_path` labels)
+- the system enqueues the the bus + checks all busses in case its forwarded to more than one (using `EventBus._all_instances` + `event_path` labels)
 - pauses their runloops
 - processes the event immediately on each bus
-- then resumes the runloops
+- then resumes the runloops so queued events continue normally
 
-This gives the same "awaited events jump the queue" semantics as Python, but without a global lock.
-
-### E) Why `event.bus` is required for `done()`
-
-`done()` is the signal to run an event immediately when called inside a handler. Without a bus, we can't
-perform the queue jump, so `done()` throws if no bus is attached.
+This gives "awaited events jump the queue regardless of how many busses they go through" semantics, same as Python.
 
 ## Summary
 
