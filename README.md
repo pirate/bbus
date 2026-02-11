@@ -33,24 +33,6 @@ It's async native, has proper automatic nested event tracking, and powerful conc
 
 <br/>
 
-## 🏃 Runtime (Python)
-
-Performance matrix measured locally on **February 11, 2026** with:
-
-- `uv run python tests/performance_runtime.py --json`
-
-| Runtime | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
-| ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
-| Python | `0.239ms/event`, `8.024kb/event` | `0.259ms/event`, `0.148kb/event` | `0.077ms/handler`, `7.785kb/handler` | `0.310ms/event`, `0.025kb/event` | `0.694ms/event`, `2.464kb/event` |
-
-Notes:
-
-- These runs use default bus setup (no special tuning knobs like custom history limits).
-- `1 bus x 50k events x 1 handler` dispatches all 50k events in one go (no manual batching).
-- `kb/event` and `kb/handler` are peak RSS deltas normalized per work unit for each scenario.
-- CPU totals are also collected by the harness (see `cpu_ms` / `cpu_ms_per_event` in JSON output) so wall-clock latency is not interpreted as pure CPU cost.
-
-<br/>
 
 ## 🔢 Quickstart
 
@@ -1258,6 +1240,19 @@ class DatabaseService:
 db_service = DatabaseService()
 bus.on(DatabaseEvent, db_service.execute_query)
 ```
+
+<br/>
+
+
+## 🏃 Performance (Python)
+
+```bash
+uv run perf   # run the performance test suite in python
+```
+
+| Runtime | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
+| ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
+| Python | `0.239ms/event`, `8.024kb/event` | `0.259ms/event`, `0.148kb/event` | `0.077ms/handler`, `7.785kb/handler` | `0.310ms/event`, `0.025kb/event` | `0.694ms/event`, `2.464kb/event` |
 
 <br/>
 
