@@ -175,6 +175,7 @@ Use when tearing down subscriptions (tests, plugin unload, hot-reload).
 - Omit `handler` to remove all handlers for `event_key`.
 - Pass handler function reference to remove one by function identity.
 - Pass handler id (`string`) or `EventHandler` object to remove by id.
+- use `bus.off('*')` to remove *all* registered handlers from the bus
 
 #### `dispatch()` / `emit()`
 
