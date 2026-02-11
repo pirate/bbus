@@ -18,7 +18,7 @@ class ValueError extends Error {
   }
 }
 
-const createHandlerEntry = (bus: EventBus, handler_id: string, handler_name: string, event_key: string): EventHandler => {
+const createHandlerEntry = (bus: EventBus, handler_id: string, handler_name: string, event_pattern: string): EventHandler => {
   const handler: EventHandlerFunction = () => undefined
   const { isostring: handler_registered_at, ts: handler_registered_ts } = BaseEvent.nextTimestamp()
   return new EventHandler({
@@ -28,7 +28,7 @@ const createHandlerEntry = (bus: EventBus, handler_id: string, handler_name: str
     handler_timeout: bus.event_timeout_default,
     handler_registered_at,
     handler_registered_ts,
-    event_key,
+    event_pattern,
     eventbus_name: bus.name,
     eventbus_id: bus.id,
   })

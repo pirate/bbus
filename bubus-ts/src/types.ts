@@ -5,7 +5,7 @@ export type EventStatus = 'pending' | 'started' | 'completed'
 
 export type EventClass<T extends BaseEvent = BaseEvent> = { event_type?: string } & (new (...args: any[]) => T)
 
-export type EventKey<T extends BaseEvent = BaseEvent> = string | EventClass<T>
+export type EventPattern<T extends BaseEvent = BaseEvent> = string | EventClass<T>
 
 export type EventWithResult<TResult> = BaseEvent & { __event_result_type__?: TResult }
 
@@ -31,18 +31,22 @@ export type FindOptions = {
   child_of?: BaseEvent | null
 } & FindEventFieldFilters
 
-export const normalizeEventKey = (event_key: EventKey | '*'): string | '*' => {
-  if (event_key === '*') {
+export const normalizeEventPattern = (event_pattern: EventPattern | '*'): string | '*' => {
+  if (event_pattern === '*') {
     return '*'
   }
-  if (typeof event_key === 'string') {
-    return event_key
+  if (typeof event_pattern === 'string') {
+    return event_pattern
   }
-  const event_type = (event_key as { event_type?: unknown }).event_type
+  const event_type = (event_pattern as { event_type?: unknown }).event_type
   if (typeof event_type === 'string' && event_type.length > 0 && event_type !== 'BaseEvent') {
     return event_type
   }
-  throw new Error(`Invalid event key: expected event type string, "*", or BaseEvent class, got: ${JSON.stringify(event_key).slice(0, 80)}`)
+  const class_name = (event_pattern as { name?: unknown }).name
+  if (typeof class_name === 'string' && class_name.length > 0 && class_name !== 'BaseEvent') {
+    return class_name
+  }
+  throw new Error(`Invalid event key: expected event type string, "*", or BaseEvent class, got: ${JSON.stringify(event_pattern).slice(0, 80)}`)
 }
 
 const WRAPPER_TYPES = new Set(['optional', 'nullable', 'default', 'catch', 'prefault', 'readonly', 'nonoptional', 'exact_optional'])

@@ -1247,7 +1247,7 @@ bus.on(DatabaseEvent, db_service.execute_query)
 ## 🏃 Performance (Python)
 
 ```bash
-uv run perf   # run the performance test suite in python
+uv run tests/performance_runtime.py   # run the performance test suite in python
 ```
 
 | Runtime | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
@@ -1293,7 +1293,7 @@ uv run pytest -vxs --full-trace tests/
 uv run pytest tests/test_eventbus.py
 
 # Run Python perf suite
-uv run perf
+uv run tests/performance_runtime.py
 
 # Run the entire lint+test+examples+perf suite for both python and ts
 ./test.sh

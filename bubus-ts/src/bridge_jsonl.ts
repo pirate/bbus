@@ -1,6 +1,6 @@
 import { BaseEvent } from './base_event.js'
 import { EventBus } from './event_bus.js'
-import type { EventClass, EventHandlerFunction, EventKey, UntypedEventHandlerFunction } from './types.js'
+import type { EventClass, EventHandlerFunction, EventPattern, UntypedEventHandlerFunction } from './types.js'
 
 const isNodeRuntime = (): boolean => {
   const maybe_process = (globalThis as { process?: { versions?: { node?: string } } }).process
@@ -40,15 +40,15 @@ export class JSONLEventBridge {
     this.on = this.on.bind(this)
   }
 
-  on<T extends BaseEvent>(event_key: EventClass<T>, handler: EventHandlerFunction<T>): void
-  on<T extends BaseEvent>(event_key: string | '*', handler: UntypedEventHandlerFunction<T>): void
-  on(event_key: EventKey | '*', handler: EventHandlerFunction | UntypedEventHandlerFunction): void {
+  on<T extends BaseEvent>(event_pattern: EventClass<T>, handler: EventHandlerFunction<T>): void
+  on<T extends BaseEvent>(event_pattern: string | '*', handler: UntypedEventHandlerFunction<T>): void
+  on(event_pattern: EventPattern | '*', handler: EventHandlerFunction | UntypedEventHandlerFunction): void {
     this.ensureStarted()
-    if (typeof event_key === 'string') {
-      this.inbound_bus.on(event_key, handler as UntypedEventHandlerFunction<BaseEvent>)
+    if (typeof event_pattern === 'string') {
+      this.inbound_bus.on(event_pattern, handler as UntypedEventHandlerFunction<BaseEvent>)
       return
     }
-    this.inbound_bus.on(event_key as EventClass<BaseEvent>, handler as EventHandlerFunction<BaseEvent>)
+    this.inbound_bus.on(event_pattern as EventClass<BaseEvent>, handler as EventHandlerFunction<BaseEvent>)
   }
 
   async dispatch<T extends BaseEvent>(event: T): Promise<void> {

@@ -463,29 +463,28 @@ class EventBus:
     # Overloads for typed event patterns with specific handler signatures
     # Order matters - more specific types must come before general ones
 
-    # 1. EventHandlerFunc[T_Event] - sync function taking event
+    # Class pattern registration keeps strict event typing.
     @overload
-    def on(self, event_pattern: EventPatternType, handler: EventHandlerFunc[T_Event]) -> None: ...
+    def on(self, event_pattern: type[T_Event], handler: EventHandlerFunc[T_Event]) -> None: ...
 
-    # 2. AsyncEventHandlerFunc[T_Event] - async function taking event
     @overload
-    def on(self, event_pattern: EventPatternType, handler: AsyncEventHandlerFunc[T_Event]) -> None: ...
+    def on(self, event_pattern: type[T_Event], handler: AsyncEventHandlerFunc[T_Event]) -> None: ...
 
-    # 3. EventHandlerMethod[T_Event] - sync method taking self and event
     @overload
-    def on(self, event_pattern: EventPatternType, handler: EventHandlerMethod[T_Event]) -> None: ...
+    def on(self, event_pattern: type[T_Event], handler: EventHandlerMethod[T_Event]) -> None: ...
 
-    # 4. AsyncEventHandlerMethod[T_Event] - async method taking self and event
     @overload
-    def on(self, event_pattern: EventPatternType, handler: AsyncEventHandlerMethod[T_Event]) -> None: ...
+    def on(self, event_pattern: type[T_Event], handler: AsyncEventHandlerMethod[T_Event]) -> None: ...
 
-    # 5. EventHandlerClassMethod[BaseEvent] - sync classmethod taking cls and event
     @overload
-    def on(self, event_pattern: EventPatternType, handler: EventHandlerClassMethod[BaseEvent[Any]]) -> None: ...
+    def on(self, event_pattern: type[T_Event], handler: EventHandlerClassMethod[T_Event]) -> None: ...
 
-    # 6. AsyncEventHandlerClassMethod[BaseEvent] - async classmethod taking cls and event
     @overload
-    def on(self, event_pattern: EventPatternType, handler: AsyncEventHandlerClassMethod[BaseEvent[Any]]) -> None: ...
+    def on(self, event_pattern: type[T_Event], handler: AsyncEventHandlerClassMethod[T_Event]) -> None: ...
+
+    # String and wildcard registration is intentionally untyped wrt specific event subclasses.
+    @overload
+    def on(self, event_pattern: PythonIdentifierStr | Literal['*'], handler: EventHandler) -> None: ...
 
     # I dont think this is needed, but leaving it here for now
     # 9. Coroutine[Any, Any, Any] - direct coroutine
@@ -495,14 +494,7 @@ class EventBus:
     def on(
         self,
         event_pattern: EventPatternType,
-        handler: (  # TypeAlias with args doesn't work on overloaded signature as of 2025, has to be defined inline!
-            EventHandlerFunc[T_Event]
-            | AsyncEventHandlerFunc[BaseEvent[Any]]
-            | EventHandlerMethod[T_Event]
-            | AsyncEventHandlerMethod[BaseEvent[Any]]
-            | EventHandlerClassMethod[BaseEvent[Any]]
-            | AsyncEventHandlerClassMethod[BaseEvent[Any]]
-        ),
+        handler: Any,
     ) -> None:
         """
         Subscribe to events matching a pattern, event type name, or event model class.
@@ -518,21 +510,15 @@ class EventBus:
         flattened into the original event's results, so EventResults sees all handlers
         from all buses as a single flat collection.
         """
-        assert isinstance(event_pattern, str) or issubclass(event_pattern, BaseEvent), (
+        assert isinstance(event_pattern, str) or isinstance(event_pattern, type), (
             f'Invalid event pattern: {event_pattern}, must be a string event type or subclass of BaseEvent'
         )
         assert inspect.isfunction(handler) or inspect.ismethod(handler) or inspect.iscoroutinefunction(handler), (
             f'Invalid handler: {handler}, must be a sync or async function or method'
         )
 
-        # Determine event key
-        event_key: str
-        if event_pattern == '*':
-            event_key = '*'
-        elif isinstance(event_pattern, type) and issubclass(event_pattern, BaseEvent):  # pyright: ignore[reportUnnecessaryIsInstance]
-            event_key = event_pattern.__name__  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        else:
-            event_key = str(event_pattern)
+        # Normalize event key to string event_type or wildcard.
+        event_key = self._normalize_event_pattern(event_pattern)
 
         # Ensure event_key is definitely a string at this point
         assert isinstance(event_key, str)
@@ -704,12 +690,28 @@ class EventBus:
         """Alias for dispatch(), mirroring EventEmitter-style APIs."""
         return self.dispatch(event)
 
+    @staticmethod
+    def _normalize_event_pattern(event_pattern: object) -> str:
+        if event_pattern == '*':
+            return '*'
+        if isinstance(event_pattern, str):
+            return event_pattern
+        if isinstance(event_pattern, type) and issubclass(event_pattern, BaseEvent):
+            # Respect explicit event_type defaults on model classes first.
+            event_type_field = event_pattern.model_fields.get('event_type')
+            event_type_default = event_type_field.default if event_type_field is not None else None
+            if isinstance(event_type_default, str) and event_type_default not in ('', 'UndefinedEvent'):
+                return event_type_default
+            return event_pattern.__name__
+        raise ValueError(
+            f'Invalid event pattern: {event_pattern}, must be a string event type, "*", or subclass of BaseEvent'
+        )
+
     def _event_matches_pattern(self, event: BaseEvent[Any], pattern: EventPatternType) -> bool:
-        if pattern == '*':
+        pattern_key = self._normalize_event_pattern(pattern)
+        if pattern_key == '*':
             return True
-        if isinstance(pattern, str):
-            return event.event_type == pattern
-        return isinstance(event, pattern)
+        return event.event_type == pattern_key
 
     @overload
     async def find(
@@ -819,6 +821,7 @@ class EventBus:
 
         # Wait for future events using expect-like pattern
         future_result: asyncio.Future[BaseEvent[Any]] = asyncio.Future()
+        event_key = self._normalize_event_pattern(event_type)
 
         def notify_find_handler(event: BaseEvent[Any]) -> None:
             """Handler that resolves the future when a matching event is found"""
@@ -834,7 +837,6 @@ class EventBus:
         self.on(event_type, notify_find_handler)
 
         # Ensure the temporary handler runs before user handlers
-        event_key = event_type.__name__ if isinstance(event_type, type) else str(event_type)
         handlers_for_key = self.handlers.get(event_key)
         if handlers_for_key and handlers_for_key[-1] is notify_find_handler:
             handlers_for_key.insert(0, handlers_for_key.pop())
@@ -849,7 +851,6 @@ class EventBus:
             return None
         finally:
             # Clean up handler
-            event_key = event_type.__name__ if isinstance(event_type, type) else str(event_type)
             if event_key in self.handlers and notify_find_handler in self.handlers[event_key]:
                 self.handlers[event_key].remove(notify_find_handler)
 

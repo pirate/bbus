@@ -17,6 +17,7 @@ test('EventBus initializes with correct defaults', async () => {
 
   assert.equal(bus.name, 'DefaultsBus')
   assert.equal(bus.max_history_size, 100)
+  assert.equal(bus.max_history_drop, true)
   assert.equal(bus.event_concurrency_default, 'bus-serial')
   assert.equal(bus.event_handler_concurrency_default, 'serial')
   assert.equal(bus.event_handler_completion_default, 'all')
@@ -29,6 +30,7 @@ test('EventBus initializes with correct defaults', async () => {
 test('EventBus applies custom options', () => {
   const bus = new EventBus('CustomBus', {
     max_history_size: 500,
+    max_history_drop: false,
     event_concurrency: 'parallel',
     event_handler_concurrency: 'serial',
     event_handler_completion: 'first',
@@ -36,6 +38,7 @@ test('EventBus applies custom options', () => {
   })
 
   assert.equal(bus.max_history_size, 500)
+  assert.equal(bus.max_history_drop, false)
   assert.equal(bus.event_concurrency_default, 'parallel')
   assert.equal(bus.event_handler_concurrency_default, 'serial')
   assert.equal(bus.event_handler_completion_default, 'first')
@@ -61,6 +64,7 @@ test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
   const bus = new EventBus('SerializableBus', {
     id: '018f8e40-1234-7000-8000-000000001234',
     max_history_size: 500,
+    max_history_drop: false,
     event_concurrency: 'parallel',
     event_handler_concurrency: 'parallel',
     event_handler_completion: 'first',
@@ -87,6 +91,7 @@ test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
   assert.equal(json.id, '018f8e40-1234-7000-8000-000000001234')
   assert.equal(json.name, 'SerializableBus')
   assert.equal(json.max_history_size, 500)
+  assert.equal(json.max_history_drop, false)
   assert.equal(json.event_concurrency, 'parallel')
   assert.equal(json.event_handler_concurrency, 'parallel')
   assert.equal(json.event_handler_completion, 'first')
@@ -96,7 +101,7 @@ test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
   assert.equal(json.event_handler_detect_file_paths, false)
   assert.equal(json.handlers.length, 1)
   assert.equal(json.handlers_by_key.length, 1)
-  assert.ok(json.handlers_by_key.some(([event_key]) => event_key === 'SerializableEvent'))
+  assert.ok(json.handlers_by_key.some(([event_pattern]) => event_pattern === 'SerializableEvent'))
   assert.equal(json.event_history.length, 1)
   assert.equal(json.event_history[0].event_id, pending_event.event_id)
   assert.equal(json.pending_event_queue.length, 1)
@@ -109,6 +114,7 @@ test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
   assert.equal(restored.id, '018f8e40-1234-7000-8000-000000001234')
   assert.equal(restored.name, 'SerializableBus')
   assert.equal(restored.max_history_size, 500)
+  assert.equal(restored.max_history_drop, false)
   assert.equal(restored.event_concurrency_default, 'parallel')
   assert.equal(restored.event_handler_concurrency_default, 'parallel')
   assert.equal(restored.event_handler_completion_default, 'first')
@@ -403,6 +409,54 @@ test('unlimited history (max_history_size: null) keeps all events', async () => 
   for (const event of bus.event_history.values()) {
     assert.equal(event.event_status, 'completed')
   }
+})
+
+test('max_history_drop=false rejects new dispatch when history is full', async () => {
+  const bus = new EventBus('NoDropHistBus', { max_history_size: 2, max_history_drop: false })
+  const NoDropEvent = BaseEvent.extend('NoDropEvent', { seq: z.number() })
+
+  bus.on(NoDropEvent, () => 'ok')
+
+  await bus.dispatch(NoDropEvent({ seq: 1 })).done()
+  await bus.dispatch(NoDropEvent({ seq: 2 })).done()
+
+  assert.equal(bus.event_history.size, 2)
+  assert.throws(
+    () => bus.dispatch(NoDropEvent({ seq: 3 })),
+    /history limit reached \(2\/2\); set bus\.max_history_drop=true/
+  )
+  assert.equal(bus.event_history.size, 2)
+  assert.equal(bus.pending_event_queue.length, 0)
+})
+
+test('max_history_size=0 with max_history_drop=false still allows unbounded queueing and drops completed events', async () => {
+  const bus = new EventBus('ZeroHistNoDropBus', { max_history_size: 0, max_history_drop: false })
+  const BurstEvent = BaseEvent.extend('BurstEvent', {})
+
+  let release!: () => void
+  const unblock = new Promise<void>((resolve) => {
+    release = resolve
+  })
+
+  bus.on(BurstEvent, async () => {
+    await unblock
+  })
+
+  const events: BaseEvent[] = []
+  for (let i = 0; i < 25; i++) {
+    events.push(bus.dispatch(BurstEvent({})))
+  }
+
+  await delay(10)
+  assert.ok(bus.pending_event_queue.length > 1)
+  assert.ok(bus.event_history.size >= 1)
+
+  release()
+  await Promise.all(events.map((event) => event.done()))
+  await bus.waitUntilIdle()
+
+  assert.equal(bus.event_history.size, 0)
+  assert.equal(bus.pending_event_queue.length, 0)
 })
 
 test('max_history_size=0 keeps in-flight events and drops them on completion', async () => {

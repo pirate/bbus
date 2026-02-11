@@ -139,7 +139,7 @@ new EventBus(name?: string, options?: {
 
 ```ts
 on<T extends BaseEvent>(
-  event_key: string | '*' | EventClass<T>,
+  event_pattern: string | '*' | EventClass<T>,
   handler: EventHandlerFunction<T>,
   options?: Partial<EventHandler>
 ): EventHandler
@@ -153,7 +153,7 @@ Advanced `options` fields, these can be used to override defaults per-handler if
 - `handler_slow_timeout?: number | null` delay before emitting a slow handler warning log line
 - `handler_name?: string` optional name to use instead of `anonymous` if handler is an unnamed arrow function
 - `handler_file_path?: string` optional path/to/source/file.js:lineno where the handler is defined, used for logging only
-- `id?: string` unique UUID for the handler (normally a hash of bus_id + event_key + handler_name + handler_registered_at)
+- `id?: string` unique UUID for the handler (normally a hash of bus_id + event_pattern + handler_name + handler_registered_at)
 
 Notes:
 
@@ -165,14 +165,14 @@ Notes:
 
 ```ts
 off<T extends BaseEvent>(
-  event_key: EventKey<T> | '*',
+  event_pattern: EventPattern<T> | '*',
   handler?: EventHandlerFunction<T> | string | EventHandler
 ): void
 ```
 
 Use when tearing down subscriptions (tests, plugin unload, hot-reload).
 
-- Omit `handler` to remove all handlers for `event_key`.
+- Omit `handler` to remove all handlers for `event_pattern`.
 - Pass handler function reference to remove one by function identity.
 - Pass handler id (`string`) or `EventHandler` object to remove by id.
 - use `bus.off('*')` to remove _all_ registered handlers from the bus
@@ -202,9 +202,9 @@ Normal lifecycle:
 #### `find()`
 
 ```ts
-find<T extends BaseEvent>(event_key: EventKey<T> | '*', options?: FindOptions): Promise<T | null>
+find<T extends BaseEvent>(event_pattern: EventPattern<T> | '*', options?: FindOptions): Promise<T | null>
 find<T extends BaseEvent>(
-  event_key: EventKey<T> | '*',
+  event_pattern: EventPattern<T> | '*',
   where: (event: T) => boolean,
   options?: FindOptions
 ): Promise<T | null>
@@ -524,7 +524,7 @@ Represents one registered handler entry on a bus. You usually get these from `bu
 - `handler_slow_timeout` optional slow-warning threshold in seconds (`null` disables slow warning)
 - `handler_registered_at` ISO timestamp
 - `handler_registered_ts` monotonic timestamp
-- `event_key` subscribed key (`'SomeEvent'` or `'*'`)
+- `event_pattern` subscribed key (`'SomeEvent'` or `'*'`)
 - `eventbus_name` bus name where this handler was registered
 - `eventbus_id` bus UUID where this handler was registered
 

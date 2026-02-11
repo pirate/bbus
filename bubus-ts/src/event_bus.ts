@@ -13,11 +13,12 @@ import { EventHandler, FindWaiter, type EphemeralFindEventHandler, type EventHan
 import { logTree } from './logging.js'
 import { v7 as uuidv7 } from 'uuid'
 
-import type { EventClass, EventHandlerFunction, EventKey, FindOptions, UntypedEventHandlerFunction } from './types.js'
+import type { EventClass, EventHandlerFunction, EventPattern, FindOptions, UntypedEventHandlerFunction } from './types.js'
 
 type EventBusOptions = {
   id?: string
   max_history_size?: number | null
+  max_history_drop?: boolean
 
   // per-event options
   event_concurrency?: EventConcurrencyMode | null
@@ -35,6 +36,7 @@ export type EventBusJSON = {
   id: string
   name: string
   max_history_size: number | null
+  max_history_drop: boolean
   event_concurrency: EventConcurrencyMode
   event_timeout: number | null
   event_slow_timeout: number | null
@@ -120,6 +122,7 @@ export class EventBus {
 
   // configuration options
   max_history_size: number | null // max events kept in history; null=unlimited, 0=drop completed immediately (retain only in-flight)
+  max_history_drop: boolean // when false and history is full, dispatch rejects instead of trimming old entries
   event_timeout_default: number | null
   event_concurrency_default: EventConcurrencyMode
   event_handler_concurrency_default: EventHandlerConcurrencyMode
@@ -132,7 +135,7 @@ export class EventBus {
 
   // public runtime state
   handlers: Map<string, EventHandler> // map of handler uuidv5 ids to EventHandler objects
-  handlers_by_key: Map<string, string[]> // map of normalized event_key to ordered handler ids
+  handlers_by_key: Map<string, string[]> // map of normalized event_pattern to ordered handler ids
   event_history: Map<string, BaseEvent> // map of event uuidv7 ids to processed BaseEvent objects
 
   // internal runtime state
@@ -148,6 +151,7 @@ export class EventBus {
 
     // set configuration options
     this.max_history_size = options.max_history_size === undefined ? 100 : options.max_history_size
+    this.max_history_drop = options.max_history_drop ?? true
     this.event_concurrency_default = options.event_concurrency ?? 'bus-serial'
     this.event_handler_concurrency_default = options.event_handler_concurrency ?? 'serial'
     this.event_handler_completion_default = options.event_handler_completion ?? 'all'
@@ -181,6 +185,7 @@ export class EventBus {
       id: this.id,
       name: this.name,
       max_history_size: this.max_history_size,
+      max_history_drop: this.max_history_drop,
       event_concurrency: this.event_concurrency_default,
       event_timeout: this.event_timeout_default,
       event_slow_timeout: this.event_slow_timeout,
@@ -208,6 +213,7 @@ export class EventBus {
 
     if (typeof record.id === 'string') options.id = record.id
     if (typeof record.max_history_size === 'number' || record.max_history_size === null) options.max_history_size = record.max_history_size
+    if (typeof record.max_history_drop === 'boolean') options.max_history_drop = record.max_history_drop
     if (
       record.event_concurrency === 'global-serial' ||
       record.event_concurrency === 'bus-serial' ||
@@ -260,9 +266,9 @@ export class EventBus {
       }
     } else {
       for (const handler_entry of bus.handlers.values()) {
-        const ids = bus.handlers_by_key.get(handler_entry.event_key)
+        const ids = bus.handlers_by_key.get(handler_entry.event_pattern)
         if (ids) ids.push(handler_entry.id)
-        else bus.handlers_by_key.set(handler_entry.event_key, [handler_entry.id])
+        else bus.handlers_by_key.set(handler_entry.event_pattern, [handler_entry.id])
       }
     }
 
@@ -314,14 +320,14 @@ export class EventBus {
     this.locks.clear()
   }
 
-  on<T extends BaseEvent>(event_key: EventClass<T>, handler: EventHandlerFunction<T>, options?: Partial<EventHandler>): EventHandler
-  on<T extends BaseEvent>(event_key: string | '*', handler: UntypedEventHandlerFunction<T>, options?: Partial<EventHandler>): EventHandler
+  on<T extends BaseEvent>(event_pattern: EventClass<T>, handler: EventHandlerFunction<T>, options?: Partial<EventHandler>): EventHandler
+  on<T extends BaseEvent>(event_pattern: string | '*', handler: UntypedEventHandlerFunction<T>, options?: Partial<EventHandler>): EventHandler
   on(
-    event_key: EventKey | '*',
+    event_pattern: EventPattern | '*',
     handler: EventHandlerFunction | UntypedEventHandlerFunction,
     options: Partial<EventHandler> = {}
   ): EventHandler {
-    const normalized_key = this.normalizeEventKey(event_key) // get string event_type or '*'
+    const normalized_key = this.normalizeEventPattern(event_pattern) // get string event_type or '*'
     const handler_name = handler.name || 'anonymous' // get handler function name or 'anonymous' if the handler is an anonymous/arrow function
     const { isostring: handler_registered_at, ts: handler_registered_ts } = BaseEvent.nextTimestamp()
     const handler_entry = new EventHandler({
@@ -329,7 +335,7 @@ export class EventBus {
       handler_name,
       handler_registered_at,
       handler_registered_ts,
-      event_key: normalized_key,
+      event_pattern: normalized_key,
       eventbus_name: this.name,
       eventbus_id: this.id,
       ...options,
@@ -341,26 +347,26 @@ export class EventBus {
     }
 
     this.handlers.set(handler_entry.id, handler_entry)
-    const ids = this.handlers_by_key.get(handler_entry.event_key)
+    const ids = this.handlers_by_key.get(handler_entry.event_pattern)
     if (ids) ids.push(handler_entry.id)
-    else this.handlers_by_key.set(handler_entry.event_key, [handler_entry.id])
+    else this.handlers_by_key.set(handler_entry.event_pattern, [handler_entry.id])
     return handler_entry
   }
 
-  off<T extends BaseEvent>(event_key: EventKey<T> | '*', handler?: EventHandlerFunction<T> | string | EventHandler): void {
-    const normalized_key = this.normalizeEventKey(event_key)
+  off<T extends BaseEvent>(event_pattern: EventPattern<T> | '*', handler?: EventHandlerFunction<T> | string | EventHandler): void {
+    const normalized_key = this.normalizeEventPattern(event_pattern)
     if (typeof handler === 'object' && handler instanceof EventHandler && handler.id !== undefined) {
       handler = handler.id
     }
     const match_by_id = typeof handler === 'string'
     for (const entry of this.handlers.values()) {
-      if (entry.event_key !== normalized_key) {
+      if (entry.event_pattern !== normalized_key) {
         continue
       }
       const handler_id = entry.id
       if (handler === undefined || (match_by_id ? handler_id === handler : entry.handler === (handler as EventHandlerFunction))) {
         this.handlers.delete(handler_id)
-        this.removeIndexedHandler(entry.event_key, handler_id)
+        this.removeIndexedHandler(entry.event_pattern, handler_id)
       }
     }
   }
@@ -402,6 +408,17 @@ export class EventBus {
       }
     }
 
+    if (
+      this.max_history_size !== null &&
+      this.max_history_size > 0 &&
+      !this.max_history_drop &&
+      this.event_history.size >= this.max_history_size
+    ) {
+      throw new Error(
+        `${this.toString()}.dispatch(${original_event.event_type}) rejected: history limit reached (${this.event_history.size}/${this.max_history_size}); set bus.max_history_drop=true to drop old history instead.`
+      )
+    }
+
     this.event_history.set(original_event.event_id, original_event)
     this.trimHistory()
     this.notifyFindListeners(original_event)
@@ -419,12 +436,12 @@ export class EventBus {
   }
 
   // find a recent event or wait for a future event that matches some criteria
-  find(event_key: '*', options?: FindOptions): Promise<BaseEvent | null>
-  find(event_key: '*', where: (event: BaseEvent) => boolean, options?: FindOptions): Promise<BaseEvent | null>
-  find<T extends BaseEvent>(event_key: EventKey<T>, options?: FindOptions): Promise<T | null>
-  find<T extends BaseEvent>(event_key: EventKey<T>, where: (event: T) => boolean, options?: FindOptions): Promise<T | null>
+  find(event_pattern: '*', options?: FindOptions): Promise<BaseEvent | null>
+  find(event_pattern: '*', where: (event: BaseEvent) => boolean, options?: FindOptions): Promise<BaseEvent | null>
+  find<T extends BaseEvent>(event_pattern: EventPattern<T>, options?: FindOptions): Promise<T | null>
+  find<T extends BaseEvent>(event_pattern: EventPattern<T>, where: (event: T) => boolean, options?: FindOptions): Promise<T | null>
   async find<T extends BaseEvent>(
-    event_key: EventKey<T> | '*',
+    event_pattern: EventPattern<T> | '*',
     where_or_options: ((event: T) => boolean) | FindOptions = {},
     maybe_options: FindOptions = {}
   ): Promise<T | null> {
@@ -443,7 +460,7 @@ export class EventBus {
     }
 
     const matches = (event: BaseEvent): boolean => {
-      if (!this.eventMatchesKey(event, event_key)) {
+      if (!this.eventMatchesKey(event, event_pattern)) {
         return false
       }
       if (!where(event as T)) {
@@ -452,8 +469,8 @@ export class EventBus {
       if (child_of && !this.eventIsChildOf(event, child_of)) {
         return false
       }
-      for (const [event_key, expected] of event_field_filters) {
-        if ((event as unknown as Record<string, unknown>)[event_key] !== expected) {
+      for (const [event_pattern, expected] of event_field_filters) {
+        if ((event as unknown as Record<string, unknown>)[event_pattern] !== expected) {
           return false
         }
       }
@@ -486,7 +503,7 @@ export class EventBus {
     // if we are looking for future events, return a promise that resolves when a match is found
     return new Promise<T | null>((resolve) => {
       const waiter: EphemeralFindEventHandler = {
-        event_key,
+        event_pattern,
         matches,
         resolve: (event) => resolve(this.getEventProxyScopedToThisBus(event) as T),
       }
@@ -889,7 +906,7 @@ export class EventBus {
 
   private notifyFindListeners(event: BaseEvent): void {
     for (const waiter of Array.from(this.find_waiters)) {
-      if (!this.eventMatchesKey(event, waiter.event_key)) {
+      if (!this.eventMatchesKey(event, waiter.event_pattern)) {
         continue
       }
       if (!waiter.matches(event)) {
@@ -916,42 +933,46 @@ export class EventBus {
     return handlers
   }
 
-  private removeIndexedHandler(event_key: string | '*', handler_id: string): void {
-    const ids = this.handlers_by_key.get(event_key)
+  private removeIndexedHandler(event_pattern: string | '*', handler_id: string): void {
+    const ids = this.handlers_by_key.get(event_pattern)
     if (!ids) return
     const idx = ids.indexOf(handler_id)
     if (idx >= 0) ids.splice(idx, 1)
-    if (ids.length === 0) this.handlers_by_key.delete(event_key)
+    if (ids.length === 0) this.handlers_by_key.delete(event_pattern)
   }
 
-  private eventMatchesKey(event: BaseEvent, event_key: EventKey): boolean {
-    if (event_key === '*') {
+  private eventMatchesKey(event: BaseEvent, event_pattern: EventPattern): boolean {
+    if (event_pattern === '*') {
       return true
     }
-    const normalized = this.normalizeEventKey(event_key)
+    const normalized = this.normalizeEventPattern(event_pattern)
     if (normalized === '*') {
       return true
     }
     return event.event_type === normalized
   }
 
-  private normalizeEventKey(event_key: EventKey | '*'): string | '*' {
-    if (event_key === '*') {
+  private normalizeEventPattern(event_pattern: EventPattern | '*'): string | '*' {
+    if (event_pattern === '*') {
       return '*'
     }
-    if (typeof event_key === 'string') {
-      return event_key
+    if (typeof event_pattern === 'string') {
+      return event_pattern
     }
-    const event_type = (event_key as { event_type?: unknown }).event_type
+    const event_type = (event_pattern as { event_type?: unknown }).event_type
     if (typeof event_type === 'string' && event_type.length > 0 && event_type !== 'BaseEvent') {
       return event_type
     }
+    const class_name = (event_pattern as { name?: unknown }).name
+    if (typeof class_name === 'string' && class_name.length > 0 && class_name !== 'BaseEvent') {
+      return class_name
+    }
     let preview: string
     try {
-      const encoded = JSON.stringify(event_key)
-      preview = typeof encoded === 'string' ? encoded.slice(0, 30) : String(event_key).slice(0, 30)
+      const encoded = JSON.stringify(event_pattern)
+      preview = typeof encoded === 'string' ? encoded.slice(0, 30) : String(event_pattern).slice(0, 30)
     } catch {
-      preview = String(event_key).slice(0, 30)
+      preview = String(event_pattern).slice(0, 30)
     }
     throw new Error('bus.on(match_pattern, ...) must be a string event type, "*", or a BaseEvent class, got: ' + preview)
   }
@@ -968,6 +989,9 @@ export class EventBus {
           this.event_history.delete(event_id)
         }
       }
+      return
+    }
+    if (!this.max_history_drop) {
       return
     }
     if (this.event_history.size <= this.max_history_size) {

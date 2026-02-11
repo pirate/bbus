@@ -275,6 +275,37 @@ class TestHandlerRegistration:
         assert results['model'] == ['startup']
         assert set(results['universal']) == {'UserActionEvent', 'SystemEventModel'}
 
+    async def test_class_matcher_matches_generic_base_event_by_event_type(self, eventbus):
+        """Class listeners should still match generic BaseEvent payloads by event_type string."""
+
+        class DifferentNameFromClass(BaseEvent):
+            pass
+
+        seen: list[str] = []
+
+        async def class_handler(event: BaseEvent) -> None:
+            seen.append(f'class:{event.event_type}')
+
+        async def string_handler(event: BaseEvent) -> None:
+            seen.append(f'string:{event.event_type}')
+
+        async def wildcard_handler(event: BaseEvent) -> None:
+            seen.append(f'wildcard:{event.event_type}')
+
+        eventbus.on(DifferentNameFromClass, class_handler)
+        eventbus.on('DifferentNameFromClass', string_handler)
+        eventbus.on('*', wildcard_handler)
+
+        eventbus.dispatch(BaseEvent(event_type='DifferentNameFromClass'))
+        await eventbus.wait_until_idle()
+
+        assert seen == [
+            'class:DifferentNameFromClass',
+            'string:DifferentNameFromClass',
+            'wildcard:DifferentNameFromClass',
+        ]
+        assert len(eventbus.handlers['DifferentNameFromClass']) == 2
+
     async def test_multiple_handlers_parallel(self, parallel_eventbus):
         """Test that multiple handlers run in parallel"""
         eventbus = parallel_eventbus

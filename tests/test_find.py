@@ -508,6 +508,32 @@ class TestFindFutureOnly:
         finally:
             await bus.stop(clear=True)
 
+    async def test_future_class_pattern_matches_generic_base_event_by_event_type(self):
+        """find(SomeEventClass) should match BaseEvent(event_type='SomeEventClass')."""
+        bus = EventBus()
+
+        try:
+
+            class DifferentNameFromClass(BaseEvent[str]):
+                pass
+
+            bus.on('DifferentNameFromClass', lambda e: 'done')
+
+            async def dispatch_after_delay():
+                await asyncio.sleep(0.05)
+                return await bus.dispatch(BaseEvent(event_type='DifferentNameFromClass'))
+
+            find_task = asyncio.create_task(bus.find(DifferentNameFromClass, past=False, future=1))
+            dispatch_task = asyncio.create_task(dispatch_after_delay())
+
+            found, dispatched = await asyncio.gather(find_task, dispatch_task)
+
+            assert found is not None
+            assert found.event_id == dispatched.event_id
+            assert found.event_type == 'DifferentNameFromClass'
+        finally:
+            await bus.stop(clear=True)
+
     async def test_multiple_concurrent_find_waiters_resolve_correct_events(self):
         """Concurrent find() waiters should each resolve to the correct event."""
         bus = EventBus()

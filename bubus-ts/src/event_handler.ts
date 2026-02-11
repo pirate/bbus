@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { v5 as uuidv5 } from 'uuid'
 
-import { normalizeEventKey, type EventHandlerFunction, type EventKey } from './types.js'
+import { normalizeEventPattern, type EventHandlerFunction, type EventPattern } from './types.js'
 import { BaseEvent } from './base_event.js'
 import type { EventResult } from './event_result.js'
 
@@ -10,7 +10,7 @@ const HANDLER_ID_NAMESPACE = uuidv5('bubus-handler', uuidv5.DNS)
 export type EphemeralFindEventHandler = {
   // Similar to a handler, except it's for .find() calls.
   // Resolved on dispatch, ephemeral, and never shows up in the processing tree.
-  event_key: EventKey
+  event_pattern: EventPattern
   matches: (event: BaseEvent) => boolean
   resolve: (event: BaseEvent) => void
   timeout_id?: ReturnType<typeof setTimeout>
@@ -18,7 +18,7 @@ export type EphemeralFindEventHandler = {
 
 export const FindWaiterJSONSchema = z
   .object({
-    event_key: z.union([z.string(), z.literal('*')]),
+    event_pattern: z.union([z.string(), z.literal('*')]),
     has_timeout: z.boolean(),
   })
   .strict()
@@ -28,7 +28,7 @@ export type FindWaiterJSON = z.infer<typeof FindWaiterJSONSchema>
 export class FindWaiter {
   static toJSON(waiter: EphemeralFindEventHandler): FindWaiterJSON {
     return {
-      event_key: normalizeEventKey(waiter.event_key),
+      event_pattern: normalizeEventPattern(waiter.event_pattern),
       has_timeout: waiter.timeout_id !== undefined,
     }
   }
@@ -41,10 +41,10 @@ export class FindWaiter {
     } = {}
   ): EphemeralFindEventHandler {
     const record = FindWaiterJSONSchema.parse(data)
-    const event_key = record.event_key
-    const default_matches = (event: BaseEvent): boolean => event_key === '*' || event.event_type === event_key
+    const event_pattern = record.event_pattern
+    const default_matches = (event: BaseEvent): boolean => event_pattern === '*' || event.event_type === event_pattern
     return {
-      event_key,
+      event_pattern,
       matches: overrides.matches ?? default_matches,
       resolve: overrides.resolve ?? (() => {}),
     }
@@ -73,7 +73,7 @@ export const EventHandlerJSONSchema = z
     id: z.string(),
     eventbus_name: z.string(),
     eventbus_id: z.string().uuid(),
-    event_key: z.union([z.string(), z.literal('*')]),
+    event_pattern: z.union([z.string(), z.literal('*')]),
     handler_name: z.string(),
     handler_file_path: z.string().optional(),
     handler_timeout: z.number().nullable().optional(),
@@ -95,7 +95,7 @@ export class EventHandler {
   handler_slow_timeout?: number | null // warning threshold in seconds for slow handler execution
   handler_registered_at: string // ISO datetime string version of handler_registered_ts
   handler_registered_ts: number // nanosecond monotonic version of handler_registered_at
-  event_key: string | '*' // event_type string to match against, or '*' to match all events
+  event_pattern: string | '*' // event_type string to match against, or '*' to match all events
   eventbus_name: string // name of the event bus that the handler is registered on
   eventbus_id: string // uuidv7 identifier of the event bus that the handler is registered on
 
@@ -108,7 +108,7 @@ export class EventHandler {
     handler_slow_timeout?: number | null
     handler_registered_at: string
     handler_registered_ts: number
-    event_key: string | '*'
+    event_pattern: string | '*'
     eventbus_name: string
     eventbus_id: string
   }) {
@@ -120,7 +120,7 @@ export class EventHandler {
         handler_file_path: params.handler_file_path,
         handler_registered_at: params.handler_registered_at,
         handler_registered_ts: params.handler_registered_ts,
-        event_key: params.event_key,
+        event_pattern: params.event_pattern,
       })
     this.handler = params.handler
     this.handler_name = params.handler_name
@@ -129,7 +129,7 @@ export class EventHandler {
     this.handler_slow_timeout = params.handler_slow_timeout
     this.handler_registered_at = params.handler_registered_at
     this.handler_registered_ts = params.handler_registered_ts
-    this.event_key = params.event_key
+    this.event_pattern = params.event_pattern
     this.eventbus_name = params.eventbus_name
     this.eventbus_id = params.eventbus_id
   }
@@ -141,10 +141,10 @@ export class EventHandler {
     handler_file_path?: string
     handler_registered_at: string
     handler_registered_ts: number
-    event_key: string | '*'
+    event_pattern: string | '*'
   }): string {
     const file_path = params.handler_file_path ?? 'unknown'
-    const seed = `${params.eventbus_id}|${params.handler_name}|${file_path}|${params.handler_registered_at}|${params.handler_registered_ts}|${params.event_key}`
+    const seed = `${params.eventbus_id}|${params.handler_name}|${file_path}|${params.handler_registered_at}|${params.handler_registered_ts}|${params.event_pattern}`
     return uuidv5(seed, HANDLER_ID_NAMESPACE)
   }
 
@@ -190,7 +190,7 @@ export class EventHandler {
       id: this.id,
       eventbus_name: this.eventbus_name,
       eventbus_id: this.eventbus_id,
-      event_key: this.event_key,
+      event_pattern: this.event_pattern,
       handler_name: this.handler_name,
       handler_file_path: this.handler_file_path,
       handler_timeout: this.handler_timeout,
@@ -213,7 +213,7 @@ export class EventHandler {
       handler_slow_timeout: record.handler_slow_timeout,
       handler_registered_at: record.handler_registered_at,
       handler_registered_ts: record.handler_registered_ts,
-      event_key: record.event_key,
+      event_pattern: record.event_pattern,
       eventbus_name: record.eventbus_name,
       eventbus_id: record.eventbus_id,
     })

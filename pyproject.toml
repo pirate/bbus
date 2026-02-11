@@ -4,7 +4,8 @@ description = "Advanced Pydantic-powered event bus with async support"
 authors = [{ name = "Nick Sweeting" }]
 version = "1.7.3"
 readme = "README.md"
-requires-python = ">=3.11,<4.0"
+requires-python = ">=3.11"
+urls = {Repository = "https://github.com/pirate/bbus"}
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -18,23 +19,54 @@ dependencies = [
     "typing-extensions>=4.12.2",
     "uuid7>=0.1.0",
 ]
-
-[project.urls]
-Repository = "https://github.com/browser-use/bubus"
-
-[project.scripts]
-perf = "tests.performance_runtime:main"
-
 [project.optional-dependencies]
-bridges = [
+postgres = [
     "asyncpg>=0.31.0",
+]
+nats = [
     "nats-py>=2.13.1",
+]
+redis = [
     "redis>=7.1.1",
+]
+bridges = [
+    "bubus[postgres,nats,redis]",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.2",
+    "build>=1.2.2",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.1.0",
+    "pytest-httpserver>=1.0.8",
+    "ipdb>=0.13.13",
+    "pre-commit>=4.2.0",
+    "codespell>=2.4.1",
+    "pyright>=1.1.404",
+    "ty>=0.0.1a19",
+    "pytest-xdist>=3.7.0",
+    "psutil>=7.0.0",
+    "pytest-cov>=6.2.1",
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.10.2,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "bubus"
+module-root = "."
+source-exclude = [
+    "/examples",
+    "/tests",
+    "/bubus-ts",
+    "/test.sh",
+    "/.github",
+    "/.pytest_cache",
+    "/.cursor",
+    "/.claude",
+]
 
 [tool.codespell]
 ignore-words-list = "bu,wit,dont,cant,wont,re-use,re-used,re-using,re-usable,thats,doesnt"
@@ -69,15 +101,6 @@ venvPath = "."
 venv = ".venv"
 include = ["bubus"]
 
-[tool.hatch.build]
-include = [
-    "bubus/**/*.py",
-    "!tests/**/*.py",
-]
-
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
@@ -98,6 +121,7 @@ log_level = "DEBUG"
 [tool.coverage.run]
 source = ["bubus"]
 omit = [
+    "ui/*",
     "*/tests/*",
     "*/__pycache__/*",
     "*.pyc",
@@ -122,21 +146,3 @@ precision = 2
 
 [tool.coverage.html]
 directory = "htmlcov"
-
-
-[tool.uv]
-dev-dependencies = [
-    "ruff>=0.11.2",
-    "build>=1.2.2",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=1.1.0",
-    "pytest-httpserver>=1.0.8",
-    "ipdb>=0.13.13",
-    "pre-commit>=4.2.0",
-    "codespell>=2.4.1",
-    "pyright>=1.1.404",
-    "ty>=0.0.1a19",
-    "pytest-xdist>=3.7.0",
-    "psutil>=7.0.0",
-    "pytest-cov>=6.2.1",
-]
