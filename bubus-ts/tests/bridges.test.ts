@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { once } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createConnection, createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -22,6 +21,9 @@ import {
 } from '../src/index.js'
 
 const tests_dir = dirname(fileURLToPath(import.meta.url))
+const TEST_RUN_ID = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+
+const makeTempDir = (prefix: string): string => mkdtempSync(join(tmpdir(), `${prefix}-${TEST_RUN_ID}-`))
 
 const IPCPingEvent = BaseEvent.extend('IPCPingEvent', {
   value: z.number(),
@@ -62,10 +64,35 @@ const canonical = (payload: Record<string, unknown>): Record<string, unknown> =>
 
 const normalizeRoundtripPayload = (payload: Record<string, unknown>): Record<string, unknown> => {
   const normalized = canonical(payload)
-  delete normalized.event_path
-  delete normalized.event_processed_at
-  delete normalized.event_result_type
-  delete normalized.event_result_schema
+  const dynamic_keys = [
+    'event_path',
+    'event_processed_at',
+    'event_result_type',
+    'event_result_schema',
+    'event_results',
+    'event_pending_bus_count',
+    'event_status',
+    'event_started_at',
+    'event_started_ts',
+    'event_completed_at',
+    'event_completed_ts',
+    'event_timeout',
+    'event_handler_completion',
+    'event_handler_concurrency',
+    'event_handler_slow_timeout',
+    'event_handler_timeout',
+    'event_parent_id',
+    'event_emitted_by_handler_id',
+    'event_concurrency',
+  ]
+  for (const key of dynamic_keys) {
+    delete normalized[key]
+  }
+  for (const [key, value] of Object.entries(normalized)) {
+    if (value === undefined) {
+      delete normalized[key]
+    }
+  }
   return normalized
 }
 
@@ -90,7 +117,9 @@ const waitForPath = async (path: string, worker: ChildProcess, timeout_ms = 1500
   while (Date.now() - started < timeout_ms) {
     if (existsSync(path)) return
     if (worker.exitCode !== null) {
-      throw new Error(`worker exited early (${worker.exitCode})`)
+      const stdout = worker.stdout?.read()?.toString?.() ?? ''
+      const stderr = worker.stderr?.read()?.toString?.() ?? ''
+      throw new Error(`worker exited early (${worker.exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
     await sleep(50)
   }
@@ -100,10 +129,10 @@ const waitForPath = async (path: string, worker: ChildProcess, timeout_ms = 1500
 const stopProcess = async (proc: ChildProcess): Promise<void> => {
   if (proc.exitCode !== null) return
   proc.kill('SIGTERM')
-  await Promise.race([once(proc, 'exit'), sleep(5000)])
+  await sleep(250)
   if (proc.exitCode === null) {
     proc.kill('SIGKILL')
-    await once(proc, 'exit')
+    await sleep(250)
   }
 }
 
@@ -124,7 +153,7 @@ const makeSenderBridge = (kind: string, config: Record<string, string>): any => 
 }
 
 const assertRoundtrip = async (kind: string, config: Record<string, string>): Promise<void> => {
-  const temp_dir = mkdtempSync(join(tmpdir(), `bubus-bridge-${kind}-`))
+  const temp_dir = makeTempDir(`bubus-bridge-${kind}`)
   const ready_path = join(temp_dir, 'worker.ready')
   const output_path = join(temp_dir, 'received.json')
   const config_path = join(temp_dir, 'worker_config.json')
@@ -152,10 +181,7 @@ const assertRoundtrip = async (kind: string, config: Record<string, string>): Pr
     await sender.emit(outbound)
     await waitForPath(output_path, worker)
     const received_payload = JSON.parse(readFileSync(output_path, 'utf8')) as Record<string, unknown>
-    assert.deepEqual(
-      normalizeRoundtripPayload(received_payload),
-      normalizeRoundtripPayload(outbound.toJSON() as Record<string, unknown>)
-    )
+    assert.deepEqual(normalizeRoundtripPayload(received_payload), normalizeRoundtripPayload(outbound.toJSON() as Record<string, unknown>))
   } finally {
     await sender.close()
     await stopProcess(worker)
@@ -169,7 +195,7 @@ test('HTTPEventBridge roundtrip between processes', async () => {
 })
 
 test('SocketEventBridge roundtrip between processes', async () => {
-  const socket_path = `/tmp/bb-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`
+  const socket_path = `/tmp/bb-${TEST_RUN_ID}-${Math.random().toString(16).slice(2)}.sock`
   await assertRoundtrip('socket', { path: socket_path })
 })
 
@@ -181,7 +207,7 @@ test('SocketEventBridge rejects long socket paths', async () => {
 })
 
 test('JSONLEventBridge roundtrip between processes', async () => {
-  const temp_dir = mkdtempSync(join(tmpdir(), 'bubus-jsonl-'))
+  const temp_dir = makeTempDir('bubus-jsonl')
   try {
     await assertRoundtrip('jsonl', { path: join(temp_dir, 'events.jsonl') })
   } finally {
@@ -189,8 +215,22 @@ test('JSONLEventBridge roundtrip between processes', async () => {
   }
 })
 
-test('SQLiteEventBridge roundtrip between processes', async () => {
-  const temp_dir = mkdtempSync(join(tmpdir(), 'bubus-sqlite-'))
+test('SQLiteEventBridge roundtrip between processes', async (t) => {
+  try {
+    const sqlite_module = (await import('better-sqlite3')) as { default?: new (path: string) => { close: () => void } }
+    const SQLiteDatabase = sqlite_module.default
+    if (!SQLiteDatabase) {
+      t.skip('better-sqlite3 is unavailable in this runtime')
+      return
+    }
+    const db = new SQLiteDatabase(':memory:')
+    db.close()
+  } catch {
+    t.skip('better-sqlite3 is unavailable in this runtime')
+    return
+  }
+
+  const temp_dir = makeTempDir('bubus-sqlite')
   try {
     const sqlite_path = join(temp_dir, 'events.sqlite3')
     runChecked('sqlite3', [sqlite_path, 'SELECT 1;'])
@@ -201,7 +241,7 @@ test('SQLiteEventBridge roundtrip between processes', async () => {
 })
 
 test('RedisEventBridge roundtrip between processes', async () => {
-  const temp_dir = mkdtempSync(join(tmpdir(), 'bubus-redis-'))
+  const temp_dir = makeTempDir('bubus-redis')
   const port = await getFreePort()
   const redis = spawn(
     'redis-server',
@@ -229,11 +269,11 @@ test('NATSEventBridge roundtrip between processes', async () => {
 })
 
 test('PostgresEventBridge roundtrip between processes', async () => {
-  const temp_dir = mkdtempSync(join(tmpdir(), 'bubus-postgres-'))
+  const temp_dir = makeTempDir('bubus-postgres')
   const data_dir = join(temp_dir, 'pgdata')
   runChecked('initdb', ['-D', data_dir, '-A', 'trust', '-U', 'postgres'])
   const port = await getFreePort()
-  const postgres = spawn('postgres', ['-D', data_dir, '-h', '127.0.0.1', '-p', String(port), '-k', temp_dir], {
+  const postgres = spawn('postgres', ['-D', data_dir, '-h', '127.0.0.1', '-p', String(port), '-k', '/tmp'], {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   try {

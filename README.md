@@ -29,7 +29,24 @@ It's async native, has proper automatic nested event tracking, and powerful conc
 - correct timeout enforcement across multiple levels of events, if a parent times out it correctly aborts all child event processing
 - ability to strongly type hint and enforce the return type of event handlers at compile-time
 - ability to queue events on the bus, or inline await them for immediate execution like a normal function call
-- handles ~5,000 events/sec/core in both languages, with ~2kb/event RAM consumed per event during active processing
+- handles thousands of events/sec/core in both languages; see the runtime matrix below for current measured numbers
+
+<br/>
+
+## 🏃 Runtime (Python)
+
+Performance matrix measured locally on **February 11, 2026** with:
+
+- `uv run python tests/performance_runtime.py --json`
+
+| Runtime | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
+| ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
+| Python | `0.248ms/event`, `6.1kb/event` | `0.279ms/event`, `0.0kb/event` | `0.071ms/handler`, `7.4kb/handler` | `0.439ms/event`, `0.0kb/event` | `1.038ms/event`, `0.0kb/event` |
+
+Notes:
+
+- `1 bus x 50k events x 1 handler` dispatches all 50k events naively in one go (no manual batching).
+- `kb/event` and `kb/handler` are peak RSS deltas normalized per work unit for each scenario.
 
 <br/>
 
@@ -191,7 +208,17 @@ print(event.event_path)  # ['MainBus', 'AuthBus', 'DataBus']  # list of buses th
 
 ### Bridges
 
-Each bridge is wired the same way: `bus.on('*', bridge.emit)` and `bridge.on('*', bus.emit)`.
+Bridges are optional extra connectors provided that allow you to send/receive events from an external service, and you do not need to use a bridge to use bubus since it's normally purely in-memory. These are just simple helpers to forward bubus events JSON to storage engines / other processes / other machines; they prevent loops automatically, but beyond that it's only basic forwarding with no handler pickling or anything fancy.
+
+Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
+
+**Example usage: link a bus to a redis pub/sub channel**
+```python
+bridge = RedisEventBridge('redis://redis@localhost:6379')
+
+bus.on('*', bridge.emit)  # listen for all events on bus and send them to redis channel
+bridge.on('*', bus.emit)  # listen for new events in redis channel and dispatch them to our bus
+```
 
 - `SocketEventBridge('/tmp/bubus_events.sock')`
 - `HTTPEventBridge(send_to='https://127.0.0.1:8001/bubus_events', listen_on='http://0.0.0.0:8002/bubus_events')`

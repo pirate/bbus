@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from pathlib import Path
 from typing import Any
+
+from anyio import Path as AnyPath
 
 from bubus import HTTPEventBridge, SocketEventBridge
 from bubus.bridge_jsonl import JSONLEventBridge
@@ -34,20 +35,20 @@ def _make_listener_bridge(config: dict[str, Any]) -> Any:
 
 
 async def _main(config_path: str) -> None:
-    config = json.loads(Path(config_path).read_text(encoding='utf-8'))
-    ready_path = Path(str(config['ready_path']))
-    output_path = Path(str(config['output_path']))
+    config = json.loads(await AnyPath(config_path).read_text(encoding='utf-8'))
+    ready_path = AnyPath(str(config['ready_path']))
+    output_path = AnyPath(str(config['output_path']))
     done = asyncio.Event()
 
     bridge = _make_listener_bridge(config)
 
-    def _on_event(event: Any) -> None:
-        output_path.write_text(json.dumps(event.model_dump(mode='json')), encoding='utf-8')
+    async def _on_event(event: Any) -> None:
+        await output_path.write_text(json.dumps(event.model_dump(mode='json')), encoding='utf-8')
         done.set()
 
-    await bridge.start()
     bridge.on('*', _on_event)
-    ready_path.write_text('ready', encoding='utf-8')
+    await bridge.start()
+    await ready_path.write_text('ready', encoding='utf-8')
     try:
         await asyncio.wait_for(done.wait(), timeout=30.0)
     finally:

@@ -318,5 +318,4 @@ export class LockManager {
     this.idle_check_pending = false
     this.idle_check_streak = 0
   }
-
 }

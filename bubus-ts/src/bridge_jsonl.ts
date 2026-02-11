@@ -125,7 +125,12 @@ export class JSONLEventBridge {
   private async readLines(): Promise<string[]> {
     const fs = await this.loadFs()
     const content = await fs.promises.readFile(this.path, 'utf8')
-    return content.split(/\r?\n/)
+    if (!content) return []
+    const lines = content.split(/\r?\n/)
+    if (lines.length > 0 && lines[lines.length - 1] === '') {
+      lines.pop()
+    }
+    return lines
   }
 
   private async countLines(): Promise<number> {

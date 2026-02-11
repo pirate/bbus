@@ -1028,7 +1028,7 @@ test('find: past returns most recent completed event (bus-scoped)', async () => 
   assert.equal(typeof found.bus.dispatch, 'function')
 })
 
-test('find: future returns in-flight event and done waits', async () => {
+test('find: past returns in-flight dispatched event and done waits', async () => {
   const DebounceEvent = BaseEvent.extend('FindFutureEvent', { value: z.number() })
   const bus = new EventBus('FindFutureBus')
   const { promise, resolve } = withResolvers<void>()
@@ -1039,7 +1039,7 @@ test('find: future returns in-flight event and done waits', async () => {
 
   bus.dispatch(DebounceEvent({ value: 1 }))
 
-  const found = await bus.find(DebounceEvent, { past: false, future: true })
+  const found = await bus.find(DebounceEvent, { past: true, future: false })
   assert.ok(found)
   assert.equal(found.value, 1)
   assert.ok(found.event_status !== 'completed')

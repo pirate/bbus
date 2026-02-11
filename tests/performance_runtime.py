@@ -31,7 +31,8 @@ def _format_cell(result: dict[str, Any]) -> str:
 
     peak_rss_kb_per_event = result.get('peak_rss_kb_per_event')
     if isinstance(peak_rss_kb_per_event, (int, float)):
-        return f'`{latency}`, `{float(peak_rss_kb_per_event):.1f}kb/event`'
+        peak_unit = str(result.get('peak_rss_unit', 'event'))
+        return f'`{latency}`, `{float(peak_rss_kb_per_event):.1f}kb/{peak_unit}`'
     return f'`{latency}`'
 
 

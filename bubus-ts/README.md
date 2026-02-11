@@ -111,17 +111,17 @@ new EventBus(name?: string, options?: {
 
 #### Constructor options
 
-| Option | Type | Default | Purpose |
-| --- | --- | --- | --- |
-| `id` | `string` | `uuidv7()` | Override bus UUID (mostly for serialization/tests). |
-| `max_history_size` | `number \| null` | `100` | Max events kept in `event_history`; `null` = unbounded. Current behavior is equivalent to `max_history_drop=true`: if `True`, drop oldest history entries (even uncompleted events). |
-| `event_concurrency` | `'global-serial' \| 'bus-serial' \| 'parallel' \| null` | `'bus-serial'` | Event-level scheduling policy. |
-| `event_handler_concurrency` | `'serial' \| 'parallel' \| null` | `'serial'` | Per-event handler scheduling policy. |
-| `event_handler_completion` | `'all' \| 'first'` | `'all'` | Event completion mode if event does not override it. |
-| `event_timeout` | `number \| null` | `60` | Default per-handler timeout budget in seconds (unless overridden). |
-| `event_handler_slow_timeout` | `number \| null` | `30` | Slow handler warning threshold (seconds). |
-| `event_slow_timeout` | `number \| null` | `300` | Slow event warning threshold (seconds). |
-| `event_handler_detect_file_paths` | `boolean` | `true` | Capture source file:line for handlers (slower, better logs). |
+| Option                            | Type                                                    | Default        | Purpose                                                                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                              | `string`                                                | `uuidv7()`     | Override bus UUID (mostly for serialization/tests).                                                                                                                                  |
+| `max_history_size`                | `number \| null`                                        | `100`          | Max events kept in `event_history`; `null` = unbounded. Current behavior is equivalent to `max_history_drop=true`: if `True`, drop oldest history entries (even uncompleted events). |
+| `event_concurrency`               | `'global-serial' \| 'bus-serial' \| 'parallel' \| null` | `'bus-serial'` | Event-level scheduling policy.                                                                                                                                                       |
+| `event_handler_concurrency`       | `'serial' \| 'parallel' \| null`                        | `'serial'`     | Per-event handler scheduling policy.                                                                                                                                                 |
+| `event_handler_completion`        | `'all' \| 'first'`                                      | `'all'`        | Event completion mode if event does not override it.                                                                                                                                 |
+| `event_timeout`                   | `number \| null`                                        | `60`           | Default per-handler timeout budget in seconds (unless overridden).                                                                                                                   |
+| `event_handler_slow_timeout`      | `number \| null`                                        | `30`           | Slow handler warning threshold (seconds).                                                                                                                                            |
+| `event_slow_timeout`              | `number \| null`                                        | `300`          | Slow event warning threshold (seconds).                                                                                                                                              |
+| `event_handler_detect_file_paths` | `boolean`                                               | `true`         | Capture source file:line for handlers (slower, better logs).                                                                                                                         |
 
 #### Runtime state properties
 
@@ -175,7 +175,7 @@ Use when tearing down subscriptions (tests, plugin unload, hot-reload).
 - Omit `handler` to remove all handlers for `event_key`.
 - Pass handler function reference to remove one by function identity.
 - Pass handler id (`string`) or `EventHandler` object to remove by id.
-- use `bus.off('*')` to remove *all* registered handlers from the bus
+- use `bus.off('*')` to remove _all_ registered handlers from the bus
 
 #### `dispatch()` / `emit()`
 
@@ -214,8 +214,8 @@ Where:
 
 ```ts
 type FindOptions = {
-  past?: boolean | number     // true to look through all past events, or number in seconds to filter time range
-  future?: boolean | number   // true to wait for event to appear indefinitely, or number in seconds to wait for event to appear
+  past?: boolean | number // true to look through all past events, or number in seconds to filter time range
+  future?: boolean | number // true to wait for event to appear indefinitely, or number in seconds to wait for event to appear
   child_of?: BaseEvent | null // filter to only match events that are a child_of: some_parent_event
 } & {
   // event_status: 'pending' | 'started' | 'completed'
@@ -230,14 +230,13 @@ type FindOptions = {
 To find multiple matching events, iterate through `bus.event_history.filter((event) => ...some condition...)` manually.
 
 `where` behavior:
-  Any filter predicate function in the form of `(event) => true | false`, returning true to consider the event a match.
+Any filter predicate function in the form of `(event) => true | false`, returning true to consider the event a match.
 
-  ```ts
-  const matching_event = bus.find(SomeEvent, (event) => event.some_field == 123)
-  // or to match all event types:
-  const matching_event = bus.find('*', (event) => event.some_field == 123)
-  ```
-
+```ts
+const matching_event = bus.find(SomeEvent, (event) => event.some_field == 123)
+// or to match all event types:
+const matching_event = bus.find('*', (event) => event.some_field == 123)
+```
 
 `past` behavior:
 
@@ -263,9 +262,7 @@ Lifecycle use:
 Debouncing expensive events with `find()`:
 
 ```ts
-const some_expensive_event =
-  (await bus.find(ExpensiveEvent, { past: 15, future: 5 })) ??
-  bus.dispatch(ExpensiveEvent({}))
+const some_expensive_event = (await bus.find(ExpensiveEvent, { past: 15, future: 5 })) ?? bus.dispatch(ExpensiveEvent({}))
 await some_expensive_event.done()
 ```
 
@@ -502,7 +499,6 @@ toJSON(): EventResultJSON
 EventResult.fromJSON(event, data): EventResult
 ```
 
-
 ### `EventHandler`
 
 Represents one registered handler entry on a bus. You usually get these from `bus.on(...)`, then pass them to `bus.off(...)` to remove.
@@ -532,7 +528,6 @@ EventHandler.fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandl
 - `toString()` returns `handlerName() (path:line)` when path/name are available, otherwise `function#abcd()`.
 - `toJSON()` emits only serializable handler metadata (never function bodies).
 - `fromJSON()` reconstructs the handler entry and accepts an optional real function to re-bind execution behavior.
-
 
 <br/>
 
@@ -740,7 +735,17 @@ Emitting a new event for each retry is only recommended if you are using the log
 
 ## Bridges
 
-Each bridge is wired the same way: `bus.on('*', bridge.emit)` and `bridge.on('*', bus.emit)`.
+Bridges are optional extra connectors provided that allow you to send/receive events from an external service, and you do not need to use a bridge to use bubus since it's normally purely in-memory. These are just simple helpers to forward bubus events JSON to storage engines / other processes / other machines; they prevent loops automatically, but beyond that it's only basic forwarding with no handler pickling or anything fancy.
+
+Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
+
+**Example usage: link a bus to a redis pub/sub channel**
+```ts
+const bridge = new RedisEventBridge('redis://redis@localhost:6379')
+
+bus.on('*', bridge.emit)  // listen for all events on bus and send them to redis channel
+bridge.on('*', bus.emit)  // listen for new events in redis channel and dispatch them to our bus
+```
 
 - `new SocketEventBridge('/tmp/bubus_events.sock')`
 - `new HTTPEventBridge({ send_to: 'https://127.0.0.1:8001/bubus_events', listen_on: 'http://0.0.0.0:8002/bubus_events' })`

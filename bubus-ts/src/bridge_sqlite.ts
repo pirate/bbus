@@ -102,9 +102,7 @@ export class SQLiteEventBridge {
     this.db = new Database(this.path)
     this.db.pragma('journal_mode = WAL')
     this.db
-      .prepare(
-        `CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT)`
-      )
+      .prepare(`CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT)`)
       .run()
 
     this.refreshColumnCache()

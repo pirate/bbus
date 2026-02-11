@@ -54,9 +54,7 @@ const resolvePython = (): string | null => {
 const assertPythonCanImportBubus = (python_bin: string): void => {
   const probe = runCommand(python_bin, ['-c', 'import pydantic; import bubus'])
   if (probe.status !== 0) {
-    throw new Error(
-      `python environment cannot import bubus/pydantic:\nstdout:\n${probe.stdout ?? ''}\nstderr:\n${probe.stderr ?? ''}`
-    )
+    throw new Error(`python environment cannot import bubus/pydantic:\nstdout:\n${probe.stdout ?? ''}\nstderr:\n${probe.stderr ?? ''}`)
   }
 }
 
@@ -103,11 +101,7 @@ with open(output_path, 'w', encoding='utf-8') as f:
       encoding: 'utf8',
     })
 
-    assert.equal(
-      proc.status,
-      0,
-      `python roundtrip failed:\nstdout:\n${proc.stdout ?? ''}\nstderr:\n${proc.stderr ?? ''}`
-    )
+    assert.equal(proc.status, 0, `python roundtrip failed:\nstdout:\n${proc.stdout ?? ''}\nstderr:\n${proc.stderr ?? ''}`)
 
     return JSON.parse(readFileSync(output_path, 'utf8')) as Array<Record<string, unknown>>
   } finally {

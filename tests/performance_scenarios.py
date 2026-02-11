@@ -129,8 +129,8 @@ def _format_ms_per_event(value: float, unit: str = 'event') -> str:
     return f'{value:.3f}ms/{unit}'
 
 
-def _format_kb_per_event(value: float) -> str:
-    return f'{value:.3f}kb/event'
+def _format_kb_per_unit(value: float, unit: str = 'event') -> str:
+    return f'{value:.3f}kb/{unit}'
 
 
 def _format_ms(value: float) -> str:
@@ -183,6 +183,7 @@ def _scenario_result(
     ms_per_event: float,
     ms_per_event_unit: str,
     peak_rss_kb_per_event: float | None,
+    peak_rss_unit: str = 'event',
     throughput: int,
     ok: bool,
     error: str | None,
@@ -198,7 +199,10 @@ def _scenario_result(
         'ms_per_event_unit': ms_per_event_unit,
         'ms_per_event_label': _format_ms_per_event(ms_per_event, ms_per_event_unit),
         'peak_rss_kb_per_event': peak_rss_kb_per_event,
-        'peak_rss_kb_per_event_label': (None if peak_rss_kb_per_event is None else _format_kb_per_event(peak_rss_kb_per_event)),
+        'peak_rss_unit': peak_rss_unit,
+        'peak_rss_kb_per_event_label': (
+            None if peak_rss_kb_per_event is None else _format_kb_per_unit(peak_rss_kb_per_event, peak_rss_unit)
+        ),
         'throughput': throughput,
     }
     if extra:
@@ -214,7 +218,7 @@ def _record(hooks: PerfInput, metrics: dict[str, Any]) -> None:
     ]
     peak_rss = metrics.get('peak_rss_kb_per_event')
     if isinstance(peak_rss, (int, float)):
-        parts.append(f'peak_rss={_format_kb_per_event(float(peak_rss))}')
+        parts.append(f'peak_rss={_format_kb_per_unit(float(peak_rss), str(metrics.get("peak_rss_unit", "event")))}')
     parts.append(f'throughput={int(metrics.get("throughput", 0))}/s')
     parts.append(f'ok={"yes" if metrics.get("ok", False) else "no"}')
     if metrics.get('error'):
@@ -442,7 +446,7 @@ async def run_perf_single_event_many_fixed_handlers(input: PerfInput) -> dict[st
     memory.sample()
 
     ms_per_event = total_ms / float(max(total_handlers, 1))
-    peak_rss_kb_per_event = memory.peak_rss_kb_per_event(total_events)
+    peak_rss_kb_per_event = memory.peak_rss_kb_per_event(total_handlers)
     throughput = int(round(total_events / max(total_ms / 1000.0, 1e-9)))
 
     ok = error is None and processed_count == total_handlers and checksum == expected_checksum
@@ -454,6 +458,7 @@ async def run_perf_single_event_many_fixed_handlers(input: PerfInput) -> dict[st
         ms_per_event=ms_per_event,
         ms_per_event_unit='handler',
         peak_rss_kb_per_event=peak_rss_kb_per_event,
+        peak_rss_unit='handler',
         throughput=throughput,
         ok=ok,
         error=error,

@@ -208,14 +208,19 @@ export class EventBus {
 
     if (typeof record.id === 'string') options.id = record.id
     if (typeof record.max_history_size === 'number' || record.max_history_size === null) options.max_history_size = record.max_history_size
-    if (record.event_concurrency === 'global-serial' || record.event_concurrency === 'bus-serial' || record.event_concurrency === 'parallel') {
+    if (
+      record.event_concurrency === 'global-serial' ||
+      record.event_concurrency === 'bus-serial' ||
+      record.event_concurrency === 'parallel'
+    ) {
       options.event_concurrency = record.event_concurrency
     }
     if (typeof record.event_timeout === 'number' || record.event_timeout === null) options.event_timeout = record.event_timeout
     else if (typeof record.event_timeout_default === 'number' || record.event_timeout_default === null) {
       options.event_timeout = record.event_timeout_default
     }
-    if (typeof record.event_slow_timeout === 'number' || record.event_slow_timeout === null) options.event_slow_timeout = record.event_slow_timeout
+    if (typeof record.event_slow_timeout === 'number' || record.event_slow_timeout === null)
+      options.event_slow_timeout = record.event_slow_timeout
     if (record.event_handler_concurrency === 'serial' || record.event_handler_concurrency === 'parallel') {
       options.event_handler_concurrency = record.event_handler_concurrency
     } else if (record.event_handler_concurrency_default === 'serial' || record.event_handler_concurrency_default === 'parallel') {
@@ -429,9 +434,9 @@ export class EventBus {
     const past = options.past === undefined && options.future === undefined ? true : (options.past ?? true)
     const future = options.past === undefined && options.future === undefined ? false : (options.future ?? true)
     const child_of = options.child_of ?? null
-    const event_field_filters = Object.entries(options).filter(
-      ([key, value]) => key.startsWith('event_') && value !== undefined
-    ) as Array<[`event_${string}`, unknown]>
+    const event_field_filters = Object.entries(options).filter(([key, value]) => key.startsWith('event_') && value !== undefined) as Array<
+      [`event_${string}`, unknown]
+    >
 
     if (past === false && future === false) {
       return null

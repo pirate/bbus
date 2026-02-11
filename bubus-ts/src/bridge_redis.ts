@@ -68,6 +68,7 @@ export class RedisEventBridge {
 
   private readonly inbound_bus: EventBus
   private running: boolean
+  private start_promise: Promise<void> | null
   private redis_pub: any | null
   private redis_sub: any | null
 
@@ -80,6 +81,7 @@ export class RedisEventBridge {
     this.name = name ?? `RedisEventBridge_${randomSuffix()}`
     this.inbound_bus = new EventBus(this.name)
     this.running = false
+    this.start_promise = null
     this.redis_pub = null
     this.redis_sub = null
 
@@ -112,34 +114,54 @@ export class RedisEventBridge {
 
   async start(): Promise<void> {
     if (this.running) return
-    if (!isNodeRuntime()) {
-      throw new Error('RedisEventBridge is only supported in Node.js runtimes')
+    if (this.start_promise) {
+      await this.start_promise
+      return
     }
 
-    const mod = await importOptionalDependency('RedisEventBridge', 'ioredis')
-    const Redis = mod.default ?? mod.Redis ?? mod
-
-    this.redis_pub = new Redis(this.url)
-    this.redis_sub = new Redis(this.url)
-
-    // Redis logical DBs are created lazily; writing a short-lived key initializes/validates the selected DB.
-    await this.redis_pub.set(DB_INIT_KEY, '1', 'EX', 60, 'NX')
-
-    this.redis_sub.on('message', (channel_name: string, message: string) => {
-      if (channel_name !== this.channel) return
-      try {
-        const payload = JSON.parse(message)
-        void this.dispatchInboundPayload(payload)
-      } catch {
-        // Ignore malformed payloads.
+    // `on(...)` auto-start and explicit `await start()` can happen back-to-back; use one in-flight
+    // startup promise so we do not leak extra Redis clients.
+    this.start_promise = (async () => {
+      if (!isNodeRuntime()) {
+        throw new Error('RedisEventBridge is only supported in Node.js runtimes')
       }
-    })
 
-    await this.redis_sub.subscribe(this.channel)
-    this.running = true
+      const mod = await importOptionalDependency('RedisEventBridge', 'ioredis')
+      const Redis = mod.default ?? mod.Redis ?? mod
+      const redis_pub = new Redis(this.url)
+      const redis_sub = new Redis(this.url)
+
+      redis_pub.on('error', () => {})
+      redis_sub.on('error', () => {})
+
+      // Redis logical DBs are created lazily; writing a short-lived key initializes/validates the selected DB.
+      await redis_pub.set(DB_INIT_KEY, '1', 'EX', 60, 'NX')
+      redis_sub.on('message', (channel_name: string, message: string) => {
+        if (channel_name !== this.channel) return
+        try {
+          const payload = JSON.parse(message)
+          void this.dispatchInboundPayload(payload)
+        } catch {
+          // Ignore malformed payloads.
+        }
+      })
+      await redis_sub.subscribe(this.channel)
+      this.redis_pub = redis_pub
+      this.redis_sub = redis_sub
+      this.running = true
+    })()
+
+    try {
+      await this.start_promise
+    } finally {
+      this.start_promise = null
+    }
   }
 
   async close(): Promise<void> {
+    if (this.start_promise) {
+      await this.start_promise.catch(() => {})
+    }
     this.running = false
     if (this.redis_sub) {
       try {
@@ -159,6 +181,7 @@ export class RedisEventBridge {
 
   private ensureStarted(): void {
     if (this.running) return
+    if (this.start_promise) return
     void this.start().catch((error: unknown) => {
       console.error('[bubus] RedisEventBridge failed to start', error)
     })

@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from shutil import rmtree
 from typing import Any
 
 import pytest
@@ -30,6 +31,13 @@ class IPCPingEvent(BaseEvent):
     value: int
     label: str
     meta: dict[str, Any]
+
+
+_TEST_RUN_ID = f'{int(time.time() * 1000)}-{uuid7str()[-8:]}'
+
+
+def _make_temp_dir(prefix: str) -> Path:
+    return Path(tempfile.mkdtemp(prefix=f'{prefix}-{_TEST_RUN_ID}-'))
 
 
 def _free_tcp_port() -> int:
@@ -125,8 +133,8 @@ def _make_sender_bridge(kind: str, config: dict[str, Any]) -> Any:
 
 
 async def _assert_roundtrip(kind: str, config: dict[str, Any]) -> None:
-    with tempfile.TemporaryDirectory(prefix=f'bubus-bridge-{kind}-') as temp_dir:
-        temp_path = Path(temp_dir)
+    temp_path = _make_temp_dir(f'bubus-bridge-{kind}')
+    try:
         worker_config_path = temp_path / 'worker_config.json'
         worker_ready_path = temp_path / 'worker_ready'
         received_event_path = temp_path / 'received_event.json'
@@ -166,6 +174,8 @@ async def _assert_roundtrip(kind: str, config: dict[str, Any]) -> None:
                 except subprocess.TimeoutExpired:
                     worker.kill()
                     worker.wait(timeout=5)
+    finally:
+        rmtree(temp_path, ignore_errors=True)
 
 
 @pytest.mark.asyncio
@@ -176,7 +186,7 @@ async def test_http_event_bridge_roundtrip_between_processes() -> None:
 
 @pytest.mark.asyncio
 async def test_socket_event_bridge_roundtrip_between_processes() -> None:
-    socket_path = Path('/tmp') / f'bb-{uuid7str()[-8:]}.sock'
+    socket_path = Path('/tmp') / f'bb-{_TEST_RUN_ID}-{uuid7str()[-8:]}.sock'
     await _assert_roundtrip('socket', {'path': str(socket_path)})
 
 
@@ -188,22 +198,29 @@ def test_socket_event_bridge_rejects_long_socket_paths() -> None:
 
 @pytest.mark.asyncio
 async def test_jsonl_event_bridge_roundtrip_between_processes() -> None:
-    with tempfile.TemporaryDirectory(prefix='bubus-jsonl-') as temp_dir:
-        jsonl_path = Path(temp_dir) / 'events.jsonl'
+    temp_dir = _make_temp_dir('bubus-jsonl')
+    try:
+        jsonl_path = temp_dir / 'events.jsonl'
         await _assert_roundtrip('jsonl', {'path': str(jsonl_path)})
+    finally:
+        rmtree(temp_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio
 async def test_sqlite_event_bridge_roundtrip_between_processes() -> None:
-    with tempfile.TemporaryDirectory(prefix='bubus-sqlite-') as temp_dir:
-        sqlite_path = Path(temp_dir) / 'events.sqlite3'
+    temp_dir = _make_temp_dir('bubus-sqlite')
+    try:
+        sqlite_path = temp_dir / 'events.sqlite3'
         subprocess.run(['sqlite3', str(sqlite_path), 'SELECT 1;'], check=True, capture_output=True, text=True)
         await _assert_roundtrip('sqlite', {'path': str(sqlite_path), 'table': 'bubus_events'})
+    finally:
+        rmtree(temp_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio
 async def test_redis_event_bridge_roundtrip_between_processes() -> None:
-    with tempfile.TemporaryDirectory(prefix='bubus-redis-') as temp_dir:
+    temp_dir = _make_temp_dir('bubus-redis')
+    try:
         port = _free_tcp_port()
         command = [
             'redis-server',
@@ -216,12 +233,14 @@ async def test_redis_event_bridge_roundtrip_between_processes() -> None:
             '--port',
             str(port),
             '--dir',
-            temp_dir,
+            str(temp_dir),
         ]
         async with _running_process(command) as redis_process:
             await _wait_for_port(port)
             await _assert_roundtrip('redis', {'url': f'redis://127.0.0.1:{port}/1/bubus_events'})
             assert redis_process.poll() is None
+    finally:
+        rmtree(temp_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio
@@ -236,8 +255,9 @@ async def test_nats_event_bridge_roundtrip_between_processes() -> None:
 
 @pytest.mark.asyncio
 async def test_postgres_event_bridge_roundtrip_between_processes() -> None:
-    with tempfile.TemporaryDirectory(prefix='bubus-postgres-') as temp_dir:
-        data_dir = Path(temp_dir) / 'pgdata'
+    temp_dir = _make_temp_dir('bubus-postgres')
+    try:
+        data_dir = temp_dir / 'pgdata'
         initdb = subprocess.run(
             ['initdb', '-D', str(data_dir), '-A', 'trust', '-U', 'postgres'],
             capture_output=True,
@@ -247,8 +267,10 @@ async def test_postgres_event_bridge_roundtrip_between_processes() -> None:
         assert initdb.returncode == 0, f'initdb failed\nstdout:\n{initdb.stdout}\nstderr:\n{initdb.stderr}'
 
         port = _free_tcp_port()
-        command = ['postgres', '-D', str(data_dir), '-h', '127.0.0.1', '-p', str(port), '-k', temp_dir]
+        command = ['postgres', '-D', str(data_dir), '-h', '127.0.0.1', '-p', str(port), '-k', '/tmp']
         async with _running_process(command) as postgres_process:
             await _wait_for_port(port)
             await _assert_roundtrip('postgres', {'url': f'postgresql://postgres@127.0.0.1:{port}/postgres/bubus_events'})
             assert postgres_process.poll() is None
+    finally:
+        rmtree(temp_dir, ignore_errors=True)

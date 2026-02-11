@@ -70,6 +70,8 @@ class PostgresEventBridge:
         self._running = False
         self._conn: Any | None = None
         self._listener_callback: Any | None = None
+        self._start_task: asyncio.Task[None] | None = None
+        self._start_lock = asyncio.Lock()
         self._table_columns: set[str] = {'event_id', 'event_created_at', 'event_type'}
 
     def on(self, event_pattern: EventPatternType, handler: Callable[[BaseEvent[Any]], Any]) -> None:
@@ -117,26 +119,30 @@ class PostgresEventBridge:
         if self._running:
             return
 
-        asyncpg = self._load_asyncpg()
-        self._conn = await asyncpg.connect(self.dsn)
-        await self._ensure_table_exists()
-        await self._refresh_column_cache()
-        await self._ensure_columns(['event_id', 'event_created_at', 'event_type'])
-        await self._ensure_base_indexes()
-
-        async def _dispatch_event_id(event_id: str) -> None:
-            try:
-                await self._dispatch_by_event_id(event_id)
-            except Exception:
+        async with self._start_lock:
+            if self._running:
                 return
 
-        def _listener(_connection: Any, _pid: int, _channel: str, payload: str) -> None:
-            asyncio.create_task(_dispatch_event_id(payload))
+            asyncpg = self._load_asyncpg()
+            self._conn = await asyncpg.connect(self.dsn)
+            await self._ensure_table_exists()
+            await self._refresh_column_cache()
+            await self._ensure_columns(['event_id', 'event_created_at', 'event_type'])
+            await self._ensure_base_indexes()
 
-        self._listener_callback = _listener
-        assert self._conn is not None
-        await self._conn.add_listener(self.channel, _listener)
-        self._running = True
+            async def _dispatch_event_id(event_id: str) -> None:
+                try:
+                    await self._dispatch_by_event_id(event_id)
+                except Exception:
+                    return
+
+            def _listener(_connection: Any, _pid: int, _channel: str, payload: str) -> None:
+                asyncio.create_task(_dispatch_event_id(payload))
+
+            self._listener_callback = _listener
+            assert self._conn is not None
+            await self._conn.add_listener(self.channel, _listener)
+            self._running = True
 
     async def close(self, *, clear: bool = True) -> None:
         self._running = False
@@ -154,11 +160,16 @@ class PostgresEventBridge:
     def _ensure_started(self) -> None:
         if self._running:
             return
+        if self._start_task is not None and not self._start_task.done():
+            return
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return
-        asyncio.create_task(self.start())
+        # `on(...)` auto-start can race with explicit `await start()`. Track one background task and let
+        # `start()` itself handle concurrent callers safely.
+        self._start_task = asyncio.create_task(self.start())
+        self._start_task.add_done_callback(lambda task: setattr(self, '_start_task', None) if self._start_task is task else None)
 
     async def _dispatch_by_event_id(self, event_id: str) -> None:
         assert self._conn is not None
