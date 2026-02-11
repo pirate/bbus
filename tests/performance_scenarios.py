@@ -16,11 +16,6 @@ except ImportError:  # pragma: no cover
     psutil = None  # type: ignore[assignment]
 
 
-HISTORY_LIMIT_STREAM = 512
-HISTORY_LIMIT_ON_OFF = 128
-HISTORY_LIMIT_EPHEMERAL_BUS = 128
-HISTORY_LIMIT_FIXED_HANDLERS = 128
-HISTORY_LIMIT_WORST_CASE = 128
 TRIM_TARGET = 1
 
 
@@ -48,6 +43,13 @@ class PerfInput:
             return None
         process = psutil.Process(os.getpid())
         return {'rss': int(process.memory_info().rss)}
+
+    def get_cpu_time_ms(self) -> float | None:
+        if psutil is None:
+            return None
+        process = psutil.Process(os.getpid())
+        cpu = process.cpu_times()
+        return float((cpu.user + cpu.system) * 1000.0)
 
 
 @dataclass(slots=True)
@@ -223,6 +225,12 @@ def _record(hooks: PerfInput, metrics: dict[str, Any]) -> None:
     parts.append(f'ok={"yes" if metrics.get("ok", False) else "no"}')
     if metrics.get('error'):
         parts.append(f'error={metrics["error"]}')
+    if isinstance(metrics.get('cpu_ms'), (int, float)):
+        parts.append(f'cpu={_format_ms(float(metrics["cpu_ms"]))}')
+    if isinstance(metrics.get('cpu_ms_per_event'), (int, float)):
+        parts.append(
+            f'cpu_per_unit={_format_ms_per_event(float(metrics["cpu_ms_per_event"]), str(metrics.get("ms_per_event_unit", "event")))}'
+        )
     hooks.log(f'[{hooks.runtime_name}] {metrics["scenario"]}: ' + ' '.join(parts))
 
 
@@ -230,7 +238,7 @@ async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
     hooks = input
     scenario = '50k events'
     total_events = 50_000
-    bus = EventBus(name='Perf50kBus', max_history_size=HISTORY_LIMIT_STREAM, middlewares=[])
+    bus = EventBus(name='Perf50kBus', middlewares=[])
 
     processed_count = 0
     checksum = 0
@@ -244,24 +252,35 @@ async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
 
     bus.on(PerfSimpleEvent, simple_handler)
 
-    events: list[BaseEvent[Any]] = []
+    memory = MemoryTracker(hooks)
+    t0 = hooks.now()
+    cpu_t0 = hooks.get_cpu_time_ms()
+
+    queued: list[BaseEvent[Any]] = []
+    dispatch_error: str | None = None
     for i in range(total_events):
         batch_id = i // 512
         value = (i % 97) + 1
         expected_checksum += value + batch_id
-        events.append(PerfSimpleEvent(batch_id=batch_id, value=value))
+        try:
+            queued_event = bus.dispatch(PerfSimpleEvent(batch_id=batch_id, value=value))
+            queued.append(queued_event)
+            if len(sampled_early_event_ids) < 64:
+                sampled_early_event_ids.append(queued_event.event_id)
+        except Exception as exc:
+            dispatch_error = f'{type(exc).__name__}: {exc}'
+            break
+        if (i + 1) % 512 == 0:
+            memory.sample()
 
-    memory = MemoryTracker(hooks)
-    t0 = hooks.now()
-
-    queued, dispatch_error = await _dispatch_naive(
-        bus,
-        events,
-        on_dispatched=(lambda ev: sampled_early_event_ids.append(ev.event_id) if len(sampled_early_event_ids) < 64 else None),
-    )
+    if queued:
+        await asyncio.gather(*queued, return_exceptions=True)
+        await bus.wait_until_idle()
+    memory.sample()
 
     await _trim_bus_history_to_one_event(bus, PerfTrimEvent)
     t1 = hooks.now()
+    cpu_t1 = hooks.get_cpu_time_ms()
     await _wait_for_runtime_settle(hooks)
     memory.sample()
 
@@ -271,6 +290,8 @@ async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
     ms_per_event = total_ms / float(ms_denominator)
     throughput = int(round(dispatched_events / max(total_ms / 1000.0, 1e-9)))
     peak_rss_kb_per_event = memory.peak_rss_kb_per_event(ms_denominator)
+    cpu_ms = None if cpu_t0 is None or cpu_t1 is None else max(0.0, cpu_t1 - cpu_t0)
+    cpu_ms_per_event = None if cpu_ms is None else cpu_ms / float(ms_denominator)
 
     expected_for_dispatched = 0
     for i in range(dispatched_events):
@@ -302,6 +323,8 @@ async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
             'checksum': checksum,
             'expected_checksum': expected_for_dispatched,
             'sampled_evicted_count': sampled_evicted_count,
+            'cpu_ms': cpu_ms,
+            'cpu_ms_per_event': cpu_ms_per_event,
         },
     )
 
@@ -325,11 +348,11 @@ async def run_perf_ephemeral_buses(input: PerfInput) -> dict[str, Any]:
 
     memory = MemoryTracker(hooks)
     t0 = hooks.now()
+    cpu_t0 = hooks.get_cpu_time_ms()
 
     for bus_index in range(total_buses):
         bus = EventBus(
             name=f'PerfEphemeralBus_{bus_index}',
-            max_history_size=HISTORY_LIMIT_EPHEMERAL_BUS,
             middlewares=[],
         )
 
@@ -354,6 +377,7 @@ async def run_perf_ephemeral_buses(input: PerfInput) -> dict[str, Any]:
         if err and first_error is None:
             first_error = err
 
+        memory.sample()
         await _trim_bus_history_to_one_event(bus, PerfTrimEphemeralEvent)
         await bus.stop(timeout=0, clear=True)
 
@@ -361,6 +385,7 @@ async def run_perf_ephemeral_buses(input: PerfInput) -> dict[str, Any]:
             memory.sample()
 
     total_ms = hooks.now() - t0
+    cpu_t1 = hooks.get_cpu_time_ms()
     await _wait_for_runtime_settle(hooks)
     memory.sample()
 
@@ -368,6 +393,8 @@ async def run_perf_ephemeral_buses(input: PerfInput) -> dict[str, Any]:
     ms_per_event = total_ms / float(ms_denominator)
     peak_rss_kb_per_event = memory.peak_rss_kb_per_event(ms_denominator)
     throughput = int(round(dispatched_events / max(total_ms / 1000.0, 1e-9)))
+    cpu_ms = None if cpu_t0 is None or cpu_t1 is None else max(0.0, cpu_t1 - cpu_t0)
+    cpu_ms_per_event = None if cpu_ms is None else cpu_ms / float(ms_denominator)
 
     ok = (
         first_error is None
@@ -391,6 +418,8 @@ async def run_perf_ephemeral_buses(input: PerfInput) -> dict[str, Any]:
             'processed_count': processed_count,
             'checksum': checksum,
             'expected_checksum': expected_checksum,
+            'cpu_ms': cpu_ms,
+            'cpu_ms_per_event': cpu_ms_per_event,
         },
     )
 
@@ -405,7 +434,6 @@ async def run_perf_single_event_many_fixed_handlers(input: PerfInput) -> dict[st
     total_handlers = 50_000
     bus = EventBus(
         name='PerfFixedHandlersBus',
-        max_history_size=HISTORY_LIMIT_FIXED_HANDLERS,
         parallel_handlers=True,
         middlewares=[],
     )
@@ -432,6 +460,7 @@ async def run_perf_single_event_many_fixed_handlers(input: PerfInput) -> dict[st
 
     memory = MemoryTracker(hooks)
     t0 = hooks.now()
+    cpu_t0 = hooks.get_cpu_time_ms()
 
     error: str | None = None
     try:
@@ -442,12 +471,15 @@ async def run_perf_single_event_many_fixed_handlers(input: PerfInput) -> dict[st
         error = f'{type(exc).__name__}: {exc}'
 
     total_ms = hooks.now() - t0
+    cpu_t1 = hooks.get_cpu_time_ms()
     await _wait_for_runtime_settle(hooks)
     memory.sample()
 
     ms_per_event = total_ms / float(max(total_handlers, 1))
     peak_rss_kb_per_event = memory.peak_rss_kb_per_event(total_handlers)
     throughput = int(round(total_events / max(total_ms / 1000.0, 1e-9)))
+    cpu_ms = None if cpu_t0 is None or cpu_t1 is None else max(0.0, cpu_t1 - cpu_t0)
+    cpu_ms_per_event = None if cpu_ms is None else cpu_ms / float(max(total_handlers, 1))
 
     ok = error is None and processed_count == total_handlers and checksum == expected_checksum
 
@@ -467,6 +499,8 @@ async def run_perf_single_event_many_fixed_handlers(input: PerfInput) -> dict[st
             'checksum': checksum,
             'expected_checksum': expected_checksum,
             'total_handlers': total_handlers,
+            'cpu_ms': cpu_ms,
+            'cpu_ms_per_event': cpu_ms_per_event,
         },
     )
 
@@ -480,7 +514,7 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
     hooks = input
     scenario = '50k one-off handlers over 50k events'
     total_events = 50_000
-    bus = EventBus(name='PerfOnOffBus', max_history_size=HISTORY_LIMIT_ON_OFF, middlewares=[])
+    bus = EventBus(name='PerfOnOffBus', middlewares=[])
 
     processed_count = 0
     checksum = 0
@@ -490,6 +524,7 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
 
     memory = MemoryTracker(hooks)
     t0 = hooks.now()
+    cpu_t0 = hooks.get_cpu_time_ms()
 
     for i in range(total_events):
         weight = (i % 13) + 1
@@ -519,6 +554,7 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
 
     await bus.wait_until_idle()
     total_ms = hooks.now() - t0
+    cpu_t1 = hooks.get_cpu_time_ms()
     await _wait_for_runtime_settle(hooks)
     memory.sample()
 
@@ -526,6 +562,8 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
     ms_per_event = total_ms / float(ms_denominator)
     peak_rss_kb_per_event = memory.peak_rss_kb_per_event(ms_denominator)
     throughput = int(round(processed_count / max(total_ms / 1000.0, 1e-9)))
+    cpu_ms = None if cpu_t0 is None or cpu_t1 is None else max(0.0, cpu_t1 - cpu_t0)
+    cpu_ms_per_event = None if cpu_ms is None else cpu_ms / float(ms_denominator)
 
     ok = (
         error is None
@@ -549,6 +587,8 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
             'processed_count': processed_count,
             'checksum': checksum,
             'expected_checksum': expected_checksum,
+            'cpu_ms': cpu_ms,
+            'cpu_ms_per_event': cpu_ms_per_event,
         },
     )
 
@@ -562,11 +602,9 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
     hooks = input
     scenario = 'worst-case forwarding + timeouts'
     total_iterations = 500
-    history_limit = HISTORY_LIMIT_WORST_CASE
-
-    bus_a = EventBus(name='PerfWorstCaseA', max_history_size=history_limit, middlewares=[])
-    bus_b = EventBus(name='PerfWorstCaseB', max_history_size=history_limit, middlewares=[])
-    bus_c = EventBus(name='PerfWorstCaseC', max_history_size=history_limit, middlewares=[])
+    bus_a = EventBus(name='PerfWorstCaseA', middlewares=[])
+    bus_b = EventBus(name='PerfWorstCaseB', middlewares=[])
+    bus_c = EventBus(name='PerfWorstCaseC', middlewares=[])
 
     parent_handled_a = 0
     parent_handled_b = 0
@@ -602,6 +640,7 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
 
     memory = MemoryTracker(hooks)
     t0 = hooks.now()
+    cpu_t0 = hooks.get_cpu_time_ms()
 
     try:
         for iteration in range(total_iterations):
@@ -653,9 +692,12 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
                 cancel_count += 1
 
     total_ms = hooks.now() - t0
+    cpu_t1 = hooks.get_cpu_time_ms()
     estimated_events = total_iterations * 3
     ms_per_event = total_ms / float(max(estimated_events, 1))
     peak_rss_kb_per_event = memory.peak_rss_kb_per_event(max(estimated_events, 1))
+    cpu_ms = None if cpu_t0 is None or cpu_t1 is None else max(0.0, cpu_t1 - cpu_t0)
+    cpu_ms_per_event = None if cpu_ms is None else cpu_ms / float(max(estimated_events, 1))
 
     ok = (
         error is None
@@ -682,6 +724,8 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
             'timeout_count': timeout_count,
             'cancel_count': cancel_count,
             'checksum': checksum,
+            'cpu_ms': cpu_ms,
+            'cpu_ms_per_event': cpu_ms_per_event,
         },
     )
 

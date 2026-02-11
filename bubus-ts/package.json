@@ -67,6 +67,12 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  },
   "optionalDependencies": {
     "better-sqlite3": "^12.6.2",
     "ioredis": "^5.9.2",

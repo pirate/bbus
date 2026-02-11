@@ -112,14 +112,18 @@ const waitForPort = async (port: number, timeout_ms = 15000): Promise<void> => {
   throw new Error(`port did not open in time: ${port}`)
 }
 
-const waitForPath = async (path: string, worker: ChildProcess, timeout_ms = 15000): Promise<void> => {
+const waitForPath = async (
+  path: string,
+  worker: ChildProcess,
+  stdout_log: { value: string },
+  stderr_log: { value: string },
+  timeout_ms = 15000
+): Promise<void> => {
   const started = Date.now()
   while (Date.now() - started < timeout_ms) {
     if (existsSync(path)) return
     if (worker.exitCode !== null) {
-      const stdout = worker.stdout?.read()?.toString?.() ?? ''
-      const stderr = worker.stderr?.read()?.toString?.() ?? ''
-      throw new Error(`worker exited early (${worker.exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
+      throw new Error(`worker exited early (${worker.exitCode})\nstdout:\n${stdout_log.value}\nstderr:\n${stderr_log.value}`)
     }
     await sleep(50)
   }
@@ -171,15 +175,23 @@ const assertRoundtrip = async (kind: string, config: Record<string, string>): Pr
     cwd: tests_dir,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  const worker_stdout = { value: '' }
+  const worker_stderr = { value: '' }
+  worker.stdout?.on('data', (chunk) => {
+    worker_stdout.value += String(chunk)
+  })
+  worker.stderr?.on('data', (chunk) => {
+    worker_stderr.value += String(chunk)
+  })
 
   try {
-    await waitForPath(ready_path, worker)
+    await waitForPath(ready_path, worker, worker_stdout, worker_stderr)
     if (kind === 'postgres') {
       await sender.start()
     }
     const outbound = IPCPingEvent({ value: 17, label: `${kind}_ok`, meta: { kind, n: 1 } })
     await sender.emit(outbound)
-    await waitForPath(output_path, worker)
+    await waitForPath(output_path, worker, worker_stdout, worker_stderr)
     const received_payload = JSON.parse(readFileSync(output_path, 'utf8')) as Record<string, unknown>
     assert.deepEqual(normalizeRoundtripPayload(received_payload), normalizeRoundtripPayload(outbound.toJSON() as Record<string, unknown>))
   } finally {
@@ -215,21 +227,7 @@ test('JSONLEventBridge roundtrip between processes', async () => {
   }
 })
 
-test('SQLiteEventBridge roundtrip between processes', async (t) => {
-  try {
-    const sqlite_module = (await import('better-sqlite3')) as { default?: new (path: string) => { close: () => void } }
-    const SQLiteDatabase = sqlite_module.default
-    if (!SQLiteDatabase) {
-      t.skip('better-sqlite3 is unavailable in this runtime')
-      return
-    }
-    const db = new SQLiteDatabase(':memory:')
-    db.close()
-  } catch {
-    t.skip('better-sqlite3 is unavailable in this runtime')
-    return
-  }
-
+test('SQLiteEventBridge roundtrip between processes', async () => {
   const temp_dir = makeTempDir('bubus-sqlite')
   try {
     const sqlite_path = join(temp_dir, 'events.sqlite3')
