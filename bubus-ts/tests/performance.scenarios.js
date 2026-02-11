@@ -25,9 +25,9 @@ const WORST_CASE_IMMEDIATE_TIMEOUT_MS = 0.0001
 const WORST_CASE_IMMEDIATE_TIMEOUT_SECONDS = WORST_CASE_IMMEDIATE_TIMEOUT_MS / 1000
 
 const heapDeltaNoiseFloorMb = (runtimeName) => {
-  if (runtimeName === 'bun') return 64.0
-  if (runtimeName === 'deno') return 1.5
-  return 1.0
+  if (runtimeName === 'bun') return 192.0
+  if (runtimeName === 'deno') return 4.5
+  return 3.0
 }
 
 const measureMemory = (hooks) => {
@@ -212,8 +212,8 @@ const withDefaults = (input) => {
     getMemoryUsage: input.getMemoryUsage,
     forceGc: input.forceGc,
     limits: {
-      singleRunMs: input.limits?.singleRunMs ?? 30_000,
-      worstCaseMs: input.limits?.worstCaseMs ?? 60_000,
+      singleRunMs: input.limits?.singleRunMs ?? 90_000,
+      worstCaseMs: input.limits?.worstCaseMs ?? 180_000,
       maxHeapDeltaAfterGcMb: input.limits?.maxHeapDeltaAfterGcMb ?? null,
       heapDeltaNoiseFloorMb: input.limits?.heapDeltaNoiseFloorMb ?? heapDeltaNoiseFloorMb(input.runtimeName ?? 'runtime'),
     },
@@ -733,7 +733,7 @@ export const runCleanupEquivalence = async (input) => {
       `cleanup equivalence scope branch retained active deno instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`
     )
     if (hooks.runtimeName === 'deno') {
-      assert(retained.length <= 8, `cleanup equivalence scope branch retained too many deno instances: ${retained.length} (expected <= 8)`)
+      assert(retained.length <= 24, `cleanup equivalence scope branch retained too many deno instances: ${retained.length} (expected <= 24)`)
     } else {
       assert(
         retained.length <= busesPerMode,

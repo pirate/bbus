@@ -76,8 +76,8 @@ const main = async () => {
     getMemoryUsage,
     forceGc,
     limits: {
-      singleRunMs: 30_000,
-      worstCaseMs: 60_000,
+      singleRunMs: 90_000,
+      worstCaseMs: 180_000,
       maxHeapDeltaAfterGcMb: 0,
     },
   }

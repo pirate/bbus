@@ -112,26 +112,26 @@ jobs:
           cache-dependency-path: bubus-ts/pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
-      - name: Run test with coverage
-        if: matrix.task.kind == 'test'
+      - name: Prepare coverage directory
         run: |
           rm -rf .v8-coverage
           mkdir -p .v8-coverage
-          NODE_V8_COVERAGE=.v8-coverage NODE_OPTIONS='--expose-gc' node --expose-gc --test --experimental-test-coverage --import tsx tests/${{ matrix.task.name }}.test.ts
+      - name: Run test with coverage
+        if: matrix.task.kind == 'test'
+        run: NODE_V8_COVERAGE=.v8-coverage NODE_OPTIONS='--expose-gc' node --expose-gc --test --experimental-test-coverage --import tsx tests/${{ matrix.task.name }}.test.ts
       - name: Run example
         if: matrix.task.kind == 'example'
-        run: |
-          node --import tsx examples/${{ matrix.task.name }}.ts
+        run: NODE_V8_COVERAGE=.v8-coverage NODE_OPTIONS='--expose-gc' node --expose-gc --import tsx examples/${{ matrix.task.name }}.ts
       - name: Upload raw coverage data
         uses: actions/upload-artifact@v4
         with:
-          name: ts-coverage-${{ matrix.task.name }}
+          name: ts-coverage-${{ matrix.task.kind }}-${{ matrix.task.name }}
           path: |
             bubus-ts/.v8-coverage
             pyproject.toml
           retention-days: 7
           include-hidden-files: true
-        if: matrix.task.kind == 'test' && always()
+        if: always()
 
   coverage:
     needs: tests
@@ -185,7 +185,8 @@ jobs:
             --reporter=json-summary \
             --exclude-after-remap \
             -n 'src/**/*.ts' \
-            -x 'src/bridge*.ts' | tee coverage/text-report.txt
+            -x 'src/bridge*.ts' \
+            -x 'src/optional_deps.ts' | tee coverage/text-report.txt
 
           node <<'NODE'
           const fs = require('fs');
@@ -229,6 +230,7 @@ jobs:
             --exclude-after-remap \
             -n 'src/**/*.ts' \
             -x 'src/bridge*.ts' \
+            -x 'src/optional_deps.ts' \
             --check-coverage \
             --lines 50 > /dev/null
 

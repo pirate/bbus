@@ -107,31 +107,32 @@ jobs:
 
       - name: Run test with coverage
         if: matrix.task.kind == 'test'
-        run: pytest -x tests/${{ matrix.task.name }}.py --cov=bubus --cov-report=term
+        run: uv run coverage run --parallel-mode --source=bubus -m pytest -x tests/${{ matrix.task.name }}.py
 
       - name: Run example
         if: matrix.task.kind == 'example'
-        run: uv run python examples/${{ matrix.task.name }}.py
+        run: uv run coverage run --parallel-mode --source=bubus examples/${{ matrix.task.name }}.py
 
       - name: Check coverage files
-        if: matrix.task.kind == 'test'
+        if: always()
         run: |
           echo "Looking for coverage files..."
           ls -la .coverage* 2>/dev/null || ls -la | grep coverage || echo "No coverage files found"
-          if [ -f .coverage ]; then
-            echo "Found .coverage file, size: $(stat -f%z .coverage 2>/dev/null || stat -c%s .coverage) bytes"
+          coverage_file="$(find . -maxdepth 1 -type f -name '.coverage*' | head -n 1)"
+          if [ -n "$coverage_file" ]; then
+            echo "Found coverage file ($coverage_file), size: $(stat -f%z "$coverage_file" 2>/dev/null || stat -c%s "$coverage_file") bytes"
           fi
 
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{ matrix.task.name }}
+          name: coverage-${{ matrix.task.kind }}-${{ matrix.task.name }}
           path: |
-            .coverage
+            .coverage*
             pyproject.toml
           retention-days: 7
           include-hidden-files: true
-        if: matrix.task.kind == 'test' && always()
+        if: always()
 
   coverage:
     needs: tests
@@ -154,9 +155,9 @@ jobs:
 
       - name: Combine coverage data
         run: |
-          # Find all .coverage files and copy them with unique names
+          # Find all .coverage* files and copy them with unique names
           counter=1
-          for coverage_file in $(find coverage-data -name ".coverage" -type f); do
+          for coverage_file in $(find coverage-data -name ".coverage*" -type f); do
             cp "$coverage_file" ".coverage.$counter"
             counter=$((counter + 1))
           done
