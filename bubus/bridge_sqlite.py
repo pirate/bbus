@@ -14,6 +14,7 @@ import asyncio
 import json
 import re
 import sqlite3
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -142,8 +143,16 @@ class SQLiteEventBridge:
         self._inbound_bus.dispatch(event)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.execute('PRAGMA journal_mode=WAL')
+        conn = sqlite3.connect(self.path, timeout=30.0)
+        conn.execute('PRAGMA busy_timeout=30000')
+        for _ in range(20):
+            try:
+                conn.execute('PRAGMA journal_mode=WAL')
+                break
+            except sqlite3.OperationalError as exc:
+                if 'locked' not in str(exc).lower():
+                    raise
+                time.sleep(0.05)
         conn.row_factory = sqlite3.Row
         return conn
 

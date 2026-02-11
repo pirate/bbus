@@ -68,10 +68,12 @@ class PostgresEventBridge:
         self._inbound_bus = EventBus(name=name or f'PostgresEventBridge_{uuid7str()[-8:]}', max_history_size=0)
 
         self._running = False
-        self._conn: Any | None = None
+        self._write_conn: Any | None = None
+        self._listen_conn: Any | None = None
         self._listener_callback: Any | None = None
         self._start_task: asyncio.Task[None] | None = None
         self._start_lock = asyncio.Lock()
+        self._listen_query_lock = asyncio.Lock()
         self._table_columns: set[str] = {'event_id', 'event_created_at', 'event_type'}
 
     def on(self, event_pattern: EventPatternType, handler: Callable[[BaseEvent[Any]], Any]) -> None:
@@ -80,7 +82,7 @@ class PostgresEventBridge:
 
     async def dispatch(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
         self._ensure_started()
-        if self._conn is None:
+        if self._write_conn is None:
             await self.start()
 
         payload = event.model_dump(mode='json')
@@ -103,10 +105,10 @@ class PostgresEventBridge:
                 f'INSERT INTO "{self.table}" ({columns_sql}) VALUES ({placeholders_sql}) ON CONFLICT ("event_id") DO NOTHING'
             )
 
-        assert self._conn is not None
-        await self._conn.execute(upsert_sql, *values)
+        assert self._write_conn is not None
+        await self._write_conn.execute(upsert_sql, *values)
         event_id_payload = json.dumps(payload['event_id'], separators=(',', ':'))
-        await self._conn.execute('SELECT pg_notify($1, $2)', self.channel, event_id_payload)
+        await self._write_conn.execute('SELECT pg_notify($1, $2)', self.channel, event_id_payload)
 
         if inside_handler_context.get():
             return None
@@ -124,7 +126,8 @@ class PostgresEventBridge:
                 return
 
             asyncpg = self._load_asyncpg()
-            self._conn = await asyncpg.connect(self.dsn)
+            self._write_conn = await asyncpg.connect(self.dsn)
+            self._listen_conn = await asyncpg.connect(self.dsn)
             await self._ensure_table_exists()
             await self._refresh_column_cache()
             await self._ensure_columns(['event_id', 'event_created_at', 'event_type'])
@@ -140,21 +143,24 @@ class PostgresEventBridge:
                 asyncio.create_task(_dispatch_event_id(payload))
 
             self._listener_callback = _listener
-            assert self._conn is not None
-            await self._conn.add_listener(self.channel, _listener)
+            assert self._listen_conn is not None
+            await self._listen_conn.add_listener(self.channel, _listener)
             self._running = True
 
     async def close(self, *, clear: bool = True) -> None:
         self._running = False
-        if self._conn is not None:
+        if self._listen_conn is not None:
             if self._listener_callback is not None:
                 try:
-                    await self._conn.remove_listener(self.channel, self._listener_callback)
+                    await self._listen_conn.remove_listener(self.channel, self._listener_callback)
                 except Exception:
                     pass
                 self._listener_callback = None
-            await self._conn.close()
-            self._conn = None
+            await self._listen_conn.close()
+            self._listen_conn = None
+        if self._write_conn is not None:
+            await self._write_conn.close()
+            self._write_conn = None
         await self._inbound_bus.stop(clear=clear)
 
     def _ensure_started(self) -> None:
@@ -172,19 +178,20 @@ class PostgresEventBridge:
         self._start_task.add_done_callback(lambda task: setattr(self, '_start_task', None) if self._start_task is task else None)
 
     async def _dispatch_by_event_id(self, event_id: str) -> None:
-        assert self._conn is not None
-        row = await self._conn.fetchrow(f'SELECT * FROM "{self.table}" WHERE "event_id" = $1', event_id)
-        if row is None:
-            return
+        async with self._listen_query_lock:
+            assert self._listen_conn is not None
+            row = await self._listen_conn.fetchrow(f'SELECT * FROM "{self.table}" WHERE "event_id" = $1', event_id)
+            if row is None:
+                return
 
-        payload: dict[str, Any] = {}
-        for key, raw_value in dict(row).items():
-            if raw_value is None:
-                continue
-            try:
-                payload[key] = json.loads(raw_value)
-            except Exception:
-                payload[key] = raw_value
+            payload: dict[str, Any] = {}
+            for key, raw_value in dict(row).items():
+                if raw_value is None:
+                    continue
+                try:
+                    payload[key] = json.loads(raw_value)
+                except Exception:
+                    payload[key] = raw_value
 
         await self._dispatch_inbound_payload(payload)
 
@@ -193,8 +200,8 @@ class PostgresEventBridge:
         self._inbound_bus.dispatch(event)
 
     async def _ensure_table_exists(self) -> None:
-        assert self._conn is not None
-        await self._conn.execute(
+        assert self._write_conn is not None
+        await self._write_conn.execute(
             f'''
             CREATE TABLE IF NOT EXISTS "{self.table}" (
                 "event_id" TEXT PRIMARY KEY,
@@ -205,16 +212,18 @@ class PostgresEventBridge:
         )
 
     async def _ensure_base_indexes(self) -> None:
-        assert self._conn is not None
+        assert self._write_conn is not None
         event_created_at_idx = _index_name(self.table, 'event_created_at_idx')
         event_type_idx = _index_name(self.table, 'event_type_idx')
 
-        await self._conn.execute(f'CREATE INDEX IF NOT EXISTS "{event_created_at_idx}" ON "{self.table}" ("event_created_at")')
-        await self._conn.execute(f'CREATE INDEX IF NOT EXISTS "{event_type_idx}" ON "{self.table}" ("event_type")')
+        await self._write_conn.execute(
+            f'CREATE INDEX IF NOT EXISTS "{event_created_at_idx}" ON "{self.table}" ("event_created_at")'
+        )
+        await self._write_conn.execute(f'CREATE INDEX IF NOT EXISTS "{event_type_idx}" ON "{self.table}" ("event_type")')
 
     async def _refresh_column_cache(self) -> None:
-        assert self._conn is not None
-        rows = await self._conn.fetch(
+        assert self._write_conn is not None
+        rows = await self._write_conn.fetch(
             """
             SELECT column_name
             FROM information_schema.columns
@@ -232,9 +241,9 @@ class PostgresEventBridge:
         if not missing_columns:
             return
 
-        assert self._conn is not None
+        assert self._write_conn is not None
         for key in missing_columns:
-            await self._conn.execute(f'ALTER TABLE "{self.table}" ADD COLUMN IF NOT EXISTS "{key}" TEXT')
+            await self._write_conn.execute(f'ALTER TABLE "{self.table}" ADD COLUMN IF NOT EXISTS "{key}" TEXT')
             self._table_columns.add(key)
 
     @staticmethod
