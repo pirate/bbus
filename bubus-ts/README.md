@@ -37,7 +37,7 @@ It's async native, has proper automatic nested event tracking, and powerful conc
 ## 🔢 Quickstart
 
 ```bash
-pnpm add bubus
+npm install bubus
 ```
 
 ```ts
