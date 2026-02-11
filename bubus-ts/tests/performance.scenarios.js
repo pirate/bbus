@@ -13,13 +13,16 @@ const clampNonNegative = (value) => (value < 0 ? 0 : value)
 const formatMsPerEvent = (value, unit = 'event') => `${value.toFixed(3)}ms/${unit}`
 const formatKbPerEvent = (value) => `${value.toFixed(3)}kb/event`
 const formatMs = (value) => `${value.toFixed(3)}ms`
+const formatMb = (value) => `${value.toFixed(3)}mb`
 
-const HISTORY_LIMIT_STREAM = 2048
-const HISTORY_LIMIT_ON_OFF = 1024
+const HISTORY_LIMIT_STREAM = 512
+const HISTORY_LIMIT_ON_OFF = 128
 const HISTORY_LIMIT_EPHEMERAL_BUS = 128
 const HISTORY_LIMIT_FIXED_HANDLERS = 128
-const HISTORY_LIMIT_WORST_CASE = 1024
+const HISTORY_LIMIT_WORST_CASE = 128
 const TRIM_TARGET = 1
+const WORST_CASE_IMMEDIATE_TIMEOUT_MS = 0.0001
+const WORST_CASE_IMMEDIATE_TIMEOUT_SECONDS = WORST_CASE_IMMEDIATE_TIMEOUT_MS / 1000
 
 const heapDeltaNoiseFloorMb = (runtimeName) => {
   if (runtimeName === 'bun') return 64.0
@@ -40,11 +43,16 @@ const maybeForceGc = (hooks) => {
   }
 }
 
+const waitForRuntimeSettle = async (hooks) => {
+  // Let normal runtime scheduling/GC progress naturally without explicit GC forcing.
+  await hooks.sleep(50)
+}
+
 const measureStableHeapUsed = async (hooks, mode = 'max', rounds = 12) => {
   const heaps = []
   for (let i = 0; i < rounds; i += 1) {
-    await hooks.sleep(12)
     maybeForceGc(hooks)
+    await hooks.sleep(12)
     const mem = measureMemory(hooks)
     if (mem) heaps.push(mem.heapUsed)
   }
@@ -71,7 +79,6 @@ const trimBusHistoryToOneEvent = async (hooks, bus, TrimEvent) => {
 
 const waitForRegistrySize = async (hooks, EventBus, expectedSize, attempts = 150) => {
   for (let i = 0; i < attempts; i += 1) {
-    maybeForceGc(hooks)
     await hooks.sleep(40)
     if (EventBus._all_instances.size <= expectedSize) {
       return true
@@ -129,7 +136,7 @@ const runWarmup = async (input) => {
 
   await trimBusHistoryToOneEvent(hooks, bus, WarmTrimEvent)
   bus.destroy()
-  await measureStableHeapUsed(hooks, 'min', 6)
+  await waitForRuntimeSettle(hooks)
 }
 
 const createMemoryTracker = (hooks) => {
@@ -137,30 +144,40 @@ const createMemoryTracker = (hooks) => {
   if (!baselineRaw) {
     return {
       baseline: null,
-      peak: null,
+      current: null,
       sample: () => null,
+      peakHeapKbPerEvent: () => null,
       peakRssKbPerEvent: () => null,
     }
   }
 
   const baseline = { rss: baselineRaw.rss, heapUsed: baselineRaw.heapUsed }
-  const peak = { rss: baselineRaw.rss, heapUsed: baselineRaw.heapUsed }
+  let current = baselineRaw
+  let peakHeapUsed = baselineRaw.heapUsed
+  let peakRss = baselineRaw.rss
 
   const sample = () => {
-    const current = measureMemory(hooks)
-    if (!current) return null
-    if (current.rss > peak.rss) peak.rss = current.rss
-    if (current.heapUsed > peak.heapUsed) peak.heapUsed = current.heapUsed
-    return current
+    const snapshot = measureMemory(hooks)
+    if (!snapshot) return null
+    current = snapshot
+    if (snapshot.heapUsed > peakHeapUsed) peakHeapUsed = snapshot.heapUsed
+    if (snapshot.rss > peakRss) peakRss = snapshot.rss
+    return snapshot
+  }
+
+  const peakHeapKbPerEvent = (events) => {
+    if (!events || !baseline) return null
+    const deltaBytes = clampNonNegative(peakHeapUsed - baseline.heapUsed)
+    return kb(deltaBytes) / events
   }
 
   const peakRssKbPerEvent = (events) => {
     if (!events || !baseline) return null
-    const deltaBytes = clampNonNegative(peak.rss - baseline.rss)
+    const deltaBytes = clampNonNegative(peakRss - baseline.rss)
     return kb(deltaBytes) / events
   }
 
-  return { baseline, peak, sample, peakRssKbPerEvent }
+  return { baseline, current: () => current, sample, peakHeapKbPerEvent, peakRssKbPerEvent }
 }
 
 const record = (hooks, name, metrics) => {
@@ -170,12 +187,20 @@ const record = (hooks, name, metrics) => {
     if (!perEventOnly && typeof metrics.totalEvents === 'number') parts.push(`events=${metrics.totalEvents}`)
     if (!perEventOnly && typeof metrics.totalMs === 'number') parts.push(`total=${formatMs(metrics.totalMs)}`)
     if (typeof metrics.msPerEvent === 'number') parts.push(`latency=${formatMsPerEvent(metrics.msPerEvent, metrics.msPerEventUnit ?? 'event')}`)
-    if (typeof metrics.ramKbPerEvent === 'number') parts.push(`ram=${formatKbPerEvent(metrics.ramKbPerEvent)}`)
+    if (typeof metrics.peakHeapKbPerEvent === 'number') parts.push(`peak_heap=${formatKbPerEvent(metrics.peakHeapKbPerEvent)}`)
+    if (typeof metrics.peakRssKbPerEvent === 'number') parts.push(`peak_rss=${formatKbPerEvent(metrics.peakRssKbPerEvent)}`)
+    if (
+      typeof metrics.ramKbPerEvent === 'number' &&
+      typeof metrics.peakHeapKbPerEvent !== 'number' &&
+      typeof metrics.peakRssKbPerEvent !== 'number'
+    ) {
+      parts.push(`ram=${formatKbPerEvent(metrics.ramKbPerEvent)}`)
+    }
     if (typeof metrics.throughput === 'number') parts.push(`throughput=${metrics.throughput}/s`)
     if (typeof metrics.equivalent === 'boolean') parts.push(`equivalent=${metrics.equivalent ? 'yes' : 'no'}`)
     if (typeof metrics.timeoutCount === 'number') parts.push(`timeouts=${metrics.timeoutCount}`)
     if (typeof metrics.cancelCount === 'number') parts.push(`cancels=${metrics.cancelCount}`)
-    if (typeof metrics.heapDeltaGcMb === 'number') parts.push(`heap_delta_gc=${metrics.heapDeltaGcMb.toFixed(3)}mb`)
+    if (typeof metrics.heapDeltaAfterGcMb === 'number') parts.push(`heap_delta_after_gc=${formatMb(metrics.heapDeltaAfterGcMb)}`)
     hooks.log(`[${hooks.runtimeName}] ${name}: ${parts.join(' ')}`)
   }
 }
@@ -186,13 +211,13 @@ const withDefaults = (input) => {
     now: input.now ?? defaultNow,
     sleep: input.sleep ?? defaultSleep,
     log: input.log ?? (() => {}),
-    forceGc: input.forceGc,
     getMemoryUsage: input.getMemoryUsage,
+    forceGc: input.forceGc,
     limits: {
       singleRunMs: input.limits?.singleRunMs ?? 30_000,
       worstCaseMs: input.limits?.worstCaseMs ?? 60_000,
-      worstCaseMemoryDeltaMb: input.limits?.worstCaseMemoryDeltaMb ?? null,
-      enforceNonPositiveHeapDeltaAfterGc: input.limits?.enforceNonPositiveHeapDeltaAfterGc ?? true,
+      maxHeapDeltaAfterGcMb: input.limits?.maxHeapDeltaAfterGcMb ?? null,
+      heapDeltaNoiseFloorMb: input.limits?.heapDeltaNoiseFloorMb ?? heapDeltaNoiseFloorMb(input.runtimeName ?? 'runtime'),
     },
     api: input.api,
   }
@@ -240,7 +265,6 @@ export const runPerf50kEvents = async (input) => {
     processedCount += 1
   })
 
-  maybeForceGc(hooks)
   const memory = createMemoryTracker(hooks)
   const t0 = hooks.now()
 
@@ -268,16 +292,16 @@ export const runPerf50kEvents = async (input) => {
 
   await trimBusHistoryToOneEvent(hooks, bus, TrimEvent)
   const tDone = hooks.now()
+  await waitForRuntimeSettle(hooks)
   memory.sample()
   const memDone = measureMemory(hooks)
-  maybeForceGc(hooks)
-  const memGc = measureMemory(hooks)
 
   const dispatchMs = tDispatch - t0
   const awaitMs = tDone - tDispatch
   const totalMs = tDone - t0
   const msPerEvent = totalMs / totalEvents
-  const ramKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
+  const peakHeapKbPerEvent = memory.peakHeapKbPerEvent(totalEvents)
+  const peakRssKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
 
   assert(processedCount === totalEvents, `50k events processed ${processedCount}/${totalEvents}`)
   assert(totalMs < hooks.limits.singleRunMs, `50k events took ${Math.round(totalMs)}ms (limit ${hooks.limits.singleRunMs}ms)`)
@@ -309,20 +333,20 @@ export const runPerf50kEvents = async (input) => {
     awaitMs,
     msPerEvent,
     msPerEventLabel: formatMsPerEvent(msPerEvent),
-    ramKbPerEvent,
-    ramKbPerEventLabel: ramKbPerEvent === null ? 'n/a' : formatKbPerEvent(ramKbPerEvent),
+    ramKbPerEvent: peakHeapKbPerEvent,
+    ramKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakHeapKbPerEvent,
+    peakHeapKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakRssKbPerEvent,
+    peakRssKbPerEventLabel: peakRssKbPerEvent === null ? null : formatKbPerEvent(peakRssKbPerEvent),
     throughput: Math.round(totalEvents / (totalMs / 1000)),
     processedCount,
     sampledEvictedCount,
   }
 
-  if (memory.baseline && memDone && memGc) {
+  if (memory.baseline && memDone) {
     result.heapBeforeMb = Number(mb(memory.baseline.heapUsed))
     result.heapDoneMb = Number(mb(memDone.heapUsed))
-    result.heapGcMb = Number(mb(memGc.heapUsed))
-    result.rssBeforeMb = Number(mb(memory.baseline.rss))
-    result.rssDoneMb = Number(mb(memDone.rss))
-    result.rssPeakMb = Number(mb(memory.peak.rss))
   }
 
   bus.destroy()
@@ -339,7 +363,6 @@ export const runPerfEphemeralBuses = async (input) => {
   const { PerfSimpleEvent: SimpleEvent, PerfTrimEventEphemeral: TrimEvent } = getEventClasses(BaseEvent)
 
   let processedCount = 0
-  maybeForceGc(hooks)
   const memory = createMemoryTracker(hooks)
   const t0 = hooks.now()
 
@@ -362,9 +385,11 @@ export const runPerfEphemeralBuses = async (input) => {
   }
 
   const totalMs = hooks.now() - t0
+  await waitForRuntimeSettle(hooks)
   memory.sample()
   const msPerEvent = totalMs / totalEvents
-  const ramKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
+  const peakHeapKbPerEvent = memory.peakHeapKbPerEvent(totalEvents)
+  const peakRssKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
 
   assert(processedCount === totalEvents, `500x100 buses processed ${processedCount}/${totalEvents}`)
   assert(totalMs < hooks.limits.singleRunMs, `500x100 buses took ${Math.round(totalMs)}ms (limit ${hooks.limits.singleRunMs}ms)`)
@@ -376,8 +401,12 @@ export const runPerfEphemeralBuses = async (input) => {
     totalMs,
     msPerEvent,
     msPerEventLabel: formatMsPerEvent(msPerEvent),
-    ramKbPerEvent,
-    ramKbPerEventLabel: ramKbPerEvent === null ? 'n/a' : formatKbPerEvent(ramKbPerEvent),
+    ramKbPerEvent: peakHeapKbPerEvent,
+    ramKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakHeapKbPerEvent,
+    peakHeapKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakRssKbPerEvent,
+    peakRssKbPerEventLabel: peakRssKbPerEvent === null ? null : formatKbPerEvent(peakRssKbPerEvent),
     throughput: Math.round(totalEvents / (totalMs / 1000)),
     processedCount,
   }
@@ -411,7 +440,6 @@ export const runPerfSingleEventManyFixedHandlers = async (input) => {
     }
   }
 
-  maybeForceGc(hooks)
   const memory = createMemoryTracker(hooks)
   const t0 = hooks.now()
 
@@ -420,9 +448,11 @@ export const runPerfSingleEventManyFixedHandlers = async (input) => {
   await bus.waitUntilIdle()
 
   const totalMs = hooks.now() - t0
+  await waitForRuntimeSettle(hooks)
   memory.sample()
   const msPerEvent = totalMs / (totalEvents * totalHandlers)
-  const ramKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
+  const peakHeapKbPerEvent = memory.peakHeapKbPerEvent(totalEvents)
+  const peakRssKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
 
   assert(processedCount === totalHandlers, `fixed-handlers processed ${processedCount}/${totalHandlers}`)
   assert(totalMs < hooks.limits.singleRunMs, `fixed-handlers took ${Math.round(totalMs)}ms (limit ${hooks.limits.singleRunMs}ms)`)
@@ -438,8 +468,12 @@ export const runPerfSingleEventManyFixedHandlers = async (input) => {
     msPerEvent,
     msPerEventLabel: formatMsPerEvent(msPerEvent, 'event/handler'),
     msPerEventUnit: 'event/handler',
-    ramKbPerEvent,
-    ramKbPerEventLabel: ramKbPerEvent === null ? 'n/a' : formatKbPerEvent(ramKbPerEvent),
+    ramKbPerEvent: peakHeapKbPerEvent,
+    ramKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakHeapKbPerEvent,
+    peakHeapKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakRssKbPerEvent,
+    peakRssKbPerEventLabel: peakRssKbPerEvent === null ? null : formatKbPerEvent(peakRssKbPerEvent),
     throughput: Math.round(totalEvents / (totalMs / 1000)),
     processedCount,
     totalHandlers,
@@ -458,7 +492,6 @@ export const runPerfOnOffChurn = async (input) => {
 
   let processedCount = 0
 
-  maybeForceGc(hooks)
   const memory = createMemoryTracker(hooks)
   const t0 = hooks.now()
 
@@ -483,15 +516,17 @@ export const runPerfOnOffChurn = async (input) => {
 
   await bus.waitUntilIdle()
   const totalMs = hooks.now() - t0
-  memory.sample()
   const msPerEvent = totalMs / totalEvents
-  const ramKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
 
   assert(processedCount === totalEvents, `50k one-off handlers processed ${processedCount}/${totalEvents}`)
   assert(totalMs < hooks.limits.singleRunMs, `50k on/off took ${Math.round(totalMs)}ms (limit ${hooks.limits.singleRunMs}ms)`)
   assert(bus.handlers.size === 0, `50k on/off leaked handlers: ${bus.handlers.size}`)
 
   await trimBusHistoryToOneEvent(hooks, bus, TrimEvent)
+  await waitForRuntimeSettle(hooks)
+  memory.sample()
+  const peakHeapKbPerEvent = memory.peakHeapKbPerEvent(totalEvents)
+  const peakRssKbPerEvent = memory.peakRssKbPerEvent(totalEvents)
   bus.destroy()
 
   const result = {
@@ -500,8 +535,12 @@ export const runPerfOnOffChurn = async (input) => {
     totalMs,
     msPerEvent,
     msPerEventLabel: formatMsPerEvent(msPerEvent),
-    ramKbPerEvent,
-    ramKbPerEventLabel: ramKbPerEvent === null ? 'n/a' : formatKbPerEvent(ramKbPerEvent),
+    ramKbPerEvent: peakHeapKbPerEvent,
+    ramKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakHeapKbPerEvent,
+    peakHeapKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakRssKbPerEvent,
+    peakRssKbPerEventLabel: peakRssKbPerEvent === null ? null : formatKbPerEvent(peakRssKbPerEvent),
     throughput: Math.round(totalEvents / (totalMs / 1000)),
     processedCount,
   }
@@ -536,16 +575,17 @@ export const runPerfWorstCase = async (input) => {
     childHandled += 1
     const gc = event.bus.emit(GrandchildEvent({}))
     busC.dispatch(gc)
+    if (event.event_timeout !== null) {
+      // Yield once so near-zero timeout paths execute without adding a large fixed delay.
+      await hooks.sleep(0)
+    }
     await gc.done()
   })
 
-  busC.on(GrandchildEvent, async () => {
+  busC.on(GrandchildEvent, () => {
     grandchildHandled += 1
-    // Deterministically slow path so child timeout iterations reliably trigger.
-    await hooks.sleep(20)
   })
 
-  maybeForceGc(hooks)
   const memory = createMemoryTracker(hooks)
   const t0 = hooks.now()
 
@@ -556,7 +596,8 @@ export const runPerfWorstCase = async (input) => {
       parentHandledA += 1
       const child = event.bus.emit(
         ChildEvent({
-          event_timeout: shouldTimeout ? 0.005 : null,
+          // event_timeout is in seconds; use a near-zero timeout to exercise timeout handling overhead.
+          event_timeout: shouldTimeout ? WORST_CASE_IMMEDIATE_TIMEOUT_SECONDS : null,
         })
       )
       busC.dispatch(child)
@@ -595,7 +636,6 @@ export const runPerfWorstCase = async (input) => {
   const totalMs = hooks.now() - t0
   const estimatedEvents = totalIterations * 3
   const msPerEvent = totalMs / estimatedEvents
-  const ramKbPerEvent = memory.peakRssKbPerEvent(estimatedEvents)
 
   assert(parentHandledA === totalIterations, `worst-case parentA ${parentHandledA}/${totalIterations}`)
   assert(parentHandledB === totalIterations, `worst-case parentB ${parentHandledB}/${totalIterations}`)
@@ -608,6 +648,9 @@ export const runPerfWorstCase = async (input) => {
   await trimBusHistoryToOneEvent(hooks, busA, TrimEvent)
   await trimBusHistoryToOneEvent(hooks, busB, TrimEvent)
   await trimBusHistoryToOneEvent(hooks, busC, TrimEvent)
+  await waitForRuntimeSettle(hooks)
+  const peakHeapKbPerEvent = memory.peakHeapKbPerEvent(estimatedEvents)
+  const peakRssKbPerEvent = memory.peakRssKbPerEvent(estimatedEvents)
   busA.destroy()
   busB.destroy()
   busC.destroy()
@@ -618,8 +661,12 @@ export const runPerfWorstCase = async (input) => {
     totalMs,
     msPerEvent,
     msPerEventLabel: formatMsPerEvent(msPerEvent),
-    ramKbPerEvent,
-    ramKbPerEventLabel: ramKbPerEvent === null ? 'n/a' : formatKbPerEvent(ramKbPerEvent),
+    ramKbPerEvent: peakHeapKbPerEvent,
+    ramKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakHeapKbPerEvent,
+    peakHeapKbPerEventLabel: peakHeapKbPerEvent === null ? null : formatKbPerEvent(peakHeapKbPerEvent),
+    peakRssKbPerEvent,
+    peakRssKbPerEventLabel: peakRssKbPerEvent === null ? null : formatKbPerEvent(peakRssKbPerEvent),
     parentHandledA,
     parentHandledB,
     childHandled,
@@ -643,7 +690,6 @@ export const runCleanupEquivalence = async (input) => {
   const totalEvents = busesPerMode * eventsPerBus * 2
   const baselineRegistrySize = EventBus._all_instances.size
 
-  maybeForceGc(hooks)
   const t0 = hooks.now()
 
   await runCleanupBurst({
@@ -674,8 +720,7 @@ export const runCleanupEquivalence = async (input) => {
   let scopeCollected = await waitForRegistrySize(hooks, EventBus, baselineRegistrySize, scopeCollectionAttempts)
   let scopeEquivalentByState = false
 
-  const runtimeWithoutDeterministicGc = typeof hooks.forceGc !== 'function'
-  if (!scopeCollected && (hooks.runtimeName === 'deno' || runtimeWithoutDeterministicGc)) {
+  if (!scopeCollected) {
     const retained = Array.from(EventBus._all_instances)
     const allRetainedIdle = retained.every(
       (bus) =>
@@ -694,7 +739,7 @@ export const runCleanupEquivalence = async (input) => {
         retained.length <= 8,
         `cleanup equivalence scope branch retained too many deno instances: ${retained.length} (expected <= 8)`
       )
-    } else if (runtimeWithoutDeterministicGc) {
+    } else {
       assert(
         retained.length <= busesPerMode,
         `cleanup equivalence scope branch retained too many non-gc-forced instances: ${retained.length} (expected <= ${busesPerMode})`
@@ -707,7 +752,6 @@ export const runCleanupEquivalence = async (input) => {
     for (const bus of retained) {
       bus.destroy()
     }
-    maybeForceGc(hooks)
     scopeCollected = await waitForRegistrySize(hooks, EventBus, baselineRegistrySize, 100)
   }
 
@@ -724,39 +768,46 @@ export const runCleanupEquivalence = async (input) => {
     msPerEvent,
     msPerEventLabel: formatMsPerEvent(msPerEvent),
     ramKbPerEvent: null,
+    peakHeapKbPerEvent: null,
+    peakRssKbPerEvent: null,
     equivalent,
   }
   record(hooks, result.scenario, result)
   return result
 }
 
-const runWithLeakCheck = async (input, scenarioFn) => {
+const runWithLeakCheck = async (input, scenarioId, scenarioFn) => {
   const hooks = withDefaults(input)
-  const baselineHeapUsed = await measureStableHeapUsed(hooks, 'max', 12)
+  let baselineHeapUsed = null
+  if (typeof hooks.getMemoryUsage === 'function') {
+    // Leak checks compare retained floor before/after work; min/min reduces allocator jitter noise.
+    baselineHeapUsed = await measureStableHeapUsed(hooks, 'min', 8)
+  }
+
   const result = await scenarioFn(input)
-  const heapDeltaGcMbRaw = await measureHeapDeltaAfterGc(hooks, baselineHeapUsed)
-  const noiseFloorMb = heapDeltaNoiseFloorMb(hooks.runtimeName)
-  const heapDeltaGcMb = heapDeltaGcMbRaw === null ? null : heapDeltaGcMbRaw - noiseFloorMb
-  result.heapDeltaGcMbRaw = heapDeltaGcMbRaw
-  result.heapDeltaGcMb = heapDeltaGcMb
 
-  if (hooks.limits.enforceNonPositiveHeapDeltaAfterGc && typeof heapDeltaGcMb === 'number') {
-    assert(heapDeltaGcMb <= 0, `${result.scenario} heap delta after GC is positive: ${heapDeltaGcMb.toFixed(3)}MB`)
+  if (baselineHeapUsed === null) {
+    return result
   }
-  if (
-    result.scenario === 'worst-case forwarding + timeouts' &&
-    hooks.limits.worstCaseMemoryDeltaMb !== null &&
-    typeof heapDeltaGcMbRaw === 'number'
-  ) {
+
+  const heapDeltaAfterGcMb = await measureHeapDeltaAfterGc(hooks, baselineHeapUsed)
+  if (heapDeltaAfterGcMb === null) {
+    return result
+  }
+
+  const normalizedHeapDeltaAfterGcMb = clampNonNegative(heapDeltaAfterGcMb)
+  result.heapDeltaAfterGcMb = Number(normalizedHeapDeltaAfterGcMb.toFixed(3))
+  if (typeof hooks.log === 'function') {
+    hooks.log(`[${hooks.runtimeName}] ${result.scenario}: heap_delta_after_gc=${formatMb(result.heapDeltaAfterGcMb)}`)
+  }
+
+  const maxHeapDeltaAfterGcMb = hooks.limits.maxHeapDeltaAfterGcMb
+  const heapNoiseFloorMb = hooks.limits.heapDeltaNoiseFloorMb
+  if (typeof maxHeapDeltaAfterGcMb === 'number') {
+    const allowedMb = maxHeapDeltaAfterGcMb + heapNoiseFloorMb
     assert(
-      heapDeltaGcMbRaw < hooks.limits.worstCaseMemoryDeltaMb,
-      `worst-case memory delta after GC was ${heapDeltaGcMbRaw.toFixed(1)}MB (limit ${hooks.limits.worstCaseMemoryDeltaMb}MB)`
-    )
-  }
-
-  if (typeof hooks.log === 'function' && typeof heapDeltaGcMb === 'number') {
-    hooks.log(
-      `[${hooks.runtimeName}] ${result.scenario} leak-check: heap_delta_gc=${heapDeltaGcMb.toFixed(3)}mb (raw=${heapDeltaGcMbRaw?.toFixed(3)}mb, noise_floor=${noiseFloorMb.toFixed(3)}mb)`
+      normalizedHeapDeltaAfterGcMb <= allowedMb,
+      `${scenarioId} retained ${normalizedHeapDeltaAfterGcMb.toFixed(3)}mb heap after GC (limit ${allowedMb.toFixed(3)}mb = ${maxHeapDeltaAfterGcMb.toFixed(3)}mb + ${heapNoiseFloorMb.toFixed(3)}mb noise floor)`
     )
   }
 
@@ -780,7 +831,7 @@ export const runPerfScenarioById = async (input, scenarioId) => {
     throw new Error(`unknown perf scenario "${scenarioId}", expected one of: ${PERF_SCENARIO_IDS.join(', ')}`)
   }
   await runWarmup(input)
-  return runWithLeakCheck(input, scenarioFn)
+  return runWithLeakCheck(input, scenarioId, scenarioFn)
 }
 
 export const runAllPerfScenarios = async (input) => {

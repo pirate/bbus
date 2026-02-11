@@ -685,20 +685,21 @@ The TS version intentionally starts with conservative defaults (1 attempt, no de
 `retry()` with no options is a no-op wrapper. The Python version defaults to 3 retries with 3s delay and 5s
 timeout, which is more aggressive.
 
+---
+
 ## Runtimes
 
-`bubus-ts` supports:
+`bubus-ts` supports all major JS runtimes.
 
 - Node.js (default development and test runtime)
+- Browsers (ESM)
 - Bun
 - Deno
-- Browsers (ESM)
 
-### Runtime support notes
+### Browser support notes
 
-- The package output is ESM (`dist/esm`) and works across Node/Bun/Deno.
-- `AsyncLocalStorage` is used when available (Node/Bun) and gracefully disabled when unavailable (for example in browsers).
-- Browser usage is supported for core event bus features; Node-specific tooling scripts (`pnpm test`, Node test runner flags) are not used in browser environments.
+- The package output is ESM (`./dist/esm`) which is supported by all browsers [released after 2018](https://caniuse.com/?search=ESM)
+- `AsyncLocalStorage` is preserved at dispatch and used during handling when availabe (Node/Bun), otel/tracing context will work normally in those environments
 
 ### Performance comparison (local run, per-event)
 
@@ -711,15 +712,13 @@ Measured locally on an `Apple M4 Pro` with:
 
 | Runtime            | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
 | ------------------ | ------------------------------ | ----------------------------------- | -------------------------------------- | ----------------------------------------- | --------------------------------------------- |
-| Node               | `0.015ms/event`, `1.040kb/event` | `0.058ms/event`, `0.275kb/event`   | `0.021ms/event`, `187264.000kb/event`    | `0.032ms/event`, `0.812kb/event`          | `6.108ms/event`, `0.587kb/event`              |
-| Bun                | `0.013ms/event`, `2.877kb/event` | `0.054ms/event`, `1.003kb/event`   | `0.005ms/event`, `218304.000kb/event`    | `0.018ms/event`, `3.385kb/event`          | `6.070ms/event`, `1.685kb/event`              |
-| Deno               | `0.019ms/event`, `1.332kb/event` | `0.063ms/event`, `0.437kb/event`   | `0.024ms/event`, `159312.000kb/event`    | `0.060ms/event`, `2.492kb/event`          | `6.419ms/event`, `9.536kb/event`              |
-| Browser (Chromium) | `0.030ms/event`                  | `0.195ms/event`                    | `0.023ms/event`                          | `0.023ms/event`                           | `6.045ms/event`                               |
+| Node               | `0.015ms/event`, `0.6kb/event` | `0.058ms/event`, `0.1kb/event`   | `0.021ms/handler`, `189792.0kb/event`    | `0.028ms/event`, `0.6kb/event`          | `0.442ms/event`, `0.9kb/event`              |
+| Bun                | `0.011ms/event`, `2.5kb/event` | `0.054ms/event`, `1.0kb/event`   | `0.006ms/handler`, `223296.0kb/event`    | `0.019ms/event`, `2.8kb/event`          | `0.441ms/event`, `3.1kb/event`              |
+| Deno               | `0.018ms/event`, `1.2kb/event` | `0.063ms/event`, `0.4kb/event`   | `0.024ms/handler`, `156752.0kb/event`    | `0.064ms/event`, `2.6kb/event`          | `0.461ms/event`, `7.9kb/event`              |
+| Browser (Chromium) | `0.030ms/event`                  | `0.197ms/event`                    | `0.022ms/handler`                          | `0.022ms/event`                           | `1.566ms/event`                               |
 
 Notes:
 
-- `kb/event` is the peak RSS delta per event during each scenario.
-- In `1 bus x 1 event x 50k parallel handlers`, latency is normalized by handler count (CLI shows `ms/event/handler`; table keeps `ms/event` for brevity).
-- Browser runtime does not expose process RSS from page JS, so browser cells report latency only.
-- For `Worst case (N busses x N events x N handlers)`, per-event values are normalized by `500 iterations * 3 logical events`.
-- All four runtime suites currently pass (`node`, `bun`, `deno`, and browser/Chromium via Playwright).
+- `kb/event` is peak RSS delta per event during active processing (most representative of OS-visible RAM in Activity Monitor / Task Manager, with `EventBus.max_history_size=1`)
+- In `1 bus x 1 event x 50k parallel handlers` stats are shown per-handler for clarity, `0.02ms/handler * 50k handlers ~= 1000ms` for the entire event
+- Browser runtime does not expose memory usage easily, in practice memory performance in-browser is comparable to Node (they both use V8)

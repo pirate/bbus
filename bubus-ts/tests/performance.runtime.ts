@@ -40,18 +40,6 @@ const getScenarioArg = () => {
   return null
 }
 
-const getDenoInternalCore = () => {
-  if (typeof Deno === 'undefined' || !Deno) return null
-  try {
-    const sym = Object.getOwnPropertySymbols(Deno).find((key) => String(key).includes('Deno.internal'))
-    if (!sym) return null
-    const denoWithInternal = Deno as unknown as Record<symbol, { core?: Record<string, (...args: unknown[]) => unknown> }>
-    return denoWithInternal[sym]?.core ?? null
-  } catch {
-    return null
-  }
-}
-
 const getMemoryUsage = () => {
   if (typeof process !== 'undefined' && typeof process.memoryUsage === 'function') {
     return process.memoryUsage()
@@ -63,32 +51,15 @@ const getMemoryUsage = () => {
 }
 
 const forceGc = () => {
-  const maybeGc = (globalThis as { gc?: () => void }).gc
-  const denoCore = getDenoInternalCore()
+  if (runtime === 'bun' && typeof Bun !== 'undefined' && Bun && typeof Bun.gc === 'function') {
+    Bun.gc(true)
+    Bun.gc(true)
+    return
+  }
 
-  for (let i = 0; i < 16; i += 1) {
-    try {
-      maybeGc?.()
-    } catch {
-      // ignored on runtimes without exposed V8 GC.
-    }
-    try {
-      if (typeof Bun !== 'undefined' && Bun && typeof Bun.gc === 'function') {
-        Bun.gc(true)
-      }
-    } catch {
-      // ignored on non-Bun runtimes.
-    }
-    try {
-      denoCore?.runImmediateCallbacks?.()
-    } catch {
-      // best effort only
-    }
-    try {
-      denoCore?.eventLoopTick?.()
-    } catch {
-      // best effort only
-    }
+  const maybeGlobalGc = (globalThis as { gc?: () => void }).gc
+  if (typeof maybeGlobalGc === 'function') {
+    for (let i = 0; i < 4; i += 1) maybeGlobalGc()
   }
 }
 
@@ -102,14 +73,12 @@ const main = async () => {
     now: () => performance.now(),
     sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     log: (message: string) => console.log(message),
-    forceGc,
     getMemoryUsage,
+    forceGc,
     limits: {
       singleRunMs: 30_000,
       worstCaseMs: 60_000,
-      // Bun's heap accounting can be noisy; keep runtime harness tolerant.
-      worstCaseMemoryDeltaMb: 150,
-      enforceNonPositiveHeapDeltaAfterGc: true,
+      maxHeapDeltaAfterGcMb: 0,
     },
   }
 

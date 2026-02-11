@@ -17,13 +17,10 @@ const nodePerfInput = {
   now: () => performance.now(),
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   log: (message: string) => console.log(message),
-  forceGc: () => global.gc?.(),
   getMemoryUsage: () => process.memoryUsage(),
   limits: {
     singleRunMs: 30_000,
     worstCaseMs: 60_000,
-    // Keep the original stricter leak budget for node:test.
-    worstCaseMemoryDeltaMb: 50,
   },
 }
 

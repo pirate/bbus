@@ -39,8 +39,6 @@ test.describe('browser runtime perf', () => {
           limits: {
             singleRunMs: 30_000,
             worstCaseMs: 60_000,
-            // Browsers don't expose stable heap APIs for this benchmark.
-            worstCaseMemoryDeltaMb: null,
           },
         })
 
