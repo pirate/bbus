@@ -115,19 +115,89 @@ jobs:
       - name: Run test with coverage
         if: matrix.task.kind == 'test'
         run: |
-          NODE_OPTIONS='--expose-gc' node --expose-gc --test --experimental-test-coverage --import tsx tests/${{ matrix.task.name }}.test.ts | tee coverage-output.txt
+          rm -rf .v8-coverage
+          mkdir -p .v8-coverage
+          NODE_V8_COVERAGE=.v8-coverage NODE_OPTIONS='--expose-gc' node --expose-gc --test --experimental-test-coverage --import tsx tests/${{ matrix.task.name }}.test.ts | tee coverage-output.txt
       - name: Run example
         if: matrix.task.kind == 'example'
         run: |
           node --import tsx examples/${{ matrix.task.name }}.ts
+      - name: Upload raw coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: ts-coverage-${{ matrix.task.name }}
+          path: .v8-coverage
+          retention-days: 7
+          include-hidden-files: true
+        if: matrix.task.kind == 'test' && always()
       - name: Append coverage report to summary
         if: matrix.task.kind == 'test'
         run: |
           echo "### TypeScript coverage: ${{ matrix.task.name }}" >> "$GITHUB_STEP_SUMMARY"
           awk '/# start of coverage report/{flag=1} flag{print} /# end of coverage report/{flag=0}' coverage-output.txt >> "$GITHUB_STEP_SUMMARY"
 
-  perf:
+  coverage:
     needs: tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bubus-ts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: bubus-ts/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Download all coverage data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ts-coverage-*
+          path: bubus-ts/coverage-data/
+
+      - name: Combine coverage data
+        run: |
+          mkdir -p .v8-coverage-merged
+
+          counter=1
+          while IFS= read -r -d '' coverage_file; do
+            cp "$coverage_file" ".v8-coverage-merged/$counter-$(basename "$coverage_file")"
+            counter=$((counter + 1))
+          done < <(find coverage-data -type f -name "*.json" -print0)
+
+          if [[ "$counter" -eq 1 ]]; then
+            echo "No V8 coverage JSON files found in downloaded artifacts" > /dev/stderr
+            exit 1
+          fi
+
+      - name: Build merged coverage report
+        run: |
+          pnpm dlx c8 report \
+            --temp-directory .v8-coverage-merged \
+            --report-dir coverage \
+            --reporter=html \
+            --reporter=text | tee coverage/text-report.txt
+
+          echo "### TypeScript combined coverage" >> "$GITHUB_STEP_SUMMARY"
+          cat coverage/text-report.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload merged coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ts-coverage-report
+          path: bubus-ts/coverage/
+          retention-days: 7
+
+  perf:
+    needs: coverage
     runs-on: ubuntu-latest
     defaults:
       run:

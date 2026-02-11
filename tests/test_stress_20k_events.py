@@ -931,7 +931,7 @@ async def test_queue_jump_perf_matrix_by_mode(parallel_handlers: bool):
         f'queue-jump regression: phase1={phase1[0]:.0f} phase2={phase2[0]:.0f} (required >= {regression_floor:.0f})'
     )
     assert phase2[2] < 15.0
-    assert phase2[4] < 120.0
+    assert phase2[4] < ci_done_p95_ceiling_ms(120.0, phase1[4])
 
 
 @pytest.mark.asyncio
@@ -1015,7 +1015,7 @@ async def test_forwarding_chain_perf_matrix_by_mode(parallel_handlers: bool):
     assert phase1[0] >= hard_floor
     assert phase2[0] >= regression_floor
     assert phase2[2] < 40.0
-    assert phase2[4] < 350.0
+    assert phase2[4] < ci_done_p95_ceiling_ms(350.0, phase1[4])
 
 
 @pytest.mark.asyncio
@@ -1203,7 +1203,7 @@ async def test_max_history_none_single_bus_stress_matrix(parallel_handlers: bool
     assert phase1[0] >= hard_floor
     assert phase2[0] >= regression_floor
     assert phase2[2] < 12.0
-    assert phase2[4] < 80.0
+    assert phase2[4] < ci_done_p95_ceiling_ms(80.0, phase1[4])
     assert done_delta < 260.0
     assert gc_delta < 220.0
     assert per_event_mb < 0.08
@@ -1276,7 +1276,7 @@ async def test_max_history_none_forwarding_chain_stress_matrix(parallel_handlers
     assert phase1[0] >= hard_floor
     assert phase2[0] >= regression_floor
     assert phase2[2] < 15.0
-    assert phase2[4] < 100.0
+    assert phase2[4] < ci_done_p95_ceiling_ms(100.0, phase1[4])
     assert done_delta < 320.0
     assert gc_delta < 280.0
 
