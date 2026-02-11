@@ -115,10 +115,9 @@ jobs:
       - name: Run test with coverage
         if: matrix.task.kind == 'test'
         run: |
-          set -o pipefail
           rm -rf .v8-coverage
           mkdir -p .v8-coverage
-          NODE_V8_COVERAGE=.v8-coverage NODE_OPTIONS='--expose-gc' node --expose-gc --test --experimental-test-coverage --import tsx tests/${{ matrix.task.name }}.test.ts | tee coverage-output.txt
+          NODE_V8_COVERAGE=.v8-coverage NODE_OPTIONS='--expose-gc' node --expose-gc --test --experimental-test-coverage --import tsx tests/${{ matrix.task.name }}.test.ts
       - name: Run example
         if: matrix.task.kind == 'example'
         run: |
