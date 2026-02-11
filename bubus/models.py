@@ -56,6 +56,16 @@ def validate_python_id_str(s: str) -> str:
     return str(s)
 
 
+def validate_event_path_entry_str(s: str) -> str:
+    entry = str(s)
+    assert '#' in entry, f'Invalid event_path entry: {entry} (expected BusName#abcd)'
+    bus_name, short_id = entry.rsplit('#', 1)
+    assert bus_name.isidentifier() and short_id.isalnum() and len(short_id) == 4, (
+        f'Invalid event_path entry: {entry} (expected BusName#abcd)'
+    )
+    return entry
+
+
 def validate_uuid_str(s: str) -> str:
     uuid = UUID(str(s))
     return str(uuid)
@@ -64,6 +74,7 @@ def validate_uuid_str(s: str) -> str:
 UUIDStr: TypeAlias = Annotated[str, AfterValidator(validate_uuid_str)]
 PythonIdStr: TypeAlias = Annotated[str, AfterValidator(validate_python_id_str)]
 PythonIdentifierStr: TypeAlias = Annotated[str, AfterValidator(validate_event_name)]
+EventPathEntryStr: TypeAlias = Annotated[str, AfterValidator(validate_event_path_entry_str)]
 T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
 # TypeVar for BaseEvent and its subclasses
 # We use contravariant=True because if a handler accepts BaseEvent,
@@ -211,6 +222,27 @@ def _extract_basemodel_generic_arg(cls: type) -> Any:
     return None
 
 
+def _to_result_type_json_schema(result_type: Any) -> dict[str, Any] | None:
+    """Best-effort conversion of a Python result type into JSON Schema."""
+    if result_type is None:
+        return None
+    if isinstance(result_type, dict):
+        return cast(dict[str, Any], result_type)
+    if isinstance(result_type, str):
+        return None
+
+    try:
+        if inspect.isclass(result_type) and issubclass(result_type, BaseModel):
+            return cast(dict[str, Any], result_type.model_json_schema())
+    except TypeError:
+        pass
+
+    try:
+        return cast(dict[str, Any], TypeAdapter(result_type).json_schema())
+    except Exception:
+        return None
+
+
 class BaseEvent(BaseModel, Generic[T_EventResultType]):
     """
     The base model used for all Events that flow through the EventBus system.
@@ -237,6 +269,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     event_result_type: Any = Field(
         default=None, description='Type to cast/validate handler return values (e.g. int, str, bytes, BaseModel subclass)'
     )
+    event_result_schema: dict[str, Any] | None = Field(
+        default=None, description='JSONSchema describing the expected handler return value shape'
+    )
 
     @field_serializer('event_result_type')
     def event_result_type_serializer(self, value: Any) -> str | None:
@@ -246,9 +281,19 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         # Use str() to get full representation: 'int', 'str', 'list[int]', etc.
         return str(value)
 
+    @field_serializer('event_result_schema', when_used='json')
+    def event_result_schema_serializer(self, value: Any) -> dict[str, Any] | None:
+        """Serialize event_result_schema, deriving from event_result_type when possible."""
+        if isinstance(value, dict):
+            return cast(dict[str, Any], value)
+        derived_schema = _to_result_type_json_schema(value)
+        if derived_schema is not None:
+            return derived_schema
+        return _to_result_type_json_schema(self.event_result_type)
+
     # Runtime metadata
     event_id: UUIDStr = Field(default_factory=uuid7str, max_length=36)
-    event_path: list[PythonIdentifierStr] = Field(default_factory=list, description='Path tracking for event routing')
+    event_path: list[EventPathEntryStr] = Field(default_factory=list, description='Path tracking for event routing')
     event_parent_id: UUIDStr | None = Field(
         default=None, description='ID of the parent event that triggered this event', max_length=36
     )
@@ -979,15 +1024,15 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         if not self.event_path:
             raise RuntimeError('Event has no event_path - was it dispatched?')
 
-        current_bus_name = self.event_path[-1]
+        current_bus_label = self.event_path[-1]
 
-        # Find the bus by name
+        # Find the bus by label (BusName#abcd).
         # Create a list copy to avoid "Set changed size during iteration" error
         for bus in list(EventBus.all_instances):
-            if bus and hasattr(bus, 'name') and bus.name == current_bus_name:
+            if bus and bus.label == current_bus_label:
                 return bus
 
-        raise RuntimeError(f'Could not find active EventBus named {current_bus_name}')
+        raise RuntimeError(f'Could not find active EventBus for path entry {current_bus_label}')
 
 
 def attr_name_allowed(key: str) -> bool:

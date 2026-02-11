@@ -1,4 +1,4 @@
-import { BaseEvent, type BaseEventData } from './base_event.js'
+import { BaseEvent, type BaseEventJSON } from './base_event.js'
 import { EventResult } from './event_result.js'
 import { captureAsyncContext } from './async_context.js'
 import {
@@ -44,8 +44,8 @@ export type EventBusJSON = {
   event_handler_detect_file_paths: boolean
   handlers: EventHandlerJSON[]
   handlers_by_key: Array<[string, string[]]>
-  event_history: BaseEventData[]
-  pending_event_queue: BaseEventData[]
+  event_history: BaseEventJSON[]
+  pending_event_queue: BaseEventJSON[]
   in_flight_event_ids: string[]
   runloop_running: boolean
   find_waiters: FindWaiterJSON[]

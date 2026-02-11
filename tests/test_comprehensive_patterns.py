@@ -76,7 +76,7 @@ async def test_comprehensive_patterns():
         # We need to check if the child event was processed on bus2
         # Check that the event was forwarded by looking at:
         # 1. The event path includes bus2
-        assert 'bus2' in child_event_sync.event_path
+        assert bus2.label in child_event_sync.event_path
         # 2. Debug what handlers processed this event
         print('   Handlers that processed this event:')
         for result in child_event_sync.event_results.values():
@@ -278,8 +278,10 @@ async def test_race_condition_stress():
         await bus2.wait_until_idle()
 
         # Should have 6 child events processed on each bus
-        assert results.count('child_bus1') == 6, f'Run {run}: Expected 6 child_bus1, got {results.count("child_bus1")}'
-        assert results.count('child_bus2') == 6, f'Run {run}: Expected 6 child_bus2, got {results.count("child_bus2")}'
+        bus1_results = [entry for entry in results if entry.startswith(f'child_{bus1.label}')]
+        bus2_results = [entry for entry in results if entry.startswith(f'child_{bus2.label}')]
+        assert len(bus1_results) == 6, f'Run {run}: Expected 6 child_{bus1.label}, got {len(bus1_results)}'
+        assert len(bus2_results) == 6, f'Run {run}: Expected 6 child_{bus2.label}, got {len(bus2_results)}'
 
     print('✅ No race conditions detected!')
 

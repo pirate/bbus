@@ -245,7 +245,7 @@ async def test_multi_bus_timeout_is_recorded_on_target_bus():
         assert bus_b_result is not None
         assert bus_b_result.status == 'error'
         assert isinstance(bus_b_result.error, TimeoutError)
-        assert event.event_path == ['MultiTimeoutA', 'MultiTimeoutB']
+        assert event.event_path == [bus_a.label, bus_b.label]
     finally:
         await bus_a.stop(clear=True, timeout=0)
         await bus_b.stop(clear=True, timeout=0)

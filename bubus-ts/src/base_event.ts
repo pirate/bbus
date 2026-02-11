@@ -44,6 +44,7 @@ export const BaseEventSchema = z
   .loose()
 
 export type BaseEventData = z.infer<typeof BaseEventSchema>
+export type BaseEventJSON = BaseEventData & Record<string, unknown>
 type BaseEventFields = Pick<
   BaseEventData,
   | 'event_id'
@@ -293,7 +294,7 @@ export class BaseEvent {
     return new this(record as BaseEventInit<Record<string, unknown>>) as InstanceType<T>
   }
 
-  static toJSONArray(events: Iterable<BaseEvent>): BaseEventData[] {
+  static toJSONArray(events: Iterable<BaseEvent>): BaseEventJSON[] {
     return Array.from(events, (event) => {
       const original = event._event_original ?? event
       return original.toJSON()
@@ -307,8 +308,16 @@ export class BaseEvent {
     return data.map((item) => BaseEvent.fromJSON(item))
   }
 
-  toJSON(): BaseEventData {
+  toJSON(): BaseEventJSON {
+    const record: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(this as unknown as Record<string, unknown>)) {
+      if (key.startsWith('_') || key === 'bus' || key === 'event_results') continue
+      if (value === undefined || typeof value === 'function') continue
+      record[key] = value
+    }
+
     return {
+      ...record,
       event_id: this.event_id,
       event_type: this.event_type,
       event_result_schema: this.event_result_schema ? toJsonSchema(this.event_result_schema) : this.event_result_schema,

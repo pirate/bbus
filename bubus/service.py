@@ -385,6 +385,10 @@ class EventBus:
         queue_size = self.event_queue.qsize() if self.event_queue else 0
         return f'{self.name}{icon}(queue={queue_size} active={len(self._active_event_ids)} history={len(self.event_history)} handlers={len(self.handlers)})'
 
+    @property
+    def label(self) -> str:
+        return f'{self.name}#{self.id[-4:]}'
+
     def __repr__(self) -> str:
         return str(self)
 
@@ -601,11 +605,11 @@ class EventBus:
                 if event.event_id != current_event.event_id:
                     current_event.event_results[current_handler_id].event_children.append(event)
 
-        # Add this EventBus to the event_path if not already there
-        if self.name not in event.event_path:
+        # Add this EventBus label to the event_path if not already there
+        if self.label not in event.event_path:
             # preserve identity of the original object instead of creating a new one, so that the original object remains awaitable to get the result
             # NOT: event = event.model_copy(update={'event_path': event.event_path + [self.name]})
-            event.event_path.append(self.name)
+            event.event_path.append(self.label)
         else:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -615,9 +619,15 @@ class EventBus:
                     event.event_path,
                 )
 
-        assert event.event_path, 'Missing event.event_path: list[str] (with at least the origin function name recorded in it)'
-        assert all(entry.isidentifier() for entry in event.event_path), (
-            f'Event.event_path must be a list of valid EventBus names, got: {event.event_path}'
+        assert event.event_path, 'Missing event.event_path: list[str] (with at least one bus label recorded in it)'
+        assert all(
+            '#' in entry
+            and entry.rsplit('#', 1)[0].isidentifier()
+            and entry.rsplit('#', 1)[1].isalnum()
+            and len(entry.rsplit('#', 1)[1]) == 4
+            for entry in event.event_path
+        ), (
+            f'Event.event_path must be a list of EventBus labels BusName#abcd, got: {event.event_path}'
         )
 
         # Check hard limit on total pending events (queue + in-progress)
@@ -682,6 +692,10 @@ class EventBus:
                 self.cleanup_event_history()
 
         return event
+
+    def emit(self, event: T_ExpectedEvent) -> T_ExpectedEvent:
+        """Alias for dispatch(), mirroring EventEmitter-style APIs."""
+        return self.dispatch(event)
 
     def _event_matches_pattern(self, event: BaseEvent[Any], pattern: EventPatternType) -> bool:
         if pattern == '*':
@@ -1497,6 +1511,14 @@ class EventBus:
                     self.event_queue.task_done()
         finally:
             self._processing_event_ids.discard(event.event_id)
+            # Re-check completion after clearing processing marker to avoid races where
+            # another bus still looked in-flight during handle_event() completion checks.
+            was_complete_after_processing = self._is_event_complete_fast(event)
+            event.event_mark_complete_if_all_handlers_completed(current_bus=self)
+            just_completed_after_processing = (not was_complete_after_processing) and self._is_event_complete_fast(event)
+            if just_completed_after_processing:
+                self._mark_event_complete_on_all_buses(event)
+                await self._on_event_change(event, EventStatus.COMPLETED)
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('✅ %s.step(%s) COMPLETE', self, event)
@@ -1769,9 +1791,9 @@ class EventBus:
         # First check: If handler is another EventBus.dispatch method, check if we're forwarding to another bus that it's already been processed by
         if hasattr(handler, '__self__') and isinstance(handler.__self__, EventBus) and handler.__name__ == 'dispatch':  # pyright: ignore[reportFunctionMemberAccess]  # type: ignore
             target_bus = handler.__self__  # pyright: ignore[reportFunctionMemberAccess]  # type: ignore
-            if target_bus.name in event.event_path:
+            if target_bus.label in event.event_path:
                 logger.debug(
-                    f'⚠️ {self} handler {get_handler_name(handler)}#{str(id(handler))[-4:]}({event}) skipped to prevent infinite forwarding loop with {target_bus.name}'
+                    f'⚠️ {self} handler {get_handler_name(handler)}#{str(id(handler))[-4:]}({event}) skipped to prevent infinite forwarding loop with {target_bus.label}'
                 )
                 return True
 

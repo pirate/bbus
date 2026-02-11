@@ -164,6 +164,25 @@ class TestEventEnqueueing:
         assert 'no event loop is running' in str(e.value)
         assert len(bus.event_history) == 0
 
+    async def test_emit_alias_dispatches_event(self, eventbus):
+        """Test EventBus.emit() alias dispatches and processes events."""
+        handled_event_ids: list[str] = []
+
+        async def user_handler(event: UserActionEvent) -> str:
+            handled_event_ids.append(event.event_id)
+            return 'handled'
+
+        eventbus.on(UserActionEvent, user_handler)
+
+        event = UserActionEvent(action='alias', user_id='user123')
+        queued = eventbus.emit(event)
+
+        assert queued is event
+        completed = await queued
+        assert completed.event_status == 'completed'
+        assert handled_event_ids == [event.event_id]
+        assert eventbus.label in completed.event_path
+
     async def test_unbounded_history_disables_capacity_limit(self):
         """When max_history_size=None, dispatch should not enforce the 100-event cap."""
         bus = EventBus(name='NoLimitBus', max_history_size=None)
@@ -411,7 +430,7 @@ class TestEventForwarding:
             await bus_c.wait_until_idle()
 
             assert seen == {'A': 1, 'B': 1, 'C': 1}
-            assert event.event_path == ['ForwardBusA', 'ForwardBusB', 'ForwardBusC']
+            assert event.event_path == [bus_a.label, bus_b.label, bus_c.label]
         finally:
             await bus_a.stop(clear=True)
             await bus_b.stop(clear=True)
@@ -1182,7 +1201,7 @@ class TestEventBusHierarchy:
 
             # Verify event_path shows the complete journey
             final_event = events_at_parent[0]
-            assert final_event.event_path == ['SubchildBus', 'ChildBus', 'ParentBus']
+            assert final_event.event_path == [subchild_bus.label, child_bus.label, parent_bus.label]
 
             # Verify it's the same event content
             assert final_event.action == 'bubble_test'
@@ -1204,7 +1223,7 @@ class TestEventBusHierarchy:
             assert len(events_at_subchild) == 0
             assert len(events_at_child) == 1
             assert len(events_at_parent) == 1
-            assert events_at_parent[0].event_path == ['ChildBus', 'ParentBus']
+            assert events_at_parent[0].event_path == [child_bus.label, parent_bus.label]
 
         finally:
             await parent_bus.stop()
@@ -1245,6 +1264,22 @@ class TestEventBusHierarchy:
         peer2.on('*', peer3.dispatch)
         peer3.on('*', peer1.dispatch)  # This completes the circle
 
+        def dump_bus_state() -> str:
+            buses = [peer1, peer2, peer3]
+            lines: list[str] = []
+            for bus in buses:
+                queue_size = bus.event_queue.qsize() if bus.event_queue else 0
+                lines.append(
+                    f'{bus.label} queue={queue_size} active={len(bus._active_event_ids)} processing={len(bus._processing_event_ids)} history={len(bus.event_history)}'
+                )
+            lines.append('--- peer1.log_tree() ---')
+            lines.append(peer1.log_tree())
+            lines.append('--- peer2.log_tree() ---')
+            lines.append(peer2.log_tree())
+            lines.append('--- peer3.log_tree() ---')
+            lines.append(peer3.log_tree())
+            return '\n'.join(lines)
+
         try:
             # Emit event from peer1
             event = UserActionEvent(action='circular_test', user_id='test_user')
@@ -1252,9 +1287,12 @@ class TestEventBusHierarchy:
 
             # Wait for all processing to complete
             await asyncio.sleep(0.2)  # Give time for any potential loops
-            await peer1.wait_until_idle()
-            await peer2.wait_until_idle()
-            await peer3.wait_until_idle()
+            try:
+                await asyncio.wait_for(peer1.wait_until_idle(), timeout=5)
+                await asyncio.wait_for(peer2.wait_until_idle(), timeout=5)
+                await asyncio.wait_for(peer3.wait_until_idle(), timeout=5)
+            except TimeoutError:
+                pytest.fail(f'Circular test stalled during first propagation.\n{dump_bus_state()}')
 
             # Each peer should receive the event exactly once
             assert len(events_at_peer1) == 1
@@ -1262,9 +1300,9 @@ class TestEventBusHierarchy:
             assert len(events_at_peer3) == 1
 
             # Check event paths show the propagation but no loops
-            assert events_at_peer1[0].event_path == ['Peer1', 'Peer2', 'Peer3']
-            assert events_at_peer2[0].event_path == ['Peer1', 'Peer2', 'Peer3']
-            assert events_at_peer3[0].event_path == ['Peer1', 'Peer2', 'Peer3']
+            assert events_at_peer1[0].event_path == [peer1.label, peer2.label, peer3.label]
+            assert events_at_peer2[0].event_path == [peer1.label, peer2.label, peer3.label]
+            assert events_at_peer3[0].event_path == [peer1.label, peer2.label, peer3.label]
 
             # The event should NOT come back to peer1 from peer3
             # because peer3's emit handler will detect peer1 is already in the path
@@ -1281,18 +1319,21 @@ class TestEventBusHierarchy:
             peer2.dispatch(event2)
 
             await asyncio.sleep(0.2)
-            await peer1.wait_until_idle()
-            await peer2.wait_until_idle()
-            await peer3.wait_until_idle()
+            try:
+                await asyncio.wait_for(peer1.wait_until_idle(), timeout=5)
+                await asyncio.wait_for(peer2.wait_until_idle(), timeout=5)
+                await asyncio.wait_for(peer3.wait_until_idle(), timeout=5)
+            except TimeoutError:
+                pytest.fail(f'Circular test stalled during second propagation.\n{dump_bus_state()}')
 
             # Should visit peer2 -> peer3 -> peer1, then stop
             assert len(events_at_peer1) == 1
             assert len(events_at_peer2) == 1
             assert len(events_at_peer3) == 1
 
-            assert events_at_peer2[0].event_path == ['Peer2', 'Peer3', 'Peer1']
-            assert events_at_peer3[0].event_path == ['Peer2', 'Peer3', 'Peer1']
-            assert events_at_peer1[0].event_path == ['Peer2', 'Peer3', 'Peer1']
+            assert events_at_peer2[0].event_path == [peer2.label, peer3.label, peer1.label]
+            assert events_at_peer3[0].event_path == [peer2.label, peer3.label, peer1.label]
+            assert events_at_peer1[0].event_path == [peer2.label, peer3.label, peer1.label]
 
         finally:
             await peer1.stop()
@@ -1962,7 +2003,7 @@ class TestEventBusForwarding:
             assert plugin2_result is not None and plugin2_result.result == 'plugin_result2'
 
             # Check event path shows forwarding
-            assert event.event_path == ['MainBus', 'PluginBus']
+            assert event.event_path == [bus1.label, bus2.label]
 
         finally:
             await bus1.stop()
@@ -2041,9 +2082,9 @@ class TestComplexIntegration:
             assert len(process_results) >= 2  # Auth and Data buses
 
             # Check event path shows forwarding through all buses
-            assert 'AppBus' in event.event_path
-            assert 'AuthBus' in event.event_path
-            assert 'DataBus' in event.event_path
+            assert app_bus.label in event.event_path
+            assert auth_bus.label in event.event_path
+            assert data_bus.label in event.event_path
 
             # Test flat dict merging
             dict_result = await event.event_results_flat_dict()
