@@ -745,7 +745,7 @@ Each bridge is wired the same way: `bus.on('*', bridge.emit)` and `bridge.on('*'
 - `SocketEventBridge`: `new SocketEventBridge('/tmp/bubus.sock')`
 - `NATSEventBridge`: `new NATSEventBridge('nats://localhost:4222', 'bubus_events')`
 - `RedisEventBridge`: `new RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
-- `PostgresEventBridge`: `new PostgresEventBridge('postgresql://user:pass@localhost:5432/mydb')` (default table `bubus_events`) or `new PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/tablename')` (override table)
+- `PostgresEventBridge`: `new PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/tablename')`
 - `JSONLEventBridge`: `new JSONLEventBridge('/tmp/bubus.events.jsonl')`
 - `SQLiteEventBridge`: `new SQLiteEventBridge('/tmp/bubus.events.sqlite3')`
 
