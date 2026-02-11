@@ -28,7 +28,7 @@ type EventBusOptions = {
   event_handler_concurrency?: EventHandlerConcurrencyMode | null
   event_handler_completion?: EventHandlerCompletionMode
   event_handler_slow_timeout?: number | null // threshold before a warning is logged about slow handler execution
-  event_handler_detect_file_paths?: boolean  // autodetect source code file and lineno where handlers are defined for better logs (slightly slower because Error().stack introspection to fine files is expensive)
+  event_handler_detect_file_paths?: boolean // autodetect source code file and lineno where handlers are defined for better logs (slightly slower because Error().stack introspection to fine files is expensive)
 }
 
 // Global registry of all EventBus instances to allow for cross-bus coordination when global-serial concurrency mode is used
@@ -544,7 +544,6 @@ export class EventBus {
     await this.processEventImmediatelyAcrossBuses(original_event)
     return event
   }
-
 
   // Processes a queue-jumped event across all buses that have it dispatched.
   // Called from processEventImmediately after the parent handler's semaphore has been yielded.

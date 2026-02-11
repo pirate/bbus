@@ -151,7 +151,7 @@ export class EventHandler {
   static fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandler {
     const record = EventHandlerJSONSchema.parse(data)
     const handler_fn = handler ?? ((() => undefined) as EventHandlerFunction)
-    const handler_name = record.handler_name || handler_fn.name || 'anonymous'  // 'anonymous' is the default name for anonymous/arrow functions
+    const handler_name = record.handler_name || handler_fn.name || 'anonymous' // 'anonymous' is the default name for anonymous/arrow functions
     return new EventHandler({
       id: record.id,
       handler: handler_fn,

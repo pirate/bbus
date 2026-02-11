@@ -87,15 +87,7 @@ const waitForRegistrySize = async (hooks, EventBus, expectedSize, attempts = 150
   return EventBus._all_instances.size <= expectedSize
 }
 
-const runCleanupBurst = async ({
-  hooks,
-  EventBus,
-  CleanupEvent,
-  TrimEvent,
-  busesPerMode,
-  eventsPerBus,
-  destroyMode,
-}) => {
+const runCleanupBurst = async ({ hooks, EventBus, CleanupEvent, TrimEvent, busesPerMode, eventsPerBus, destroyMode }) => {
   for (let i = 0; i < busesPerMode; i += 1) {
     let bus = new EventBus(`CleanupEq-${destroyMode ? 'destroy' : 'scope'}-${i}`, { max_history_size: HISTORY_LIMIT_EPHEMERAL_BUS })
     bus.on(CleanupEvent, () => {})
@@ -103,7 +95,12 @@ const runCleanupBurst = async ({
     const pending = []
     for (let e = 0; e < eventsPerBus; e += 1) {
       // Store completion promises (not event proxies) to avoid retaining bus-bound proxies across GC checks.
-      pending.push(bus.dispatch(CleanupEvent({})).done().then(() => undefined))
+      pending.push(
+        bus
+          .dispatch(CleanupEvent({}))
+          .done()
+          .then(() => undefined)
+      )
     }
     await Promise.all(pending)
     pending.length = 0
@@ -186,7 +183,8 @@ const record = (hooks, name, metrics) => {
     const parts = []
     if (!perEventOnly && typeof metrics.totalEvents === 'number') parts.push(`events=${metrics.totalEvents}`)
     if (!perEventOnly && typeof metrics.totalMs === 'number') parts.push(`total=${formatMs(metrics.totalMs)}`)
-    if (typeof metrics.msPerEvent === 'number') parts.push(`latency=${formatMsPerEvent(metrics.msPerEvent, metrics.msPerEventUnit ?? 'event')}`)
+    if (typeof metrics.msPerEvent === 'number')
+      parts.push(`latency=${formatMsPerEvent(metrics.msPerEvent, metrics.msPerEventUnit ?? 'event')}`)
     if (typeof metrics.peakHeapKbPerEvent === 'number') parts.push(`peak_heap=${formatKbPerEvent(metrics.peakHeapKbPerEvent)}`)
     if (typeof metrics.peakRssKbPerEvent === 'number') parts.push(`peak_rss=${formatKbPerEvent(metrics.peakRssKbPerEvent)}`)
     if (
@@ -735,10 +733,7 @@ export const runCleanupEquivalence = async (input) => {
       `cleanup equivalence scope branch retained active deno instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`
     )
     if (hooks.runtimeName === 'deno') {
-      assert(
-        retained.length <= 8,
-        `cleanup equivalence scope branch retained too many deno instances: ${retained.length} (expected <= 8)`
-      )
+      assert(retained.length <= 8, `cleanup equivalence scope branch retained too many deno instances: ${retained.length} (expected <= 8)`)
     } else {
       assert(
         retained.length <= busesPerMode,

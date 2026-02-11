@@ -20,7 +20,7 @@ const runtime = typeof Bun !== 'undefined' && Bun ? 'bun' : typeof Deno !== 'und
 const getCliArgs = () => {
   const processArgs = typeof process !== 'undefined' && process && Array.isArray(process.argv) ? process.argv.slice(2) : []
   if (processArgs.length > 0) return processArgs
-  return typeof Deno !== 'undefined' && Deno && Array.isArray((Deno as { args?: string[] }).args) ? Deno.args ?? [] : []
+  return typeof Deno !== 'undefined' && Deno && Array.isArray((Deno as { args?: string[] }).args) ? (Deno.args ?? []) : []
 }
 
 const getScenarioArg = () => {

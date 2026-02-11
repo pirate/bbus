@@ -3,6 +3,9 @@ import ts_eslint_plugin from '@typescript-eslint/eslint-plugin'
 
 export default [
   {
+    ignores: ['dist/**', 'README.md'],
+  },
+  {
     files: ['**/*.ts'],
     languageOptions: {
       parser: ts_parser,
