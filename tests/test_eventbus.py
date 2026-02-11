@@ -836,10 +836,10 @@ class TestEventTypeOverride:
         task_event = CreateAgentTaskEvent(
             user_id='test_user', agent_session_id='12345678-1234-5678-1234-567812345678', llm_model='test-model', task='test task'
         )
-        assert task_event.event_schema == f'test_eventbus.CreateAgentTaskEvent@{version}'
+        assert task_event.event_schema == f'{CreateAgentTaskEvent.__module__}.CreateAgentTaskEvent@{version}'
 
         user_event = UserActionEvent(action='login', user_id='user123')
-        assert user_event.event_schema == f'test_eventbus.UserActionEvent@{version}'
+        assert user_event.event_schema == f'{UserActionEvent.__module__}.UserActionEvent@{version}'
 
         # Check schema is preserved after emit
         result = eventbus.dispatch(task_event)
