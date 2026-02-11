@@ -424,6 +424,16 @@ first(): Promise<EventResultType<this> | undefined>
 - Returns `undefined` when no handler produces a successful non-`undefined` value.
 - Cancellation and winner-selection behavior is covered in `bubus-ts/tests/first.test.ts`.
 
+#### `reset()`
+
+```ts
+reset(): this
+```
+
+- Returns a fresh event copy with runtime state reset to pending so it can be dispatched again safely.
+- Original event object is unchanged.
+- Clears runtime completion state (`event_results`, status/timestamps, dispatch context, done signal, local bus binding).
+
 #### `toString()` / `toJSON()` / `fromJSON()`
 
 ```ts
@@ -740,11 +750,12 @@ Bridges are optional extra connectors provided that allow you to send/receive ev
 Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
 
 **Example usage: link a bus to a redis pub/sub channel**
+
 ```ts
 const bridge = new RedisEventBridge('redis://redis@localhost:6379')
 
-bus.on('*', bridge.emit)  // listen for all events on bus and send them to redis channel
-bridge.on('*', bus.emit)  // listen for new events in redis channel and dispatch them to our bus
+bus.on('*', bridge.emit) // listen for all events on bus and send them to redis channel
+bridge.on('*', bus.emit) // listen for new events in redis channel and dispatch them to our bus
 ```
 
 - `new SocketEventBridge('/tmp/bubus_events.sock')`

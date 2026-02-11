@@ -1272,10 +1272,6 @@ async def test_max_history_none_forwarding_chain_stress_matrix(parallel_handlers
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(
-    os.getenv('BUBUS_PERF_DEBUG') != '1',
-    reason='Set BUBUS_PERF_DEBUG=1 to enable hot-path timing diagnostics',
-)
 async def test_perf_debug_hot_path_breakdown() -> None:
     """
     Debug-only perf test:

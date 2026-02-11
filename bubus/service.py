@@ -305,6 +305,7 @@ class EventBus:
     _active_event_ids: set[str]
     _processing_event_ids: set[str]
     _warned_about_dropping_uncompleted_events: bool
+    _duplicate_handler_name_check_limit: int = 256
 
     def __init__(
         self,
@@ -532,18 +533,22 @@ class EventBus:
         # Ensure event_key is definitely a string at this point
         assert isinstance(event_key, str)
 
-        # Check for duplicate handler names
+        # Check for duplicate handler names. Keep this bounded so large handler
+        # registrations (e.g. perf scenarios with tens of thousands of handlers)
+        # do not degrade into O(n^2) registration time.
         new_handler_name = get_handler_name(handler)
-        existing_registered_handlers = [get_handler_name(h) for h in self.handlers.get(event_key, [])]  # pyright: ignore[reportUnknownArgumentType]
-
-        if new_handler_name in existing_registered_handlers:
-            warnings.warn(
-                f"⚠️ {self} Handler {new_handler_name} already registered for event '{event_key}'. "
-                f'This may make it difficult to filter event results by handler name. '
-                f'Consider using unique function names.',
-                UserWarning,
-                stacklevel=2,
-            )
+        existing_handlers = self.handlers.get(event_key, [])
+        if existing_handlers and len(existing_handlers) <= self._duplicate_handler_name_check_limit:
+            for existing_handler in existing_handlers:
+                if get_handler_name(existing_handler) == new_handler_name:
+                    warnings.warn(
+                        f"⚠️ {self} Handler {new_handler_name} already registered for event '{event_key}'. "
+                        f'This may make it difficult to filter event results by handler name. '
+                        f'Consider using unique function names.',
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    break
 
         # Register handler
         self.handlers[event_key].append(handler)  # type: ignore
@@ -1400,9 +1405,7 @@ class EventBus:
                 except Exception as e:
                     logger.exception(f'❌ Weak run loop error: {type(e).__name__} {e}', exc_info=True)
                 finally:
-                    bus._processing_event_ids.discard(event.event_id)
-                    # Local bus has finished processing this event instance.
-                    bus._active_event_ids.discard(event.event_id)
+                    await bus._finalize_local_event_processing(event)
                     del bus
         finally:
             bus = bus_ref()
@@ -1442,6 +1445,55 @@ class EventBus:
         except (asyncio.CancelledError, RuntimeError, QueueShutDown):
             # Clean cancellation during shutdown or queue was shut down
             return None
+
+    async def _finalize_local_event_processing(self, event: BaseEvent[Any]) -> None:
+        """
+        Clear local in-flight markers and run completion propagation exactly once.
+
+        This is shared by both `step()` and the weak runloop path so completion
+        semantics stay identical regardless of which runner consumed the event.
+        """
+        self._processing_event_ids.discard(event.event_id)
+        # Local bus consumed this event instance (or observed completion), so it
+        # should not remain in this bus's active set.
+        self._active_event_ids.discard(event.event_id)
+
+        newly_completed_events = self._mark_event_tree_complete_if_ready(event)
+        for completed_event in newly_completed_events:
+            await self._on_event_change(completed_event, EventStatus.COMPLETED)
+
+    def _mark_event_tree_complete_if_ready(self, root_event: BaseEvent[Any]) -> list[BaseEvent[Any]]:
+        """
+        Re-check completion for `root_event` and descendants in post-order.
+
+        Timeout/cancellation paths can update child result statuses after an
+        earlier completion check. Running this post-order pass ensures children
+        are marked complete before their parents are re-evaluated.
+        """
+        newly_completed: list[BaseEvent[Any]] = []
+        visited_event_ids: set[str] = set()
+
+        def visit(event: BaseEvent[Any]) -> None:
+            if event.event_id in visited_event_ids:
+                return
+            visited_event_ids.add(event.event_id)
+
+            for child_event in event.event_children:
+                visit(child_event)
+
+            was_complete = self._is_event_complete_fast(event)
+            # Only the root event may still appear "in-flight" on this bus during finalization.
+            # Descendants are not currently being processed in this frame, so they must consider
+            # queues on this bus too (otherwise queued children can be marked complete too early).
+            current_bus = self if event.event_id == root_event.event_id else None
+            event.event_mark_complete_if_all_handlers_completed(current_bus=current_bus)
+            just_completed = (not was_complete) and self._is_event_complete_fast(event)
+            if just_completed:
+                self._mark_event_complete_on_all_buses(event)
+                newly_completed.append(event)
+
+        visit(root_event)
+        return newly_completed
 
     async def step(
         self, event: 'BaseEvent[Any] | None' = None, timeout: float | None = None, wait_for_timeout: float = 0.1
@@ -1510,18 +1562,7 @@ class EventBus:
                 if from_queue:
                     self.event_queue.task_done()
         finally:
-            self._processing_event_ids.discard(event.event_id)
-            # Local bus consumed this event instance (or observed completion), so it
-            # should not remain in this bus's active set.
-            self._active_event_ids.discard(event.event_id)
-            # Re-check completion after clearing processing marker to avoid races where
-            # another bus still looked in-flight during handle_event() completion checks.
-            was_complete_after_processing = self._is_event_complete_fast(event)
-            event.event_mark_complete_if_all_handlers_completed(current_bus=self)
-            just_completed_after_processing = (not was_complete_after_processing) and self._is_event_complete_fast(event)
-            if just_completed_after_processing:
-                self._mark_event_complete_on_all_buses(event)
-                await self._on_event_change(event, EventStatus.COMPLETED)
+            await self._finalize_local_event_processing(event)
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('✅ %s.step(%s) COMPLETE', self, event)
@@ -1878,12 +1919,11 @@ class EventBus:
         if not self.max_history_size or len(self.event_history) <= self.max_history_size:
             return 0
 
-        # Sort events by creation time (oldest first)
-        sorted_events = sorted(self.event_history.items(), key=lambda x: x[1].event_created_at.timestamp())
-
-        # Remove oldest events to get down to max_history_size
-        events_to_remove = sorted_events[: -self.max_history_size]
-        event_ids_to_remove = [event_id for event_id, _ in events_to_remove]
+        # event_history preserves insertion order, so oldest dispatched events are first.
+        # Avoid per-cleanup O(n log n) sorting by timestamp in this hot-path helper.
+        total_events = len(self.event_history)
+        remove_count = total_events - self.max_history_size
+        event_ids_to_remove = list(self.event_history.keys())[:remove_count]
 
         for event_id in event_ids_to_remove:
             del self.event_history[event_id]
@@ -1918,9 +1958,6 @@ class EventBus:
             else:
                 pending_events.append((event_id, event))
 
-        # Sort completed events by creation time (oldest first)
-        completed_events.sort(key=lambda x: x[1].event_created_at.timestamp())  # pyright: ignore[reportUnknownMemberType, reportUnknownLambdaType]
-
         # Calculate how many to remove
         total_events = len(self.event_history)
         events_to_remove_count = total_events - self.max_history_size
@@ -1935,14 +1972,12 @@ class EventBus:
 
         # If still need to remove more, remove oldest started events
         if events_to_remove_count > 0 and started_events:
-            started_events.sort(key=lambda x: x[1].event_created_at.timestamp())  # pyright: ignore[reportUnknownMemberType, reportUnknownLambdaType]
             remove_from_started = min(len(started_events), events_to_remove_count)
             events_to_remove.extend([event_id for event_id, _ in started_events[:remove_from_started]])
             events_to_remove_count -= remove_from_started
 
         # If still need to remove more, remove oldest pending events
         if events_to_remove_count > 0 and pending_events:
-            pending_events.sort(key=lambda x: x[1].event_created_at.timestamp())  # pyright: ignore[reportUnknownMemberType, reportUnknownLambdaType]
             events_to_remove.extend([event_id for event_id, _ in pending_events[:events_to_remove_count]])
 
         # Remove the events

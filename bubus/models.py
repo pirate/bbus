@@ -418,16 +418,14 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                     processed_on_bus = False
 
                     if self._remove_self_from_queue(bus):
-                        # Fast path: event is still in the queue, claim and process it.
-                        processing_event_ids = cast(set[str], getattr(bus, '_processing_event_ids'))
-                        processing_event_ids.add(self.event_id)
+                        # Fast path: event is still in the queue, claim and process it via EventBus.step
+                        # so completion/finalization uses the same logic as the runloop.
                         try:
-                            await bus.handle_event(self)
+                            await bus.step(event=self)
                             bus.event_queue.task_done()
-                        finally:
-                            processing_event_ids.discard(self.event_id)
-                            active_event_ids = cast(set[str], getattr(bus, '_active_event_ids'))
-                            active_event_ids.discard(self.event_id)
+                        except ValueError:
+                            # Queue bookkeeping can already be drained by competing paths.
+                            pass
                         processed_on_bus = True
                     else:
                         # Slow path: another task already claimed queue.get() and set
@@ -438,7 +436,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                             self.event_id in cast(set[str], getattr(bus, '_processing_event_ids', empty_event_ids))
                             and bus_key not in claimed_processed_bus_ids
                         ):
-                            await bus.handle_event(self)
+                            await bus.step(event=self)
                             claimed_processed_bus_ids.add(bus_key)
                             processed_on_bus = True
 
@@ -992,6 +990,24 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         # Clear dispatch context to avoid memory leaks (it holds references to ContextVars)
         self._event_dispatch_context = None
 
+    def event_mark_pending(self) -> Self:
+        """Reset mutable runtime state so this event can be dispatched again as pending."""
+        self._event_is_complete_flag = False
+        self.event_processed_at = None
+        self.event_results.clear()
+        self._event_dispatch_context = None
+        try:
+            asyncio.get_running_loop()
+            self._event_completed_signal = asyncio.Event()
+        except RuntimeError:
+            self._event_completed_signal = None
+        return self
+
+    def reset(self) -> Self:
+        """Return a fresh copy of this event with pending runtime state."""
+        fresh_event = self.__class__.model_validate(self.model_dump(mode='python'))
+        return fresh_event.event_mark_pending()
+
     def event_are_all_children_complete(self, _visited: set[str] | None = None) -> bool:
         """Recursively check if all child events and their descendants are complete"""
         if _visited is None:
@@ -1065,7 +1081,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
 
 def attr_name_allowed(key: str) -> bool:
-    allowed_unprefixed_attrs = {'raise_if_errors'}
+    allowed_unprefixed_attrs = {'raise_if_errors', 'reset'}
     return key in pydantic_builtin_attrs or key in event_builtin_attrs or key.startswith('_') or key in allowed_unprefixed_attrs
 
 

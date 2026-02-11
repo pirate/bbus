@@ -734,6 +734,29 @@ export class BaseEvent {
     return this.waitForCompletion()
   }
 
+  markPending(): this {
+    const original = this._event_original ?? this
+    original.event_status = 'pending'
+    original.event_started_at = undefined
+    original.event_started_ts = undefined
+    original.event_completed_at = undefined
+    original.event_completed_ts = undefined
+    original.event_results.clear()
+    original.event_pending_bus_count = 0
+    original._event_dispatch_context = undefined
+    original._event_done_signal = null
+    original._event_handler_semaphore = null
+    original.bus = undefined
+    return this
+  }
+
+  reset(): this {
+    const original = this._event_original ?? this
+    const ctor = original.constructor as typeof BaseEvent
+    const fresh_event = ctor.fromJSON(original.toJSON()) as this
+    return fresh_event.markPending()
+  }
+
   markStarted(): void {
     if (this.event_status !== 'pending') {
       return

@@ -100,7 +100,7 @@ export class NATSEventBridge {
   private async dispatchInboundPayload(payload: unknown): Promise<void> {
     const parsed_event = BaseEvent.fromJSON(payload)
     const existing_event = EventBus._all_instances.findEventById(parsed_event.event_id)
-    const event = existing_event ?? parsed_event
+    const event = existing_event ?? parsed_event.reset()
     this.inbound_bus.dispatch(event)
   }
 }

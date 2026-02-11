@@ -41,12 +41,14 @@ Performance matrix measured locally on **February 11, 2026** with:
 
 | Runtime | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
 | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
-| Python | `0.248ms/event`, `6.1kb/event` | `0.279ms/event`, `0.0kb/event` | `0.071ms/handler`, `7.4kb/handler` | `0.439ms/event`, `0.0kb/event` | `1.038ms/event`, `0.0kb/event` |
+| Python | `0.239ms/event`, `8.024kb/event` | `0.259ms/event`, `0.148kb/event` | `0.077ms/handler`, `7.785kb/handler` | `0.310ms/event`, `0.025kb/event` | `0.694ms/event`, `2.464kb/event` |
 
 Notes:
 
-- `1 bus x 50k events x 1 handler` dispatches all 50k events naively in one go (no manual batching).
+- These runs use default bus setup (no special tuning knobs like custom history limits).
+- `1 bus x 50k events x 1 handler` dispatches all 50k events in one go (no manual batching).
 - `kb/event` and `kb/handler` are peak RSS deltas normalized per work unit for each scenario.
+- CPU totals are also collected by the harness (see `cpu_ms` / `cpu_ms_per_event` in JSON output) so wall-clock latency is not interpreted as pure CPU cost.
 
 <br/>
 
@@ -952,6 +954,14 @@ completed_event = await event
 raw_result_values = [(await event_result) for event_result in completed_event.event_results.values()]
 # equivalent to: completed_event.event_results_list()  (see below)
 ```
+
+##### `reset() -> Self`
+
+Return a fresh event copy with runtime processing state reset back to pending.
+
+- Intended for re-dispatching an already-seen event payload (for example after crossing a bridge boundary).
+- The original event object is unchanged.
+- Runtime completion state is cleared (`event_results`, completion signal/flags, processed timestamp, dispatch context).
 
 ##### `event_result(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> Any`
 

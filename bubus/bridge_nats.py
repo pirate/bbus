@@ -88,9 +88,9 @@ class NATSEventBridge:
                 continue
             existing = bus.event_history.get(event.event_id)
             if existing is not None:
-                event = existing
-                break
-        self._inbound_bus.dispatch(event)
+                self._inbound_bus.dispatch(existing)
+                return
+        self._inbound_bus.dispatch(event.reset())
 
     @staticmethod
     def _load_nats() -> Any:

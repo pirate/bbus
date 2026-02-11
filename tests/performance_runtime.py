@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import json
 import logging
+import sys
+from pathlib import Path
 from typing import Any
 
 from performance_scenarios import PERF_SCENARIO_IDS, PerfInput, run_all_perf_scenarios, run_perf_scenario_by_id
@@ -32,7 +34,7 @@ def _format_cell(result: dict[str, Any]) -> str:
     peak_rss_kb_per_event = result.get('peak_rss_kb_per_event')
     if isinstance(peak_rss_kb_per_event, (int, float)):
         peak_unit = str(result.get('peak_rss_unit', 'event'))
-        return f'`{latency}`, `{float(peak_rss_kb_per_event):.1f}kb/{peak_unit}`'
+        return f'`{latency}`, `{float(peak_rss_kb_per_event):.3f}kb/{peak_unit}`'
     return f'`{latency}`'
 
 
@@ -58,16 +60,45 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Run Python runtime performance scenarios for bubus')
     parser.add_argument('--scenario', type=str, default=None, help=f'One scenario id: {", ".join(PERF_SCENARIO_IDS)}')
     parser.add_argument('--json', action='store_true', help='Print full JSON output')
+    parser.add_argument(
+        '--in-process',
+        action='store_true',
+        help='Run all scenarios in one process (default runs each scenario in an isolated subprocess).',
+    )
+    parser.add_argument('--child-json', action='store_true', help=argparse.SUPPRESS)
     return parser
+
+
+async def _run_scenario_in_subprocess(scenario_id: str) -> dict[str, Any]:
+    script_path = str(Path(__file__).resolve())
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        script_path,
+        '--scenario',
+        scenario_id,
+        '--child-json',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f'Perf child process failed for scenario={scenario_id!r} exit={proc.returncode} stderr={stderr.decode().strip()}'
+        )
+    payload = stdout.decode().strip()
+    if not payload:
+        raise RuntimeError(f'Perf child process produced no output for scenario={scenario_id!r}')
+    return json.loads(payload)
 
 
 async def _main_async() -> int:
     args = _build_parser().parse_args()
     logging.getLogger('bubus').setLevel(logging.CRITICAL)
 
-    perf_input = PerfInput(runtime_name='python')
+    perf_input = PerfInput(runtime_name='python', log=(lambda _: None) if args.child_json else print)
 
-    print('[python] runtime perf harness starting')
+    if not args.child_json:
+        print('[python] runtime perf harness starting')
 
     if args.scenario:
         if args.scenario not in PERF_SCENARIO_IDS:
@@ -75,13 +106,21 @@ async def _main_async() -> int:
         result = await run_perf_scenario_by_id(perf_input, args.scenario)
         result['scenario_id'] = args.scenario
         results = [result]
-    else:
+    elif args.in_process:
         raw_results = await run_all_perf_scenarios(perf_input)
         results = []
         for scenario_id, result in zip(PERF_SCENARIO_IDS, raw_results, strict=True):
             result_copy = dict(result)
             result_copy['scenario_id'] = scenario_id
             results.append(result_copy)
+    else:
+        results = []
+        for scenario_id in PERF_SCENARIO_IDS:
+            results.append(await _run_scenario_in_subprocess(scenario_id))
+
+    if args.child_json:
+        print(json.dumps(results[0], default=str))
+        return 0
 
     print('[python] runtime perf harness complete')
     print('')
