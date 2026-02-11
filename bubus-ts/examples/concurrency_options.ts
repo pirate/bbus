@@ -38,10 +38,10 @@ async function eventConcurrencyDemo(): Promise<void> {
   }
   global_a.on(WorkEvent, global_handler)
   global_b.on(WorkEvent, global_handler)
-  global_a.dispatch(WorkEvent({ lane: 'A', order: 0, ms: 45 }))
-  global_b.dispatch(WorkEvent({ lane: 'B', order: 0, ms: 45 }))
-  global_a.dispatch(WorkEvent({ lane: 'A', order: 1, ms: 45 }))
-  global_b.dispatch(WorkEvent({ lane: 'B', order: 1, ms: 45 }))
+  global_a.emit(WorkEvent({ lane: 'A', order: 0, ms: 45 }))
+  global_b.emit(WorkEvent({ lane: 'B', order: 0, ms: 45 }))
+  global_a.emit(WorkEvent({ lane: 'A', order: 1, ms: 45 }))
+  global_b.emit(WorkEvent({ lane: 'B', order: 1, ms: 45 }))
   await Promise.all([global_a.waitUntilIdle(), global_b.waitUntilIdle()])
   global_log(`max in-flight across both buses: ${global_max} (expect 1 in global-serial)`)
   console.log('\n=== global_a.logTree() ===')
@@ -69,10 +69,10 @@ async function eventConcurrencyDemo(): Promise<void> {
   }
   bus_a.on(WorkEvent, bus_handler)
   bus_b.on(WorkEvent, bus_handler)
-  bus_a.dispatch(WorkEvent({ lane: 'A', order: 0, ms: 45 }))
-  bus_b.dispatch(WorkEvent({ lane: 'B', order: 0, ms: 45 }))
-  bus_a.dispatch(WorkEvent({ lane: 'A', order: 1, ms: 45 }))
-  bus_b.dispatch(WorkEvent({ lane: 'B', order: 1, ms: 45 }))
+  bus_a.emit(WorkEvent({ lane: 'A', order: 0, ms: 45 }))
+  bus_b.emit(WorkEvent({ lane: 'B', order: 0, ms: 45 }))
+  bus_a.emit(WorkEvent({ lane: 'A', order: 1, ms: 45 }))
+  bus_b.emit(WorkEvent({ lane: 'B', order: 1, ms: 45 }))
   await Promise.all([bus_a.waitUntilIdle(), bus_b.waitUntilIdle()])
   bus_log(`max in-flight global=${mixed_global_max}, per-bus A=${per_bus_max.A}, B=${per_bus_max.B} (expect global >= 2, per-bus = 1)`)
   console.log('\n=== bus_a.logTree() ===')
@@ -99,7 +99,7 @@ async function handlerConcurrencyDemo(): Promise<void> {
     }
     bus.on(HandlerEvent, make_handler('slow', 60))
     bus.on(HandlerEvent, make_handler('fast', 20))
-    const event = bus.dispatch(HandlerEvent({ label: mode }))
+    const event = bus.emit(HandlerEvent({ label: mode }))
     await event.done()
     await bus.waitUntilIdle()
     log(`max handler overlap: ${max_in_flight} (expect 1 for serial, >= 2 for parallel)`)
@@ -165,8 +165,8 @@ async function eventOverrideDemo(): Promise<void> {
     bus.on(OverrideEvent, handler_a)
     bus.on(OverrideEvent, handler_b)
     const overrides = use_override ? ({ event_concurrency: 'parallel', event_handler_concurrency: 'parallel' } as const) : {}
-    bus.dispatch(OverrideEvent({ label, order: 0, ms: 45, ...overrides }))
-    bus.dispatch(OverrideEvent({ label, order: 1, ms: 45, ...overrides }))
+    bus.emit(OverrideEvent({ label, order: 0, ms: 45, ...overrides }))
+    bus.emit(OverrideEvent({ label, order: 1, ms: 45, ...overrides }))
     await bus.waitUntilIdle()
     log(`${label} summary -> max events=${max_events}, max handlers=${max_handlers}`)
   }
@@ -199,7 +199,7 @@ async function handlerTimeoutDemo(): Promise<void> {
     log('fast handler end')
     return 'fast'
   }, { handler_timeout: 0.1 })
-  const event = bus.dispatch(TimeoutEvent({ ms: 60, event_handler_timeout: 0.5 }))
+  const event = bus.emit(TimeoutEvent({ ms: 60, event_handler_timeout: 0.5 }))
   await event.done()
   const slow_result = event.event_results.get(slow_entry.id)
   const slow_timeout = slow_result?.error instanceof EventHandlerTimeoutError

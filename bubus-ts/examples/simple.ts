@@ -49,10 +49,10 @@ async function main(): Promise<void> {
   })
 
   // Dispatch a simple event handled by a string registration.
-  await bus.dispatch(AuditEvent({ message: 'Starting simple bubus example' })).done()
+  await bus.emit(AuditEvent({ message: 'Starting simple bubus example' })).done()
 
   // Dispatch the typed event; one handler returns valid data, one returns invalid data.
-  const register_event = bus.dispatch(
+  const register_event = bus.emit(
     RegisterUserEvent({
       email: 'ada@example.com',
       plan: 'pro',

@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   bus.on(ChildEvent, async (event: InstanceType<typeof ChildEvent>): Promise<string> => {
     console.log(`child handler start: ${event.event_type}#${shortId(event.event_id)}`)
 
-    const grandchild = event.bus?.dispatch(
+    const grandchild = event.bus?.emit(
       GrandchildEvent({
         note: `spawned by ${event.stage}`,
       })
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
       console.log(`  parent resumed after awaited child.done(): ${shortId(awaitedChild.event_id)}`)
     }
 
-    const backgroundChild = event.bus?.dispatch(ChildEvent({ stage: 'background-child' }))
+    const backgroundChild = event.bus?.emit(ChildEvent({ stage: 'background-child' }))
     if (backgroundChild) {
       console.log(
         `  parent dispatched second child: ${backgroundChild.event_type}#${shortId(backgroundChild.event_id)} parent_id=${shortId(backgroundChild.event_parent_id)}`
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
 
     // Parent also dispatches a GrandchildEvent type directly via event.bus.
     // This is still automatically linked to the parent event.
-    const directGrandchild = event.bus?.dispatch(GrandchildEvent({ note: 'directly from parent' }))
+    const directGrandchild = event.bus?.emit(GrandchildEvent({ note: 'directly from parent' }))
     if (directGrandchild) {
       console.log(
         `  parent dispatched grandchild type directly: ${directGrandchild.event_type}#${shortId(directGrandchild.event_id)} parent_id=${shortId(directGrandchild.event_parent_id)}`
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   })
 
   // Step 7: Dispatch parent and wait for full bus idle so history is complete.
-  const parent = bus.dispatch(ParentEvent({ workflow: 'demo-parent-child-tracking' }))
+  const parent = bus.emit(ParentEvent({ workflow: 'demo-parent-child-tracking' }))
   await parent.done()
   await bus.waitUntilIdle()
 

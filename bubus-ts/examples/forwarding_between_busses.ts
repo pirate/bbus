@@ -51,12 +51,12 @@ async function main(): Promise<void> {
   // Expected for one dispatch from A: event path becomes [A, B, C] and stops.
   // The C -> A edge is skipped because A is already in event_path.
   busA.on('*', busB.emit)
-  busB.on('*', busC.dispatch)
-  busC.on('*', busA.dispatch)
+  busB.on('*', busC.emit)
+  busC.on('*', busA.emit)
 
   console.log('Dispatching ForwardedEvent on BusA with cyclic forwarding A -> B -> C -> A')
 
-  const event = busA.dispatch(
+  const event = busA.emit(
     ForwardedEvent({
       message: 'hello across 3 buses',
     })

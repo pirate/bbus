@@ -48,11 +48,11 @@ async function main(): Promise<void> {
   // Forwarding setup: both sibling/child events emitted on bus_a are forwarded to bus_b.
   bus_a.on(ChildEvent, (event) => {
     log(`[forward] ${event.event_type}(${event.scenario}) bus_a -> bus_b`)
-    bus_b.dispatch(event)
+    bus_b.emit(event)
   })
   bus_a.on(SiblingEvent, (event) => {
     log(`[forward] ${event.event_type}(${event.scenario}) bus_a -> bus_b`)
-    bus_b.dispatch(event)
+    bus_b.emit(event)
   })
 
   // Local handlers on bus_a.
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
 
     // Parent event uses parallel concurrency so waitForCompletion() in handler
     // can wait safely while other queued events continue to run.
-    const parent = bus_a.dispatch(
+    const parent = bus_a.emit(
       ParentEvent({
         mode,
         event_concurrency: 'parallel',

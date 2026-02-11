@@ -31,7 +31,7 @@ async function main(): Promise<void> {
 
   async function forward_to_bus_b(event: InstanceType<typeof RootEvent>): Promise<string> {
     await delay(20)
-    bus_b.dispatch(event)
+    bus_b.emit(event)
     return 'forwarded_to_bus_b'
   }
 
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   bus_b.on(GrandchildEvent, grandchild_fast_handler)
   bus_b.on(GrandchildEvent, grandchild_slow_handler)
 
-  const root_event = bus_a.dispatch(RootEvent({ url: 'https://example.com', event_timeout: 0.25 }))
+  const root_event = bus_a.emit(RootEvent({ url: 'https://example.com', event_timeout: 0.25 }))
 
   await root_event.done()
 
