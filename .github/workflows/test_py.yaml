@@ -19,43 +19,81 @@ on:
   workflow_dispatch:
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - run: uv sync --dev --all-extras
+      - run: uv run ruff format --check
+      - run: uv run ruff check
+      - run: uv run pyright
+
   find_tests:
     runs-on: ubuntu-latest
     outputs:
-      TEST_FILENAMES: ${{ steps.lsgrep.outputs.TEST_FILENAMES }}
-      # ["test_eventbus", ...]
+      PY_TASKS: ${{ steps.lsgrep.outputs.PY_TASKS }}
+      # [{ "kind": "test" | "example", "name": "test_eventbus" }, ...]
+      PY_TEST_TASKS: ${{ steps.lsgrep.outputs.PY_TEST_TASKS }}
+      # [{ "kind": "test", "name": "test_eventbus" }, ...]
     steps:
       - uses: actions/checkout@v4
       - id: lsgrep
         run: |
-          TEST_FILENAMES="$(ls tests/test_*.py | sed 's|^tests/||' | sed 's|\.py$||' | jq -R -s -c 'split("\n")[:-1] | map(select(. != "test_bridges" and . != "test_python_to_ts_roundrip" and . != "test_python_to_ts_roundtrip"))')"
-          echo "TEST_FILENAMES=${TEST_FILENAMES}" >> "$GITHUB_OUTPUT"
-          echo "$TEST_FILENAMES"
+          PY_TEST_TASKS="$(
+            find tests -maxdepth 1 -type f -name 'test_*.py' \
+              | sort \
+              | sed 's|^tests/||' \
+              | sed 's|\.py$||' \
+              | jq -R -s -c 'split("\n")[:-1] | map({kind: "test", name: .})'
+          )"
+          PY_EXAMPLE_TASKS="$(
+            (
+              if [[ -d examples ]]; then
+                find examples -maxdepth 1 -type f -name '*.py' | sort
+              fi
+            ) \
+              | sed 's|^examples/||' \
+              | sed 's|\.py$||' \
+              | jq -R -s -c 'split("\n")[:-1] | map({kind: "example", name: .})'
+          )"
+          PY_TASKS="$(jq -cn --argjson tests "$PY_TEST_TASKS" --argjson examples "$PY_EXAMPLE_TASKS" '$tests + $examples')"
+
+          echo "PY_TEST_TASKS=${PY_TEST_TASKS}" >> "$GITHUB_OUTPUT"
+          echo "PY_TASKS=${PY_TASKS}" >> "$GITHUB_OUTPUT"
+          echo "$PY_TASKS"
         # https://code.dblock.org/2021/09/03/generating-task-matrix-by-looping-over-repo-files-with-github-actions.html
       - name: Check that at least one test file is found
         run: |
-          if [[ -z "${{ steps.lsgrep.outputs.TEST_FILENAMES }}" || "${{ steps.lsgrep.outputs.TEST_FILENAMES }}" == "[]" ]]; then
+          if [[ -z "${{ steps.lsgrep.outputs.PY_TEST_TASKS }}" || "${{ steps.lsgrep.outputs.PY_TEST_TASKS }}" == "[]" ]]; then
             echo "Failed to find any test_*.py files in tests/ folder!" > /dev/stderr
             exit 1
           fi
 
   tests:
-    needs: find_tests
+    needs:
+      - quality
+      - find_tests
     runs-on: ubuntu-latest
     env:
       IN_DOCKER: 'True'
     strategy:
       matrix:
-        test_filename: ${{ fromJson(needs.find_tests.outputs.TEST_FILENAMES || '["FAILED_TO_DISCOVER_TESTS"]') }}
-        # autodiscovers all the files in tests/test_*.py
-        # - test_eventbus
+        task: ${{ fromJson(needs.find_tests.outputs.PY_TASKS || '[{"kind":"error","name":"FAILED_TO_DISCOVER_TASKS"}]') }}
+        # autodiscovers files in tests/test_*.py and examples/*.py
+        # - { kind: "test", name: "test_eventbus" }
+        # - { kind: "example", name: "quickstart" }
         # ... and more
-    name: ${{ matrix.test_filename }}
+    name: ${{ matrix.task.kind }}-${{ matrix.task.name }}
     steps:
-      - name: Check that the previous step managed to find some test files for us to run
+      - name: Check that the previous step managed to find some tasks for us to run
         run: |
-          if [[ "${{ matrix.test_filename }}" == "FAILED_TO_DISCOVER_TESTS" ]]; then
-            echo "Failed get list of test files in tests/test_*.py from find_tests job" > /dev/stderr
+          if [[ "${{ matrix.task.kind }}" == "error" ]]; then
+            echo "Failed get list of tasks in tests/test_*.py and examples/*.py from find_tests job" > /dev/stderr
             exit 1
           fi
 
@@ -67,9 +105,16 @@ jobs:
 
       - run: uv sync --dev --all-extras
 
-      - run: pytest -x tests/${{ matrix.test_filename }}.py --cov=bubus --cov-report=term
+      - name: Run test with coverage
+        if: matrix.task.kind == 'test'
+        run: pytest -x tests/${{ matrix.task.name }}.py --cov=bubus --cov-report=term
+
+      - name: Run example
+        if: matrix.task.kind == 'example'
+        run: uv run python examples/${{ matrix.task.name }}.py
 
       - name: Check coverage files
+        if: matrix.task.kind == 'test'
         run: |
           echo "Looking for coverage files..."
           ls -la .coverage* 2>/dev/null || ls -la | grep coverage || echo "No coverage files found"
@@ -80,11 +125,11 @@ jobs:
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{ matrix.test_filename }}
+          name: coverage-${{ matrix.task.name }}
           path: .coverage
           retention-days: 7
           include-hidden-files: true
-        if: always()
+        if: matrix.task.kind == 'test' && always()
 
   coverage:
     needs: tests
@@ -135,3 +180,17 @@ jobs:
             htmlcov/
             coverage.xml
           retention-days: 7
+
+  perf:
+    needs: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - run: uv sync --dev --all-extras
+      - run: uv run perf
