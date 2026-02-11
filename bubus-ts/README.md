@@ -91,36 +91,223 @@ See the [Python README](../README.md) for more details.
 
 ### `EventBus`
 
-Create a bus:
+The main bus class that registers handlers, schedules events, and tracks results.
+
+Constructor:
 
 ```ts
-const bus = new EventBus('MyBus', {
-  max_history_size: 100, // keep small, copy events to external store manually if you want to persist/query long-term logs
-  event_concurrency: 'bus-serial', // 'global-serial' | 'bus-serial' (default) | 'parallel'
-  event_handler_concurrency: 'serial', // 'serial' (default) | 'parallel'
-  event_handler_completion: 'all', // 'all' (default) | 'first' (stop handlers after the first non-undefined result from any handler)
-  event_timeout: 60, // default hard timeout for event handlers before they are marked result.status = 'error' w/ result.error = HandlerTimeoutError(...)
-  event_handler_slow_timeout: 30, // default timeout before a console.warn("Slow event handler bus.on(SomeEvent, someHandler()) has taken more than 30s"
-  event_slow_timeout: 300, // default timeout before a console.warn("Slow event processing: bus.on(SomeEvent, ...4 handlers) have taken more than 300s"
+new EventBus(name?: string, options?: {
+  id?: string
+  max_history_size?: number | null
+  event_concurrency?: 'global-serial' | 'bus-serial' | 'parallel' | null
+  event_timeout?: number | null
+  event_slow_timeout?: number | null
+  event_handler_concurrency?: 'serial' | 'parallel' | null
+  event_handler_completion?: 'all' | 'first'
+  event_handler_slow_timeout?: number | null
+  event_handler_detect_file_paths?: boolean
 })
 ```
 
-Core methods:
+Constructor options:
 
-- `bus.emit(event)` aka `bus.dispatch(event)`
-- `bus.on(event_type, handler, options?)`
-- `bus.off(event_type, handler)`
-- `bus.find(event_type, options?)`
-- `bus.waitUntilIdle()`
+| Option | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `id` | `string` | `uuidv7()` | Override bus UUID (mostly for serialization/tests). |
+| `max_history_size` | `number \| null` | `100` | Max events kept in `event_history`; `null` = unbounded. |
+| `event_concurrency` | `'global-serial' \| 'bus-serial' \| 'parallel' \| null` | `'bus-serial'` | Event-level scheduling policy. |
+| `event_handler_concurrency` | `'serial' \| 'parallel' \| null` | `'serial'` | Per-event handler scheduling policy. |
+| `event_handler_completion` | `'all' \| 'first'` | `'all'` | Event completion mode if event does not override it. |
+| `event_timeout` | `number \| null` | `60` | Default per-handler timeout budget in seconds (unless overridden). |
+| `event_handler_slow_timeout` | `number \| null` | `30` | Slow handler warning threshold (seconds). |
+| `event_slow_timeout` | `number \| null` | `300` | Slow event warning threshold (seconds). |
+| `event_handler_detect_file_paths` | `boolean` | `true` | Capture source file:line for handlers (slower, better logs). |
+
+Common runtime properties:
+
+- `id: string`
+- `name: string`
+- `label: string` (`${name}#${id.slice(-4)}`)
+- `handlers: Map<string, EventHandler>`
+- `handlers_by_key: Map<string, string[]>`
+- `event_history: Map<string, BaseEvent>`
+- `pending_event_queue: BaseEvent[]`
+- `in_flight_event_ids: Set<string>`
+- `locks: LockManager`
+
+#### `on()`
+
+```ts
+on<T extends BaseEvent>(
+  event_key: EventClass<T>,
+  handler: EventHandlerFunction<T>,
+  options?: Partial<EventHandler>
+): EventHandler
+
+on<T extends BaseEvent>(
+  event_key: string | '*',
+  handler: UntypedEventHandlerFunction<T>,
+  options?: Partial<EventHandler>
+): EventHandler
+```
+
+Use during startup/composition to register handlers.
+
+Supported `options` fields:
+
+- `handler_timeout?: number | null`
+- `handler_slow_timeout?: number | null`
+- `handler_name?: string`
+- `handler_file_path?: string`
+- `id?: string`
+- `handler_registered_at?: string` (advanced/internal)
+- `handler_registered_ts?: number` (advanced/internal)
+- `handler?: EventHandlerFunction` (advanced/internal)
+- `event_key?: string | '*'` (advanced/internal)
+- `eventbus_name?: string` (advanced/internal)
+- `eventbus_id?: string` (advanced/internal)
 
 Notes:
 
-- String matching of event types using `bus.on('SomeEvent', ...)` and `bus.on('*', ...)` wildcard matching is supported
-- Prefer passing event class to (`bus.on(MyEvent, handler)`) over string-based maching for stricter type inference
+- Prefer class/factory keys (`bus.on(MyEvent, handler)`) for typed payload/result inference.
+- String and `'*'` matching are supported (`bus.on('MyEvent', ...)`, `bus.on('*', ...)`).
+- Returns an `EventHandler` object you can later pass to `off()`.
+
+#### `off()`
+
+```ts
+off<T extends BaseEvent>(
+  event_key: EventKey<T> | '*',
+  handler?: EventHandlerFunction<T> | string | EventHandler
+): void
+```
+
+Use when tearing down subscriptions (tests, plugin unload, hot-reload).
+
+- Omit `handler` to remove all handlers for `event_key`.
+- Pass handler function reference to remove one by function identity.
+- Pass handler id (`string`) or `EventHandler` object to remove by id.
+
+#### `dispatch()` / `emit()`
+
+```ts
+dispatch<T extends BaseEvent>(event: T, _event_key?: EventKey<T>): T
+emit<T extends BaseEvent>(event: T, event_key?: EventKey<T>): T
+```
+
+`emit()` is an alias of `dispatch()`.
+
+- The optional second arg (`event_key`) is kept for API compatibility and is currently ignored.
+
+Normal lifecycle:
+
+1. Create event instance (`const event = MyEvent({...})`).
+2. Dispatch (`const queued = bus.emit(event)`).
+3. Await with `await queued.done()` (immediate/queue-jump semantics) or `await queued.waitForCompletion()` (strict queue order).
+4. Inspect `queued.event_results`, `queued.first_result`, `queued.event_errors`, etc.
+
+Behavior notes:
+
+- Event defaults are applied at dispatch time (timeouts, completion mode, bus path metadata).
+- Same event forwarded through multiple buses is loop-protected using `event_path`.
+- Dispatch is synchronous and returns immediately with the event object.
+
+#### `find()`
+
+```ts
+find<T extends BaseEvent>(event_key: EventKey<T>, options?: FindOptions): Promise<T | null>
+find<T extends BaseEvent>(
+  event_key: EventKey<T>,
+  where: (event: T) => boolean,
+  options?: FindOptions
+): Promise<T | null>
+```
+
+Where:
+
+```ts
+type FindOptions = {
+  past?: boolean | number
+  future?: boolean | number
+  child_of?: BaseEvent | null
+}
+```
+
+`past` behavior:
+
+- `true`: search all history.
+- `false`: skip history.
+- `number`: search completed history within last `N` seconds.
+
+`future` behavior:
+
+- `true`: wait forever for future match.
+- `false`: do not wait.
+- `number`: wait up to `N` seconds.
+
+Lifecycle use:
+
+- Use for idempotency / de-dupe before dispatch (`past: ...`).
+- Use for synchronization/waiting (`future: ...`).
+- Combine both to "check recent then wait".
+- Add `child_of` to constrain by parent/ancestor event chain.
+
+Important semantics:
+
+- Past lookup only returns completed events.
+- Future matching can resolve as soon as event starts processing.
+- If both `past` and `future` are `false`, it returns `null` immediately.
+- Detailed behavior matrix is covered in `bubus-ts/tests/find.test.ts`.
+
+#### Idle and status helpers
+
+```ts
+waitUntilIdle(): Promise<void>
+isIdle(): boolean
+isIdleAndQueueEmpty(): boolean
+```
+
+- `waitUntilIdle()` is the normal "drain bus work" primitive (tests/shutdown).
+- `isIdle()` is a weaker check (handler states only).
+- `isIdleAndQueueEmpty()` is a stronger instantaneous check used by lock manager internals.
+
+#### Parent/child helpers
+
+```ts
+eventIsChildOf(event: BaseEvent, ancestor: BaseEvent): boolean
+eventIsParentOf(parent_event: BaseEvent, child_event: BaseEvent): boolean
+findEventById(event_id: string): BaseEvent | null
+```
+
+- Use when traversing multi-level event trees, including cross-bus forwarded chains.
+
+#### Diagnostics and lifecycle cleanup
+
+```ts
+toString(): string
+logTree(): string
+destroy(): void
+```
+
+- `toString()` returns `BusName#abcd` style labels used in logs/errors.
+- `logTree()` returns a full event/result tree string for debugging.
+- `destroy()` clears handlers/history/locks and removes this bus from global weak registry.
+- `destroy()`/GC behavior is exercised in `bubus-ts/tests/eventbus_basics.test.ts` and `bubus-ts/tests/performance.test.ts`.
+
+#### Advanced/internal public methods
+
+These are public in TS but intended for internals/custom dispatch loops:
+
+- `getParentEventResultAcrossAllBusses(event)`
+- `hasProcessedEvent(event)`
+- `getEventProxyScopedToThisBus(event, handler_result?)`
+- `getHandlersForEvent(event)`
 
 ### `BaseEvent`
 
-Define typed events:
+Base class + factory builder for typed event models.
+
+Define typed events with `extend()`:
 
 ```ts
 const MyEvent = BaseEvent.extend('MyEvent', {
@@ -135,48 +322,189 @@ const MyEvent = BaseEvent.extend('MyEvent', {
   // ...
 })
 
-const pending_event: MyEvent = MyEvent({ some_key: 'abc', some_other_key: 234 })
-const queued_event: MyEvent = bus.emit(pending_event)
-const completed_event: MyEvent = queued_event.done()
+const pending_event = MyEvent({ some_key: 'abc', some_other_key: 234 })
+const queued_event = bus.emit(pending_event)
+const completed_event = await queued_event.done()
 ```
 
-Special fields that change how the event is processed:
+Factory/class signatures:
 
-- `event_result_schema` defines the type to enforce for handler return values
-- `event_concurrency`, `event_handler_concurrency`, `event_handler_completion`
-- `event_timeout`, `event_handler_timeout`, `event_handler_slow_timeout`
+```ts
+BaseEvent.extend(event_type: string, shape?: z.ZodRawShape | Record<string, unknown>)
+BaseEvent.parse(data: unknown)
+BaseEvent.fromJSON(data: unknown)
+BaseEvent.nextTimestamp()
 
-Common methods:
+event.toString()
+event.toJSON()
+event.done()
+event.immediate()
+event.first()
+event.waitForCompletion()
+event.finished()
+```
 
-- `await event.done()`
-- `await event.first()`
-- `event.toJSON()` (serialization format is compatible with python library)
-- `event.fromJSON()`
+Processing fields you can set on each event instance:
 
-#### `done()`
+- `event_result_schema?: z.ZodTypeAny`
+- `event_result_type?: string`
+- `event_timeout?: number | null`
+- `event_handler_timeout?: number | null`
+- `event_handler_slow_timeout?: number | null`
+- `event_concurrency?: 'global-serial' | 'bus-serial' | 'parallel' | null`
+- `event_handler_concurrency?: 'serial' | 'parallel' | null`
+- `event_handler_completion?: 'all' | 'first'`
 
-- Runs the event with completion mode `'all'` and waits for all handlers/buses to finish.
-- Returns the same event instance in completed state so you can inspect `event_results`, `event_errors`, etc.
-- Want to dispatch and await an event like a function call? simply `await event.done()` and it will process immediately, skipping queued events.
-- Want to wait for normal processing in the order it was originally queued? use `await event.waitForCompletion()`
+Common runtime fields:
+
+- `event_id`, `event_type`, `event_path`, `event_parent_id`
+- `event_status: 'pending' | 'started' | 'completed'`
+- `event_results: Map<string, EventResult>`
+- `event_pending_bus_count`
+- `event_created_at/ts`, `event_started_at/ts`, `event_completed_at/ts`
+
+Key getters:
+
+- `event_parent`
+- `event_children`
+- `event_descendants`
+- `event_errors`
+- `all_results`
+- `first_result`
+- `last_result`
+
+#### `done()` and `immediate()`
+
+```ts
+done(): Promise<this>
+immediate(): Promise<this>
+```
+
+- `immediate()` is an alias for `done()`.
+- If called from inside a running handler, it queue-jumps child processing immediately.
+- If called outside handler context, it waits for normal completion (or processes immediately if already next).
+- Rejects if event is not attached to a bus (`event has no bus attached`).
+- Queue-jump behavior is demonstrated in `bubus-ts/examples/immediate_event_processing.ts` and `bubus-ts/tests/event_bus_proxy.test.ts`.
+
+#### `waitForCompletion()` and `finished()`
+
+```ts
+waitForCompletion(): Promise<this>
+finished(): Promise<this>
+```
+
+- Waits for completion in normal runloop order.
+- Use inside handlers when you explicitly do not want queue-jump behavior.
+- `finished()` is an alias.
 
 #### `first()`
 
-- Runs the event with completion mode `'first'`.
-- Returns the temporally first non-`undefined` handler result (not registration order).
-- If all handlers return `undefined` (or only error), it resolves to `undefined`.
-- Remaining handlers are cancelled after the winning result is found.
+```ts
+first(): Promise<EventResultType<this> | undefined>
+```
+
+- Forces `event_handler_completion = 'first'` for this run.
+- Returns temporally first non-`undefined` successful handler result.
+- Cancels pending/running losing handlers on the same bus.
+- Returns `undefined` when no handler produces a successful non-`undefined` value.
+- Cancellation and winner-selection behavior is covered in `bubus-ts/tests/first.test.ts`.
+
+#### Serialization
+
+```ts
+toJSON(): BaseEventData
+BaseEvent.fromJSON(data: unknown): BaseEvent
+EventFactory.fromJSON?.(data: unknown): TypedEvent
+```
+
+- JSON format is cross-language compatible with Python implementation.
+- `event_result_schema` is serialized as JSON Schema when possible and rehydrated on `fromJSON`.
+- Round-trip coverage is in `bubus-ts/tests/typed_results.test.ts` and `bubus-ts/tests/eventbus_basics.test.ts`.
+
+#### Advanced/internal public methods
+
+Mostly used by bus internals or custom runtimes:
+
+- `createSlowEventWarningTimer()`
+- `createPendingHandlerResults(bus)`
+- `processEvent(pending_entries?)`
+- `getHandlerSemaphore(default_concurrency?)`
+- `cancelPendingDescendants(reason)`
+- `cancelEventHandlersForFirstMode(winner)`
+- `markCancelled(cause)`
+- `notifyEventParentsOfCompletion()`
+- `markStarted()`
+- `markCompleted(force?, notify_parents?)`
+- `eventAreAllChildrenComplete()`
+- `_notifyDoneListeners()`
+- `_gc()`
 
 ### `EventResult`
 
-Each handler run produces an `EventResult` stored in `event.event_results` with:
+Each handler execution creates one `EventResult` stored in `event.event_results`.
 
-- `status`: `pending | started | completed | error`
-- `result: EventType.event_result_schema` or `error: Error | undefined`
-- handler metadata (`handler_id`, `handler_name`, bus metadata)
-- `event_children` list of any sub-events that were emitted during handling
+Core fields:
 
-The event aggregates these via `event.event_results` and exposes the values from them via getters like `event.first_result`, `event.event_errors`, and others.
+- `id`
+- `status: 'pending' | 'started' | 'completed' | 'error'`
+- `event`
+- `handler`
+- `result`
+- `error`
+- `started_at/ts`
+- `completed_at/ts`
+- `event_children`
+
+Useful getters:
+
+- `event_id`
+- `bus`
+- `handler_id`
+- `handler_name`
+- `handler_file_path`
+- `eventbus_name`
+- `eventbus_id`
+- `eventbus_label`
+- `value` (alias of `result`)
+- `raw_value` (returns invalid raw value when schema validation failed)
+- `handler_timeout` (resolved precedence: handler -> event -> bus, capped by event timeout)
+- `handler_slow_timeout`
+
+Main methods:
+
+```ts
+toString(): string
+runHandler(): Promise<void>
+signalAbort(error: Error): void
+markStarted(): Promise<never>
+markCompleted(result): void
+markError(error): void
+linkEmittedChildEvent(child_event): void
+createSlowHandlerWarningTimer(effective_timeout): ReturnType<typeof setTimeout> | null
+ensureQueueJumpPause(bus): void
+releaseQueueJumpPauses(): void
+toJSON(): EventResultJSON
+EventResult.fromJSON(event, data): EventResult
+```
+
+Lifecycle notes:
+
+- `toString()` is a compact debug representation of `{result} ({status})`.
+- `runHandler()` handles semaphore acquisition, timeout enforcement, optional schema validation, and status transitions.
+- Errors are captured in `error` and propagated to event-level aggregation (`event.event_errors`).
+- `toJSON()/fromJSON()` preserve status/timestamps/result/error + handler metadata.
+
+API behavior and lifecycle examples:
+
+- `bubus-ts/examples/simple.ts`
+- `bubus-ts/examples/immediate_event_processing.ts`
+- `bubus-ts/examples/forwarding_between_busses.ts`
+- `bubus-ts/tests/eventbus_basics.test.ts`
+- `bubus-ts/tests/find.test.ts`
+- `bubus-ts/tests/first.test.ts`
+- `bubus-ts/tests/event_bus_proxy.test.ts`
+- `bubus-ts/tests/timeout.test.ts`
+- `bubus-ts/tests/event_results.test.ts`
 
 <br/>
 
