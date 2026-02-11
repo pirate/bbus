@@ -172,13 +172,12 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           # Report and write a markdown table to summary.
           coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "[Download HTML coverage artifact (coverage-report)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)" >> "$GITHUB_STEP_SUMMARY"
 
           # Report again and fail if under 50%.
           coverage report --fail-under=50
 
       - name: Upload combined coverage report
+        id: upload_py_coverage_report
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
@@ -187,6 +186,11 @@ jobs:
             coverage.xml
             pyproject.toml
           retention-days: 7
+
+      - name: Append Python coverage artifact link
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "[Download Python HTML coverage artifact (coverage-report)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${{ steps.upload_py_coverage_report.outputs.artifact-id }})" >> "$GITHUB_STEP_SUMMARY"
 
   perf:
     needs: coverage

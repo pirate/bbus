@@ -137,7 +137,7 @@ jobs:
         if: matrix.task.kind == 'test'
         run: |
           echo "### TypeScript coverage: ${{ matrix.task.name }}" >> "$GITHUB_STEP_SUMMARY"
-          awk '/# start of coverage report/{flag=1} flag{print} /# end of coverage report/{flag=0}' coverage-output.txt >> "$GITHUB_STEP_SUMMARY"
+          awk '/start of coverage report/{flag=1} flag{print} /end of coverage report/{flag=0}' coverage-output.txt >> "$GITHUB_STEP_SUMMARY"
 
   coverage:
     needs: tests
@@ -186,10 +186,41 @@ jobs:
             --temp-directory .v8-coverage-merged \
             --report-dir coverage \
             --reporter=html \
-            --reporter=text | tee coverage/text-report.txt
+            --reporter=text \
+            --reporter=json-summary | tee coverage/text-report.txt
 
-          echo "### TypeScript combined coverage" >> "$GITHUB_STEP_SUMMARY"
-          cat coverage/text-report.txt >> "$GITHUB_STEP_SUMMARY"
+          node <<'NODE'
+          const fs = require('fs');
+          const summaryPath = 'coverage/coverage-summary.json';
+          const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+          const entries = Object.entries(summary);
+          const total = summary.total;
+          const files = entries
+            .filter(([name]) => name !== 'total')
+            .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+
+          const esc = (s) => String(s).replace(/\|/g, '\\|');
+          const row = (name, m) => {
+            const stmtsTotal = Number(m.statements.total || 0);
+            const stmtsCovered = Number(m.statements.covered || 0);
+            const stmtsMiss = Math.max(stmtsTotal - stmtsCovered, 0);
+            return `| ${esc(name)} | ${stmtsTotal} | ${stmtsMiss} | ${Number(m.statements.pct || 0).toFixed(2)}% | ${Number(m.branches.pct || 0).toFixed(2)}% | ${Number(m.functions.pct || 0).toFixed(2)}% | ${Number(m.lines.pct || 0).toFixed(2)}% |`;
+          };
+
+          const lines = [];
+          lines.push('### TypeScript combined coverage');
+          lines.push('');
+          lines.push('| Name | Stmts | Miss | Cover | Branch | Funcs | Lines |');
+          lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: |');
+          lines.push(row('TOTAL', total));
+          for (const [name, metrics] of files) {
+            lines.push(row(name, metrics));
+          }
+          lines.push('');
+
+          const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+          fs.appendFileSync(summaryFile, lines.join('\n'));
+          NODE
 
       - name: Fail if TypeScript coverage is <50%
         run: |
@@ -201,6 +232,7 @@ jobs:
             --lines 50 > /dev/null
 
       - name: Upload merged coverage report
+        id: upload_ts_coverage_report
         uses: actions/upload-artifact@v4
         with:
           name: ts-coverage-report
@@ -208,6 +240,11 @@ jobs:
             bubus-ts/coverage/
             pyproject.toml
           retention-days: 7
+
+      - name: Append TypeScript coverage artifact link
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "[Download TypeScript HTML coverage artifact (ts-coverage-report)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${{ steps.upload_ts_coverage_report.outputs.artifact-id }})" >> "$GITHUB_STEP_SUMMARY"
 
   perf:
     needs: coverage
