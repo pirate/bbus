@@ -65,7 +65,7 @@ class PostgresEventBridge:
         self.dsn, self.table = _parse_table_url(table_url)
         derived_channel = channel or _DEFAULT_POSTGRES_CHANNEL
         self.channel = _validate_identifier(derived_channel[:63], label='channel name')
-        self._inbound_bus = EventBus(name=name or f'PostgresEventBridge_{uuid7str()[-8:]}')
+        self._inbound_bus = EventBus(name=name or f'PostgresEventBridge_{uuid7str()[-8:]}', max_history_size=0)
 
         self._running = False
         self._conn: Any | None = None

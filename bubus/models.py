@@ -1006,6 +1006,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     def reset(self) -> Self:
         """Return a fresh copy of this event with pending runtime state."""
         fresh_event = self.__class__.model_validate(self.model_dump(mode='python'))
+        fresh_event.event_id = uuid7str()
         return fresh_event.event_mark_pending()
 
     def event_are_all_children_complete(self, _visited: set[str] | None = None) -> bool:

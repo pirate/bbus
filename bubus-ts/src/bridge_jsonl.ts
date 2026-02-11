@@ -21,16 +21,18 @@ export class JSONLEventBridge {
 
   private readonly inbound_bus: EventBus
   private running: boolean
-  private line_offset: number
+  private byte_offset: number
+  private pending_line: string
   private listener_task: Promise<void> | null
 
   constructor(path: string, poll_interval: number = 0.25, name?: string) {
     this.path = path
     this.poll_interval = poll_interval
     this.name = name ?? `JSONLEventBridge_${randomSuffix()}`
-    this.inbound_bus = new EventBus(this.name)
+    this.inbound_bus = new EventBus(this.name, { max_history_size: 0 })
     this.running = false
-    this.line_offset = 0
+    this.byte_offset = 0
+    this.pending_line = ''
     this.listener_task = null
 
     this.dispatch = this.dispatch.bind(this)
@@ -66,7 +68,9 @@ export class JSONLEventBridge {
     const fs = await this.loadFs()
     await fs.promises.mkdir(this.dirname(this.path), { recursive: true })
     await fs.promises.appendFile(this.path, '', 'utf8')
-    this.line_offset = await this.countLines()
+    const stats = await fs.promises.stat(this.path)
+    this.byte_offset = Number(stats.size ?? 0)
+    this.pending_line = ''
     this.running = true
     this.listener_task = this.listenLoop()
   }
@@ -97,11 +101,16 @@ export class JSONLEventBridge {
   }
 
   private async pollNewLines(): Promise<void> {
-    const lines = await this.readLines()
-    if (this.line_offset >= lines.length) return
+    const previous_offset = this.byte_offset
+    const { chunk, next_offset } = await this.readAppended(previous_offset)
+    this.byte_offset = next_offset
+    if (next_offset < previous_offset) {
+      this.pending_line = ''
+    }
+    if (!chunk) return
 
-    const new_lines = lines.slice(this.line_offset)
-    this.line_offset = lines.length
+    const new_lines = (this.pending_line + chunk).split('\n')
+    this.pending_line = new_lines.pop() ?? ''
 
     for (const line of new_lines) {
       const trimmed = line.trim()
@@ -122,20 +131,35 @@ export class JSONLEventBridge {
     this.inbound_bus.dispatch(event)
   }
 
-  private async readLines(): Promise<string[]> {
+  private async readAppended(offset: number): Promise<{ chunk: string; next_offset: number }> {
     const fs = await this.loadFs()
-    const content = await fs.promises.readFile(this.path, 'utf8')
-    if (!content) return []
-    const lines = content.split(/\r?\n/)
-    if (lines.length > 0 && lines[lines.length - 1] === '') {
-      lines.pop()
+    let size = 0
+    try {
+      const stats = await fs.promises.stat(this.path)
+      size = Number(stats.size ?? 0)
+    } catch (error: unknown) {
+      const code = (error as { code?: string }).code
+      if (code === 'ENOENT') {
+        return { chunk: '', next_offset: 0 }
+      }
+      throw error
     }
-    return lines
-  }
 
-  private async countLines(): Promise<number> {
-    const lines = await this.readLines()
-    return lines.length
+    const start_offset = size < offset ? 0 : offset
+    if (size === start_offset) {
+      return { chunk: '', next_offset: size }
+    }
+
+    const handle = await fs.promises.open(this.path, 'r')
+    try {
+      const byte_count = size - start_offset
+      const bytes = new Uint8Array(byte_count)
+      const { bytesRead } = await handle.read(bytes, 0, byte_count, start_offset)
+      const chunk = new TextDecoder().decode(bytes.subarray(0, Number(bytesRead ?? 0)))
+      return { chunk, next_offset: start_offset + Number(bytesRead ?? 0) }
+    } finally {
+      await handle.close()
+    }
   }
 
   private dirname(path: string): string {

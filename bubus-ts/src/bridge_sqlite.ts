@@ -34,7 +34,7 @@ export class SQLiteEventBridge {
     this.table = validateIdentifier(table, 'table name')
     this.poll_interval = poll_interval
     this.name = name ?? `SQLiteEventBridge_${randomSuffix()}`
-    this.inbound_bus = new EventBus(this.name)
+    this.inbound_bus = new EventBus(this.name, { max_history_size: 0 })
     this.running = false
     this.last_seen_event_created_at = ''
     this.last_seen_event_id = ''

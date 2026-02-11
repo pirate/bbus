@@ -63,6 +63,7 @@ const canonical = (payload: Record<string, unknown>): Record<string, unknown> =>
 const normalizeRoundtripPayload = (payload: Record<string, unknown>): Record<string, unknown> => {
   const normalized = canonical(payload)
   const dynamic_keys = [
+    'event_id',
     'event_path',
     'event_processed_at',
     'event_result_type',

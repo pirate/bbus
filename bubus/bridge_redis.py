@@ -66,7 +66,7 @@ def _parse_redis_url(redis_url: str, channel: str | None) -> tuple[str, str]:
 class RedisEventBridge:
     def __init__(self, redis_url: str, channel: str | None = None, *, name: str | None = None):
         self.url, self.channel = _parse_redis_url(redis_url, channel)
-        self._inbound_bus = EventBus(name=name or f'RedisEventBridge_{uuid7str()[-8:]}')
+        self._inbound_bus = EventBus(name=name or f'RedisEventBridge_{uuid7str()[-8:]}', max_history_size=0)
 
         self._running = False
         self._listener_task: asyncio.Task[None] | None = None

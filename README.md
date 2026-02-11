@@ -966,6 +966,7 @@ Return a fresh event copy with runtime processing state reset back to pending.
 
 - Intended for re-dispatching an already-seen event payload (for example after crossing a bridge boundary).
 - The original event object is unchanged.
+- A new UUIDv7 `event_id` is generated for the returned copy.
 - Runtime completion state is cleared (`event_results`, completion signal/flags, processed timestamp, dispatch context).
 
 ##### `event_result(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> Any`

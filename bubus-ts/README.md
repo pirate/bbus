@@ -432,6 +432,7 @@ reset(): this
 
 - Returns a fresh event copy with runtime state reset to pending so it can be dispatched again safely.
 - Original event object is unchanged.
+- Generates a new UUIDv7 `event_id` for the returned copy.
 - Clears runtime completion state (`event_results`, status/timestamps, dispatch context, done signal, local bus binding).
 
 #### `toString()` / `toJSON()` / `fromJSON()`

@@ -754,6 +754,7 @@ export class BaseEvent {
     const original = this._event_original ?? this
     const ctor = original.constructor as typeof BaseEvent
     const fresh_event = ctor.fromJSON(original.toJSON()) as this
+    fresh_event.event_id = uuidv7()
     return fresh_event.markPending()
   }
 

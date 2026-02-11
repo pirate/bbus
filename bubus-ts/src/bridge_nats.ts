@@ -21,7 +21,7 @@ export class NATSEventBridge {
     this.server = server
     this.subject = subject
     this.name = name ?? `NATSEventBridge_${randomSuffix()}`
-    this.inbound_bus = new EventBus(this.name)
+    this.inbound_bus = new EventBus(this.name, { max_history_size: 0 })
     this.running = false
     this.nc = null
     this.sub_task = null

@@ -23,11 +23,12 @@ class JSONLEventBridge:
     def __init__(self, path: str, *, poll_interval: float = 0.25, name: str | None = None):
         self.path = Path(path)
         self.poll_interval = poll_interval
-        self._inbound_bus = EventBus(name=name or f'JSONLEventBridge_{uuid7str()[-8:]}')
+        self._inbound_bus = EventBus(name=name or f'JSONLEventBridge_{uuid7str()[-8:]}', max_history_size=0)
 
         self._running = False
         self._listener_task: asyncio.Task[None] | None = None
-        self._line_offset = 0
+        self._byte_offset = 0
+        self._pending_line = ''
 
     def on(self, event_pattern: EventPatternType, handler: Callable[[BaseEvent[Any]], Any]) -> None:
         self._ensure_started()
@@ -53,7 +54,8 @@ class JSONLEventBridge:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
-        self._line_offset = self._count_lines()
+        self._byte_offset = self.path.stat().st_size
+        self._pending_line = ''
         self._running = True
         self._listener_task = asyncio.create_task(self._listen_loop())
 
@@ -85,11 +87,19 @@ class JSONLEventBridge:
             await asyncio.sleep(self.poll_interval)
 
     async def _poll_new_lines(self) -> None:
-        lines = await asyncio.to_thread(self._read_lines)
-        if self._line_offset >= len(lines):
+        previous_offset = self._byte_offset
+        appended_text, new_offset = await asyncio.to_thread(self._read_appended_text, previous_offset)
+        self._byte_offset = new_offset
+
+        if new_offset < previous_offset:
+            self._pending_line = ''
+
+        if not appended_text:
             return
-        new_lines = lines[self._line_offset :]
-        self._line_offset = len(lines)
+
+        combined_text = self._pending_line + appended_text
+        new_lines = combined_text.split('\n')
+        self._pending_line = new_lines.pop() if new_lines else ''
 
         for line in new_lines:
             line = line.strip()
@@ -112,15 +122,21 @@ class JSONLEventBridge:
                 return
         self._inbound_bus.dispatch(event.reset())
 
-    def _read_lines(self) -> list[str]:
-        return self.path.read_text(encoding='utf-8').splitlines()
+    def _read_appended_text(self, offset: int) -> tuple[str, int]:
+        try:
+            with self.path.open('r', encoding='utf-8') as fp:
+                fp.seek(0, 2)
+                file_size = fp.tell()
+
+                start_offset = 0 if file_size < offset else offset
+                if file_size == start_offset:
+                    return '', file_size
+
+                fp.seek(start_offset)
+                return fp.read(), fp.tell()
+        except FileNotFoundError:
+            return '', 0
 
     def _append_line(self, payload: str) -> None:
         with self.path.open('a', encoding='utf-8') as fp:
             fp.write(payload + '\n')
-
-    def _count_lines(self) -> int:
-        try:
-            return len(self._read_lines())
-        except FileNotFoundError:
-            return 0

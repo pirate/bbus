@@ -21,7 +21,7 @@ class NATSEventBridge:
     def __init__(self, server: str, subject: str, *, name: str | None = None):
         self.server = server
         self.subject = subject
-        self._inbound_bus = EventBus(name=name or f'NATSEventBridge_{uuid7str()[-8:]}')
+        self._inbound_bus = EventBus(name=name or f'NATSEventBridge_{uuid7str()[-8:]}', max_history_size=0)
 
         self._running = False
         self._nc: Any | None = None

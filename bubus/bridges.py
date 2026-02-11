@@ -112,7 +112,7 @@ class EventBridge:
         self.send_to = _parse_endpoint(send_to) if send_to else None
         self.listen_on = _parse_endpoint(listen_on) if listen_on else None
         internal_name = name or f'EventBridge_{uuid7str()[-8:]}'
-        self._inbound_bus = EventBus(name=internal_name)
+        self._inbound_bus = EventBus(name=internal_name, max_history_size=0)
 
         self._server: asyncio.AbstractServer | None = None
         self._start_lock = asyncio.Lock()

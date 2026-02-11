@@ -85,7 +85,7 @@ class _EventBridge {
     this.send_to = send_to ? parseEndpoint(send_to) : null
     this.listen_on = listen_on ? parseEndpoint(listen_on) : null
     this.name = name ?? `EventBridge_${randomSuffix()}`
-    this.inbound_bus = new EventBus(this.name)
+    this.inbound_bus = new EventBus(this.name, { max_history_size: 0 })
     this.start_promise = null
     this.node_server = null
 

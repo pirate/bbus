@@ -59,6 +59,7 @@ def _canonical(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_roundtrip_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = _canonical(payload)
+    normalized.pop('event_id', None)
     normalized.pop('event_path', None)
     normalized.pop('event_processed_at', None)
     normalized.pop('event_result_type', None)
