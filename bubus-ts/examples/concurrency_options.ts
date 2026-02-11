@@ -193,12 +193,16 @@ async function handlerTimeoutDemo(): Promise<void> {
     },
     { handler_timeout: 0.03 }
   )
-  bus.on(TimeoutEvent, async () => {
-    log('fast handler start')
-    await sleep(10)
-    log('fast handler end')
-    return 'fast'
-  }, { handler_timeout: 0.1 })
+  bus.on(
+    TimeoutEvent,
+    async () => {
+      log('fast handler start')
+      await sleep(10)
+      log('fast handler end')
+      return 'fast'
+    },
+    { handler_timeout: 0.1 }
+  )
   const event = bus.emit(TimeoutEvent({ ms: 60, event_handler_timeout: 0.5 }))
   await event.done()
   const slow_result = event.event_results.get(slow_entry.id)
