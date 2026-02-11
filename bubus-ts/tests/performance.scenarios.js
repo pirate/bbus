@@ -733,7 +733,10 @@ export const runCleanupEquivalence = async (input) => {
       `cleanup equivalence scope branch retained active deno instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`
     )
     if (hooks.runtimeName === 'deno') {
-      assert(retained.length <= 24, `cleanup equivalence scope branch retained too many deno instances: ${retained.length} (expected <= 24)`)
+      assert(
+        retained.length <= 24,
+        `cleanup equivalence scope branch retained too many deno instances: ${retained.length} (expected <= 24)`
+      )
     } else {
       assert(
         retained.length <= busesPerMode,
