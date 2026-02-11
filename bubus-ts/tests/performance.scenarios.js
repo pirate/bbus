@@ -461,17 +461,23 @@ export const runPerfOnOffChurn = async (input) => {
   maybeForceGc(hooks)
   const memory = createMemoryTracker(hooks)
   const t0 = hooks.now()
-  for (let i = 0; i < totalEvents; i += 1) {
+
+  const dispatchWithEphemeralHandler = async () => {
+    // Allocate/register exactly one handler for one event, then immediately remove it.
+    // Avoid pre-building handler arrays so memory samples reflect runtime churn, not idle closures.
     const oneOffHandler = () => {
       processedCount += 1
     }
     bus.on(RequestEvent, oneOffHandler)
 
-    const event = RequestEvent({})
-    const ev = bus.dispatch(event)
+    const ev = bus.dispatch(RequestEvent({}))
     await ev.done()
 
     bus.off(RequestEvent, oneOffHandler)
+  }
+
+  for (let i = 0; i < totalEvents; i += 1) {
+    await dispatchWithEphemeralHandler()
     if (i % 1000 === 0) memory.sample()
   }
 
