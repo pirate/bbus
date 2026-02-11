@@ -1,3 +1,6 @@
+#!/usr/bin/env -S node --import tsx
+// Run: node --import tsx examples/parent_child_tracking.ts
+
 import { z } from 'zod'
 
 import { BaseEvent, EventBus } from '../src/index.js'

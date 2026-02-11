@@ -1,3 +1,6 @@
+#!/usr/bin/env -S node --import tsx
+// Run: node --import tsx examples/forwarding_between_busses.ts
+
 import { z } from 'zod'
 
 import { BaseEvent, EventBus } from '../src/index.js'
@@ -81,6 +84,13 @@ async function main(): Promise<void> {
   } else {
     console.log('\nUnexpected forwarding result. Check handlers/forwarding setup.')
   }
+
+  console.log('\n=== BusA logTree() ===')
+  console.log(busA.logTree())
+  console.log('\n=== BusB logTree() ===')
+  console.log(busB.logTree())
+  console.log('\n=== BusC logTree() ===')
+  console.log(busC.logTree())
 }
 
 await main()

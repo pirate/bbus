@@ -1,3 +1,6 @@
+#!/usr/bin/env -S node --import tsx
+// Run: node --import tsx examples/concurrency_options.ts
+
 import { z } from 'zod'
 import { BaseEvent, EventBus, EventHandlerTimeoutError } from '../src/index.js'
 const sleep = (ms: number): Promise<void> =>
@@ -41,6 +44,10 @@ async function eventConcurrencyDemo(): Promise<void> {
   global_b.dispatch(WorkEvent({ lane: 'B', order: 1, ms: 45 }))
   await Promise.all([global_a.waitUntilIdle(), global_b.waitUntilIdle()])
   global_log(`max in-flight across both buses: ${global_max} (expect 1 in global-serial)`)
+  console.log('\n=== global_a.logTree() ===')
+  console.log(global_a.logTree())
+  console.log('\n=== global_b.logTree() ===')
+  console.log(global_b.logTree())
   const bus_log = makeLogger('event:bus-serial')
   const bus_a = new EventBus('BusSerialA', { event_concurrency: 'bus-serial', event_handler_concurrency: 'serial' })
   const bus_b = new EventBus('BusSerialB', { event_concurrency: 'bus-serial', event_handler_concurrency: 'serial' })
@@ -68,6 +75,10 @@ async function eventConcurrencyDemo(): Promise<void> {
   bus_b.dispatch(WorkEvent({ lane: 'B', order: 1, ms: 45 }))
   await Promise.all([bus_a.waitUntilIdle(), bus_b.waitUntilIdle()])
   bus_log(`max in-flight global=${mixed_global_max}, per-bus A=${per_bus_max.A}, B=${per_bus_max.B} (expect global >= 2, per-bus = 1)`)
+  console.log('\n=== bus_a.logTree() ===')
+  console.log(bus_a.logTree())
+  console.log('\n=== bus_b.logTree() ===')
+  console.log(bus_b.logTree())
 }
 
 // 2) Handler concurrency at bus level: serial vs parallel on the same event.
@@ -92,6 +103,8 @@ async function handlerConcurrencyDemo(): Promise<void> {
     await event.done()
     await bus.waitUntilIdle()
     log(`max handler overlap: ${max_in_flight} (expect 1 for serial, >= 2 for parallel)`)
+    console.log(`\n=== ${bus.name}.logTree() ===`)
+    console.log(bus.logTree())
   }
   await run_case('serial')
   await run_case('parallel')
@@ -160,6 +173,8 @@ async function eventOverrideDemo(): Promise<void> {
 
   await run_pair('bus-defaults', false)
   await run_pair('event-overrides', true)
+  console.log('\n=== OverrideBus.logTree() ===')
+  console.log(bus.logTree())
 }
 
 // 4) Handler-level timeout via bus.on(..., { handler_timeout }).
@@ -189,6 +204,9 @@ async function handlerTimeoutDemo(): Promise<void> {
   const slow_result = event.event_results.get(slow_entry.id)
   const slow_timeout = slow_result?.error instanceof EventHandlerTimeoutError
   log(`slow handler status=${slow_result?.status}, timeout_error=${slow_timeout ? 'yes' : 'no'}`)
+  await bus.waitUntilIdle()
+  console.log('\n=== TimeoutBus.logTree() ===')
+  console.log(bus.logTree())
 }
 
 async function main(): Promise<void> {

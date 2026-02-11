@@ -1,3 +1,6 @@
+#!/usr/bin/env -S node --import tsx
+// Run: node --import tsx examples/simple.ts
+
 import { BaseEvent, EventBus } from '../src/index.js'
 import { z } from 'zod'
 
@@ -82,6 +85,8 @@ async function main(): Promise<void> {
   }
 
   await bus.waitUntilIdle()
+  console.log('\n=== bus.logTree() ===')
+  console.log(bus.logTree())
 }
 
 main().catch((error) => {

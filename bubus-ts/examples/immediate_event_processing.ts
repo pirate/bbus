@@ -1,3 +1,6 @@
+#!/usr/bin/env -S node --import tsx
+// Run: node --import tsx examples/immediate_event_processing.ts
+
 import { z } from 'zod'
 
 import { BaseEvent, EventBus } from '../src/index.js'
@@ -126,6 +129,10 @@ async function main(): Promise<void> {
   console.log('\nExpected behavior:')
   console.log('- immediate: child runs before sibling (queue-jump) and parent resumes right after child.')
   console.log('- queued: sibling runs first, child waits in normal queue order, parent resumes later.')
+  console.log('\n=== bus_a.logTree() ===')
+  console.log(bus_a.logTree())
+  console.log('\n=== bus_b.logTree() ===')
+  console.log(bus_b.logTree())
 }
 
 await main()
