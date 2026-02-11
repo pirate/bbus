@@ -17,3 +17,13 @@ export type {
 export type { EventClass, EventHandlerFunction as EventHandler, EventKey, EventStatus, FindOptions, FindWindow } from './types.js'
 export { retry, clearSemaphoreRegistry, RetryTimeoutError, SemaphoreTimeoutError } from './retry.js'
 export type { RetryOptions } from './retry.js'
+export {
+  HTTPEventBridge,
+  SocketEventBridge,
+  NATSEventBridge,
+  RedisEventBridge,
+  PostgresEventBridge,
+  JSONLEventBridge,
+  SQLiteEventBridge,
+} from './bridges.js'
+export type { HTTPEventBridgeOptions } from './bridges.js'

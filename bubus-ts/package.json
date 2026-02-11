@@ -66,5 +66,11 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.6.2",
+    "ioredis": "^5.9.2",
+    "nats": "^2.29.3",
+    "pg": "^8.18.0"
   }
 }

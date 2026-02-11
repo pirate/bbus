@@ -1,6 +1,7 @@
 """Event bus for the browser-use agent."""
 
 from .event_history import EventHistory, InMemoryEventHistory
+from .bridges import HTTPEventBridge, SocketEventBridge
 from .middlewares import (
     EventBusMiddleware,
     LoggerEventBusMiddleware,
@@ -13,6 +14,8 @@ from .service import EventBus
 __all__ = [
     'EventBus',
     'EventBusMiddleware',
+    'HTTPEventBridge',
+    'SocketEventBridge',
     'LoggerEventBusMiddleware',
     'SQLiteHistoryMirrorMiddleware',
     'WALEventBusMiddleware',

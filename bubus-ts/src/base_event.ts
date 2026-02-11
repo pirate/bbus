@@ -22,10 +22,11 @@ export const BaseEventSchema = z
     event_created_at: z.string().datetime(),
     event_created_ts: z.number().optional(),
     event_type: z.string(),
+    event_version: z.string().default('0.0.1'),
     event_timeout: z.number().positive().nullable(),
     event_handler_timeout: z.number().positive().nullable().optional(),
     event_handler_slow_timeout: z.number().positive().nullable().optional(),
-    event_parent_id: z.string().uuid().optional(),
+    event_parent_id: z.string().uuid().nullable().optional(),
     event_path: z.array(z.string()).optional(),
     event_result_type: z.string().optional(),
     event_result_schema: z.unknown().optional(),
@@ -51,6 +52,7 @@ type BaseEventFields = Pick<
   | 'event_created_at'
   | 'event_created_ts'
   | 'event_type'
+  | 'event_version'
   | 'event_timeout'
   | 'event_handler_timeout'
   | 'event_handler_slow_timeout'
@@ -94,6 +96,7 @@ export type EventFactory<TShape extends z.ZodRawShape, TResult = unknown> = {
   new (data: EventInit<TShape>): EventWithResult<TResult> & EventPayload<TShape>
   schema: EventSchema<TShape>
   event_type?: string
+  event_version?: string
   event_result_schema?: z.ZodTypeAny
   event_result_type?: string
   fromJSON?: (data: unknown) => EventWithResult<TResult> & EventPayload<TShape>
@@ -113,10 +116,11 @@ export class BaseEvent {
   event_created_at!: string // ISO datetime string version of event_created_at
   event_created_ts!: number // nanosecond monotonic version of event_created_at
   event_type!: string // should match the class name of the event, e.g. BaseEvent.extend("MyEvent").event_type === "MyEvent"
+  event_version!: string // event schema/version tag managed by callers for migration-friendly payload handling
   event_timeout!: number | null // maximum time in seconds that the event is allowed to run before it is aborted
   event_handler_timeout?: number | null // optional per-event handler timeout override in seconds
   event_handler_slow_timeout?: number | null // optional per-event slow handler warning threshold in seconds
-  event_parent_id?: string // id of the parent event that triggered this event, if this event was emitted during handling of another event
+  event_parent_id?: string | null // id of the parent event that triggered this event, if this event was emitted during handling of another event
   event_path!: string[] // list of bus labels (name#id) that the event has been dispatched to, including the current bus
   event_result_schema?: z.ZodTypeAny // optional zod schema to enforce the shape of return values from handlers
   event_result_type?: string // optional string identifier of the type of the return values from handlers, to make it easier to reference common shapes across networkboundaries e.g. ScreenshotEventResultType
@@ -133,22 +137,26 @@ export class BaseEvent {
   event_handler_completion?: EventHandlerCompletionMode // completion strategy: 'all' (default) waits for every handler, 'first' returns earliest non-undefined result and cancels the rest
 
   static event_type?: string // class name of the event, e.g. BaseEvent.extend("MyEvent").event_type === "MyEvent"
+  static event_version = '0.0.1'
   static schema = BaseEventSchema // zod schema for the event data fields, used to parse and validate event data when creating a new event
 
   // internal runtime state
   bus?: EventBus // shortcut to the bus that dispatched this event, for event.bus.dispatch(event) auto-child tracking via proxy wrapping
   _event_original?: BaseEvent // underlying event object that was dispatched, if this is a bus-scoped proxy wrapping it
   _event_dispatch_context?: unknown | null // captured AsyncLocalStorage context at dispatch site, used to restore that context when running handlers
+  _event_result_schema_json?: unknown // preserve raw JSON schema for stable cross-language roundtrips
 
   _event_done_signal: Deferred<this> | null
   _event_handler_semaphore: AsyncSemaphore | null
 
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
     const ctor = this.constructor as typeof BaseEvent & {
+      event_version?: string
       event_result_schema?: z.ZodTypeAny
       event_result_type?: string
     }
     const event_type = data.event_type ?? ctor.event_type ?? ctor.name
+    const event_version = data.event_version ?? ctor.event_version ?? '0.0.1'
     const event_result_schema = (data.event_result_schema ?? ctor.event_result_schema) as z.ZodTypeAny | undefined
     const event_result_type = data.event_result_type ?? ctor.event_result_type ?? getStringTypeName(event_result_schema)
     const event_id = data.event_id ?? uuidv7()
@@ -161,6 +169,7 @@ export class BaseEvent {
       event_id,
       event_created_at,
       event_type,
+      event_version,
       event_timeout,
       event_result_schema,
       event_result_type,
@@ -245,6 +254,7 @@ export class BaseEvent {
     const event_result_schema = isZodSchema(raw_shape.event_result_schema) ? (raw_shape.event_result_schema as z.ZodTypeAny) : undefined
     const explicit_event_result_type = typeof raw_shape.event_result_type === 'string' ? raw_shape.event_result_type : undefined
     const event_result_type = explicit_event_result_type ?? getStringTypeName(event_result_schema)
+    const event_version = typeof raw_shape.event_version === 'string' ? raw_shape.event_version : undefined
 
     const zod_shape = extractZodShape(raw_shape)
     const full_schema = BaseEventSchema.extend(zod_shape)
@@ -253,6 +263,7 @@ export class BaseEvent {
     class ExtendedEvent extends BaseEvent {
       static schema = full_schema as unknown as typeof BaseEvent.schema
       static event_type = event_type
+      static event_version = event_version ?? BaseEvent.event_version
       static event_result_schema = event_result_schema
       static event_result_type = event_result_type
 
@@ -269,6 +280,7 @@ export class BaseEvent {
 
     EventFactory.schema = full_schema as EventSchema<ZodShapeFrom<TShape>>
     EventFactory.event_type = event_type
+    EventFactory.event_version = event_version ?? BaseEvent.event_version
     EventFactory.event_result_schema = event_result_schema
     EventFactory.event_result_type = event_result_type
     EventFactory.fromJSON = (data: unknown) => (ExtendedEvent.fromJSON as (data: unknown) => FactoryResult)(data)
@@ -285,13 +297,20 @@ export class BaseEvent {
       return new this(parsed) as InstanceType<T>
     }
     const record = { ...(data as Record<string, unknown>) }
+    const raw_event_result_schema = record.event_result_schema
     if (record.event_result_schema && !isZodSchema(record.event_result_schema)) {
       const zod_any = z as unknown as { fromJSONSchema?: (schema: unknown) => z.ZodTypeAny }
       if (typeof zod_any.fromJSONSchema === 'function') {
         record.event_result_schema = zod_any.fromJSONSchema(record.event_result_schema)
       }
     }
-    return new this(record as BaseEventInit<Record<string, unknown>>) as InstanceType<T>
+    const event = new this(record as BaseEventInit<Record<string, unknown>>) as InstanceType<T> & {
+      _event_result_schema_json?: unknown
+    }
+    if (raw_event_result_schema && !isZodSchema(raw_event_result_schema)) {
+      event._event_result_schema_json = raw_event_result_schema
+    }
+    return event
   }
 
   static toJSONArray(events: Iterable<BaseEvent>): BaseEventJSON[] {
@@ -315,12 +334,15 @@ export class BaseEvent {
       if (value === undefined || typeof value === 'function') continue
       record[key] = value
     }
+    const event_results = Array.from(this.event_results.values()).map((result) => result.toJSON())
 
     return {
       ...record,
       event_id: this.event_id,
       event_type: this.event_type,
-      event_result_schema: this.event_result_schema ? toJsonSchema(this.event_result_schema) : this.event_result_schema,
+      event_version: this.event_version,
+      event_result_schema:
+        this._event_result_schema_json ?? (this.event_result_schema ? toJsonSchema(this.event_result_schema) : this.event_result_schema),
       event_result_type: this.event_result_type,
 
       // static configuration options
@@ -347,7 +369,7 @@ export class BaseEvent {
       event_completed_ts: this.event_completed_ts,
 
       // mutable result state
-      event_results: Array.from(this.event_results.values()).map((result) => result.toJSON()),
+      ...(event_results.length > 0 ? { event_results } : {}),
     }
   }
 

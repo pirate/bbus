@@ -1137,9 +1137,13 @@ class EventBus:
                 # Create and start the run loop task.
                 # Use a weakref-based runner so an unreferenced EventBus can be GC'd
                 # without requiring explicit stop(clear=True) by callers.
+                # Run loops must start with a clean context. If dispatch() is called
+                # from inside a handler, ContextVars like holds_global_lock=True would
+                # otherwise leak into the new task and bypass global lock acquisition.
                 self._runloop_task = loop.create_task(
                     EventBus._run_loop_weak(weakref.ref(self)),
                     name=f'{self}._run_loop',
+                    context=contextvars.Context(),
                 )
                 self._is_running = True
             except RuntimeError:
@@ -1384,7 +1388,9 @@ class EventBus:
                     if event is not None:
                         bus._processing_event_ids.add(event.event_id)
                     async with _get_global_lock():
-                        if event is not None:
+                        # If a competing path already completed this claimed queue item,
+                        # skip duplicate handler execution and just drain queue bookkeeping.
+                        if event is not None and not bus._is_event_complete_fast(event):
                             await bus.handle_event(event)
                         queue.task_done()
 
@@ -1404,6 +1410,8 @@ class EventBus:
                 finally:
                     if event is not None:
                         bus._processing_event_ids.discard(event.event_id)
+                        # Local bus has finished processing this event instance.
+                        bus._active_event_ids.discard(event.event_id)
                     del bus
         finally:
             bus = bus_ref()
@@ -1504,13 +1512,17 @@ class EventBus:
         try:
             async with _get_global_lock():
                 # Process the event
-                await self.handle_event(event, timeout=timeout)
+                if not self._is_event_complete_fast(event):
+                    await self.handle_event(event, timeout=timeout)
 
                 # Mark task as done only if we got it from the queue
                 if from_queue:
                     self.event_queue.task_done()
         finally:
             self._processing_event_ids.discard(event.event_id)
+            # Local bus consumed this event instance (or observed completion), so it
+            # should not remain in this bus's active set.
+            self._active_event_ids.discard(event.event_id)
             # Re-check completion after clearing processing marker to avoid races where
             # another bus still looked in-flight during handle_event() completion checks.
             was_complete_after_processing = self._is_event_complete_fast(event)

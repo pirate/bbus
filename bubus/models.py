@@ -251,6 +251,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     model_config = ConfigDict(
         extra='allow',
         arbitrary_types_allowed=True,
+        # Allow ergonomic subclass defaults like `class MyEvent(BaseEvent): event_version = '1.2.3'`
+        # without requiring repetitive type annotations on every override.
+        ignored_types=(str,),
         validate_assignment=True,
         validate_default=True,
         revalidate_instances='always',
@@ -260,6 +263,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     _event_result_type_cache: ClassVar[Any | None] = None
 
     event_type: PythonIdentifierStr = Field(default='UndefinedEvent', description='Event type name', max_length=64)
+    event_version: str = Field(default='0.0.1', description='Event payload version tag')
     event_schema: str = Field(
         default=f'UndefinedEvent@{LIBRARY_VERSION}',
         description='Event schema version in format ClassName@version',
@@ -362,9 +366,11 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         for bus in list(EventBus.all_instances):
             if not bus:
                 continue
-            if self.event_id in getattr(bus, '_processing_event_ids', set()):
-                if ignore_bus is not None and bus is ignore_bus:
-                    continue
+            # Another bus can claim queue.get() before marking processing.
+            # `_active_event_ids` bridges that handoff gap for completion checks.
+            if ignore_bus is not None and bus is not ignore_bus and self.event_id in getattr(bus, '_active_event_ids', set()):
+                return True
+            if self.event_id in getattr(bus, '_processing_event_ids', set()) and bus is not ignore_bus:
                 return True
             if not bus.event_queue or not hasattr(bus.event_queue, '_queue'):
                 continue
@@ -392,6 +398,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         # Cache the signal - in async context it will always be created
         completed_signal = self.event_completed_signal
         assert completed_signal is not None, 'event_completed_signal should exist in async context'
+        claimed_processed_bus_ids: set[int] = set()
 
         try:
             while not completed_signal.is_set() and iterations < max_iterations:
@@ -402,19 +409,30 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 for bus in list(EventBus.all_instances):
                     if not bus or not bus.event_queue:
                         continue
+                    processed_on_bus = False
 
-                    # Check if THIS event is in this bus's queue
                     if self._remove_self_from_queue(bus):
-                        # Process only this event on this bus
+                        # Fast path: event is still in the queue, claim and process it.
                         bus._processing_event_ids.add(self.event_id)
                         try:
                             await bus.handle_event(self)
                             bus.event_queue.task_done()
                         finally:
                             bus._processing_event_ids.discard(self.event_id)
-                        processed_any = True
+                            bus._active_event_ids.discard(self.event_id)
+                        processed_on_bus = True
+                    else:
+                        # Slow path: another task already claimed queue.get() and set
+                        # processing state, but may be blocked on the global lock held
+                        # by the awaiting parent handler. Process once here to make progress.
+                        bus_key = id(bus)
+                        if self.event_id in getattr(bus, '_processing_event_ids', set()) and bus_key not in claimed_processed_bus_ids:
+                            await bus.handle_event(self)
+                            claimed_processed_bus_ids.add(bus_key)
+                            processed_on_bus = True
 
-                        # Check if we're done after processing
+                    if processed_on_bus:
+                        processed_any = True
                         if completed_signal.is_set():
                             break
 

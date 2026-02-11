@@ -19,7 +19,7 @@ import json
 import os
 import sqlite3
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -817,6 +817,28 @@ class TestEventTypeOverride:
         result = eventbus.dispatch(task_event)
         assert result.event_schema == task_event.event_schema
 
+    async def test_event_version_defaults_and_overrides(self, eventbus):
+        """event_version supports class defaults, runtime override, and JSON roundtrip."""
+
+        base_event = BaseEvent(event_type='TestVersionEvent')
+        assert base_event.event_version == '0.0.1'
+
+        class VersionedEvent(BaseEvent):
+            event_version = '1.2.3'
+            data: str
+
+        class_default = VersionedEvent(data='x')
+        assert class_default.event_version == '1.2.3'
+
+        runtime_override = VersionedEvent(data='x', event_version='9.9.9')
+        assert runtime_override.event_version == '9.9.9'
+
+        dispatched = eventbus.dispatch(VersionedEvent(data='queued'))
+        assert dispatched.event_version == '1.2.3'
+
+        restored = BaseEvent.model_validate(dispatched.model_dump(mode='json'))
+        assert restored.event_version == '1.2.3'
+
     async def test_automatic_event_type_derivation(self, eventbus):
         """Test that event_type is automatically derived from class name when not specified"""
 
@@ -1584,6 +1606,7 @@ class TestDebouncePatterns:
             1 for event in eventbus.event_history.values() if isinstance(event, self.DebounceEvent)
         )
         assert total_events == 1
+
     async def test_expect_with_complex_predicate(self, eventbus):
         """Test expect with complex predicate logic"""
         events_seen = []

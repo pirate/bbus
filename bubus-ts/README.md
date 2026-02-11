@@ -367,6 +367,7 @@ Special configuration fields you can set on each event to control processing:
 
 - `event_result_schema?: z.ZodTypeAny`
 - `event_result_type?: string`
+- `event_version?: string` (default: `'0.0.1'`; useful for your own schema/data migrations)
 - `event_timeout?: number | null`
 - `event_handler_timeout?: number | null`
 - `event_handler_slow_timeout?: number | null`
@@ -376,7 +377,7 @@ Special configuration fields you can set on each event to control processing:
 
 #### Runtime state fields
 
-- `event_id`, `event_type`, `event_path`, `event_parent_id`
+- `event_id`, `event_type`, `event_version`, `event_path`, `event_parent_id`
 - `event_status: 'pending' | 'started' | 'completed'`
 - `event_results: Map<string, EventResult>`
 - `event_pending_bus_count`
@@ -729,6 +730,24 @@ Use bus/event timeouts for outer deadlines and `retry({ timeout })` for per-hand
 Avoid wrapping `emit()/done()` in `retry()` unless you intentionally want multiple event dispatches (a new event for every retry).  
 Keep retries on handlers so that your logs represent the original high-level intent, with a single event per call even if handling it took multiple tries.  
 Emitting a new event for each retry is only recommended if you are using the logs for debugging more than for replayability / time-travel.
+
+<br/>
+
+---
+
+<br/>
+
+## Bridges
+
+Each bridge is wired the same way: `bus.on('*', bridge.emit)` and `bridge.on('*', bus.emit)`.
+
+- `HTTPEventBridge`: `new HTTPEventBridge({ send_to: 'https://remote-host/events', listen_on: 'http://0.0.0.0:23424/events' })`
+- `SocketEventBridge`: `new SocketEventBridge('/tmp/bubus.sock')`
+- `NATSEventBridge`: `new NATSEventBridge('nats://localhost:4222', 'bubus_events')`
+- `RedisEventBridge`: `new RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
+- `PostgresEventBridge`: `new PostgresEventBridge('postgresql://user:pass@localhost:5432/mydb')`
+- `JSONLEventBridge`: `new JSONLEventBridge('/tmp/bubus.events.jsonl')`
+- `SQLiteEventBridge`: `new SQLiteEventBridge('/tmp/bubus.events.sqlite3')`
 
 <br/>
 

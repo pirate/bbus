@@ -234,6 +234,58 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
   assert.equal(restored_result.result, 'ok')
 })
 
+test('event_version supports defaults, extend-time defaults, runtime override, and JSON roundtrip', () => {
+  const DefaultEvent = BaseEvent.extend('DefaultVersionEvent', {})
+  const ExtendVersionEvent = BaseEvent.extend('ExtendVersionEvent', { event_version: '1.2.3' })
+
+  class StaticVersionEvent extends BaseEvent {
+    static event_type = 'StaticVersionEvent'
+    static event_version = '4.5.6'
+  }
+
+  const default_event = DefaultEvent({})
+  assert.equal(default_event.event_version, '0.0.1')
+
+  const extended_default = ExtendVersionEvent({})
+  assert.equal(extended_default.event_version, '1.2.3')
+
+  const static_default = new StaticVersionEvent({})
+  assert.equal(static_default.event_version, '4.5.6')
+
+  const runtime_override = ExtendVersionEvent({ event_version: '9.9.9' })
+  assert.equal(runtime_override.event_version, '9.9.9')
+
+  const restored = BaseEvent.fromJSON(runtime_override.toJSON())
+  assert.equal(restored.event_version, '9.9.9')
+})
+
+test('fromJSON accepts event_parent_id: null and preserves it in toJSON output', () => {
+  const event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-000000001234',
+    event_created_at: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+    event_type: 'NullParentIdEvent',
+    event_parent_id: null,
+    event_timeout: null,
+  })
+
+  assert.equal(event.event_parent_id, null)
+  assert.equal((event.toJSON() as Record<string, unknown>).event_parent_id, null)
+})
+
+test('fromJSON preserves raw event_result_schema JSON for stable roundtrip output', () => {
+  const raw_schema = { type: 'integer' }
+  const event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-000000001235',
+    event_created_at: new Date('2025-01-01T00:00:01.000Z').toISOString(),
+    event_type: 'RawSchemaEvent',
+    event_timeout: null,
+    event_result_type: 'integer',
+    event_result_schema: raw_schema,
+  })
+  const json = event.toJSON() as Record<string, unknown>
+  assert.deepEqual(json.event_result_schema, raw_schema)
+})
+
 // ─── Event dispatch and status lifecycle ─────────────────────────────────────
 
 test('dispatch returns pending event with correct initial state', async () => {

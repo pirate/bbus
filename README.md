@@ -189,6 +189,20 @@ print(event.event_path)  # ['MainBus', 'AuthBus', 'DataBus']  # list of buses th
 
 <br/>
 
+### Bridges
+
+Each bridge is wired the same way: `bus.on('*', bridge.emit)` and `bridge.on('*', bus.emit)`.
+
+- `HTTPEventBridge`: `HTTPEventBridge(send_to='https://remote-host/events', listen_on='http://0.0.0.0:23423/events')`
+- `SocketEventBridge`: `SocketEventBridge(path='/tmp/bubus.sock')`
+- `NATSEventBridge`: `NATSEventBridge('nats://localhost:4222', 'bubus_events')`
+- `RedisEventBridge`: `RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
+- `PostgresEventBridge`: `PostgresEventBridge('postgresql://user:pass@localhost:5432/mydb')`
+- `JSONLEventBridge`: `JSONLEventBridge('/tmp/bubus.events.jsonl')`
+- `SQLiteEventBridge`: `SQLiteEventBridge('/tmp/bubus.events.sqlite3')`
+
+<br/>
+
 ### 🔱 Event Results Aggregation
 
 Collect and aggregate results from multiple handlers:
@@ -862,6 +876,7 @@ T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
 class BaseEvent(BaseModel, Generic[T_EventResultType]):
     # Framework-managed fields
     event_type: str              # Defaults to class name
+    event_version: str           # Defaults to '0.0.1' (override per class/instance for event payload versioning)
     event_id: str                # Unique UUID7 identifier, auto-generated if not provided
     event_timeout: float = 300.0 # Maximum execution in seconds for each handler
     event_schema: str            # Module.Class@version (auto-set based on class & LIBRARY_VERSION env var)
