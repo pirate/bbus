@@ -28,9 +28,7 @@ from bubus.bridge_sqlite import SQLiteEventBridge
 
 
 class IPCPingEvent(BaseEvent):
-    value: int
     label: str
-    meta: dict[str, Any]
 
 
 _TEST_RUN_ID = f'{int(time.time() * 1000)}-{uuid7str()[-8:]}'
@@ -114,15 +112,19 @@ async def _wait_for_path(path: Path, *, process: subprocess.Popen[str], timeout:
     raise TimeoutError(f'path did not appear in time: {path}')
 
 
-def _make_sender_bridge(kind: str, config: dict[str, Any]) -> Any:
+def _make_sender_bridge(kind: str, config: dict[str, Any], *, low_latency: bool = False) -> Any:
     if kind == 'http':
         return HTTPEventBridge(send_to=str(config['endpoint']))
     if kind == 'socket':
         return SocketEventBridge(path=str(config['path']))
     if kind == 'jsonl':
-        return JSONLEventBridge(str(config['path']), poll_interval=0.05)
+        return JSONLEventBridge(str(config['path']), poll_interval=0.001 if low_latency else 0.05)
     if kind == 'sqlite':
-        return SQLiteEventBridge(str(config['path']), str(config['table']), poll_interval=0.05)
+        return SQLiteEventBridge(
+            str(config['path']),
+            str(config['table']),
+            poll_interval=0.001 if low_latency else 0.05,
+        )
     if kind == 'redis':
         return RedisEventBridge(str(config['url']))
     if kind == 'nats':
@@ -130,6 +132,90 @@ def _make_sender_bridge(kind: str, config: dict[str, Any]) -> Any:
     if kind == 'postgres':
         return PostgresEventBridge(str(config['url']))
     raise ValueError(f'Unsupported bridge kind: {kind}')
+
+
+def _make_listener_bridge(kind: str, config: dict[str, Any], *, low_latency: bool = False) -> Any:
+    if kind == 'http':
+        return HTTPEventBridge(listen_on=str(config['endpoint']))
+    if kind == 'socket':
+        return SocketEventBridge(path=str(config['path']))
+    if kind == 'jsonl':
+        return JSONLEventBridge(str(config['path']), poll_interval=0.001 if low_latency else 0.05)
+    if kind == 'sqlite':
+        return SQLiteEventBridge(
+            str(config['path']),
+            str(config['table']),
+            poll_interval=0.001 if low_latency else 0.05,
+        )
+    if kind == 'redis':
+        return RedisEventBridge(str(config['url']))
+    if kind == 'nats':
+        return NATSEventBridge(str(config['server']), str(config['subject']))
+    if kind == 'postgres':
+        return PostgresEventBridge(str(config['url']))
+    raise ValueError(f'Unsupported bridge kind: {kind}')
+
+
+async def _measure_warm_latency_ms(kind: str, config: dict[str, Any]) -> float:
+    sender = _make_sender_bridge(kind, config, low_latency=True)
+    receiver = _make_listener_bridge(kind, config, low_latency=True)
+    for bridge in (sender, receiver):
+        inbound_bus = getattr(bridge, '_inbound_bus', None)
+        if inbound_bus is not None:
+            inbound_bus.max_history_size = 5000
+
+    run_suffix = uuid7str()[-8:]
+    warmup_prefix = f'warmup_{run_suffix}_'
+    measured_prefix = f'measured_{run_suffix}_'
+    warmup_count_target = 5
+    measured_count_target = 1000
+
+    warmup_seen_count = 0
+    measured_seen_count = 0
+    warmup_seen = asyncio.Event()
+    measured_seen = asyncio.Event()
+
+    async def _on_event(event: BaseEvent[Any]) -> None:
+        nonlocal warmup_seen_count, measured_seen_count
+        label = getattr(event, 'label', '')
+        if not isinstance(label, str):
+            return
+        if label.startswith(warmup_prefix):
+            warmup_seen_count += 1
+            if warmup_seen_count >= warmup_count_target:
+                warmup_seen.set()
+            return
+        if label.startswith(measured_prefix):
+            measured_seen_count += 1
+            if measured_seen_count >= measured_count_target:
+                measured_seen.set()
+
+    try:
+        await sender.start()
+        await receiver.start()
+        receiver.on('IPCPingEvent', _on_event)
+
+        for index in range(warmup_count_target):
+            await sender.emit(
+                IPCPingEvent(
+                    label=f'{warmup_prefix}{index}',
+                )
+            )
+        await asyncio.wait_for(warmup_seen.wait(), timeout=30.0)
+
+        start_ns = time.perf_counter_ns()
+        for index in range(measured_count_target):
+            await sender.emit(
+                IPCPingEvent(
+                    label=f'{measured_prefix}{index}',
+                )
+            )
+        await asyncio.wait_for(measured_seen.wait(), timeout=300.0)
+        elapsed_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
+        return elapsed_ms / measured_count_target
+    finally:
+        await sender.close()
+        await receiver.close()
 
 
 async def _assert_roundtrip(kind: str, config: dict[str, Any]) -> None:
@@ -158,7 +244,7 @@ async def _assert_roundtrip(kind: str, config: dict[str, Any]) -> None:
             await _wait_for_path(worker_ready_path, process=worker)
             if kind == 'postgres':
                 await sender.start()
-            outbound = IPCPingEvent(value=17, label=f'{kind}_ok', meta={'kind': kind, 'n': 1})
+            outbound = IPCPingEvent(label=f'{kind}_ok')
             await sender.emit(outbound)
             await _wait_for_path(received_event_path, process=worker)
             received_payload = json.loads(received_event_path.read_text(encoding='utf-8'))
@@ -182,12 +268,16 @@ async def _assert_roundtrip(kind: str, config: dict[str, Any]) -> None:
 async def test_http_event_bridge_roundtrip_between_processes() -> None:
     endpoint = f'http://127.0.0.1:{_free_tcp_port()}/events'
     await _assert_roundtrip('http', {'endpoint': endpoint})
+    latency_ms = await _measure_warm_latency_ms('http', {'endpoint': endpoint})
+    print(f'LATENCY python http {latency_ms:.3f}ms')
 
 
 @pytest.mark.asyncio
 async def test_socket_event_bridge_roundtrip_between_processes() -> None:
     socket_path = Path('/tmp') / f'bb-{_TEST_RUN_ID}-{uuid7str()[-8:]}.sock'
     await _assert_roundtrip('socket', {'path': str(socket_path)})
+    latency_ms = await _measure_warm_latency_ms('socket', {'path': str(socket_path)})
+    print(f'LATENCY python socket {latency_ms:.3f}ms')
 
 
 def test_socket_event_bridge_rejects_long_socket_paths() -> None:
@@ -202,6 +292,8 @@ async def test_jsonl_event_bridge_roundtrip_between_processes() -> None:
     try:
         jsonl_path = temp_dir / 'events.jsonl'
         await _assert_roundtrip('jsonl', {'path': str(jsonl_path)})
+        latency_ms = await _measure_warm_latency_ms('jsonl', {'path': str(jsonl_path)})
+        print(f'LATENCY python jsonl {latency_ms:.3f}ms')
     finally:
         rmtree(temp_dir, ignore_errors=True)
 
@@ -211,8 +303,10 @@ async def test_sqlite_event_bridge_roundtrip_between_processes() -> None:
     temp_dir = _make_temp_dir('bubus-sqlite')
     try:
         sqlite_path = temp_dir / 'events.sqlite3'
-        subprocess.run(['sqlite3', str(sqlite_path), 'SELECT 1;'], check=True, capture_output=True, text=True)
         await _assert_roundtrip('sqlite', {'path': str(sqlite_path), 'table': 'bubus_events'})
+        measure_sqlite_path = temp_dir / 'events.measure.sqlite3'
+        latency_ms = await _measure_warm_latency_ms('sqlite', {'path': str(measure_sqlite_path), 'table': 'bubus_events'})
+        print(f'LATENCY python sqlite {latency_ms:.3f}ms')
     finally:
         rmtree(temp_dir, ignore_errors=True)
 
@@ -238,6 +332,8 @@ async def test_redis_event_bridge_roundtrip_between_processes() -> None:
         async with _running_process(command) as redis_process:
             await _wait_for_port(port)
             await _assert_roundtrip('redis', {'url': f'redis://127.0.0.1:{port}/1/bubus_events'})
+            latency_ms = await _measure_warm_latency_ms('redis', {'url': f'redis://127.0.0.1:{port}/1/bubus_events'})
+            print(f'LATENCY python redis {latency_ms:.3f}ms')
             assert redis_process.poll() is None
     finally:
         rmtree(temp_dir, ignore_errors=True)
@@ -250,6 +346,8 @@ async def test_nats_event_bridge_roundtrip_between_processes() -> None:
     async with _running_process(command) as nats_process:
         await _wait_for_port(port)
         await _assert_roundtrip('nats', {'server': f'nats://127.0.0.1:{port}', 'subject': 'bubus_events'})
+        latency_ms = await _measure_warm_latency_ms('nats', {'server': f'nats://127.0.0.1:{port}', 'subject': 'bubus_events'})
+        print(f'LATENCY python nats {latency_ms:.3f}ms')
         assert nats_process.poll() is None
 
 
@@ -271,6 +369,10 @@ async def test_postgres_event_bridge_roundtrip_between_processes() -> None:
         async with _running_process(command) as postgres_process:
             await _wait_for_port(port)
             await _assert_roundtrip('postgres', {'url': f'postgresql://postgres@127.0.0.1:{port}/postgres/bubus_events'})
+            latency_ms = await _measure_warm_latency_ms(
+                'postgres', {'url': f'postgresql://postgres@127.0.0.1:{port}/postgres/bubus_events'}
+            )
+            print(f'LATENCY python postgres {latency_ms:.3f}ms')
             assert postgres_process.poll() is None
     finally:
         rmtree(temp_dir, ignore_errors=True)

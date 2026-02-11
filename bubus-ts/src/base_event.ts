@@ -787,8 +787,24 @@ export class BaseEvent {
     this._notifyDoneListeners()
     this._event_done_signal!.resolve(this)
     this._event_done_signal = null
+    this.dropFromZeroHistoryBuses()
     if (notify_parents && this.bus) {
       this.notifyEventParentsOfCompletion()
+    }
+  }
+
+  private dropFromZeroHistoryBuses(): void {
+    if (!this.bus) {
+      return
+    }
+    const original = this._event_original ?? this
+    for (const bus of this.bus._all_instances) {
+      if (bus.max_history_size !== 0) {
+        continue
+      }
+      if (bus.event_history.has(original.event_id)) {
+        bus.event_history.delete(original.event_id)
+      }
     }
   }
 

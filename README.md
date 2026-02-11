@@ -584,12 +584,16 @@ bus = EventBus(max_history_size=100)  # Keep max 100 events in history
 # Or disable memory limits for unlimited history
 bus = EventBus(max_history_size=None)
 
+# Or keep only in-flight events in history (drop each event as soon as it completes)
+bus = EventBus(max_history_size=0)
+
 # Or reject new dispatches when history is full (instead of dropping old history)
 bus = EventBus(max_history_size=100, max_history_drop=False)
 ```
 
 **Automatic Cleanup:**
 - When `max_history_size` is set and `max_history_drop=True` (default), EventBus removes old events when the limit is exceeded
+- If `max_history_size=0`, history keeps only pending/started events and drops each event immediately after completion
 - If `max_history_drop=True`, the bus may drop oldest history entries even if they are uncompleted events
 - Completed events are removed first (oldest first), then started events, then pending events
 - This ensures active events are preserved while cleaning up old completed events
@@ -697,8 +701,8 @@ EventBus(
 
 - `name`: Optional unique name for the bus (auto-generated if not provided)
 - `parallel_handlers`: If `True`, handlers run concurrently for each event, otherwise serially if `False` (the default)
-- `max_history_size`: Maximum number of events to keep in history (default: 50, `None` = unlimited)
-- `max_history_drop`: If `True` (default), drop oldest history entries when full (even uncompleted events). If `False`, reject new dispatches once history reaches `max_history_size`
+- `max_history_size`: Maximum number of events to keep in history (default: 50, `None` = unlimited, `0` = keep only in-flight events and drop completed events immediately)
+- `max_history_drop`: If `True` (default), drop oldest history entries when full (even uncompleted events). If `False`, reject new dispatches once history reaches `max_history_size` (except when `max_history_size=0`, which never rejects on history size)
 - `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc.
 
 Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need:
@@ -761,6 +765,7 @@ result = await event  # await the pending Event to get the completed Event
 **Note:** Queueing is unbounded. History pressure is controlled by `max_history_size` + `max_history_drop`:
 - `max_history_drop=True`: absorb new events and trim old history entries (even uncompleted events).
 - `max_history_drop=False`: raise `RuntimeError` when history is full.
+- `max_history_size=0`: keep pending/in-flight events only; completed events are immediately removed from history.
 
 ##### `query(event_type: str | Type[BaseEvent], *, include: Callable[[BaseEvent], bool] | None=None, exclude: Callable[[BaseEvent], bool] | None=None, since: timedelta | float | int | None=None) -> BaseEvent | None`
 
@@ -1262,7 +1267,7 @@ bus.on(DatabaseEvent, db_service.execute_query)
 
 ## 👾 Development
 
-Set up the development environment using `uv`:
+Set up the python development environment using `uv`:
 
 ```bash
 git clone https://github.com/browser-use/bubus && cd bubus
@@ -1290,7 +1295,15 @@ uv run pytest -vxs --full-trace tests/
 
 # Run specific test file
 uv run pytest tests/test_eventbus.py
+
+# Run Python perf suite
+uv run perf
+
+# Run the entire lint+test+examples+perf suite for both python and ts
+./test.sh
 ```
+
+> For Bubus-TS development see the `bubus-ts/README.md` `# Development` section.
 
 ## 🔗 Inspiration
 

@@ -8,7 +8,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from performance_scenarios import PERF_SCENARIO_IDS, PerfInput, run_all_perf_scenarios, run_perf_scenario_by_id
+try:
+    from .performance_scenarios import PERF_SCENARIO_IDS, PerfInput, run_all_perf_scenarios, run_perf_scenario_by_id
+except ImportError:  # pragma: no cover - direct script execution path
+    from performance_scenarios import PERF_SCENARIO_IDS, PerfInput, run_all_perf_scenarios, run_perf_scenario_by_id
 
 TABLE_MATRIX = [
     ('50k-events', '1 bus x 50k events x 1 handler'),
@@ -59,7 +62,13 @@ def _print_markdown_matrix(runtime_name: str, results: list[dict[str, Any]]) -> 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Run Python runtime performance scenarios for bubus')
     parser.add_argument('--scenario', type=str, default=None, help=f'One scenario id: {", ".join(PERF_SCENARIO_IDS)}')
-    parser.add_argument('--json', action='store_true', help='Print full JSON output')
+    parser.add_argument(
+        '--no-json',
+        action='store_false',
+        dest='json',
+        help='Disable full JSON output (enabled by default).',
+    )
+    parser.set_defaults(json=True)
     parser.add_argument(
         '--in-process',
         action='store_true',

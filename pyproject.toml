@@ -22,6 +22,9 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/browser-use/bubus"
 
+[project.scripts]
+perf = "tests.performance_runtime:main"
+
 [project.optional-dependencies]
 bridges = [
     "asyncpg>=0.31.0",

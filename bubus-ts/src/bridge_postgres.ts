@@ -129,6 +129,7 @@ export class PostgresEventBridge {
     const mod = await importOptionalDependency('PostgresEventBridge', 'pg')
     const Client = mod.Client ?? mod.default?.Client
     this.client = new Client({ connectionString: this.dsn })
+    this.client.on('error', () => {})
     await this.client.connect()
 
     await this.ensureTableExists()
@@ -138,7 +139,9 @@ export class PostgresEventBridge {
 
     this.notification_handler = (msg: { channel: string; payload?: string }) => {
       if (msg.channel !== this.channel || !msg.payload) return
-      void this.dispatchByEventId(msg.payload)
+      void this.dispatchByEventId(msg.payload).catch(() => {
+        // Ignore transient shutdown races while closing connections.
+      })
     }
 
     this.client.on('notification', this.notification_handler)
@@ -172,7 +175,7 @@ export class PostgresEventBridge {
   }
 
   private async dispatchByEventId(event_id: string): Promise<void> {
-    if (!this.client) return
+    if (!this.running || !this.client) return
     const result = await this.client.query(`SELECT * FROM "${this.table}" WHERE "event_id" = $1`, [event_id])
     const row = result.rows?.[0] as Record<string, unknown> | undefined
     if (!row) return

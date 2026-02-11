@@ -405,6 +405,33 @@ test('unlimited history (max_history_size: null) keeps all events', async () => 
   }
 })
 
+test('max_history_size=0 keeps in-flight events and drops them on completion', async () => {
+  const bus = new EventBus('ZeroHistBus', { max_history_size: 0 })
+  const SlowEvent = BaseEvent.extend('SlowEvent', {})
+
+  let release!: () => void
+  const unblock = new Promise<void>((resolve) => {
+    release = resolve
+  })
+
+  bus.on(SlowEvent, async () => {
+    await unblock
+  })
+
+  const first = bus.dispatch(SlowEvent({}))
+  const second = bus.dispatch(SlowEvent({}))
+
+  await delay(10)
+  assert.ok(bus.event_history.has(first.event_id))
+  assert.ok(bus.event_history.has(second.event_id))
+
+  release()
+  await Promise.all([first.done(), second.done()])
+  await bus.waitUntilIdle()
+
+  assert.equal(bus.event_history.size, 0)
+})
+
 // ─── Event type derivation ───────────────────────────────────────────────────
 
 test('event_type is derived from extend() name argument', () => {

@@ -145,19 +145,30 @@ class RedisEventBridge:
 
     async def _listen_loop(self) -> None:
         assert self._pubsub is not None
-        while self._running:
-            try:
-                message = await self._pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if not message:
+        try:
+            async for message in self._pubsub.listen():
+                if not self._running:
+                    break
+                if not isinstance(message, dict):
                     continue
+                if message.get('type') != 'message':
+                    continue
+
                 data = message.get('data')
+                if isinstance(data, bytes):
+                    data = data.decode('utf-8')
                 if not isinstance(data, str):
                     continue
-                payload = json.loads(data)
+
+                try:
+                    payload = json.loads(data)
+                except Exception:
+                    continue
                 await self._dispatch_inbound_payload(payload)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if self._running:
                 await asyncio.sleep(0.05)
 
     async def _dispatch_inbound_payload(self, payload: Any) -> None:

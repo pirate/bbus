@@ -87,6 +87,24 @@ test('find future waits for event', async () => {
   assert.equal(found_event.event_type, 'ParentEvent')
 })
 
+test('max_history_size=0 disables past history search but future find still resolves', async () => {
+  const bus = new EventBus('FindZeroHistoryBus', { max_history_size: 0 })
+  bus.on(ParentEvent, () => 'ok')
+
+  const find_future = bus.find(ParentEvent, { past: false, future: 0.5 })
+  const dispatched = bus.dispatch(ParentEvent({}))
+
+  const found_future = await find_future
+  assert.ok(found_future)
+  assert.equal(found_future.event_id, dispatched.event_id)
+
+  await dispatched.done()
+  assert.equal(bus.event_history.has(dispatched.event_id), false)
+
+  const found_past = await bus.find(ParentEvent, { past: true, future: false })
+  assert.equal(found_past, null)
+})
+
 test('find future works with string event keys', async () => {
   const bus = new EventBus('FindFutureStringBus')
 

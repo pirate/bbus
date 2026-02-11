@@ -114,7 +114,7 @@ new EventBus(name?: string, options?: {
 | Option                            | Type                                                    | Default        | Purpose                                                                                                                                                                              |
 | --------------------------------- | ------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `id`                              | `string`                                                | `uuidv7()`     | Override bus UUID (mostly for serialization/tests).                                                                                                                                  |
-| `max_history_size`                | `number \| null`                                        | `100`          | Max events kept in `event_history`; `null` = unbounded. Current behavior is equivalent to `max_history_drop=true`: if `True`, drop oldest history entries (even uncompleted events). |
+| `max_history_size`                | `number \| null`                                        | `100`          | Max events kept in `event_history`; `null` = unbounded; `0` = keep only in-flight events and drop completed events immediately. Current behavior is equivalent to `max_history_drop=true`: drop oldest history entries when over limit (even uncompleted events). |
 | `event_concurrency`               | `'global-serial' \| 'bus-serial' \| 'parallel' \| null` | `'bus-serial'` | Event-level scheduling policy.                                                                                                                                                       |
 | `event_handler_concurrency`       | `'serial' \| 'parallel' \| null`                        | `'serial'`     | Per-event handler scheduling policy.                                                                                                                                                 |
 | `event_handler_completion`        | `'all' \| 'first'`                                      | `'all'`        | Event completion mode if event does not override it.                                                                                                                                 |
@@ -553,6 +553,7 @@ EventHandler.fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandl
 
 - `max_history_size?: number | null` (default: `100`)
   - Max events kept in history. `null` = unlimited. `bus.find(...)` uses this log to query recently dispatched events
+  - `0` keeps only pending/in-flight events; each event is removed from history immediately after completion.
   - Current TS behavior is equivalent to `max_history_drop=true`: if `True`, drop oldest history entries (even uncompleted events).
 - `event_concurrency?: 'global-serial' | 'bus-serial' | 'parallel' | null` (default: `'bus-serial'`)
   - Event-level scheduling policy (`global-serial`: FIFO across all buses, `bus-serial`: FIFO per bus, `parallel`: concurrent events per bus).

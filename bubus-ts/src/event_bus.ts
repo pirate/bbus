@@ -119,7 +119,7 @@ export class EventBus {
   name: string // name of the event bus, recommended to include the word "Bus" in the name for clarity in logs
 
   // configuration options
-  max_history_size: number | null // max number of completed events kept in log, set to null for unlimited history
+  max_history_size: number | null // max events kept in history; null=unlimited, 0=drop completed immediately (retain only in-flight)
   event_timeout_default: number | null
   event_concurrency_default: EventConcurrencyMode
   event_handler_concurrency_default: EventHandlerConcurrencyMode
@@ -618,6 +618,9 @@ export class EventBus {
         }
         event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
         event.markCompleted(false)
+        if (this.max_history_size !== null && this.max_history_size > 0 && this.event_history.size > this.max_history_size) {
+          this.trimHistory()
+        }
       } finally {
         if (slow_event_warning_timer) {
           clearTimeout(slow_event_warning_timer)
@@ -952,6 +955,16 @@ export class EventBus {
     if (this.max_history_size === null) {
       return
     }
+    if (this.max_history_size === 0) {
+      // Keep pending/in-flight events visible on the bus, but drop completed
+      // events immediately so "history" behaves as ephemeral state only.
+      for (const [event_id, event] of this.event_history) {
+        if (event.event_status === 'completed') {
+          this.event_history.delete(event_id)
+        }
+      }
+      return
+    }
     if (this.event_history.size <= this.max_history_size) {
       return
     }
@@ -992,4 +1005,5 @@ export class EventBus {
       }
     }
   }
+
 }

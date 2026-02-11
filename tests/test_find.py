@@ -246,6 +246,29 @@ class TestEventIsParentOf:
 class TestFindPastOnly:
     """Tests for find(past=True, future=False) - equivalent to query()."""
 
+    async def test_max_history_zero_disables_past_but_future_still_works(self):
+        """With max_history_size=0, future find resolves on dispatch but completed events are not searchable in past."""
+        bus = EventBus(max_history_size=0)
+
+        try:
+            bus.on(ParentEvent, lambda e: 'done')
+
+            find_future_task = asyncio.create_task(bus.find(ParentEvent, past=False, future=1))
+            await asyncio.sleep(0)
+
+            dispatched = bus.dispatch(ParentEvent())
+            found_future = await find_future_task
+            assert found_future is not None
+            assert found_future.event_id == dispatched.event_id
+
+            await dispatched
+            assert dispatched.event_id not in bus.event_history
+
+            found_past = await bus.find(ParentEvent, past=True, future=False)
+            assert found_past is None
+        finally:
+            await bus.stop(clear=True)
+
     async def test_returns_matching_event_from_history(self):
         """find(past=True, future=False) returns event from history."""
         bus = EventBus()

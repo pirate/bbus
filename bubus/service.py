@@ -432,6 +432,10 @@ class EventBus:
         for bus in list(EventBus.all_instances):
             if bus:
                 bus._active_event_ids.discard(event_id)
+                if bus.max_history_size == 0:
+                    # max_history_size=0 means "keep only in-flight events".
+                    # As soon as an event is completed, drop it from history.
+                    bus.event_history.pop(event_id, None)
 
     @property
     def events_pending(self) -> list[BaseEvent[Any]]:
@@ -640,7 +644,12 @@ class EventBus:
         # So pressure is handled by policy:
         #   - max_history_drop=True  -> absorb and trim oldest history entries
         #   - max_history_drop=False -> reject new dispatches at max_history_size
-        if self.max_history_size is not None and not self.max_history_drop and len(self.event_history) >= self.max_history_size:
+        if (
+            self.max_history_size is not None
+            and self.max_history_size > 0
+            and not self.max_history_drop
+            and len(self.event_history) >= self.max_history_size
+        ):
             raise RuntimeError(
                 f'{self} history limit reached ({len(self.event_history)}/{self.max_history_size}); '
                 'set max_history_drop=True to drop old history instead of rejecting new events'
@@ -684,7 +693,7 @@ class EventBus:
 
         # Amortize cleanup work by trimming only after a soft overage; this keeps
         # hot dispatch fast under large naive floods while still bounding memory.
-        if self.max_history_size and self.max_history_drop:
+        if self.max_history_size is not None and self.max_history_size > 0 and self.max_history_drop:
             soft_limit = max(self.max_history_size, int(self.max_history_size * 1.2))
             if len(self.event_history) > soft_limit:
                 self.cleanup_event_history()
@@ -1655,7 +1664,12 @@ class EventBus:
             current = parent_event
 
         # Clean up excess events to prevent memory leaks
-        if self.max_history_size and self.max_history_drop and len(self.event_history) > self.max_history_size:
+        if (
+            self.max_history_size is not None
+            and self.max_history_size > 0
+            and self.max_history_drop
+            and len(self.event_history) > self.max_history_size
+        ):
             self.cleanup_event_history()
 
     def _get_applicable_handlers(self, event: BaseEvent[Any]) -> dict[str, EventHandler]:
@@ -1916,7 +1930,11 @@ class EventBus:
         Returns:
             Number of events removed from history
         """
-        if not self.max_history_size or len(self.event_history) <= self.max_history_size:
+        if self.max_history_size is None:
+            return 0
+        if self.max_history_size == 0:
+            return self.cleanup_event_history()
+        if len(self.event_history) <= self.max_history_size:
             return 0
 
         # event_history preserves insertion order, so oldest dispatched events are first.
@@ -1942,7 +1960,14 @@ class EventBus:
         Returns:
             Total number of events removed from history
         """
-        if not self.max_history_size or len(self.event_history) <= self.max_history_size:
+        if self.max_history_size is None:
+            return 0
+        if self.max_history_size == 0:
+            completed_event_ids = [event_id for event_id, event in self.event_history.items() if self._is_event_complete_fast(event)]
+            for event_id in completed_event_ids:
+                del self.event_history[event_id]
+            return len(completed_event_ids)
+        if len(self.event_history) <= self.max_history_size:
             return 0
 
         # Separate events by status

@@ -208,6 +208,35 @@ class TestEventEnqueueing:
         finally:
             await bus.stop(clear=True)
 
+    async def test_zero_history_size_keeps_inflight_and_drops_on_completion(self):
+        """max_history_size=0 keeps in-flight events but removes them as soon as they complete."""
+        bus = EventBus(name='ZeroHistoryBus', max_history_size=0, max_history_drop=False)
+
+        first_handler_started = asyncio.Event()
+        release_handlers = asyncio.Event()
+
+        async def slow_handler(_event: BaseEvent[Any]) -> None:
+            first_handler_started.set()
+            await release_handlers.wait()
+
+        bus.on('SlowEvent', slow_handler)
+
+        try:
+            first = bus.dispatch(BaseEvent(event_type='SlowEvent'))
+            await asyncio.wait_for(first_handler_started.wait(), timeout=1.0)
+            second = bus.dispatch(BaseEvent(event_type='SlowEvent'))
+
+            assert first.event_id in bus.event_history
+            assert second.event_id in bus.event_history
+
+            release_handlers.set()
+            await asyncio.gather(first, second)
+            await bus.wait_until_idle()
+
+            assert len(bus.event_history) == 0
+        finally:
+            await bus.stop(clear=True)
+
 
 class TestHandlerRegistration:
     """Test handler registration and execution"""

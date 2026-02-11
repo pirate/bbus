@@ -29,7 +29,7 @@ wait "$python_pid"
 wait "$ts_pid"
 
 # Perf suites run at the end, outside the default parallel checks.
-uv run python tests/performance_runtime.py --json
+uv run perf
 (
   cd bubus-ts
   pnpm run perf
