@@ -160,10 +160,6 @@ def _make_listener_bridge(kind: str, config: dict[str, Any], *, low_latency: boo
 async def _measure_warm_latency_ms(kind: str, config: dict[str, Any]) -> float:
     sender = _make_sender_bridge(kind, config, low_latency=True)
     receiver = _make_listener_bridge(kind, config, low_latency=True)
-    for bridge in (sender, receiver):
-        inbound_bus = getattr(bridge, '_inbound_bus', None)
-        if inbound_bus is not None:
-            inbound_bus.max_history_size = 5000
 
     run_suffix = uuid7str()[-8:]
     warmup_prefix = f'warmup_{run_suffix}_'

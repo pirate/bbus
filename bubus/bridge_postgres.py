@@ -189,15 +189,8 @@ class PostgresEventBridge:
         await self._dispatch_inbound_payload(payload)
 
     async def _dispatch_inbound_payload(self, payload: Any) -> None:
-        event = BaseEvent[Any].model_validate(payload)
-        for bus in list(EventBus.all_instances):
-            if not bus:
-                continue
-            existing = bus.event_history.get(event.event_id)
-            if existing is not None:
-                self._inbound_bus.dispatch(existing)
-                return
-        self._inbound_bus.dispatch(event.reset())
+        event = BaseEvent[Any].model_validate(payload).reset()
+        self._inbound_bus.dispatch(event)
 
     async def _ensure_table_exists(self) -> None:
         assert self._conn is not None

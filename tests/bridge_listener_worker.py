@@ -46,7 +46,7 @@ async def _main(config_path: str) -> None:
         await output_path.write_text(json.dumps(event.model_dump(mode='json')), encoding='utf-8')
         done.set()
 
-    bridge.on('*', _on_event)
+    bridge.on('IPCPingEvent', _on_event)
     await bridge.start()
     await ready_path.write_text('ready', encoding='utf-8')
     try:

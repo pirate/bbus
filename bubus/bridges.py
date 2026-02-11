@@ -276,15 +276,8 @@ class EventBridge:
 
     async def _handle_incoming_bytes(self, payload: bytes) -> None:
         message = json.loads(payload.decode('utf-8'))
-        event = BaseEvent[Any].model_validate(message)
-        for bus in list(EventBus.all_instances):
-            if not bus:
-                continue
-            existing = bus.event_history.get(event.event_id)
-            if existing is not None:
-                self._inbound_bus.dispatch(existing)
-                return
-        self._inbound_bus.dispatch(event.reset())
+        event = BaseEvent[Any].model_validate(message).reset()
+        self._inbound_bus.dispatch(event)
 
     async def _send_unix(self, endpoint: _Endpoint, payload: dict[str, Any]) -> None:
         socket_path = endpoint.path or ''
