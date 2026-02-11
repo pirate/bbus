@@ -946,9 +946,14 @@ export class EventBus {
     if (typeof event_type === 'string' && event_type.length > 0 && event_type !== 'BaseEvent') {
       return event_type
     }
-    throw new Error(
-      'bus.on(match_pattern, ...) must be a string event type, "*", or a BaseEvent class, got: ' + JSON.stringify(event_key).slice(0, 30)
-    )
+    let preview: string
+    try {
+      const encoded = JSON.stringify(event_key)
+      preview = typeof encoded === 'string' ? encoded.slice(0, 30) : String(event_key).slice(0, 30)
+    } catch {
+      preview = String(event_key).slice(0, 30)
+    }
+    throw new Error('bus.on(match_pattern, ...) must be a string event type, "*", or a BaseEvent class, got: ' + preview)
   }
 
   private trimHistory(): void {
