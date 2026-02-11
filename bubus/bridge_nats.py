@@ -14,7 +14,7 @@ from typing import Any
 from uuid_extensions import uuid7str
 
 from bubus.models import BaseEvent
-from bubus.service import EventBus, EventPatternType, inside_handler_context
+from bubus.service import EventBus, EventPatternType, QueueShutDown, inside_handler_context
 
 
 class NATSEventBridge:
@@ -58,7 +58,10 @@ class NATSEventBridge:
                 payload = json.loads(msg.data.decode('utf-8'))
             except Exception:
                 return
-            await self._dispatch_inbound_payload(payload)
+            try:
+                await self._dispatch_inbound_payload(payload)
+            except QueueShutDown:
+                return
 
         assert self._nc is not None
         await self._nc.subscribe(self.subject, cb=_on_msg)
