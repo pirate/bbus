@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint:
+  lint_py:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +33,7 @@ jobs:
       - run: uv run ruff check
       - run: uv run pyright
 
-  find_tests:
+  find_py_tests:
     runs-on: ubuntu-latest
     outputs:
       PY_TASKS: ${{ steps.lsgrep.outputs.PY_TASKS }}
@@ -76,14 +76,14 @@ jobs:
 
   tests:
     needs:
-      - lint
-      - find_tests
+      - lint_py
+      - find_py_tests
     runs-on: ubuntu-latest
     env:
       IN_DOCKER: 'True'
     strategy:
       matrix:
-        task: ${{ fromJson(needs.find_tests.outputs.PY_TASKS || '[{"kind":"error","name":"FAILED_TO_DISCOVER_TASKS"}]') }}
+        task: ${{ fromJson(needs.find_py_tests.outputs.PY_TASKS || '[{"kind":"error","name":"FAILED_TO_DISCOVER_TASKS"}]') }}
         # autodiscovers files in tests/test_*.py and examples/*.py
         # - { kind: "test", name: "test_eventbus" }
         # - { kind: "example", name: "quickstart" }
@@ -93,7 +93,7 @@ jobs:
       - name: Check that the previous step managed to find some tasks for us to run
         run: |
           if [[ "${{ matrix.task.kind }}" == "error" ]]; then
-            echo "Failed get list of tasks in tests/test_*.py and examples/*.py from find_tests job" > /dev/stderr
+            echo "Failed get list of tasks in tests/test_*.py and examples/*.py from find_py_tests job" > /dev/stderr
             exit 1
           fi
 
@@ -164,17 +164,19 @@ jobs:
       - name: Combine coverage & fail if it's <50%
         run: |
           uv tool install 'coverage[toml]'
+          OMIT='bubus/bridge*.py'
 
           coverage combine
-          coverage html --skip-covered --skip-empty
+          coverage html --skip-covered --skip-empty --omit="$OMIT"
+          coverage xml --omit="$OMIT"
 
           echo "### Python combined coverage" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           # Report and write a markdown table to summary.
-          coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
+          coverage report --omit="$OMIT" --format=markdown >> $GITHUB_STEP_SUMMARY
 
           # Report again and fail if under 50%.
-          coverage report --fail-under=50
+          coverage report --omit="$OMIT" --fail-under=50
 
       - name: Upload combined coverage report
         id: upload_py_coverage_report

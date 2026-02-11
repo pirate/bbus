@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint:
+  lint_ts:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -35,7 +35,7 @@ jobs:
       - run: pnpm exec eslint .
       - run: pnpm run typecheck
 
-  find_ts_tasks:
+  find_ts_tests:
     runs-on: ubuntu-latest
     outputs:
       TS_TASKS: ${{ steps.lsgrep.outputs.TS_TASKS }}
@@ -77,12 +77,12 @@ jobs:
 
   tests:
     needs:
-      - lint
-      - find_ts_tasks
+      - lint_ts
+      - find_ts_tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        task: ${{ fromJson(needs.find_ts_tasks.outputs.TS_TASKS || '[{"kind":"error","name":"FAILED_TO_DISCOVER_TASKS"}]') }}
+        task: ${{ fromJson(needs.find_ts_tests.outputs.TS_TASKS || '[{"kind":"error","name":"FAILED_TO_DISCOVER_TASKS"}]') }}
         # autodiscovers all files in bubus-ts/tests/*.test.ts and bubus-ts/examples/*.ts
         # - { kind: "test", name: "eventbus_basics" }
         # - { kind: "example", name: "simple" }
@@ -97,7 +97,7 @@ jobs:
       - name: Check that the previous step managed to find some tasks for us to run
         run: |
           if [[ "${{ matrix.task.kind }}" == "error" ]]; then
-            echo "Failed get list of tasks from find_ts_tasks job" > /dev/stderr
+            echo "Failed get list of tasks from find_ts_tests job" > /dev/stderr
             exit 1
           fi
 
@@ -133,11 +133,6 @@ jobs:
           retention-days: 7
           include-hidden-files: true
         if: matrix.task.kind == 'test' && always()
-      - name: Append coverage report to summary
-        if: matrix.task.kind == 'test'
-        run: |
-          echo "### TypeScript coverage: ${{ matrix.task.name }}" >> "$GITHUB_STEP_SUMMARY"
-          awk '/start of coverage report/{flag=1} flag{print} /end of coverage report/{flag=0}' coverage-output.txt >> "$GITHUB_STEP_SUMMARY"
 
   coverage:
     needs: tests
@@ -182,12 +177,16 @@ jobs:
         run: |
           cd bubus-ts
           set -o pipefail
+          mkdir -p coverage
           pnpm dlx c8 report \
             --temp-directory .v8-coverage-merged \
             --report-dir coverage \
             --reporter=html \
             --reporter=text \
-            --reporter=json-summary | tee coverage/text-report.txt
+            --reporter=json-summary \
+            --exclude-after-remap \
+            -n 'src/**/*.ts' \
+            -x 'src/bridge*.ts' | tee coverage/text-report.txt
 
           node <<'NODE'
           const fs = require('fs');
@@ -228,6 +227,9 @@ jobs:
           pnpm dlx c8 report \
             --temp-directory .v8-coverage-merged \
             --reporter=text-summary \
+            --exclude-after-remap \
+            -n 'src/**/*.ts' \
+            -x 'src/bridge*.ts' \
             --check-coverage \
             --lines 50 > /dev/null
 
