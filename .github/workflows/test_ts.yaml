@@ -115,6 +115,7 @@ jobs:
       - name: Run test with coverage
         if: matrix.task.kind == 'test'
         run: |
+          set -o pipefail
           rm -rf .v8-coverage
           mkdir -p .v8-coverage
           NODE_V8_COVERAGE=.v8-coverage NODE_OPTIONS='--expose-gc' node --expose-gc --test --experimental-test-coverage --import tsx tests/${{ matrix.task.name }}.test.ts | tee coverage-output.txt
@@ -126,7 +127,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ts-coverage-${{ matrix.task.name }}
-          path: .v8-coverage
+          path: |
+            bubus-ts/.v8-coverage
+            pyproject.toml
           retention-days: 7
           include-hidden-files: true
         if: matrix.task.kind == 'test' && always()
@@ -139,9 +142,6 @@ jobs:
   coverage:
     needs: tests
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: bubus-ts
     steps:
       - uses: actions/checkout@v4
 
@@ -155,21 +155,21 @@ jobs:
           cache: pnpm
           cache-dependency-path: bubus-ts/pnpm-lock.yaml
 
-      - run: pnpm install --frozen-lockfile
+      - run: cd bubus-ts && pnpm install --frozen-lockfile
 
       - name: Download all coverage data
         uses: actions/download-artifact@v4
         with:
           pattern: ts-coverage-*
-          path: bubus-ts/coverage-data/
+          path: coverage-data/
 
       - name: Combine coverage data
         run: |
-          mkdir -p .v8-coverage-merged
+          mkdir -p bubus-ts/.v8-coverage-merged
 
           counter=1
           while IFS= read -r -d '' coverage_file; do
-            cp "$coverage_file" ".v8-coverage-merged/$counter-$(basename "$coverage_file")"
+            cp "$coverage_file" "bubus-ts/.v8-coverage-merged/$counter-$(basename "$coverage_file")"
             counter=$((counter + 1))
           done < <(find coverage-data -type f -name "*.json" -print0)
 
@@ -180,6 +180,8 @@ jobs:
 
       - name: Build merged coverage report
         run: |
+          cd bubus-ts
+          set -o pipefail
           pnpm dlx c8 report \
             --temp-directory .v8-coverage-merged \
             --report-dir coverage \
@@ -189,11 +191,22 @@ jobs:
           echo "### TypeScript combined coverage" >> "$GITHUB_STEP_SUMMARY"
           cat coverage/text-report.txt >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Fail if TypeScript coverage is <50%
+        run: |
+          cd bubus-ts
+          pnpm dlx c8 report \
+            --temp-directory .v8-coverage-merged \
+            --reporter=text-summary \
+            --check-coverage \
+            --lines 50 > /dev/null
+
       - name: Upload merged coverage report
         uses: actions/upload-artifact@v4
         with:
           name: ts-coverage-report
-          path: bubus-ts/coverage/
+          path: |
+            bubus-ts/coverage/
+            pyproject.toml
           retention-days: 7
 
   perf:
