@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 from typing import Any
 
 from performance_scenarios import PERF_SCENARIO_IDS, PerfInput, run_all_perf_scenarios, run_perf_scenario_by_id
@@ -62,6 +63,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 async def _main_async() -> int:
     args = _build_parser().parse_args()
+    logging.getLogger('bubus').setLevel(logging.CRITICAL)
 
     perf_input = PerfInput(runtime_name='python')
 
