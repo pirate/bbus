@@ -276,7 +276,7 @@ class EventBridge:
 
     async def _handle_incoming_bytes(self, payload: bytes) -> None:
         message = json.loads(payload.decode('utf-8'))
-        event = BaseEvent[Any].model_validate(message).reset()
+        event = BaseEvent[Any].model_validate(message).event_reset()
         self._inbound_bus.dispatch(event)
 
     async def _send_unix(self, endpoint: _Endpoint, payload: dict[str, Any]) -> None:

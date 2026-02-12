@@ -33,7 +33,7 @@ def _result_with_handler(
     handler = EventHandler(
         id=handler_id,
         handler_name=handler_name,
-        eventbus_id=str(id(bus)),
+        eventbus_id=bus.id,
         eventbus_name=bus.name,
         event_pattern='*',
     )
@@ -91,7 +91,7 @@ def test_log_history_tree_with_handlers(capsys: Any) -> None:
     captured_str = bus.log_tree()
 
     assert '└── RootEvent#' in captured_str
-    assert '└── ✅ HandlerBus.test_handler#' in captured_str
+    assert f'└── ✅ {bus.label}.test_handler#' in captured_str
     assert "'status: success'" in captured_str
 
 
@@ -118,7 +118,7 @@ def test_log_history_tree_with_errors(capsys: Any) -> None:
     bus.event_history[event.event_id] = event
     captured_str = bus.log_tree()
 
-    assert 'ErrorBus.error_handler#' in captured_str
+    assert f'{bus.label}.error_handler#' in captured_str
     assert 'ValueError: Test error message' in captured_str
 
 
@@ -194,11 +194,11 @@ def test_log_history_tree_complex_nested() -> None:
 
     # Check structure - note that events may appear both as handler children and in parent mapping
     assert '└── RootEvent#' in output
-    assert '✅ ComplexBus.root_handler#' in output
+    assert f'✅ {bus.label}.root_handler#' in output
     assert 'ChildEvent#' in output
-    assert '✅ ComplexBus.child_handler#' in output
+    assert f'✅ {bus.label}.child_handler#' in output
     assert 'GrandchildEvent#' in output
-    assert '✅ ComplexBus.grandchild_handler#' in output
+    assert f'✅ {bus.label}.grandchild_handler#' in output
 
     # Check result formatting
     assert "'Root processed'" in output
@@ -279,5 +279,5 @@ def test_log_history_tree_running_handler(capsys: Any) -> None:
     bus.event_history[event.event_id] = event
     captured_str = bus.log_tree()
 
-    assert 'RunningBus.running_handler#' in captured_str
+    assert f'{bus.label}.running_handler#' in captured_str
     assert 'RootEvent#' in captured_str  # Event should also show as running

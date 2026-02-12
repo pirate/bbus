@@ -33,7 +33,7 @@ export const EventResultJSONSchema = z
     completed_ts: z.number().optional(),
     result: z.unknown().optional(),
     error: z.unknown().optional(),
-    event_children: z.array(z.string()).optional(),
+    event_children: z.array(z.string()),
   })
   .strict()
 
@@ -51,7 +51,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   completed_ts?: number // nanosecond monotonic version of completed_at
   result?: EventResultType<TEvent> // parsed return value from the event handler
   error?: unknown // error object thrown by the event handler, or null if the handler completed successfully
-  event_children: BaseEvent[] | undefined // lazily allocated list of emitted child events
+  event_children: BaseEvent[] // list of emitted child events
 
   // Abort signal: created when handler starts, rejected by signalAbort() to
   // interrupt runHandler's await via Promise.race.
@@ -70,6 +70,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     this.handler = params.handler
     this.result = undefined
     this.error = undefined
+    this.event_children = []
     this._abort = null
     this._lock = null
     this._queue_jump_pause_releases = null
@@ -116,6 +117,13 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     return this.result
   }
 
+  // Per-result schema reference derives from the parent event schema.
+  // It is intentionally not serialized with each EventResult to avoid duplication.
+  get result_type(): TEvent['event_result_type'] {
+    const original_event = this.event._event_original ?? this.event
+    return original_event.event_result_type as TEvent['event_result_type']
+  }
+
   // Link a child event emitted by this handler run to the parent event/result.
   linkEmittedChildEvent(child_event: BaseEvent): void {
     const original_child = child_event._event_original ?? child_event
@@ -126,10 +134,8 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     if (!original_child.event_emitted_by_handler_id) {
       original_child.event_emitted_by_handler_id = this.handler_id
     }
-    // Performance: most handlers emit no children, so keep this undefined until first use.
-    const children = this.event_children ?? (this.event_children = [])
-    if (!children.some((child) => child.event_id === original_child.event_id)) {
-      children.push(original_child)
+    if (!this.event_children.some((child) => child.event_id === original_child.event_id)) {
+      this.event_children.push(original_child)
     }
   }
 
@@ -403,7 +409,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       completed_ts: this.completed_ts,
       result: this.result,
       error: this.error,
-      event_children: this.event_children?.map((child) => child.event_id) ?? [],
+      event_children: this.event_children.map((child) => child.event_id),
     }
   }
 
@@ -424,7 +430,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     if ('error' in record) {
       result.error = record.error
     }
-    result.event_children = undefined
+    result.event_children = []
     return result
   }
 }

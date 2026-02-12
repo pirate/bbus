@@ -2,13 +2,21 @@ import json
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from bubus import BaseEvent, EventBus
+
+
+class ScreenshotRegion(BaseModel):
+    id: str
+    label: str
+    score: float
+    visible: bool
 
 
 class ScreenshotResult(BaseModel):
@@ -19,67 +27,270 @@ class ScreenshotResult(BaseModel):
     is_animated: bool
     confidence_scores: list[float]
     metadata: dict[str, float]
+    regions: list[ScreenshotRegion]
 
 
-class IntResultEvent(BaseEvent[int]):
+class PyTsTypedDictResult(TypedDict):
+    name: str
+    active: bool
+    count: int
+
+
+@dataclass(slots=True)
+class PyTsDataclassResult:
+    name: str
+    score: float
+    tags: list[str]
+
+
+@dataclass(slots=True)
+class RoundtripCase:
+    event: BaseEvent[Any]
+    valid_results: list[Any]
+    invalid_results: list[Any]
+
+
+class PyTsIntResultEvent(BaseEvent[int]):
     value: int
     label: str
 
 
-class StringListResultEvent(BaseEvent[list[str]]):
-    names: list[str]
-    attempt: int
+class PyTsFloatResultEvent(BaseEvent[float]):
+    marker: str
 
 
-class ScreenshotEvent(BaseEvent[ScreenshotResult]):
+class PyTsStringResultEvent(BaseEvent[str]):
+    marker: str
+
+
+class PyTsBoolResultEvent(BaseEvent[bool]):
+    marker: str
+
+
+class PyTsNullResultEvent(BaseEvent[type(None)]):
+    marker: str
+
+
+class PyTsStringListResultEvent(BaseEvent[list[str]]):
+    marker: str
+
+
+class PyTsDictResultEvent(BaseEvent[dict[str, int]]):
+    marker: str
+
+
+class PyTsNestedMapResultEvent(BaseEvent[dict[str, list[int]]]):
+    marker: str
+
+
+class PyTsTypedDictResultEvent(BaseEvent[PyTsTypedDictResult]):
+    marker: str
+
+
+class PyTsDataclassResultEvent(BaseEvent[PyTsDataclassResult]):
+    marker: str
+
+
+class PyTsScreenshotEvent(BaseEvent[ScreenshotResult]):
     target_id: str
     quality: str
 
 
-class MetricsEvent(BaseEvent[dict[str, list[int]]]):
-    bucket: str
-    counters: dict[str, int]
+def _value_repr(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True)
+    except TypeError:
+        return repr(value)
 
 
-class AdhocEvent(BaseEvent[dict[str, int]]):
-    custom_payload: dict[str, Any]
-    nested_payload: dict[str, Any]
+def _accepts_result_type(result_type: Any, value: Any) -> bool:
+    try:
+        TypeAdapter(result_type).validate_python(value)
+    except ValidationError:
+        return False
+    return True
 
 
-def _build_python_roundtrip_events() -> list[BaseEvent[Any]]:
-    parent = IntResultEvent(
+def _assert_result_type_semantics_equal(
+    original_result_type: Any,
+    candidate_schema_json: dict[str, Any],
+    valid_results: list[Any],
+    invalid_results: list[Any],
+    context: str,
+) -> None:
+    hydrated = BaseEvent[Any].model_validate({'event_type': 'SchemaSemanticsEvent', 'event_result_type': candidate_schema_json})
+    candidate_result_type = hydrated.event_result_type
+    assert candidate_result_type is not None, f'{context}: missing candidate result type after hydration'
+
+    for value in valid_results:
+        original_ok = _accepts_result_type(original_result_type, value)
+        candidate_ok = _accepts_result_type(candidate_result_type, value)
+        assert original_ok, f'{context}: original schema should accept {_value_repr(value)}'
+        assert candidate_ok, f'{context}: candidate schema should accept {_value_repr(value)}'
+
+    for value in invalid_results:
+        original_ok = _accepts_result_type(original_result_type, value)
+        candidate_ok = _accepts_result_type(candidate_result_type, value)
+        assert not original_ok, f'{context}: original schema should reject {_value_repr(value)}'
+        assert not candidate_ok, f'{context}: candidate schema should reject {_value_repr(value)}'
+
+    for value in [*valid_results, *invalid_results]:
+        original_ok = _accepts_result_type(original_result_type, value)
+        candidate_ok = _accepts_result_type(candidate_result_type, value)
+        assert candidate_ok == original_ok, (
+            f'{context}: schema decision mismatch for {_value_repr(value)} '
+            f'(expected {original_ok}, got {candidate_ok})'
+        )
+
+
+def _build_python_roundtrip_cases() -> list[RoundtripCase]:
+    parent = PyTsIntResultEvent(
         value=7,
         label='parent',
         event_path=['PyBus#aaaa'],
         event_timeout=12.5,
     )
-    child = ScreenshotEvent(
+
+    screenshot_event = PyTsScreenshotEvent(
         target_id='tab-1',
         quality='high',
         event_parent_id=parent.event_id,
         event_path=['PyBus#aaaa', 'TsBridge#bbbb'],
         event_timeout=33.0,
     )
-    list_event = StringListResultEvent(
-        names=['alpha', 'beta', 'gamma'],
-        attempt=2,
+
+    float_event = PyTsFloatResultEvent(
+        marker='float',
         event_parent_id=parent.event_id,
         event_path=['PyBus#aaaa'],
     )
-    metrics_event = MetricsEvent(
-        bucket='images',
-        counters={'ok': 12, 'failed': 1},
-        event_path=['PyBus#aaaa'],
-    )
-    adhoc_event = AdhocEvent(
-        event_timeout=4.0,
+    string_event = PyTsStringResultEvent(
+        marker='string',
         event_parent_id=parent.event_id,
         event_path=['PyBus#aaaa'],
-        event_result_type=dict[str, int],
-        custom_payload={'tab_id': 'tab-1', 'bytes': 12345},
-        nested_payload={'frames': [1, 2, 3], 'format': 'png'},
     )
-    return [parent, child, list_event, metrics_event, adhoc_event]
+    bool_event = PyTsBoolResultEvent(
+        marker='bool',
+        event_path=['PyBus#aaaa'],
+    )
+    null_event = PyTsNullResultEvent(
+        marker='null',
+        event_path=['PyBus#aaaa'],
+    )
+    list_event = PyTsStringListResultEvent(
+        marker='list[str]',
+        event_parent_id=parent.event_id,
+        event_path=['PyBus#aaaa'],
+    )
+    dict_event = PyTsDictResultEvent(
+        marker='dict[str,int]',
+        event_path=['PyBus#aaaa'],
+    )
+    nested_map_event = PyTsNestedMapResultEvent(
+        marker='dict[str,list[int]]',
+        event_path=['PyBus#aaaa'],
+    )
+    typed_dict_event = PyTsTypedDictResultEvent(
+        marker='typeddict',
+        event_path=['PyBus#aaaa'],
+    )
+    dataclass_event = PyTsDataclassResultEvent(
+        marker='dataclass',
+        event_path=['PyBus#aaaa'],
+    )
+
+    return [
+        RoundtripCase(
+            event=parent,
+            valid_results=[0, -5, 42],
+            invalid_results=[{}, [], 'not-int'],
+        ),
+        RoundtripCase(
+            event=float_event,
+            valid_results=[0.5, 12.25, 3],
+            invalid_results=[{}, [], 'not-number'],
+        ),
+        RoundtripCase(
+            event=string_event,
+            valid_results=['ok', ''],
+            invalid_results=[{}, [], 123],
+        ),
+        RoundtripCase(
+            event=bool_event,
+            valid_results=[True, False],
+            invalid_results=[{}, [], 'not-bool'],
+        ),
+        RoundtripCase(
+            event=null_event,
+            valid_results=[None],
+            invalid_results=[{}, [], 0, False, 'not-null'],
+        ),
+        RoundtripCase(
+            event=list_event,
+            valid_results=[['a', 'b'], []],
+            invalid_results=[{}, 'not-list', 123],
+        ),
+        RoundtripCase(
+            event=dict_event,
+            valid_results=[{'ok': 1, 'failed': 2}, {}],
+            invalid_results=[['not', 'dict'], 'bad', 123],
+        ),
+        RoundtripCase(
+            event=nested_map_event,
+            valid_results=[{'a': [1, 2], 'b': []}, {}],
+            invalid_results=[{'a': 'not-list'}, ['bad'], 123],
+        ),
+        RoundtripCase(
+            event=typed_dict_event,
+            valid_results=[{'name': 'alpha', 'active': True, 'count': 2}],
+            invalid_results=[{'name': 'alpha'}, {'name': 123, 'active': True, 'count': 2}],
+        ),
+        RoundtripCase(
+            event=dataclass_event,
+            valid_results=[{'name': 'model', 'score': 0.85, 'tags': ['a', 'b']}],
+            invalid_results=[{'name': 'model', 'score': 'not-number', 'tags': ['a']}, {'name': 'model', 'score': 1.0}],
+        ),
+        RoundtripCase(
+            event=screenshot_event,
+            valid_results=[
+                {
+                    'image_url': 'https://img.local/1.png',
+                    'width': 1920,
+                    'height': 1080,
+                    'tags': ['hero', 'dashboard'],
+                    'is_animated': False,
+                    'confidence_scores': [0.95, 0.89],
+                    'metadata': {'score': 0.99, 'variance': 0.01},
+                    'regions': [
+                        {'id': 'r1', 'label': 'face', 'score': 0.9, 'visible': True},
+                        {'id': 'r2', 'label': 'button', 'score': 0.7, 'visible': False},
+                    ],
+                }
+            ],
+            invalid_results=[
+                {
+                    'image_url': 123,
+                    'width': 1920,
+                    'height': 1080,
+                    'tags': ['hero'],
+                    'is_animated': False,
+                    'confidence_scores': [0.95],
+                    'metadata': {'score': 0.99},
+                    'regions': [{'id': 'r1', 'label': 'face', 'score': 0.9, 'visible': True}],
+                },
+                {
+                    'image_url': 'https://img.local/1.png',
+                    'width': 1920,
+                    'height': 1080,
+                    'tags': ['hero'],
+                    'is_animated': False,
+                    'confidence_scores': [0.95],
+                    'metadata': {'score': 0.99},
+                    'regions': [{'id': 123, 'label': 'face', 'score': 0.9, 'visible': True}],
+                },
+            ],
+        ),
+    ]
 
 
 def _ts_roundtrip_events(payload: list[dict[str, Any]], tmp_path: Path) -> list[dict[str, Any]]:
@@ -134,8 +345,10 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
     return json.loads(out_path.read_text(encoding='utf-8'))
 
 
-def test_python_to_ts_roundrip_preserves_event_fields_and_result_schemas(tmp_path: Path) -> None:
-    events = _build_python_roundtrip_events()
+def test_python_to_ts_roundrip_preserves_event_fields_and_result_type_semantics(tmp_path: Path) -> None:
+    cases = _build_python_roundtrip_cases()
+    events = [entry.event for entry in cases]
+    cases_by_type = {entry.event.event_type: entry for entry in cases}
     python_dumped = [event.model_dump(mode='json') for event in events]
 
     # Ensure Python emits JSONSchema for return value types before sending to TS.
@@ -150,40 +363,65 @@ def test_python_to_ts_roundrip_preserves_event_fields_and_result_schemas(tmp_pat
         ts_event = ts_roundtripped[i]
         assert isinstance(ts_event, dict)
 
+        event_type = str(original.get('event_type'))
+        semantics_case = cases_by_type.get(event_type)
+        assert semantics_case is not None, f'missing semantics case for event_type={event_type}'
+
         # Every field Python emitted should survive through TS serialization.
         for key, value in original.items():
             assert key in ts_event, f'missing key after ts roundtrip: {key}'
-            assert ts_event[key] == value, f'field changed after ts roundtrip: {key}'
+            if key == 'event_result_type':
+                assert isinstance(ts_event[key], dict), 'event_result_type should serialize as JSON schema dict'
+                _assert_result_type_semantics_equal(
+                    semantics_case.event.event_result_type,
+                    ts_event[key],
+                    semantics_case.valid_results,
+                    semantics_case.invalid_results,
+                    f'ts roundtrip {event_type}',
+                )
+            else:
+                assert ts_event[key] == value, f'field changed after ts roundtrip: {key}'
 
-        # Verify we can load back into Python BaseEvent and keep the same payload.
+        # Verify we can load back into Python BaseEvent and keep the same payload/semantics.
         restored = BaseEvent[Any].model_validate(ts_event)
         restored_dump = restored.model_dump(mode='json')
         for key, value in original.items():
             assert key in restored_dump, f'missing key after python reload: {key}'
-            assert restored_dump[key] == value, f'field changed after python reload: {key}'
+            if key == 'event_result_type':
+                assert isinstance(restored_dump[key], dict), 'event_result_type should remain JSON schema after reload'
+                _assert_result_type_semantics_equal(
+                    semantics_case.event.event_result_type,
+                    restored_dump[key],
+                    semantics_case.valid_results,
+                    semantics_case.invalid_results,
+                    f'python reload {event_type}',
+                )
+            else:
+                assert restored_dump[key] == value, f'field changed after python reload: {key}'
 
 
 async def test_python_to_ts_roundtrip_schema_enforcement_after_reload(tmp_path: Path) -> None:
-    events = _build_python_roundtrip_events()
+    events = [entry.event for entry in _build_python_roundtrip_cases()]
     python_dumped = [event.model_dump(mode='json') for event in events]
     ts_roundtripped = _ts_roundtrip_events(python_dumped, tmp_path)
 
-    screenshot_payload = next(event for event in ts_roundtripped if event.get('event_type') == 'ScreenshotEvent')
+    screenshot_payload = next(event for event in ts_roundtripped if event.get('event_type') == 'PyTsScreenshotEvent')
 
     wrong_bus = EventBus(name='py_ts_py_wrong_shape')
 
     async def wrong_shape_handler(event: BaseEvent[Any]) -> dict[str, Any]:
         return {
             'image_url': 123,  # wrong: should be string
-            'width': '1920',  # wrong: should be number
+            'width': '1920',  # wrong: should be int
             'height': 1080,
             'tags': ['a', 'b'],
-            'is_animated': 'false',  # wrong: should be boolean
+            'is_animated': 'false',  # wrong: should be bool
             'confidence_scores': [0.9, 0.8],
             'metadata': {'score': 0.99},
+            'regions': [{'id': 'r1', 'label': 'face', 'score': 0.9, 'visible': True}],
         }
 
-    wrong_bus.on('ScreenshotEvent', wrong_shape_handler)
+    wrong_bus.on('PyTsScreenshotEvent', wrong_shape_handler)
     wrong_event = BaseEvent[Any].model_validate(screenshot_payload)
     assert isinstance(wrong_event.event_result_type, type)
     assert issubclass(wrong_event.event_result_type, BaseModel)
@@ -204,9 +442,13 @@ async def test_python_to_ts_roundtrip_schema_enforcement_after_reload(tmp_path: 
             'is_animated': False,
             'confidence_scores': [0.95, 0.89],
             'metadata': {'score': 0.99, 'variance': 0.01},
+            'regions': [
+                {'id': 'r1', 'label': 'face', 'score': 0.9, 'visible': True},
+                {'id': 'r2', 'label': 'button', 'score': 0.7, 'visible': False},
+            ],
         }
 
-    right_bus.on('ScreenshotEvent', right_shape_handler)
+    right_bus.on('PyTsScreenshotEvent', right_shape_handler)
     right_event = BaseEvent[Any].model_validate(screenshot_payload)
     assert isinstance(right_event.event_result_type, type)
     assert issubclass(right_event.event_result_type, BaseModel)

@@ -121,8 +121,8 @@ async def test_casting_failure_handling():
     await bus.stop(clear=True)
 
 
-async def test_no_casting_when_no_result_schema():
-    """Test that events without result_schema work normally."""
+async def test_no_casting_when_no_result_type():
+    """Test that events without result_type work normally."""
     print('\n=== Test No Casting When No Result Schema ===')
 
     bus = EventBus(name='normal_test_bus')
@@ -148,8 +148,8 @@ async def test_no_casting_when_no_result_schema():
     await bus.stop(clear=True)
 
 
-async def test_result_schema_stored_in_event_result():
-    """Test that result_schema is stored in EventResult for inspection."""
+async def test_result_type_stored_in_event_result():
+    """Test that result_type is stored in EventResult for inspection."""
     print('\n=== Test Result Schema Stored in EventResult ===')
 
     bus = EventBus(name='storage_test_bus')
@@ -162,15 +162,15 @@ async def test_result_schema_stored_in_event_result():
     event = StringEvent()
     await bus.dispatch(event)
 
-    # Check that result_schema is accessible
+    # Check that result_type is accessible
     handler_id = list(event.event_results.keys())[0]
     event_result = event.event_results[handler_id]
 
-    assert event_result.result_schema is str
+    assert event_result.result_type is str
     assert isinstance(event_result.result, str)
     assert event_result.result == '123'
 
-    print(f'✅ Result schema stored: {event_result.result_schema}')
+    print(f'✅ Result type stored: {event_result.result_type}')
     await bus.stop(clear=True)
 
 
@@ -375,8 +375,8 @@ async def test_typed_event_results():
     await test_pydantic_model_result_casting()
     await test_builtin_type_casting()
     await test_casting_failure_handling()
-    await test_no_casting_when_no_result_schema()
-    await test_result_schema_stored_in_event_result()
+    await test_no_casting_when_no_result_type()
+    await test_result_type_stored_in_event_result()
     await test_expect_type_inference()
     await test_query_type_inference()
     await test_dispatch_type_inference()

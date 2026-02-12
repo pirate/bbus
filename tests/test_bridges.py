@@ -65,7 +65,6 @@ def _normalize_roundtrip_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = _canonical(payload)
     normalized.pop('event_id', None)
     normalized.pop('event_path', None)
-    normalized.pop('event_result_type', None)
     return normalized
 
 
@@ -254,7 +253,20 @@ async def _assert_roundtrip(kind: str, config: dict[str, Any]) -> None:
             await _wait_for_path(worker_ready_path, process=worker)
             if kind == 'postgres':
                 await sender.start()
-            outbound = IPCPingEvent(label=f'{kind}_ok')
+            outbound = IPCPingEvent(
+                label=f'{kind}_ok',
+                event_result_type={
+                    '$schema': 'https://json-schema.org/draft/2020-12/schema',
+                    'type': 'object',
+                    'properties': {
+                        'ok': {'type': 'boolean'},
+                        'score': {'type': 'number'},
+                        'tags': {'type': 'array', 'items': {'type': 'string'}},
+                    },
+                    'required': ['ok', 'score', 'tags'],
+                    'additionalProperties': False,
+                },
+            )
             await sender.emit(outbound)
             await _wait_for_path(received_event_path, process=worker)
             received_payload = json.loads(received_event_path.read_text(encoding='utf-8'))

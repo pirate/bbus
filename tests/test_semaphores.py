@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 
-from bubus.helpers import retry
+import bubus.retry as retry_helpers
+from bubus.retry import retry
 
 
 def worker_acquire_semaphore(
@@ -472,16 +473,14 @@ class TestMultiprocessSemaphore:
         import tempfile
         from pathlib import Path
 
-        from bubus import helpers
-
         # Use a custom directory for this test
         test_dir = Path(tempfile.gettempdir()) / 'test_semaphore_disappear'
         test_dir.mkdir(exist_ok=True)
 
-        original_dir = helpers.MULTIPROCESS_SEMAPHORE_DIR
+        original_dir = retry_helpers.MULTIPROCESS_SEMAPHORE_DIR
         try:
             # Monkey patch the directory for this test
-            helpers.MULTIPROCESS_SEMAPHORE_DIR = test_dir
+            retry_helpers.MULTIPROCESS_SEMAPHORE_DIR = test_dir
 
             acquired_count = 0
 
@@ -514,9 +513,7 @@ class TestMultiprocessSemaphore:
 
         finally:
             # Restore original directory
-            from bubus import helpers
-
-            helpers.MULTIPROCESS_SEMAPHORE_DIR = original_dir
+            retry_helpers.MULTIPROCESS_SEMAPHORE_DIR = original_dir
             # Clean up test directory
             shutil.rmtree(test_dir, ignore_errors=True)
 

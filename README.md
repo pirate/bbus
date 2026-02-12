@@ -502,6 +502,8 @@ event_bus.on(FetchInboxEvent, fetch_from_gmail)
 email_list = await event_bus.dispatch(FetchInboxEvent(account_id='124', ...)).event_result()
 ```
 
+For pure Python usage, `event_result_type` can be any Python/Pydantic type you want. For cross-language JSON roundtrips, object-like shapes (e.g. `TypedDict`, `dataclass`, model-like dict schemas) rehydrate on Python as Pydantic models, map keys are constrained to JSON object string keys, and fine-grained string constraints/custom field validator logic is not preserved.
+
 <br/>
 
 ### 🧵 ContextVar Propagation
@@ -711,6 +713,10 @@ EventBus(
     name: str | None = None,
     event_handler_concurrency: Literal['serial', 'parallel'] = 'serial',
     event_handler_completion: Literal['all', 'first'] = 'all',
+    event_timeout: float | None = 60.0,
+    event_slow_timeout: float | None = 300.0,
+    event_handler_slow_timeout: float | None = 30.0,
+    event_handler_detect_file_paths: bool = True,
     max_history_size: int | None = 50,
     max_history_drop: bool = False,
     middlewares: Sequence[EventBusMiddleware | type[EventBusMiddleware]] | None = None,
@@ -722,9 +728,17 @@ EventBus(
 - `name`: Optional unique name for the bus (auto-generated if not provided)
 - `event_handler_concurrency`: Default handler execution mode for events on this bus: `'serial'` (default) or `'parallel'` (copied onto `event.event_handler_concurrency` at dispatch time unless the event sets its own value)
 - `event_handler_completion`: Handler completion mode for each event: `'all'` (default, wait for all handlers) or `'first'` (complete once first successful non-`None` result is available)
+- `event_timeout`: Default per-event timeout in seconds applied at dispatch when `event.event_timeout` is `None`
+- `event_slow_timeout`: Default slow-event warning threshold in seconds
+- `event_handler_slow_timeout`: Default slow-handler warning threshold in seconds
+- `event_handler_detect_file_paths`: Whether to auto-detect handler source file paths at registration time (slightly slower when enabled)
 - `max_history_size`: Maximum number of events to keep in history (default: 50, `None` = unlimited, `0` = keep only in-flight events and drop completed events immediately)
 - `max_history_drop`: If `True`, drop oldest history entries when full (even uncompleted events). If `False` (default), reject new dispatches once history reaches `max_history_size` (except when `max_history_size=0`, which never rejects on history size)
 - `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc. (see [Middlwares](#middlwares) for more info)
+
+Timeout precedence matches TS:
+- Effective handler timeout = `min(resolved_handler_timeout, event_timeout)` where `resolved_handler_timeout` resolves in order: `handler.handler_timeout` -> `event.event_handler_timeout` -> `bus.event_timeout`.
+- Slow handler warning threshold resolves in order: `handler.handler_slow_timeout` -> `event.event_handler_slow_timeout` -> `event.event_slow_timeout`/`event.slow_timeout` -> `bus.event_handler_slow_timeout` -> `bus.event_slow_timeout`.
 
 #### `EventBus` Properties
 
@@ -911,31 +925,34 @@ Make sure none of your own event data fields start with `event_` or `model_` to 
 T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
 
 class BaseEvent(BaseModel, Generic[T_EventResultType]):
-    # Framework-managed fields
+    # special config fields
     event_id: str                # Unique UUID7 identifier, auto-generated if not provided
-    event_type: str              # Defaults to class name
-    event_result_type: Any | None  # Pydantic model/python type to validate handler result values (serialized as JSON Schema)
+    event_type: str              # Defaults to class name e.g. 'BaseEvent'
+    event_result_type: Any | None  # Pydantic model/python type to validate handler return values, defaults to T_EventResultType
     event_version: str           # Defaults to '0.0.1' (override per class/instance for event payload versioning)
-    event_timeout: float = 300.0 # Maximum execution in seconds for each handler
+    event_timeout: float | None = None # Event timeout in seconds (bus default applied at dispatch if None)
+    event_handler_timeout: float | None = None # Optional per-event handler timeout cap in seconds
+    event_handler_slow_timeout: float | None = None # Optional per-event slow-handler warning threshold
     event_handler_concurrency: Literal['serial', 'parallel'] = 'serial'  # handler scheduling strategy for this event
     event_handler_completion: Literal['all', 'first'] = 'all'  # completion strategy for this event's handlers
 
+    # runtime state fields
     event_status: Literal['pending', 'started', 'completed']  # event processing status (auto-set)
     event_created_at: datetime   # When event was created, auto-generated (auto-set)
     event_started_at: datetime   # When first handler started executing during event processing (auto-set)
     event_completed_at: datetime # When all event handlers finished processing (property, derives from last event_result.completed_at)
-
     event_parent_id: str | None  # Parent event ID that led to this event during handling (auto-set)
     event_path: list[str]        # List of bus names traversed (auto-set)
     event_results: dict[str, EventResult]   # Handler results {<handler uuid>: EventResult} (auto-set)
     event_children: list[BaseEvent] # getter property to list any child events emitted during handling
     event_bus: EventBus          # getter property to get the bus the event was dispatched on
     
-    # Data fields
-    # ... subclass BaseEvent to add your own event data fields here ...
+    # payload fields
+    # ... subclass BaseEvent to add your own event payload fields here ...
     # some_key: str
     # some_other_key: dict[str, int]
     # ...
+    # (they should not start with event_* to avoid conflict with special built-in fields)
 ```
 
 #### `BaseEvent` Methods
@@ -1205,7 +1222,7 @@ The `@retry` decorator provides automatic retry functionality with built-in conc
 
 ```python
 from bubus import EventBus, BaseEvent
-from bubus.helpers import retry
+from bubus.retry import retry
 
 bus = EventBus()
 

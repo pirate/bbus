@@ -580,63 +580,6 @@ class TestErrorHandling:
         assert working_result.result == 'worked'
         assert results == ['success']
 
-    async def test_raise_if_errors_raises_exception_group_with_all_handler_errors(self, eventbus):
-        """raise_if_errors() should aggregate all handler failures into ExceptionGroup."""
-
-        async def failing_handler_one(event: BaseEvent) -> str:
-            raise ValueError('first failure')
-
-        async def failing_handler_two(event: BaseEvent) -> str:
-            raise RuntimeError('second failure')
-
-        async def working_handler(event: BaseEvent) -> str:
-            return 'worked'
-
-        eventbus.on('UserActionEvent', failing_handler_one)
-        eventbus.on('UserActionEvent', failing_handler_two)
-        eventbus.on('UserActionEvent', working_handler)
-
-        event = await eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
-
-        with pytest.raises(ExceptionGroup) as exc_info:
-            await event.raise_if_errors()
-
-        grouped_errors = exc_info.value.exceptions
-        assert len(grouped_errors) == 2
-        assert {type(err) for err in grouped_errors} == {ValueError, RuntimeError}
-        assert {'first failure', 'second failure'} == {str(err) for err in grouped_errors}
-
-    async def test_raise_if_errors_waits_for_completion(self, eventbus):
-        """raise_if_errors() should wait for completion when called on pending events."""
-        handler_started = asyncio.Event()
-
-        async def delayed_failure(event: BaseEvent) -> str:
-            handler_started.set()
-            await asyncio.sleep(0.02)
-            raise ValueError('delayed failure')
-
-        eventbus.on('UserActionEvent', delayed_failure)
-
-        event = eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
-        await handler_started.wait()
-
-        with pytest.raises(ExceptionGroup) as exc_info:
-            await event.raise_if_errors(timeout=1)
-
-        assert len(exc_info.value.exceptions) == 1
-        assert isinstance(exc_info.value.exceptions[0], ValueError)
-
-    async def test_raise_if_errors_noop_when_no_errors(self, eventbus):
-        """raise_if_errors() should return normally when no handler failed."""
-
-        async def working_handler(event: BaseEvent) -> str:
-            return 'ok'
-
-        eventbus.on('UserActionEvent', working_handler)
-
-        event = await eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
-        await event.raise_if_errors()
-
     async def test_event_result_raises_exception_group_when_multiple_handlers_fail(self, eventbus):
         """event_result() should raise ExceptionGroup when multiple handler failures exist."""
 
@@ -1180,6 +1123,30 @@ class TestHandlerMiddleware:
         finally:
             await bus.stop()
 
+    async def test_synthetic_return_event_middleware_skips_baseevent_returns(self):
+        seen: list[tuple[str, Any]] = []
+        bus = EventBus(middlewares=[SyntheticReturnEventMiddleware()])
+
+        class ReturnedEvent(BaseEvent):
+            value: int
+
+        async def returns_event(event: BaseEvent) -> ReturnedEvent:
+            return ReturnedEvent(value=7)
+
+        bus.on(UserActionEvent, returns_event)
+        bus.on('UserActionEventResultEvent', lambda event: seen.append((event.event_type, event.data)))
+
+        try:
+            parent = await bus.dispatch(UserActionEvent(action='ok', user_id='u3'))
+            await bus.wait_until_idle()
+            assert len(parent.event_results) == 1
+            only_result = next(iter(parent.event_results.values()))
+            assert isinstance(only_result.result, ReturnedEvent)
+            assert seen == []
+            assert await bus.find('UserActionEventResultEvent', past=True, future=False) is None
+        finally:
+            await bus.stop()
+
     async def test_synthetic_handler_change_event_middleware_emits_registered_and_unregistered(self):
         registered: list[BusHandlerRegisteredEvent] = []
         unregistered: list[BusHandlerUnregisteredEvent] = []
@@ -1276,6 +1243,10 @@ class TestHandlerMiddleware:
             assert root_handler_span.context['parent'] is root_event_span
             assert child_event_span.context['parent'] is root_handler_span
             assert child_handler_span.context['parent'] is child_event_span
+            assert root_event_span.attrs.get('bubus.bus_name') == bus.label
+            assert root_handler_span.attrs.get('bubus.bus_name') == bus.label
+            assert child_event_span.attrs.get('bubus.bus_name') == bus.label
+            assert child_handler_span.attrs.get('bubus.bus_name') == bus.label
             assert all(span.ended for span in tracer.spans)
         finally:
             await bus.stop()

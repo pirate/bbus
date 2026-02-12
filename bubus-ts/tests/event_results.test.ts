@@ -80,3 +80,18 @@ test('event with no result schema stores raw values', async () => {
   assert.equal(result.status, 'completed')
   assert.deepEqual(result.result, { raw: true })
 })
+
+test('event result JSON omits result_type and derives from parent event', async () => {
+  const bus = new EventBus('ResultTypeDeriveBus')
+
+  bus.on(StringResultEvent, () => 'ok')
+
+  const event = bus.dispatch(StringResultEvent({}))
+  await event.done()
+
+  const result = Array.from(event.event_results.values())[0]
+  const json = result.toJSON() as Record<string, unknown>
+
+  assert.equal('result_type' in json, false)
+  assert.equal(result.result_type, event.event_result_type)
+})

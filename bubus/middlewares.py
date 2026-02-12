@@ -122,7 +122,7 @@ class OtelTracingMiddleware(EventBusMiddleware):
         span.set_attribute('bubus.event_id', event.event_id)
         span.set_attribute('bubus.event_type', event.event_type)
         span.set_attribute('bubus.bus_id', eventbus.id)
-        span.set_attribute('bubus.bus_name', eventbus.name)
+        span.set_attribute('bubus.bus_name', eventbus.label)
         if event.event_parent_id:
             span.set_attribute('bubus.event_parent_id', event.event_parent_id)
         self._event_spans[key] = span
@@ -159,7 +159,7 @@ class OtelTracingMiddleware(EventBusMiddleware):
             span.set_attribute('bubus.handler_id', event_result.handler_id)
             span.set_attribute('bubus.handler_name', event_result.handler_name)
             span.set_attribute('bubus.bus_id', eventbus.id)
-            span.set_attribute('bubus.bus_name', eventbus.name)
+            span.set_attribute('bubus.bus_name', eventbus.label)
             self._handler_spans[key] = span
             return
         if status != EventStatus.COMPLETED:
@@ -234,16 +234,17 @@ class SyntheticReturnEventMiddleware(EventBusMiddleware):
         event_result: EventResult[Any],
         status: EventStatus,
     ) -> None:
+        result_value = event_result.result
         if (
             status != EventStatus.COMPLETED
             or event_result.error is not None
-            or event_result.result is None
-            or isinstance(event_result.result, BaseEvent)
+            or result_value is None
+            or isinstance(result_value, BaseEvent)
             or event.event_type.endswith(_SYNTHETIC_EVENT_SUFFIXES)
         ):
             return
         try:
-            eventbus.dispatch(SyntheticReturnEvent(event_type=f'{event.event_type}ResultEvent', data=event_result.result))
+            eventbus.dispatch(SyntheticReturnEvent(event_type=f'{event.event_type}ResultEvent', data=result_value))
         except Exception as exc:  # pragma: no cover
             logger.error('❌ %s Failed to emit synthetic result event for %s: %s', eventbus, event.event_id, exc)
 
@@ -298,7 +299,7 @@ class LoggerEventBusMiddleware(EventBusMiddleware):
 
         summary = event.event_log_safe_summary()
         logger.info('✅ %s completed event %s', eventbus, summary)
-        line = f'[{eventbus.name}] {summary}\n'
+        line = f'[{eventbus.label}] {summary}\n'
 
         if self.log_path is not None:
             await asyncio.to_thread(self._write_line, line)
@@ -368,7 +369,7 @@ class SQLiteHistoryMirrorMiddleware(EventBusMiddleware):
             event_result.handler_id,
             event_result.handler_name,
             eventbus.id,
-            eventbus.name,
+            eventbus.label,
             event.event_type,
             event_result.status,
             str(status),
@@ -445,7 +446,7 @@ class SQLiteHistoryMirrorMiddleware(EventBusMiddleware):
                     event_type,
                     event_status,
                     eventbus.id,
-                    eventbus.name,
+                    eventbus.label,
                     phase,
                     event_json,
                 ),

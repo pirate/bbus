@@ -11,6 +11,15 @@ export type EventWithResultSchema<TResult> = BaseEvent & { __event_result_type__
 
 export type EventResultType<TEvent extends BaseEvent> = TEvent extends { __event_result_type__?: infer TResult } ? TResult : unknown
 
+export type EventResultTypeConstructor =
+  | StringConstructor
+  | NumberConstructor
+  | BooleanConstructor
+  | ArrayConstructor
+  | ObjectConstructor
+
+export type EventResultTypeInput = z.ZodTypeAny | EventResultTypeConstructor | unknown
+
 export type EventHandlerFunction<T extends BaseEvent = BaseEvent> = (
   event: T
 ) => void | EventResultType<T> | Promise<void | EventResultType<T>>
@@ -53,6 +62,25 @@ export const normalizeEventPattern = (event_pattern: EventPattern | '*'): string
 
 export const isZodSchema = (value: unknown): value is z.ZodTypeAny => !!value && typeof (value as z.ZodTypeAny).safeParse === 'function'
 
+export const eventResultTypeFromConstructor = (value: unknown): z.ZodTypeAny | undefined => {
+  if (value === String) {
+    return z.string()
+  }
+  if (value === Number) {
+    return z.number()
+  }
+  if (value === Boolean) {
+    return z.boolean()
+  }
+  if (value === Array) {
+    return z.array(z.unknown())
+  }
+  if (value === Object) {
+    return z.record(z.string(), z.unknown())
+  }
+  return undefined
+}
+
 export const extractZodShape = (raw: Record<string, unknown>): z.ZodRawShape => {
   const shape: Record<string, z.ZodTypeAny> = {}
   for (const [key, value] of Object.entries(raw)) {
@@ -64,41 +92,26 @@ export const extractZodShape = (raw: Record<string, unknown>): z.ZodRawShape => 
 
 export const toJsonSchema = (schema: unknown): unknown => {
   if (!schema || !isZodSchema(schema)) return schema
-  const zod_any = z as unknown as { toJSONSchema?: (input: z.ZodTypeAny) => unknown }
-  return typeof zod_any.toJSONSchema === 'function' ? zod_any.toJSONSchema(schema) : undefined
+  const zod_any = z as unknown as { toJSONSchema: (input: z.ZodTypeAny) => unknown }
+  // Cross-language roundtrips preserve core structural types; constraint keywords may not roundtrip exactly.
+  return zod_any.toJSONSchema(schema)
 }
 
-const getJsonSchemaTypeName = (schema: unknown): string | undefined => {
-  if (!schema || typeof schema !== 'object') return undefined
-  const raw_type = (schema as { type?: unknown }).type
-  let schema_type: string | undefined
-  if (typeof raw_type === 'string') {
-    schema_type = raw_type
-  } else if (Array.isArray(raw_type)) {
-    const non_null = raw_type.filter((value): value is string => typeof value === 'string' && value !== 'null')
-    if (non_null.length === 1) {
-      schema_type = non_null[0]
-    }
-  }
-  if (!schema_type) return undefined
-  if (schema_type === 'integer') return 'number'
-  if (
-    schema_type === 'string' ||
-    schema_type === 'number' ||
-    schema_type === 'boolean' ||
-    schema_type === 'object' ||
-    schema_type === 'array' ||
-    schema_type === 'null'
-  ) {
-    return schema_type
-  }
-  return undefined
+export const fromJsonSchema = (schema: unknown): z.ZodTypeAny => {
+  const zod_any = z as unknown as { fromJSONSchema: (input: unknown) => z.ZodTypeAny }
+  return zod_any.fromJSONSchema(schema)
 }
 
-export const jsonSchemaToZodPrimitive = (schema: unknown): z.ZodTypeAny | undefined => {
-  const schema_type = getJsonSchemaTypeName(schema)
-  if (schema_type === 'string') return z.string()
-  if (schema_type === 'number') return z.number()
-  if (schema_type === 'boolean') return z.boolean()
-  return undefined
+export const normalizeEventResultType = (value: EventResultTypeInput): z.ZodTypeAny | undefined => {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (isZodSchema(value)) {
+    return value
+  }
+  const constructor_schema = eventResultTypeFromConstructor(value)
+  if (constructor_schema) {
+    return constructor_schema
+  }
+  return fromJsonSchema(value)
 }

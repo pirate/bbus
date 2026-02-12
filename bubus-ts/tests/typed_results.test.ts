@@ -5,13 +5,13 @@ import { z } from 'zod'
 
 import { BaseEvent, EventBus } from '../src/index.js'
 
-const typed_result_schema = z.object({
+const typed_result_type = z.object({
   value: z.string(),
   count: z.number(),
 })
 
 const TypedResultEvent = BaseEvent.extend('TypedResultEvent', {
-  event_result_type: typed_result_schema,
+  event_result_type: typed_result_type,
 })
 
 const StringResultEvent = BaseEvent.extend('StringResultEvent', {
@@ -20,6 +20,26 @@ const StringResultEvent = BaseEvent.extend('StringResultEvent', {
 
 const NumberResultEvent = BaseEvent.extend('NumberResultEvent', {
   event_result_type: z.number(),
+})
+
+const ConstructorStringResultEvent = BaseEvent.extend('ConstructorStringResultEvent', {
+  event_result_type: String,
+})
+
+const ConstructorNumberResultEvent = BaseEvent.extend('ConstructorNumberResultEvent', {
+  event_result_type: Number,
+})
+
+const ConstructorBooleanResultEvent = BaseEvent.extend('ConstructorBooleanResultEvent', {
+  event_result_type: Boolean,
+})
+
+const ConstructorArrayResultEvent = BaseEvent.extend('ConstructorArrayResultEvent', {
+  event_result_type: Array,
+})
+
+const ConstructorObjectResultEvent = BaseEvent.extend('ConstructorObjectResultEvent', {
+  event_result_type: Object,
 })
 
 const ComplexResultEvent = BaseEvent.extend('ComplexResultEvent', {
@@ -62,6 +82,50 @@ test('built-in result schemas validate handler results', async () => {
   assert.equal(string_result.result, '42')
   assert.equal(number_result.status, 'completed')
   assert.equal(number_result.result, 123)
+})
+
+test('event_result_type supports constructor shorthands and enforces them', async () => {
+  const bus = new EventBus('ConstructorResultTypeBus')
+
+  bus.on(ConstructorStringResultEvent, () => 'ok')
+  bus.on(ConstructorNumberResultEvent, () => 123)
+  bus.on(ConstructorBooleanResultEvent, () => true)
+  bus.on(ConstructorArrayResultEvent, () => [1, 'two', false])
+  bus.on(ConstructorObjectResultEvent, () => ({ id: 1, ok: true }))
+
+  const string_event = bus.dispatch(ConstructorStringResultEvent({}))
+  const number_event = bus.dispatch(ConstructorNumberResultEvent({}))
+  const boolean_event = bus.dispatch(ConstructorBooleanResultEvent({}))
+  const array_event = bus.dispatch(ConstructorArrayResultEvent({}))
+  const object_event = bus.dispatch(ConstructorObjectResultEvent({}))
+
+  await Promise.all([
+    string_event.done(),
+    number_event.done(),
+    boolean_event.done(),
+    array_event.done(),
+    object_event.done(),
+  ])
+
+  assert.equal(typeof (string_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
+  assert.equal(typeof (number_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
+  assert.equal(typeof (boolean_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
+  assert.equal(typeof (array_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
+  assert.equal(typeof (object_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
+
+  assert.equal(Array.from(string_event.event_results.values())[0]?.status, 'completed')
+  assert.equal(Array.from(number_event.event_results.values())[0]?.status, 'completed')
+  assert.equal(Array.from(boolean_event.event_results.values())[0]?.status, 'completed')
+  assert.equal(Array.from(array_event.event_results.values())[0]?.status, 'completed')
+  assert.equal(Array.from(object_event.event_results.values())[0]?.status, 'completed')
+
+  const invalid_number_event = BaseEvent.extend('ConstructorNumberResultEventInvalid', {
+    event_result_type: Number,
+  })
+  bus.on(invalid_number_event, () => 'not-a-number')
+  const invalid = bus.dispatch(invalid_number_event({}))
+  await invalid.done()
+  assert.equal(Array.from(invalid.event_results.values())[0]?.status, 'error')
 })
 
 test('invalid handler result marks error when schema is defined', async () => {
@@ -111,7 +175,7 @@ test('fromJSON converts event_result_type into zod schema', async () => {
   const bus = new EventBus('FromJsonResultBus')
 
   const original = TypedResultEvent({
-    event_result_type: typed_result_schema,
+    event_result_type: typed_result_type,
   })
   const json = original.toJSON()
 

@@ -90,6 +90,7 @@ async def run_mode_throughput_benchmark(
         name=f'ThroughputFloor_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
+        max_history_drop=True,
     )
 
     processed = 0
@@ -134,6 +135,7 @@ async def run_io_fanout_benchmark(
         name=f'Fanout_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
+        max_history_drop=True,
     )
 
     handled = 0
@@ -279,6 +281,7 @@ async def run_contention_round(
             name=f'LockContention_{i}_{event_handler_concurrency}',
             event_handler_concurrency=event_handler_concurrency,
             middlewares=[],
+            max_history_drop=True,
         )
         for i in range(bus_count)
     ]
@@ -354,8 +357,8 @@ async def test_20k_events_with_memory_control():
     initial_memory = get_memory_usage_mb()
     print(f'\nInitial memory: {initial_memory:.1f} MB')
 
-    # Create EventBus with proper limits (now default)
-    bus = EventBus(name='ManyEvents', middlewares=[])
+    # Use bounded history with drop enabled to allow sustained flooding.
+    bus = EventBus(name='ManyEvents', middlewares=[], max_history_drop=True)
 
     print('EventBus settings:')
     print(f'  max_history_size: {bus.max_history_size}')
@@ -516,7 +519,7 @@ async def test_hard_limit_enforcement():
 @pytest.mark.asyncio
 async def test_cleanup_prioritizes_pending():
     """Test that cleanup keeps pending events and removes completed ones"""
-    bus = EventBus(name='CleanupTest', max_history_size=10, middlewares=[])
+    bus = EventBus(name='CleanupTest', max_history_size=10, max_history_drop=True, middlewares=[])
 
     try:
         # Process some events to completion
@@ -579,8 +582,8 @@ async def test_ephemeral_buses_with_forwarding_churn():
     start = time.time()
 
     for idx in range(total_bus_pairs):
-        bus_a = EventBus(name=f'EphemeralA_{idx}_{os.getpid()}', middlewares=[])
-        bus_b = EventBus(name=f'EphemeralB_{idx}_{os.getpid()}', middlewares=[])
+        bus_a = EventBus(name=f'EphemeralA_{idx}_{os.getpid()}', middlewares=[], max_history_drop=True)
+        bus_b = EventBus(name=f'EphemeralB_{idx}_{os.getpid()}', middlewares=[], max_history_drop=True)
 
         async def handler_a(event: SimpleEvent) -> None:
             nonlocal handled_a
@@ -633,8 +636,8 @@ async def test_forwarding_queue_jump_timeout_mix_stays_stable():
     history_limit = 500
     total_iterations = 300
 
-    bus_a = EventBus(name='MixedPathA', max_history_size=history_limit, middlewares=[])
-    bus_b = EventBus(name='MixedPathB', max_history_size=history_limit, middlewares=[])
+    bus_a = EventBus(name='MixedPathA', max_history_size=history_limit, max_history_drop=True, middlewares=[])
+    bus_b = EventBus(name='MixedPathB', max_history_size=history_limit, max_history_drop=True, middlewares=[])
 
     parent_handled = 0
     child_handled = 0
@@ -692,7 +695,7 @@ async def test_forwarding_queue_jump_timeout_mix_stays_stable():
 @pytest.mark.asyncio
 async def test_history_bound_is_strict_after_idle():
     """After steady-state processing, history should stay within max_history_size."""
-    bus = EventBus(name='StrictHistoryBound', max_history_size=25, middlewares=[])
+    bus = EventBus(name='StrictHistoryBound', max_history_size=25, max_history_drop=True, middlewares=[])
 
     async def handler(event: SimpleEvent) -> None:
         return None
@@ -761,11 +764,13 @@ async def test_forwarding_throughput_floor_across_modes(event_handler_concurrenc
         name=f'ForwardSource_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
+        max_history_drop=True,
     )
     target_bus = EventBus(
         name=f'ForwardTarget_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
+        max_history_drop=True,
     )
 
     handled = 0
@@ -905,6 +910,7 @@ async def test_queue_jump_perf_matrix_by_mode(event_handler_concurrency: Literal
         name=f'QueueJump_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
+        max_history_drop=True,
     )
 
     parent_count = 0
@@ -965,18 +971,21 @@ async def test_forwarding_chain_perf_matrix_by_mode(event_handler_concurrency: L
         event_handler_concurrency=event_handler_concurrency,
         max_history_size=120,
         middlewares=[],
+        max_history_drop=True,
     )
     middle_bus = EventBus(
         name=f'ChainMiddle_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         max_history_size=120,
         middlewares=[],
+        max_history_drop=True,
     )
     sink_bus = EventBus(
         name=f'ChainSink_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         max_history_size=120,
         middlewares=[],
+        max_history_drop=True,
     )
 
     sink_count = 0
@@ -1054,6 +1063,7 @@ async def test_timeout_churn_perf_matrix_by_mode(event_handler_concurrency: Lite
         name=f'TimeoutChurn_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
+        max_history_drop=True,
     )
 
     timeout_phase_events: list[TimeoutChurnEvent] = []
@@ -1136,6 +1146,7 @@ async def test_memory_envelope_by_mode_for_capped_history(event_handler_concurre
         event_handler_concurrency=event_handler_concurrency,
         max_history_size=60,
         middlewares=[],
+        max_history_drop=True,
     )
 
     async def handler(event: SimpleEvent) -> None:
@@ -1187,6 +1198,7 @@ async def test_max_history_none_single_bus_stress_matrix(event_handler_concurren
         event_handler_concurrency=event_handler_concurrency,
         max_history_size=None,
         middlewares=[],
+        max_history_drop=True,
     )
     processed = 0
 
@@ -1240,18 +1252,21 @@ async def test_max_history_none_forwarding_chain_stress_matrix(event_handler_con
         event_handler_concurrency=event_handler_concurrency,
         max_history_size=None,
         middlewares=[],
+        max_history_drop=True,
     )
     middle_bus = EventBus(
         name=f'UnlimitedChainMiddle_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         max_history_size=None,
         middlewares=[],
+        max_history_drop=True,
     )
     sink_bus = EventBus(
         name=f'UnlimitedChainSink_{event_handler_concurrency}',
         event_handler_concurrency=event_handler_concurrency,
         max_history_size=None,
         middlewares=[],
+        max_history_drop=True,
     )
 
     sink_count = 0
@@ -1328,8 +1343,8 @@ async def test_perf_debug_hot_path_breakdown() -> None:
         idx: int = 0
         event_timeout: float | None = 0.2
 
-    bus_a = EventBus(name='PerfDebugA', middlewares=[])
-    bus_b = EventBus(name='PerfDebugB', middlewares=[])
+    bus_a = EventBus(name='PerfDebugA', middlewares=[], max_history_drop=True)
+    bus_b = EventBus(name='PerfDebugB', middlewares=[], max_history_drop=True)
 
     forwarded_simple_count = 0
     child_count = 0

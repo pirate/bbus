@@ -32,7 +32,7 @@ async def test_event_reset_creates_fresh_pending_event_for_cross_bus_dispatch():
     assert completed.event_status == EventStatus.COMPLETED
     assert len(completed.event_results) == 1
 
-    fresh = completed.reset()
+    fresh = completed.event_reset()
     assert fresh.event_id != completed.event_id
     assert fresh.event_status == EventStatus.PENDING
     assert fresh.event_completed_at is None

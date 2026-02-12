@@ -229,6 +229,10 @@ export class EventHandler {
     }
     return data.map((item) => EventHandler.fromJSON(item, handler))
   }
+
+  get eventbus_label(): string {
+    return `${this.eventbus_name}#${this.eventbus_id.slice(-4)}`
+  }
 }
 
 // Generic base TimeoutError used for EventHandlerTimeoutError.cause default value if

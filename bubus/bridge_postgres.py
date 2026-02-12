@@ -237,7 +237,7 @@ class PostgresEventBridge:
         await self._dispatch_inbound_payload(payload)
 
     async def _dispatch_inbound_payload(self, payload: Any) -> None:
-        event = BaseEvent[Any].model_validate(payload).reset()
+        event = BaseEvent[Any].model_validate(payload).event_reset()
         self._inbound_bus.dispatch(event)
 
     async def _ensure_table_exists(self) -> None:

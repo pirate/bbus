@@ -160,7 +160,7 @@ class SQLiteEventBridge:
             await asyncio.sleep(self.poll_interval)
 
     async def _dispatch_inbound_payload(self, payload: Any) -> None:
-        event = BaseEvent[Any].model_validate(payload).reset()
+        event = BaseEvent[Any].model_validate(payload).event_reset()
         self._inbound_bus.dispatch(event)
 
     def _connect(self) -> sqlite3.Connection:

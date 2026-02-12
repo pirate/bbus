@@ -184,7 +184,7 @@ export const buildResultLine = (
   const extension = is_last ? '    ' : '│   '
   const new_indent = indent + extension
 
-  const direct_children = result.event_children ?? []
+  const direct_children = result.event_children
   if (direct_children.length === 0) {
     return line
   }

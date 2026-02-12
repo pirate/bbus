@@ -278,7 +278,7 @@ test('fromJSON accepts event_parent_id: null and preserves it in toJSON output',
   assert.equal((event.toJSON() as Record<string, unknown>).event_parent_id, null)
 })
 
-test('fromJSON preserves raw event_result_type JSON for stable roundtrip output', () => {
+test('fromJSON deserializes event_result_type and toJSON reserializes schema', () => {
   const raw_schema = { type: 'integer' }
   const event = BaseEvent.fromJSON({
     event_id: '018f8e40-1234-7000-8000-000000001235',
@@ -288,7 +288,89 @@ test('fromJSON preserves raw event_result_type JSON for stable roundtrip output'
     event_result_type: raw_schema,
   })
   const json = event.toJSON() as Record<string, unknown>
-  assert.deepEqual(json.event_result_type, raw_schema)
+  assert.equal(typeof (event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
+  assert.equal(typeof json.event_result_type, 'object')
+  assert.ok(['integer', 'number'].includes(String((json.event_result_type as { type?: unknown }).type)))
+})
+
+test('fromJSON reconstructs integer and null schemas for runtime validation', async () => {
+  const bus = new EventBus('SchemaPrimitiveRuntimeBus')
+
+  const int_event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-000000001236',
+    event_created_at: new Date('2025-01-01T00:00:02.000Z').toISOString(),
+    event_type: 'RawIntegerEvent',
+    event_timeout: null,
+    event_result_type: { type: 'integer' },
+  })
+  bus.on('RawIntegerEvent', () => 123)
+  await bus.dispatch(int_event).done()
+  const int_result = Array.from(int_event.event_results.values())[0]
+  assert.equal(int_result.status, 'completed')
+
+  const int_bad_event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-000000001237',
+    event_created_at: new Date('2025-01-01T00:00:03.000Z').toISOString(),
+    event_type: 'RawIntegerEventBad',
+    event_timeout: null,
+    event_result_type: { type: 'integer' },
+  })
+  bus.on('RawIntegerEventBad', () => 1.5)
+  await bus.dispatch(int_bad_event).done()
+  const int_bad_result = Array.from(int_bad_event.event_results.values())[0]
+  assert.equal(int_bad_result.status, 'error')
+
+  const null_event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-000000001238',
+    event_created_at: new Date('2025-01-01T00:00:04.000Z').toISOString(),
+    event_type: 'RawNullEvent',
+    event_timeout: null,
+    event_result_type: { type: 'null' },
+  })
+  bus.on('RawNullEvent', () => null)
+  await bus.dispatch(null_event).done()
+  const null_result = Array.from(null_event.event_results.values())[0]
+  assert.equal(null_result.status, 'completed')
+
+  await bus.waitUntilIdle()
+})
+
+test('fromJSON reconstructs nested object/array result schemas', async () => {
+  const bus = new EventBus('SchemaNestedRuntimeBus')
+  const raw_nested_schema = {
+    type: 'object',
+    properties: {
+      items: { type: 'array', items: { type: 'integer' } },
+      meta: { type: 'object', additionalProperties: { type: 'boolean' } },
+    },
+    required: ['items', 'meta'],
+  }
+
+  const valid_event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-000000001239',
+    event_created_at: new Date('2025-01-01T00:00:05.000Z').toISOString(),
+    event_type: 'RawNestedSchemaEvent',
+    event_timeout: null,
+    event_result_type: raw_nested_schema,
+  })
+  bus.on('RawNestedSchemaEvent', () => ({ items: [1, 2, 3], meta: { ok: true } }))
+  await bus.dispatch(valid_event).done()
+  const valid_result = Array.from(valid_event.event_results.values())[0]
+  assert.equal(valid_result.status, 'completed')
+
+  const invalid_event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-000000001240',
+    event_created_at: new Date('2025-01-01T00:00:06.000Z').toISOString(),
+    event_type: 'RawNestedSchemaEventBad',
+    event_timeout: null,
+    event_result_type: raw_nested_schema,
+  })
+  bus.on('RawNestedSchemaEventBad', () => ({ items: ['bad'], meta: { ok: 'yes' } }))
+  await bus.dispatch(invalid_event).done()
+  const invalid_result = Array.from(invalid_event.event_results.values())[0]
+  assert.equal(invalid_result.status, 'error')
+
+  await bus.waitUntilIdle()
 })
 
 // ─── Event dispatch and status lifecycle ─────────────────────────────────────

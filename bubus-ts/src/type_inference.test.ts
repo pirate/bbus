@@ -30,6 +30,36 @@ const NoSchemaEvent = BaseEvent.extend('NoSchemaEventForInference', {})
 type NoSchemaResult = EventResultType<InstanceType<typeof NoSchemaEvent>>
 type _assert_no_schema_result = Assert<IsEqual<NoSchemaResult, unknown>>
 
+const ConstructorStringResultEvent = BaseEvent.extend('ConstructorStringResultEventForInference', {
+  event_result_type: String,
+})
+type ConstructorStringResult = EventResultType<InstanceType<typeof ConstructorStringResultEvent>>
+type _assert_constructor_string_result = Assert<IsEqual<ConstructorStringResult, string>>
+
+const ConstructorNumberResultEvent = BaseEvent.extend('ConstructorNumberResultEventForInference', {
+  event_result_type: Number,
+})
+type ConstructorNumberResult = EventResultType<InstanceType<typeof ConstructorNumberResultEvent>>
+type _assert_constructor_number_result = Assert<IsEqual<ConstructorNumberResult, number>>
+
+const ConstructorBooleanResultEvent = BaseEvent.extend('ConstructorBooleanResultEventForInference', {
+  event_result_type: Boolean,
+})
+type ConstructorBooleanResult = EventResultType<InstanceType<typeof ConstructorBooleanResultEvent>>
+type _assert_constructor_boolean_result = Assert<IsEqual<ConstructorBooleanResult, boolean>>
+
+const ConstructorArrayResultEvent = BaseEvent.extend('ConstructorArrayResultEventForInference', {
+  event_result_type: Array,
+})
+type ConstructorArrayResult = EventResultType<InstanceType<typeof ConstructorArrayResultEvent>>
+type _assert_constructor_array_result = Assert<IsEqual<ConstructorArrayResult, unknown[]>>
+
+const ConstructorObjectResultEvent = BaseEvent.extend('ConstructorObjectResultEventForInference', {
+  event_result_type: Object,
+})
+type ConstructorObjectResult = EventResultType<InstanceType<typeof ConstructorObjectResultEvent>>
+type _assert_constructor_object_result = Assert<IsEqual<ConstructorObjectResult, Record<string, unknown>>>
+
 const bus = new EventBus('TypeInferenceBus')
 
 bus.on(InferableResultEvent, (event) => {

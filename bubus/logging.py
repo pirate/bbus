@@ -126,7 +126,7 @@ def log_eventresult_tree(
     )
 
     # Format handler name with bus info
-    handler_display = f'{result.eventbus_name}.{result.handler_name}#{result.handler_id[-4:]}'
+    handler_display = f'{result.eventbus_label}.{result.handler.label}'
 
     # Format the result line
     result_line = f'{indent}{connector}{result_icon} {handler_display}'
@@ -237,7 +237,7 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
 
     logger.warning('=' * 80)
     logger.warning(
-        f'⏱️  TIMEOUT ERROR - Handling took more than {event.event_timeout}s for {timed_out_result.eventbus_name}.{timed_out_result.handler_name}({event})'
+        f'⏱️  TIMEOUT ERROR - Handling took more than {event.event_timeout}s for {timed_out_result.eventbus_label}.{timed_out_result.handler_name}({event})'
     )
     logger.warning('=' * 80)
 

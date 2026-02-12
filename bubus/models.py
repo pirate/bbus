@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Generator
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -18,7 +18,6 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
-    TypeAdapter,
     computed_field,
     field_serializer,
     field_validator,
@@ -27,7 +26,14 @@ from pydantic import (
 from typing_extensions import TypeVar  # needed to get TypeVar(default=...) above python 3.11
 from uuid_extensions import uuid7str
 
-from bubus.helpers import create_model_from_schema
+from bubus.helpers import extract_basemodel_generic_arg
+from bubus.jsonschema import (
+    normalize_result_dict,
+    pydantic_model_from_json_schema,
+    pydantic_model_to_json_schema,
+    result_type_identifier_from_schema,
+    validate_result_against_type,
+)
 
 if TYPE_CHECKING:
     from bubus.service import EventBus
@@ -36,8 +42,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger('bubus')
 
 BUBUS_LOGGING_LEVEL = os.getenv('BUBUS_LOGGING_LEVEL', 'WARNING').upper()  # WARNING normally, otherwise DEBUG when testing
-LIBRARY_VERSION = os.getenv('LIBRARY_VERSION', '1.0.0')
-JSON_SCHEMA_DRAFT = 'https://json-schema.org/draft/2020-12/schema'
+LIBRARY_VERSION = os.getenv('LIBRARY_VERSION', '0.0.1')
 
 logger.setLevel(BUBUS_LOGGING_LEVEL)
 
@@ -185,18 +190,6 @@ EventResultFilter = Callable[['EventResult[Any]'], bool]
 HANDLER_ID_NAMESPACE: UUID = uuid5(NAMESPACE_DNS, 'bubus-handler')
 
 
-def _get_callable_handler_name(handler: EventHandlerCallable) -> str:
-    assert hasattr(handler, '__name__'), f'Handler {handler} has no __name__ attribute!'
-    if inspect.ismethod(handler):
-        return f'{type(handler.__self__).__name__}.{handler.__name__}'
-    elif callable(handler):
-        handler_module = getattr(handler, '__module__', '<unknown>')
-        handler_name = getattr(handler, '__name__', type(handler).__name__)
-        return f'{handler_module}.{handler_name}'
-    else:
-        raise ValueError(f'Invalid handler: {handler} {type(handler)}, expected a function, coroutine, or method')
-
-
 def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
     normalized = str(Path(path).expanduser().resolve())
     home = str(Path.home())
@@ -266,45 +259,50 @@ class EventHandler(BaseModel):
     eventbus_name: PythonIdentifierStr = 'EventBus'
     eventbus_id: str = '00000000-0000-0000-0000-000000000000'
 
+    @property
+    def eventbus_label(self) -> str:
+        return f'{self.eventbus_name}#{self.eventbus_id[-4:]}'
+
+    @staticmethod
+    def get_callable_handler_name(handler: EventHandlerCallable) -> str:
+        assert hasattr(handler, '__name__'), f'Handler {handler} has no __name__ attribute!'
+        if inspect.ismethod(handler):
+            return f'{type(handler.__self__).__name__}.{handler.__name__}'
+        elif callable(handler):
+            handler_module = getattr(handler, '__module__', '<unknown>')
+            handler_name = getattr(handler, '__name__', type(handler).__name__)
+            return f'{handler_module}.{handler_name}'
+        else:
+            raise ValueError(f'Invalid handler: {handler} {type(handler)}, expected a function, coroutine, or method')
+
     @model_validator(mode='before')
     @classmethod
     def _populate_handler_name(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        payload = cast(dict[str, Any], data)
-        handler = payload.get('handler')
-        if handler is not None and not payload.get('handler_name'):
-            payload['handler_name'] = _get_callable_handler_name(handler)
-        return payload
+        params = cast(dict[str, Any], data)
+        handler = params.get('handler')
+        if handler is not None and not params.get('handler_name'):
+            params['handler_name'] = cls.get_callable_handler_name(handler)
+        return params
 
     @model_validator(mode='after')
     def _ensure_handler_id(self) -> 'EventHandler':
         if self.id:
             return self
-        self.id = self.compute_handler_id(
-            eventbus_id=self.eventbus_id,
-            handler_name=self.handler_name,
-            handler_file_path=self.handler_file_path,
-            handler_registered_at=self.handler_registered_at,
-            handler_registered_ts=self.handler_registered_ts,
-            event_pattern=self.event_pattern,
-        )
+        self.id = self.compute_handler_id()
         return self
 
-    @staticmethod
-    def compute_handler_id(
-        *,
-        eventbus_id: str,
-        handler_name: str,
-        handler_file_path: str | None,
-        handler_registered_at: datetime,
-        handler_registered_ts: int,
-        event_pattern: str,
-    ) -> str:
-        file_path = handler_file_path or 'unknown'
+    def compute_handler_id(self) -> str:
+        """Match TS handler-id algorithm: uuidv5(seed, HANDLER_ID_NAMESPACE)."""
+        file_path = self.handler_file_path or 'unknown'
+        registered_at = self.handler_registered_at
+        if registered_at.tzinfo is None:
+            registered_at = registered_at.replace(tzinfo=UTC)
+        registered_at_iso = registered_at.astimezone(UTC).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
         seed = (
-            f'{eventbus_id}|{handler_name}|{file_path}|'
-            f'{handler_registered_at.isoformat()}|{handler_registered_ts}|{event_pattern}'
+            f'{self.eventbus_id}|{self.handler_name}|{file_path}|'
+            f'{registered_at_iso}|{self.handler_registered_ts}|{self.event_pattern}'
         )
         return str(uuid5(HANDLER_ID_NAMESPACE, seed))
 
@@ -334,7 +332,7 @@ class EventHandler(BaseModel):
         if handler is not None:
             entry.handler = handler
             if not entry.handler_name or entry.handler_name == 'anonymous':
-                entry.handler_name = _get_callable_handler_name(cast(Any, handler))
+                entry.handler_name = cls.get_callable_handler_name(handler)
         return entry
 
     @classmethod
@@ -345,6 +343,7 @@ class EventHandler(BaseModel):
         event_pattern: str,
         eventbus_name: PythonIdentifierStr,
         eventbus_id: str,
+        detect_handler_file_path: bool = True,
         id: str | None = None,
         handler_file_path: str | None = None,
         handler_timeout: float | None = None,
@@ -352,224 +351,27 @@ class EventHandler(BaseModel):
         handler_registered_at: datetime | None = None,
         handler_registered_ts: int | None = None,
     ) -> 'EventHandler':
-        return cls(
-            id=id,
-            handler=handler,
-            handler_name=_get_callable_handler_name(cast(Any, handler)),
-            handler_file_path=handler_file_path or _get_callable_handler_file_path(handler),
-            handler_timeout=handler_timeout,
-            handler_slow_timeout=handler_slow_timeout,
-            handler_registered_at=handler_registered_at or datetime.now(UTC),
-            handler_registered_ts=handler_registered_ts or time.time_ns(),
-            event_pattern=event_pattern,
-            eventbus_name=eventbus_name,
-            eventbus_id=eventbus_id,
-        )
+        resolved_file_path = handler_file_path
+        if resolved_file_path is None and detect_handler_file_path:
+            resolved_file_path = _get_callable_handler_file_path(handler)
 
+        handler_params: dict[str, Any] = {
+            'id': id,
+            'handler': handler,
+            'handler_name': cls.get_callable_handler_name(handler),
+            'handler_file_path': resolved_file_path,
+            'handler_registered_at': handler_registered_at or datetime.now(UTC),
+            'handler_registered_ts': handler_registered_ts or time.time_ns(),
+            'event_pattern': event_pattern,
+            'eventbus_name': eventbus_name,
+            'eventbus_id': eventbus_id,
+        }
+        if handler_timeout is not None:
+            handler_params['handler_timeout'] = handler_timeout
+        if handler_slow_timeout is not None:
+            handler_params['handler_slow_timeout'] = handler_slow_timeout
 
-def get_handler_name(handler: EventHandler | EventHandlerCallable) -> str:
-    if isinstance(handler, EventHandler):
-        return handler.handler_name
-    return _get_callable_handler_name(handler)
-
-
-def get_handler_id(handler: EventHandler | EventHandlerCallable, eventbus: Any = None) -> str:
-    """Generate a unique handler ID based on the bus and handler instance."""
-    if isinstance(handler, EventHandler):
-        if handler.id:
-            return handler.id
-        if handler.handler is not None and eventbus is not None:
-            return f'{id(eventbus)}.{id(handler.handler)}'
-        if handler.handler is not None:
-            return str(id(handler.handler))
-        return str(id(handler))
-    if eventbus is None:
-        return str(id(handler))
-    return f'{id(eventbus)}.{id(handler)}'
-
-
-def _extract_basemodel_generic_arg(cls: type) -> Any:
-    """
-    Extract T_EventResultType Generic arg from BaseModel[T_EventResultType] subclasses using pydantic generic metadata.
-    Needed because pydantic messes with the mro and obscures the Generic from the bases list.
-    https://github.com/pydantic/pydantic/issues/8410
-    """
-    # Direct check first for speed - most subclasses will have it directly
-    if hasattr(cls, '__pydantic_generic_metadata__'):
-        metadata_value = getattr(cls, '__pydantic_generic_metadata__')
-        metadata: dict[str, Any] = cast(dict[str, Any], metadata_value)
-        origin: Any = metadata.get('origin')
-        args: tuple[Any, ...] = cast(tuple[Any, ...], metadata.get('args') or ())
-        if origin is BaseEvent and args and len(args) > 0:
-            return args[0]
-
-    # Only check MRO if direct check failed
-    # Skip first element (cls itself) since we already checked it
-    for parent in cls.__mro__[1:]:
-        if hasattr(parent, '__pydantic_generic_metadata__'):
-            metadata_value = getattr(parent, '__pydantic_generic_metadata__')
-            metadata = cast(dict[str, Any], metadata_value)
-            # Check if this is a parameterized BaseEvent
-            origin: Any = metadata.get('origin')
-            args: tuple[Any, ...] = cast(tuple[Any, ...], metadata.get('args') or ())
-            if origin is BaseEvent and args and len(args) > 0:
-                return args[0]
-
-    return None
-
-
-def _normalize_result_dict(value: Any) -> dict[str, Any]:
-    """Return a dict with only string keys from an arbitrary mapping-like value."""
-    if not isinstance(value, dict):
-        return {}
-
-    normalized: dict[str, Any] = {}
-    raw_items = cast(Any, value).items()
-    for key, item_value in raw_items:
-        if isinstance(key, str):
-            normalized[key] = item_value
-    return normalized
-
-
-def _json_schema_primitive_type(schema: dict[str, Any]) -> type[Any] | None:
-    """Map simple JSON Schema primitive types to Python runtime types."""
-    raw_type = schema.get('type')
-    schema_type: str | None = None
-    if isinstance(raw_type, str):
-        schema_type = raw_type
-    elif isinstance(raw_type, Sequence) and not isinstance(raw_type, (str, bytes, bytearray)):
-        raw_type_values = cast(Sequence[Any], raw_type)
-        non_null: list[str] = []
-        for raw_item in raw_type_values:
-            if isinstance(raw_item, str) and raw_item != 'null':
-                non_null.append(raw_item)
-        if len(non_null) == 1:
-            schema_type = non_null[0]
-
-    if schema_type == 'string':
-        return str
-    if schema_type == 'number':
-        return float
-    if schema_type == 'integer':
-        return int
-    if schema_type == 'boolean':
-        return bool
-    return None
-
-
-def _json_schema_identifier(schema: dict[str, Any]) -> str | None:
-    raw_type = schema.get('type')
-    schema_type: str | None = None
-    if isinstance(raw_type, str):
-        schema_type = raw_type
-    elif isinstance(raw_type, Sequence) and not isinstance(raw_type, (str, bytes, bytearray)):
-        raw_type_values = cast(Sequence[Any], raw_type)
-        non_null: list[str] = []
-        for raw_item in raw_type_values:
-            if isinstance(raw_item, str) and raw_item != 'null':
-                non_null.append(raw_item)
-        if len(non_null) == 1:
-            schema_type = non_null[0]
-
-    if schema_type in ('number', 'integer'):
-        return 'number'
-    if schema_type in ('string', 'boolean', 'object', 'array', 'null'):
-        return schema_type
-    return None
-
-
-def _result_schema_from_json_schema(result_schema: Any) -> Any:
-    """Reconstruct runtime types from JSON Schema when possible."""
-    if not isinstance(result_schema, dict):
-        return result_schema
-    normalized_schema = _normalize_result_dict(result_schema)
-
-    primitive_type = _json_schema_primitive_type(normalized_schema)
-    if primitive_type is not None:
-        return primitive_type
-
-    # For object schemas produced by model_json_schema(), dynamically rebuild a
-    # Pydantic model so loaded events can validate results across language boundaries.
-    has_object_shape = normalized_schema.get('type') == 'object' and isinstance(normalized_schema.get('properties'), dict)
-    has_defs = isinstance(normalized_schema.get('$defs'), dict) and bool(normalized_schema.get('$defs'))
-    if has_object_shape or has_defs:
-        try:
-            dynamic_model = create_model_from_schema(normalized_schema)
-            if getattr(dynamic_model, 'model_fields', None):
-                return dynamic_model
-        except Exception:
-            # Keep raw schema dict if reconstruction fails.
-            pass
-
-    return normalized_schema
-
-
-def _to_result_schema_json_schema(result_schema: Any) -> dict[str, Any] | None:
-    """Best-effort conversion of a Python result schema/type into JSON Schema."""
-    if result_schema is None:
-        return None
-    if isinstance(result_schema, dict):
-        schema = dict(cast(dict[str, Any], result_schema))
-        schema.setdefault('$schema', JSON_SCHEMA_DRAFT)
-        return schema
-    if isinstance(result_schema, str):
-        return None
-
-    try:
-        if inspect.isclass(result_schema) and issubclass(result_schema, BaseModel):
-            schema = result_schema.model_json_schema()
-            schema.setdefault('$schema', JSON_SCHEMA_DRAFT)
-            return schema
-    except TypeError:
-        pass
-
-    try:
-        schema = TypeAdapter(result_schema).json_schema()
-        normalized_schema = _normalize_result_dict(schema)
-        normalized_schema.setdefault('$schema', JSON_SCHEMA_DRAFT)
-        return normalized_schema
-    except Exception:
-        return None
-
-
-def _result_schema_identifier_from_schema(result_schema: Any) -> str | None:
-    if result_schema is None:
-        return None
-    if isinstance(result_schema, str):
-        return result_schema
-    if isinstance(result_schema, dict):
-        return _json_schema_identifier(_normalize_result_dict(result_schema))
-
-    if result_schema is str:
-        return 'string'
-    if result_schema in (int, float):
-        return 'number'
-    if result_schema is bool:
-        return 'boolean'
-
-    derived_schema = _to_result_schema_json_schema(result_schema)
-    if isinstance(derived_schema, dict):
-        return _json_schema_identifier(derived_schema)
-    return None
-
-
-def _validate_result_against_schema(result_schema: Any, result: Any) -> Any:
-    if result_schema is None:
-        return result
-
-    if isinstance(result_schema, dict):
-        normalized_schema = _normalize_result_dict(result_schema)
-        primitive_type = _json_schema_primitive_type(normalized_schema)
-        if primitive_type is None:
-            # Complex JSON Schema objects/arrays are currently metadata-only in Python.
-            return result
-        result_schema = primitive_type
-
-    if inspect.isclass(result_schema) and issubclass(result_schema, BaseModel):
-        return result_schema.model_validate(result)
-
-    adapter = TypeAdapter(result_schema)
-    return adapter.validate_python(result)
+        return cls(**handler_params)
 
 
 class BaseEvent(BaseModel, Generic[T_EventResultType]):
@@ -592,8 +394,21 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     _event_result_type_cache: ClassVar[Any | None] = None
 
     event_type: PythonIdentifierStr = Field(default='UndefinedEvent', description='Event type name', max_length=64)
-    event_version: str = Field(default='0.0.1', description='Event payload version tag')
-    event_timeout: float | None = Field(default=300.0, description='Timeout in seconds for event to finish processing')
+    event_version: str = Field(
+        default=LIBRARY_VERSION,
+        description='Event type version tag, defaults to LIBRARY_VERSION env var or "0.0.1" if not overridden',
+    )
+    event_timeout: float | None = Field(
+        default=None, description='Timeout in seconds for event to finish processing (bus default applied at dispatch)'
+    )
+    event_slow_timeout: float | None = Field(
+        default=None, description='Optional per-event slow processing warning threshold in seconds'
+    )
+    event_concurrency: ClassVar[Literal['global-serial']] = 'global-serial'  # only mode supported in python for now, ts supports 'global-serial' | 'bus-serial' | 'parallel'
+    event_handler_timeout: float | None = Field(default=None, description='Optional per-event handler timeout cap in seconds')
+    event_handler_slow_timeout: float | None = Field(
+        default=None, description='Optional per-event slow handler warning threshold in seconds'
+    )
     event_handler_concurrency: EventHandlerConcurrencyMode = Field(
         default='serial',
         description="Handler scheduling strategy: 'serial' runs one handler at a time, 'parallel' runs handlers concurrently",
@@ -605,31 +420,16 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     event_result_type: Any = Field(
         default=None, description='Schema/type for handler result validation (serialized as JSON Schema)'
     )
-    event_result_type_json: dict[str, Any] | None = Field(
-        default=None, exclude=True, repr=False, description='Original raw JSON Schema payload for stable roundtrip'
-    )
-
-    @model_validator(mode='before')
-    @classmethod
-    def _capture_raw_event_result_type_json(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        payload = cast(dict[str, Any], data)
-        if 'event_result_type_json' not in payload and isinstance(payload.get('event_result_type'), dict):
-            payload['event_result_type_json'] = dict(cast(dict[str, Any], payload['event_result_type']))
-        return payload
 
     @field_validator('event_result_type', mode='before')
     @classmethod
     def _deserialize_event_result_type(cls, value: Any) -> Any:
-        return _result_schema_from_json_schema(value)
+        return pydantic_model_from_json_schema(value)
 
     @field_serializer('event_result_type', when_used='json')
     def event_result_type_serializer(self, value: Any) -> dict[str, Any] | None:
         """Serialize event_result_type to JSON Schema for cross-language transport."""
-        if isinstance(self.event_result_type_json, dict):
-            return self.event_result_type_json
-        return _to_result_schema_json_schema(value)
+        return pydantic_model_to_json_schema(value)
 
     # Runtime metadata
     event_id: UUIDStr = Field(default_factory=uuid7str, max_length=36)
@@ -856,12 +656,12 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         """Automatically set event_type to the class name if not provided"""
         if not isinstance(data, dict):
             return data
-        payload = cast(dict[str, Any], data)
+        params = cast(dict[str, Any], data)
         is_class_default_unchanged = cls.model_fields['event_type'].default == 'UndefinedEvent'
-        is_event_type_not_provided = 'event_type' not in payload or payload['event_type'] == 'UndefinedEvent'
+        is_event_type_not_provided = 'event_type' not in params or params['event_type'] == 'UndefinedEvent'
         if is_class_default_unchanged and is_event_type_not_provided:
-            payload['event_type'] = cls.__name__
-        return payload
+            params['event_type'] = cls.__name__
+        return params
 
     @model_validator(mode='before')
     @classmethod
@@ -870,25 +670,38 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         if not isinstance(data, dict):
             return data
 
-        payload = cast(dict[str, Any], data)
-        if 'event_result_type' in payload:
-            return payload
+        params = cast(dict[str, Any], data)
 
+        # if we already have a event_result_type provided in the event constructor args
+        if 'event_result_type' in params:
+            return params
+
+        # if we already have a event_result_type defined statically on the event class
         if 'event_result_type' in cls.model_fields:
             field = cls.model_fields['event_result_type']
             if field.default is not None and field.default != BaseEvent.model_fields['event_result_type'].default:
-                payload['event_result_type'] = field.default
-                return payload
+                params['event_result_type'] = field.default
+                return params
 
+        # if we already have a event_result_type cached in the class
         if cls._event_result_type_cache is not None:
-            payload['event_result_type'] = cls._event_result_type_cache
-            return payload
+            params['event_result_type'] = cls._event_result_type_cache
+            return params
 
-        extracted_type = _extract_basemodel_generic_arg(cls)
+        # if we don't have a event_result_type defined anywhere, extract it from the event class generic argument
+        extracted_type = extract_basemodel_generic_arg(cls)
         cls._event_result_type_cache = extracted_type
         if extracted_type is not None:
-            payload['event_result_type'] = extracted_type
-        return payload
+            params['event_result_type'] = extracted_type
+        return params
+
+    @model_validator(mode='after')
+    def _hydrate_event_result_types_from_event(self) -> Self:
+        """Rehydrate per-handler result_type from the event-level event_result_type."""
+        if self.event_results:
+            for event_result in self.event_results.values():
+                event_result.result_type = self.event_result_type
+        return self
 
     @property
     def event_completed_signal(self) -> asyncio.Event | None:
@@ -962,7 +775,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             event_result.completed_at = None
             event_result.status = 'pending'
             event_result.timeout = timeout if timeout is not None else self.event_timeout
-            event_result.result_schema = self.event_result_type
+            event_result.result_type = self.event_result_type
             pending_results[handler_id] = event_result
         return pending_results
 
@@ -1044,28 +857,6 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
         return event_results_by_handler_id
 
-    async def raise_if_errors(
-        self,
-        timeout: float | None = None,
-        include_cancelled: bool = False,
-    ) -> None:
-        """
-        Raise an ExceptionGroup containing all handler errors for this event.
-
-        This waits for event completion, then aggregates handler failures from
-        event_results. By default, asyncio.CancelledError entries are ignored.
-        """
-        assert self.event_completed_signal is not None, 'Event cannot be awaited outside of an async context'
-        await asyncio.wait_for(self.event_completed_signal.wait(), timeout=timeout or self.event_timeout)
-
-        collected_errors = self._collect_handler_errors(include_cancelled=include_cancelled)
-
-        if collected_errors:
-            raise ExceptionGroup(
-                f'Event {self.event_type}#{self.event_id[-4:]} had {len(collected_errors)} handler error(s)',
-                collected_errors,
-            )
-
     def _collect_handler_errors(self, include_cancelled: bool) -> list[Exception]:
         """Collect handler errors as Exception instances for aggregation."""
         collected_errors: list[Exception] = []
@@ -1085,7 +876,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 continue
 
             wrapped = RuntimeError(
-                f'Non-Exception handler error from {event_result.eventbus_name}.{event_result.handler_name}: '
+                f'Non-Exception handler error from {event_result.eventbus_label}.{event_result.handler_name}: '
                 f'{type(original_error).__name__}: {original_error}'
             )
             wrapped.__cause__ = original_error
@@ -1177,7 +968,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 continue
 
             # check for event results trampling each other / conflicting
-            result_dict = _normalize_result_dict(result_value)
+            result_dict = normalize_result_dict(result_value)
             if not result_dict:
                 continue
             overlapping_keys: set[str] = merged_results.keys() & result_dict.keys()
@@ -1231,22 +1022,30 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
         if isinstance(handler, EventHandler):
             handler_entry = handler
-            if eventbus is None and handler_entry.eventbus_name != 'EventBus':
+            if eventbus is None and handler_entry.eventbus_id != '00000000-0000-0000-0000-000000000000':
                 for bus in list(EventBus.all_instances):
-                    if bus and bus.name == handler_entry.eventbus_name:
+                    if bus and bus.id == handler_entry.eventbus_id:
                         eventbus = bus
                         break
+                if (
+                    eventbus is None
+                    and handler_entry.eventbus_id
+                    and handler_entry.eventbus_id != '00000000-0000-0000-0000-000000000000'
+                ):
+                    expected_label = handler_entry.eventbus_label
+                    for bus in list(EventBus.all_instances):
+                        if bus and bus.label == expected_label:
+                            eventbus = bus
+                            break
         else:
             handler_entry = EventHandler.from_callable(
                 handler=handler,
                 event_pattern=self.event_type,
                 eventbus_name=str(eventbus.name if eventbus is not None else 'EventBus'),
                 eventbus_id=str(eventbus.id if eventbus is not None else '00000000-0000-0000-0000-000000000000'),
-                # Preserve existing event_result key semantics for compatibility.
-                id=get_handler_id(handler, eventbus),
             )
 
-        handler_id: PythonIdStr = handler_entry.id or get_handler_id(handler_entry)
+        handler_id: PythonIdStr = handler_entry.id or handler_entry.compute_handler_id()
 
         # Get or create EventResult
         if handler_id not in self.event_results:
@@ -1257,10 +1056,10 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                     handler=handler_entry,
                     status=kwargs.get('status', 'pending'),
                     timeout=self.event_timeout,
-                    result_schema=self.event_result_type,
+                    result_type=self.event_result_type,
                 ),
             )
-            # logger.debug(f'Created EventResult for handler {handler_id}: {handler and get_handler_name(handler)}')
+            # logger.debug(f'Created EventResult for handler {handler_id}: {handler and EventHandler._get_callable_handler_name(cast(Any, handler))}')
 
         # Update the EventResult with provided kwargs
         existing_result = self.event_results[handler_id]
@@ -1343,7 +1142,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             self._event_completed_signal = None
         return self
 
-    def reset(self) -> Self:
+    def event_reset(self) -> Self:
         """Return a fresh copy of this event with pending runtime state."""
         fresh_event = self.__class__.model_validate(self.model_dump(mode='python'))
         fresh_event.event_id = uuid7str()
@@ -1422,7 +1221,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
 
 def attr_name_allowed(key: str) -> bool:
-    allowed_unprefixed_attrs = {'first', 'raise_if_errors', 'reset'}
+    allowed_unprefixed_attrs = {'first'}
     return key in pydantic_builtin_attrs or key in event_builtin_attrs or key.startswith('_') or key in allowed_unprefixed_attrs
 
 
@@ -1455,7 +1254,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
     status: Literal['pending', 'started', 'completed', 'error'] = 'pending'
     event_id: UUIDStr
     handler: EventHandler = Field(default_factory=EventHandler)
-    result_schema: Any = None
+    result_type: Any = Field(default=None, exclude=True, repr=False)
     timeout: float | None = None
     started_at: datetime | None = None
 
@@ -1476,32 +1275,6 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
     #   and it would significantly reduce runtime flexibility, e.g. you couldn't define and dispatch arbitrary server-provided event types at runtime
     event_children: list['BaseEvent[Any]'] = Field(default_factory=list)  # pyright: ignore[reportUnknownVariableType]
 
-    @model_validator(mode='before')
-    @classmethod
-    def _coerce_legacy_handler_fields(cls, data: Any) -> Any:
-        """Accept legacy handler_* fields and construct handler metadata."""
-        if not isinstance(data, dict):
-            return data
-        payload = dict(cast(dict[str, Any], data))
-
-        legacy_handler_id = payload.pop('handler_id', None)
-        legacy_handler_name = payload.pop('handler_name', None)
-        legacy_eventbus_id = payload.pop('eventbus_id', None)
-        legacy_eventbus_name = payload.pop('eventbus_name', None)
-
-        if payload.get('handler') is None:
-            raw_name = str(legacy_eventbus_name or 'EventBus')
-            eventbus_name = raw_name if raw_name.isidentifier() else 'EventBus'
-            payload['handler'] = EventHandler(
-                id=str(legacy_handler_id) if legacy_handler_id is not None else None,
-                handler_name=str(legacy_handler_name or 'anonymous'),
-                eventbus_id=str(legacy_eventbus_id or '00000000-0000-0000-0000-000000000000'),
-                eventbus_name=eventbus_name,
-                event_pattern='*',
-            )
-
-        return payload
-
     @field_serializer('result', when_used='json')
     def _serialize_result(self, value: T_EventResultType | BaseEvent[Any] | None) -> Any:
         """Preserve handler return values when serializing without extra validation."""
@@ -1510,7 +1283,11 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
     @computed_field(return_type=str)
     @property
     def handler_id(self) -> str:
-        return self.handler.id or str(id(self.handler))
+        handler_id = self.handler.id
+        if handler_id is None:
+            handler_id = self.handler.compute_handler_id()
+            self.handler.id = handler_id
+        return handler_id
 
     @computed_field(return_type=str)
     @property
@@ -1528,6 +1305,10 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         return self.handler.eventbus_name
 
     @property
+    def eventbus_label(self) -> str:
+        return self.handler.eventbus_label
+
+    @property
     def handler_completed_signal(self) -> asyncio.Event | None:
         """Lazily create asyncio.Event when accessed"""
         if self._handler_completed_signal is None:
@@ -1539,12 +1320,12 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         return self._handler_completed_signal
 
     def __str__(self) -> str:
-        handler_qualname = f'{self.eventbus_name}.{self.handler_name}'
+        handler_qualname = f'{self.eventbus_label}.{self.handler_name}'
         return f'{handler_qualname}() -> {self.result or self.error or "..."} ({self.status})'
 
     def __repr__(self) -> str:
         icon = '🏃' if self.status == 'pending' else '✅' if self.status == 'completed' else '❌'
-        return f'{self.handler_name}#{self.handler_id[-4:]}() {icon}'
+        return f'{self.handler.label}() {icon}'
 
     def __await__(self) -> Generator[Self, Any, T_EventResultType | BaseEvent[Any] | None]:
         """
@@ -1561,7 +1342,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             except TimeoutError:
                 # self.handler_completed_signal.clear()
                 raise TimeoutError(
-                    f'Event handler {self.eventbus_name}.{self.handler_name}(#{self.event_id[-4:]}) timed out after {self.timeout}s'
+                    f'Event handler {self.eventbus_label}.{self.handler_name}(#{self.event_id[-4:]}) timed out after {self.timeout}s'
                 )
 
             if self.status == 'error' and self.error:
@@ -1588,7 +1369,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         if 'result' in kwargs:
             result: Any = kwargs['result']
             self.status = 'completed'
-            if self.result_schema is not None and result is not None:
+            if self.result_type is not None and result is not None:
                 # Always allow BaseEvent results without validation
                 # This is needed for event forwarding patterns like bus1.on('*', bus2.dispatch)
                 if isinstance(result, BaseEvent):
@@ -1596,13 +1377,13 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                 else:
                     # Validate/cast against event_result_type.
                     try:
-                        validated_result = _validate_result_against_schema(self.result_schema, result)
+                        validated_result = validate_result_against_type(self.result_type, result)
 
                         # Normal assignment works, make sure validate_assignment=False otherwise pydantic will attempt to re-validate it a second time
                         self.result = cast(T_EventResultType, validated_result)
 
                     except Exception as cast_error:
-                        schema_id = _result_schema_identifier_from_schema(self.result_schema) or 'unknown'
+                        schema_id = result_type_identifier_from_schema(self.result_type) or 'unknown'
                         self.error = ValueError(
                             f'Event handler returned a value that did not match expected event_result_type '
                             f'({schema_id}): {result} -> {type(cast_error).__name__}: {cast_error}'
@@ -1610,7 +1391,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                         self.result = None
                         self.status = 'error'
             else:
-                # No result_schema specified or result is None - assign directly
+                # No result_type specified or result is None - assign directly
                 self.result = cast(T_EventResultType, result)
 
         if 'error' in kwargs:
@@ -1639,6 +1420,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         *,
         eventbus: 'EventBus',
         timeout: float | None,
+        slow_timeout: float | None = None,
         enter_handler_context: Callable[[BaseEvent[Any], str], tuple[Any, Any, Any]] | None = None,
         exit_handler_context: Callable[[tuple[Any, Any, Any]], None] | None = None,
         format_exception_for_log: Callable[[BaseException], str] | None = None,
@@ -1663,8 +1445,8 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         if handler is None:
             raise RuntimeError(f'EventResult {self.id} has no callable attached to handler {self.handler.id}')
 
-        self.timeout = timeout if timeout is not None else self.timeout or event.event_timeout
-        self.result_schema = event.event_result_type
+        self.timeout = timeout
+        self.result_type = event.event_result_type
         self.update(status='started')
 
         monitor_task: asyncio.Task[None] | None = None
@@ -1675,17 +1457,29 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         # Use getattr to handle stub events that may not have this attribute
         dispatch_context = getattr(event, '_event_dispatch_context', None)
 
-        async def deadlock_monitor() -> None:
-            await asyncio.sleep(15.0)
-            logger.warning(
-                f'⚠️ {eventbus} handler {self.handler_name}() has been running for >15s on event. Possible slow processing or deadlock.\n'
-                '(handler could be trying to await its own result or could be blocked by another async task).\n'
-                f'{self.handler_name}({event})'
-            )
+        should_warn_for_slow_handler = slow_timeout is not None and (self.timeout is None or self.timeout > slow_timeout)
+        if should_warn_for_slow_handler:
 
-        monitor_task = asyncio.create_task(
-            deadlock_monitor(), name=f'{eventbus}.deadlock_monitor({event}, {self.handler_name}#{self.handler_id[-4:]})'
-        )
+            async def slow_handler_monitor() -> None:
+                assert slow_timeout is not None
+                await asyncio.sleep(slow_timeout)
+                if self.status != 'started':
+                    return
+                started_at = self.started_at or event.event_started_at or event.event_created_at
+                elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+                logger.warning(
+                    '⚠️ Slow event handler: %s.on(%s#%s, %s) still running after %.1fs',
+                    eventbus.label,
+                    event.event_type,
+                    event.event_id[-4:],
+                    self.handler.label,
+                    elapsed_seconds,
+                )
+
+            monitor_task = asyncio.create_task(
+                slow_handler_monitor(),
+                name=f'{eventbus}.slow_handler_monitor({event}, {self.handler.label})',
+            )
 
         # For handlers running in dispatch context, we need to set up internal context vars
         # INSIDE that context. Create a wrapper that does setup -> handler -> cleanup.
@@ -1738,11 +1532,13 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                 else:
                     handler_return_value = handler(event)
                 if isinstance(handler_return_value, BaseEvent):
-                    logger.debug(f'Handler {self.handler_name} returned BaseEvent, not awaiting to avoid circular dependency')
+                    logger.debug(f'Handler {self.handler.label} returned BaseEvent, not awaiting to avoid circular dependency')
             else:
-                raise ValueError(f'Handler {get_handler_name(handler)} must be a sync or async function, got: {type(handler)}')
+                handler_name = EventHandler.get_callable_handler_name(handler)
+                raise ValueError(f'Handler {handler_name} must be a sync or async function, got: {type(handler)}')
 
-            monitor_task.cancel()
+            if monitor_task:
+                monitor_task.cancel()
             self.update(result=handler_return_value)
             return self.result
 
@@ -1750,7 +1546,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             if monitor_task:
                 monitor_task.cancel()
             handler_interrupted_error = asyncio.CancelledError(
-                f'Event handler {self.handler_name}#{self.handler_id[-4:]}({event}) was interrupted because of a parent timeout'
+                f'Event handler {self.handler.label}({event}) was interrupted because of a parent timeout'
             )
             self.update(error=handler_interrupted_error)
             raise handler_interrupted_error from exc
@@ -1761,9 +1557,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             children = (
                 f' and interrupted any processing of {len(event.event_children)} child events' if event.event_children else ''
             )
-            timeout_error = TimeoutError(
-                f'Event handler {self.handler_name}#{self.handler_id[-4:]}({event}) timed out after {self.timeout}s{children}'
-            )
+            timeout_error = TimeoutError(f'Event handler {self.handler.label}({event}) timed out after {self.timeout}s{children}')
             self.update(error=timeout_error)
             event.event_cancel_pending_child_processing(timeout_error)
 

@@ -139,7 +139,10 @@ def test_sqlite_mirror_supports_concurrent_processes(tmp_path: Path) -> None:
     results_count = conn.execute('SELECT COUNT(*) FROM event_results_log').fetchone()
     conn.close()
 
-    assert {name for (name,) in events} == {'WorkerBus0', 'WorkerBus1', 'WorkerBus2'}
+    bus_labels = {name for (name,) in events}
+    assert len(bus_labels) == 3
+    for idx in range(3):
+        assert any(label.startswith(f'WorkerBus{idx}#') and len(label.rsplit('#', 1)[-1]) == 4 for label in bus_labels)
     assert results_count is not None
     # Each worker records pending/started/completed for its single handler
     assert results_count[0] == 9
