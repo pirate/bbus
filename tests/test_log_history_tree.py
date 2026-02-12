@@ -37,7 +37,7 @@ def _result_with_handler(
         eventbus_name=bus.name,
         event_pattern='*',
     )
-    return EventResult(
+    return EventResult[Any](
         event_id=event_id,
         handler=handler,
         status=status,
