@@ -421,10 +421,7 @@ test('max_history_drop=false rejects new dispatch when history is full', async (
   await bus.dispatch(NoDropEvent({ seq: 2 })).done()
 
   assert.equal(bus.event_history.size, 2)
-  assert.throws(
-    () => bus.dispatch(NoDropEvent({ seq: 3 })),
-    /history limit reached \(2\/2\); set bus\.max_history_drop=true/
-  )
+  assert.throws(() => bus.dispatch(NoDropEvent({ seq: 3 })), /history limit reached \(2\/2\); set bus\.max_history_drop=true/)
   assert.equal(bus.event_history.size, 2)
   assert.equal(bus.pending_event_queue.length, 0)
 })

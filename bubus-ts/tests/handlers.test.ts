@@ -90,11 +90,7 @@ test('class matcher falls back to class name and matches generic BaseEvent event
 
   await bus.dispatch(new BaseEvent({ event_type: 'DifferentNameFromClass' })).done()
 
-  assert.deepEqual(seen, [
-    'class:DifferentNameFromClass',
-    'string:DifferentNameFromClass',
-    'wildcard:DifferentNameFromClass',
-  ])
+  assert.deepEqual(seen, ['class:DifferentNameFromClass', 'string:DifferentNameFromClass', 'wildcard:DifferentNameFromClass'])
   assert.equal(bus.handlers_by_key.get('DifferentNameFromClass')?.length, 2)
 })
 

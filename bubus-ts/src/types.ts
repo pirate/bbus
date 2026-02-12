@@ -46,7 +46,9 @@ export const normalizeEventPattern = (event_pattern: EventPattern | '*'): string
   if (typeof class_name === 'string' && class_name.length > 0 && class_name !== 'BaseEvent') {
     return class_name
   }
-  throw new Error(`Invalid event key: expected event type string, "*", or BaseEvent class, got: ${JSON.stringify(event_pattern).slice(0, 80)}`)
+  throw new Error(
+    `Invalid event key: expected event type string, "*", or BaseEvent class, got: ${JSON.stringify(event_pattern).slice(0, 80)}`
+  )
 }
 
 const WRAPPER_TYPES = new Set(['optional', 'nullable', 'default', 'catch', 'prefault', 'readonly', 'nonoptional', 'exact_optional'])

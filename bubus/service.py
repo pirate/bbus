@@ -285,7 +285,9 @@ class EventBus:
 
     # Class Attributes
     name: PythonIdentifierStr = 'EventBus'
-    event_concurrency: str = 'bus-serial'  # only mode supported in python for now, ts supports 'global-serial' | 'bus-serial' | 'parallel'
+    event_concurrency: str = (
+        'bus-serial'  # only mode supported in python for now, ts supports 'global-serial' | 'bus-serial' | 'parallel'
+    )
     event_handler_concurrency: EventHandlerConcurrencyMode = 'serial'
     max_history_size: int | None = 100
     max_history_drop: bool = True
@@ -352,7 +354,9 @@ class EventBus:
         self.handlers = {}
         self.handlers_by_key = defaultdict(list)
         self.event_handler_concurrency = event_handler_concurrency or 'serial'
-        assert self.event_handler_concurrency in ('serial', 'parallel'), f'event_handler_concurrency must be "serial" or "parallel", got: {self.event_handler_concurrency!r}'
+        assert self.event_handler_concurrency in ('serial', 'parallel'), (
+            f'event_handler_concurrency must be "serial" or "parallel", got: {self.event_handler_concurrency!r}'
+        )
         self._on_idle = None
         self.middlewares: list[EventBusMiddleware] = list(middlewares or [])
         self._active_event_ids = set()
@@ -590,7 +594,9 @@ class EventBus:
         return handler_entry
 
     @overload
-    def off(self, event_pattern: type[T_Event], handler: EventHandlerCallable | PythonIdStr | EventHandler | None = None) -> None: ...
+    def off(
+        self, event_pattern: type[T_Event], handler: EventHandlerCallable | PythonIdStr | EventHandler | None = None
+    ) -> None: ...
 
     @overload
     def off(
@@ -793,9 +799,7 @@ class EventBus:
             if isinstance(event_type_default, str) and event_type_default not in ('', 'UndefinedEvent'):
                 return event_type_default
             return event_pattern.__name__
-        raise ValueError(
-            f'Invalid event pattern: {event_pattern}, must be a string event type, "*", or subclass of BaseEvent'
-        )
+        raise ValueError(f'Invalid event pattern: {event_pattern}, must be a string event type, "*", or subclass of BaseEvent')
 
     def _event_matches_pattern(self, event: BaseEvent[Any], pattern: EventPatternType) -> bool:
         pattern_key = self._normalize_event_pattern(pattern)
@@ -1973,7 +1977,9 @@ class EventBus:
 
         # Third check: For non-forwarding handlers, check recursion depth
         # Forwarding handlers (EventBus.dispatch) are allowed to forward at any depth
-        is_forwarding_handler = inspect.ismethod(handler) and isinstance(handler.__self__, EventBus) and handler.__name__ == 'dispatch'
+        is_forwarding_handler = (
+            inspect.ismethod(handler) and isinstance(handler.__self__, EventBus) and handler.__name__ == 'dispatch'
+        )
 
         if not is_forwarding_handler:
             # Only check recursion for regular handlers, not forwarding
@@ -2175,7 +2181,12 @@ class EventBus:
 
                 total_bytes += bus_bytes
                 bus_details.append(
-                    (bus.name, bus_bytes, len(bus.event_history), bus.pending_event_queue.qsize() if bus.pending_event_queue else 0)
+                    (
+                        bus.name,
+                        bus_bytes,
+                        len(bus.event_history),
+                        bus.pending_event_queue.qsize() if bus.pending_event_queue else 0,
+                    )
                 )
             except Exception:
                 # Skip buses that can't be measured

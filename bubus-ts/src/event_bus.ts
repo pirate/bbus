@@ -321,7 +321,11 @@ export class EventBus {
   }
 
   on<T extends BaseEvent>(event_pattern: EventClass<T>, handler: EventHandlerFunction<T>, options?: Partial<EventHandler>): EventHandler
-  on<T extends BaseEvent>(event_pattern: string | '*', handler: UntypedEventHandlerFunction<T>, options?: Partial<EventHandler>): EventHandler
+  on<T extends BaseEvent>(
+    event_pattern: string | '*',
+    handler: UntypedEventHandlerFunction<T>,
+    options?: Partial<EventHandler>
+  ): EventHandler
   on(
     event_pattern: EventPattern | '*',
     handler: EventHandlerFunction | UntypedEventHandlerFunction,

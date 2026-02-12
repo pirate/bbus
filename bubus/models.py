@@ -197,7 +197,7 @@ def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
     if normalized == home:
         display = '~'
     elif normalized.startswith(home + os.sep):
-        display = f'~{normalized[len(home):]}'
+        display = f'~{normalized[len(home) :]}'
     else:
         display = normalized
     return f'{display}:{line_no}' if line_no else display
@@ -1091,7 +1091,12 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         from bubus.service import EventBus
 
         assert eventbus is None or isinstance(eventbus, EventBus)
-        if eventbus is None and not isinstance(handler, EventHandler) and inspect.ismethod(handler) and isinstance(handler.__self__, EventBus):
+        if (
+            eventbus is None
+            and not isinstance(handler, EventHandler)
+            and inspect.ismethod(handler)
+            and isinstance(handler.__self__, EventBus)
+        ):
             eventbus = handler.__self__
 
         if isinstance(handler, EventHandler):

@@ -248,8 +248,7 @@ def _matches_retry_on_error(error: Exception, retry_on_errors: RetryOnErrors | N
                 return True
             continue
         raise TypeError(
-            'retry_on_errors entries must be Exception subclasses or compiled regex patterns '
-            f'(got {type(matcher).__name__})'
+            f'retry_on_errors entries must be Exception subclasses or compiled regex patterns (got {type(matcher).__name__})'
         )
 
     return False
@@ -357,8 +356,7 @@ async def _acquire_multiprocess_semaphore(
     if not semaphore_lax:
         timeout_str = f', timeout={timeout}s per operation' if timeout is not None else ''
         raise TimeoutError(
-            f'Failed to acquire multiprocess semaphore "{sem_key}" within {sem_timeout}s '
-            f'(limit={semaphore_limit}{timeout_str})'
+            f'Failed to acquire multiprocess semaphore "{sem_key}" within {sem_timeout}s (limit={semaphore_limit}{timeout_str})'
         )
     logger.warning(
         f'Failed to acquire multiprocess semaphore "{sem_key}" after {sem_timeout:.1f}s, proceeding without concurrency limit'
@@ -389,8 +387,7 @@ async def _acquire_asyncio_semaphore(
         if not semaphore_lax:
             timeout_str = f', timeout={timeout}s per operation' if timeout is not None else ''
             raise TimeoutError(
-                f'Failed to acquire semaphore "{sem_key}" within {sem_timeout}s '
-                f'(limit={semaphore_limit}{timeout_str})'
+                f'Failed to acquire semaphore "{sem_key}" within {sem_timeout}s (limit={semaphore_limit}{timeout_str})'
             )
         logger.warning(
             f'Failed to acquire semaphore "{sem_key}" after {sem_wait_time:.1f}s, proceeding without concurrency limit'
