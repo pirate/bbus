@@ -626,7 +626,40 @@ await bus.dispatch(DataEvent())
 
 <br/>
 
-### Middlwares
+### 🧩 Middlwares
+
+Middlewares can observe or mutate the `EventResult` at each step, dispatch additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
+
+```python
+from bubus import EventBus
+from bubus.middlewares import LoggerEventBusMiddleware, WALEventBusMiddleware, SQLiteHistoryMirrorMiddleware, OtelTracingMiddleware
+
+bus = EventBus(
+    name='MyBus',
+    middlewares=[
+        SQLiteHistoryMirrorMiddleware('./events.sqlite3'),
+        WALEventBusMiddleware('./events.jsonl'),
+        LoggerEventBusMiddleware('./events.log'),
+        OtelTracingMiddleware(),
+        # ...
+    ],
+)
+
+await bus.dispatch(SecondEventAbc(some_key="banana"))
+# will persist all events to sqlite + events.jsonl + events.log
+```
+
+Built-in middlwares you can import from `bubus.middlwares.*`:
+
+- `SyntheticErrorEventMiddleware`: on handler error, fire-and-forget emits `OriginalEventTypeErrorEvent` with `{error, error_type}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful when downstream/remote consumers only see events and need explicit failure notifications.
+- `SyntheticReturnEventMiddleware`: on non-`None` handler return, fire-and-forget emits `OriginalEventTypeResultEvent` with `{data}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful for bridges/remote systems since handler return values do not cross bridge boundaries, but events do.
+- `SyntheticHandlerChangeEventMiddleware`: emits `BusHandlerRegisteredEvent({handler})` / `BusHandlerUnregisteredEvent({handler})` when handlers are added/removed via `.on()` / `.off()`.
+- `OtelTracingMiddleware`: emits OpenTelemetry spans for events and handlers with parent-child linking; can be exported to Sentry via Sentry's OpenTelemetry integration.
+- `WALEventBusMiddleware`: persists completed events to JSONL for replay/debugging.
+- `LoggerEventBusMiddleware`: writes event/handler transitions to stdout and optionally to file.
+- `SQLiteHistoryMirrorMiddleware`: mirrors event and handler snapshots into append-only SQLite `events_log` and `event_results_log` tables for auditing/debugging.
+
+#### Defining a custom middleware
 
 Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need (`on_event_change`, `on_event_result_change`, `on_handler_change`):
 
@@ -649,55 +682,6 @@ class AnalyticsMiddleware(EventBusMiddleware):
         await analytics_bus.dispatch(
             HandlerRegistryChangedEvent(handler_id=handler.id, registered=registered, bus=eventbus.name)
         )
-```
-
-Middlewares can observe or mutate the `EventResult` at each step, dispatch additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
-
-Built-in synthetic helpers:
-- `SyntheticErrorEventMiddleware`: on handler error, fire-and-forget emits `OriginalEventTypeErrorEvent` with `{error, error_type}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful when downstream/remote consumers only see events and need explicit failure notifications.
-- `SyntheticReturnEventMiddleware`: on non-`None` handler return, fire-and-forget emits `OriginalEventTypeResultEvent` with `{data}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful for bridges/remote systems since handler return values do not cross bridge boundaries, but events do.
-- `SyntheticHandlerChangeEventMiddleware`: emits `BusHandlerRegisteredEvent({handler})` / `BusHandlerUnregisteredEvent({handler})` when handlers are added/removed via `.on()` / `.off()`.
-- `OtelTracingMiddleware`: emits OpenTelemetry spans for events and handlers with parent-child linking; can be exported to Sentry via Sentry's OpenTelemetry integration.
-- `WALEventBusMiddleware`: persists completed events to JSONL for replay/debugging.
-- `LoggerEventBusMiddleware`: writes event/handler transitions to stdout and optionally to file.
-
-Pair that with the built-in `SQLiteHistoryMirrorMiddleware` to mirror every event and handler transition into append-only `events_log` and `event_results_log` tables, making it easy to inspect or audit the bus state:
-
-```python
-from bubus import EventBus, SQLiteHistoryMirrorMiddleware
-
-bus = EventBus(middlewares=[SQLiteHistoryMirrorMiddleware('./events.sqlite')])
-```
-
-Middleware setup example:
-
-```python
-from pathlib import Path
-
-from bubus import EventBus, SQLiteHistoryMirrorMiddleware
-from bubus.middlewares import LoggerEventBusMiddleware, WALEventBusMiddleware
-
-# Enable WAL event log persistence (optional)
-bus = EventBus(
-    name='MyBus',
-    middlewares=[
-        SQLiteHistoryMirrorMiddleware('./events.sqlite'),
-        WALEventBusMiddleware('./events.jsonl'),
-        LoggerEventBusMiddleware('./events.log'),
-    ],
-)
-
-# LoggerEventBusMiddleware defaults to stdout-only logging if no file path is provided
-
-# All completed events are automatically appended as JSON lines to the end
-await bus.dispatch(SecondEventAbc(some_key="banana"))
-```
-
-`./events.jsonl`:
-```json
-{"event_type": "FirstEventXyz", "event_created_at": "2025-07-10T20:39:56.462000+00:00", "some_key": "some_val", ...}
-{"event_type": "SecondEventAbc", ..., "some_key": "banana"}
-...
 ```
 
 <br/>
@@ -731,6 +715,7 @@ EventBus(
 - `max_history_drop`: If `True` (default), drop oldest history entries when full (even uncompleted events). If `False`, reject new dispatches once history reaches `max_history_size` (except when `max_history_size=0`, which never rejects on history size)
 - `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc.
 - Middleware hook details and built-in middleware examples are documented in [Middlwares](#middlwares).
+
 #### `EventBus` Properties
 
 - `name`: The bus identifier
@@ -740,7 +725,6 @@ EventBus(
 - `events_started`: List of events currently being processed
 - `events_completed`: List of completed events
 - `all_instances`: Class-level WeakSet tracking all active EventBus instances (for memory monitoring)
-
 
 #### `EventBus` Methods
 
@@ -764,6 +748,7 @@ result = await event  # await the pending Event to get the completed Event
 ```
 
 **Note:** Queueing is unbounded. History pressure is controlled by `max_history_size` + `max_history_drop`:
+
 - `max_history_drop=True`: absorb new events and trim old history entries (even uncompleted events).
 - `max_history_drop=False`: raise `RuntimeError` when history is full.
 - `max_history_size=0`: keep pending/in-flight events only; completed events are immediately removed from history.
@@ -917,15 +902,22 @@ T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
 
 class BaseEvent(BaseModel, Generic[T_EventResultType]):
     # Framework-managed fields
-    event_type: str              # Defaults to class name
-    event_version: str           # Defaults to '0.0.1' (override per class/instance for event payload versioning)
     event_id: str                # Unique UUID7 identifier, auto-generated if not provided
-    event_timeout: float = 300.0 # Maximum execution in seconds for each handler
-    event_parent_id: str         # Parent event ID (auto-set)
-    event_path: list[str]        # List of bus names traversed (auto-set)
-    event_created_at: datetime   # When event was created, auto-generated
-    event_results: dict[str, EventResult]   # Handler results
+    event_type: str              # Defaults to class name
     event_result_type: Any | None  # Pydantic model/python type to validate handler result values (serialized as JSON Schema)
+    event_version: str           # Defaults to '0.0.1' (override per class/instance for event payload versioning)
+    event_timeout: float = 300.0 # Maximum execution in seconds for each handler
+
+    event_status: Literal['pending', 'started', 'completed']  # event processing status (auto-set)
+    event_created_at: datetime   # When event was created, auto-generated (auto-set)
+    event_started_at: datetime   # When first handler started executing during event processing (auto-set)
+    event_completed_at: datetime # When all event handlers finished processing (property, derives from last event_result.completed_at)
+
+    event_parent_id: str | None  # Parent event ID that led to this event during handling (auto-set)
+    event_path: list[str]        # List of bus names traversed (auto-set)
+    event_results: dict[str, EventResult]   # Handler results {<handler uuid>: EventResult} (auto-set)
+    event_children: list[BaseEvent] # getter property to list any child events emitted during handling
+    event_bus: EventBus          # getter property to get the bus the event was dispatched on
     
     # Data fields
     # ... subclass BaseEvent to add your own event data fields here ...
@@ -933,18 +925,6 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     # some_other_key: dict[str, int]
     # ...
 ```
-
-`event.event_results` contains a dict of pending `EventResult` objects that will be completed once handlers finish executing.
-
-
-#### `BaseEvent` Properties
-
-- `event_status`: `Literal['pending', 'started', 'completed']` Event status
-- `event_started_at`: `datetime` When first handler started processing
-- `event_completed_at`: `datetime` When all handlers completed processing
-- `event_children`: `list[BaseEvent]` Get any child events emitted during handling of this event
-- `event_bus`: `EventBus` Shortcut to get the bus currently processing this event
-- `event_result_type`: `Any | None` Validation schema/type for handler return values
 
 #### `BaseEvent` Methods
 
@@ -964,9 +944,9 @@ raw_result_values = [(await event_result) for event_result in completed_event.ev
 
 Return a fresh event copy with runtime processing state reset back to pending.
 
-- Intended for re-dispatching an already-seen event payload (for example after crossing a bridge boundary).
-- The original event object is unchanged.
-- A new UUIDv7 `event_id` is generated for the returned copy.
+- Intended for re-dispatching an already-seen event as a fresh event (for example after crossing a bridge boundary).
+- The original event object is not mutated, it returns a new copy with some fields reset.
+- A new UUIDv7 `event_id` is generated for the returned copy (to allow it to process as a separate event it needs a new unique uuid)
 - Runtime completion state is cleared (`event_results`, completion signal/flags, processed timestamp, dispatch context).
 
 ##### `event_result(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> Any`
@@ -1110,7 +1090,6 @@ async def some_handler(event: MyEvent):
     child_event = await event.event_bus.dispatch(ChildEvent())
 ```
 
-
 ---
 
 ### `EventResult`
@@ -1189,6 +1168,15 @@ The raw callable is stored on `handler`, but is excluded from JSON serialization
 ---
 
 ## 🧵 Advanced Concurrency Control
+
+### `EventBus`, `BaseEvent`, and `EventHandler` concurrency options
+
+These options can be set as bus-level defaults, event-level options, or as handler-specific options.
+They control the concurrency of how events are processed within a bus, across all busses, and how handlers execute within a single event.
+
+- `event_concurrency`: Only `global-serial` is supported at the moment in python
+- `event_handler_concurrency`: `'serial' | 'parallel'` should handlers on a single event run in parallel or in sequential order
+- `event_handler_completion`: `'all' | 'first'` should all handlers run, or should we stop handler execution once any handler returns a non-`None` value
 
 ### `@retry` Decorator
 
