@@ -83,6 +83,8 @@ UUIDStr: TypeAlias = Annotated[str, AfterValidator(validate_uuid_str)]
 PythonIdStr: TypeAlias = Annotated[str, AfterValidator(validate_python_id_str)]
 PythonIdentifierStr: TypeAlias = Annotated[str, AfterValidator(validate_event_name)]
 EventPathEntryStr: TypeAlias = Annotated[str, AfterValidator(validate_event_path_entry_str)]
+EventHandlerConcurrencyMode: TypeAlias = Literal['serial', 'parallel']
+EventHandlerCompletionMode: TypeAlias = Literal['all', 'first']
 T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
 # TypeVar for BaseEvent and its subclasses
 # We use contravariant=True because if a handler accepts BaseEvent,
@@ -592,6 +594,14 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     event_type: PythonIdentifierStr = Field(default='UndefinedEvent', description='Event type name', max_length=64)
     event_version: str = Field(default='0.0.1', description='Event payload version tag')
     event_timeout: float | None = Field(default=300.0, description='Timeout in seconds for event to finish processing')
+    event_handler_concurrency: EventHandlerConcurrencyMode = Field(
+        default='serial',
+        description="Handler scheduling strategy: 'serial' runs one handler at a time, 'parallel' runs handlers concurrently",
+    )
+    event_handler_completion: EventHandlerCompletionMode = Field(
+        default='all',
+        description="Handler completion strategy: 'all' waits for all handlers, 'first' resolves on first successful result",
+    )
     event_result_type: Any = Field(
         default=None, description='Schema/type for handler result validation (serialized as JSON Schema)'
     )
@@ -824,6 +834,22 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
         return wait_for_handlers_to_complete_then_return_event().__await__()
 
+    async def first(
+        self,
+        timeout: float | None = None,
+        *,
+        raise_if_any: bool = False,
+        raise_if_none: bool = False,
+    ) -> T_EventResultType | None:
+        """
+        Resolve with the first successful non-None handler result for this event.
+
+        This switches the event to ``event_handler_completion='first'`` before awaiting completion.
+        """
+        self.event_handler_completion = 'first'
+        await self
+        return await self.event_result(timeout=timeout, raise_if_any=raise_if_any, raise_if_none=raise_if_none)
+
     @model_validator(mode='before')
     @classmethod
     def _set_event_type_from_class_name(cls, data: Any) -> Any:
@@ -975,7 +1001,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         for event_result in self.event_results.values():
             try:
                 await event_result
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 # Ignore exceptions here - we'll handle them based on raise_if_any below
                 pass
 
@@ -1396,7 +1422,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
 
 def attr_name_allowed(key: str) -> bool:
-    allowed_unprefixed_attrs = {'raise_if_errors', 'reset'}
+    allowed_unprefixed_attrs = {'first', 'raise_if_errors', 'reset'}
     return key in pydantic_builtin_attrs or key in event_builtin_attrs or key.startswith('_') or key in allowed_unprefixed_attrs
 
 

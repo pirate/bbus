@@ -11,9 +11,17 @@ Bubus is an in-memory event bus library for async Python and TS (node/browser).
 It's designed for quickly building resilient, predictable, complex event-driven apps.
 
 It "just works" with an intuitive, but powerful event JSON format + dispatch API that's consistent across both languages and scales consistently from one even up to millions:
+
 ```python
+class SomeEvent(BaseEvent):
+    some_data: int
+
+def handle_some_event(event: SomeEvent):
+    print('hi!')
+
 bus.on(SomeEvent, some_function)
-bus.emit(SomeEvent({some_data: 132}))
+await bus.emit(SomeEvent({some_data: 132}))
+# "hi!""
 ```
 
 It's async native, has proper automatic nested event tracking, and powerful concurrency control options. The API is inspired by `EventEmitter` or [`emittery`](https://github.com/sindresorhus/emittery) in JS, but it takes it a step further:
@@ -417,6 +425,7 @@ print(await event_bus.dispatch(DoSomeMathEvent(a=100, b=120)).event_result())
 ```
 
 You can use these helpers to interact with the results returned by handlers:
+
 - `BaseEvent.event_result()`
 - `BaseEvent.event_results_list()`, `BaseEvent.event_results_filtered()`
 - `BaseEvent.event_results_by_handler_id()`, `BaseEvent.event_results_by_handler_name()`
@@ -577,7 +586,7 @@ bus = EventBus(max_history_size=100, max_history_drop=False)
 ```
 
 **Automatic Cleanup:**
-- When `max_history_size` is set and `max_history_drop=True` (default), EventBus removes old events when the limit is exceeded
+- When `max_history_size` is set and `max_history_drop=True`, EventBus removes old events when the limit is exceeded
 - If `max_history_size=0`, history keeps only pending/started events and drops each event immediately after completion
 - If `max_history_drop=True`, the bus may drop oldest history entries even if they are uncompleted events
 - Completed events are removed first (oldest first), then started events, then pending events
@@ -701,8 +710,9 @@ The main event bus class that manages event processing and handler execution.
 EventBus(
     name: str | None = None,
     event_handler_concurrency: Literal['serial', 'parallel'] = 'serial',
+    event_handler_completion: Literal['all', 'first'] = 'all',
     max_history_size: int | None = 50,
-    max_history_drop: bool = True,
+    max_history_drop: bool = False,
     middlewares: Sequence[EventBusMiddleware | type[EventBusMiddleware]] | None = None,
 )
 ```
@@ -710,11 +720,11 @@ EventBus(
 **Parameters:**
 
 - `name`: Optional unique name for the bus (auto-generated if not provided)
-- `event_handler_concurrency`: Handler execution mode for each event: `'serial'` (default) or `'parallel'`
+- `event_handler_concurrency`: Default handler execution mode for events on this bus: `'serial'` (default) or `'parallel'` (copied onto `event.event_handler_concurrency` at dispatch time unless the event sets its own value)
+- `event_handler_completion`: Handler completion mode for each event: `'all'` (default, wait for all handlers) or `'first'` (complete once first successful non-`None` result is available)
 - `max_history_size`: Maximum number of events to keep in history (default: 50, `None` = unlimited, `0` = keep only in-flight events and drop completed events immediately)
-- `max_history_drop`: If `True` (default), drop oldest history entries when full (even uncompleted events). If `False`, reject new dispatches once history reaches `max_history_size` (except when `max_history_size=0`, which never rejects on history size)
-- `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc.
-- Middleware hook details and built-in middleware examples are documented in [Middlwares](#middlwares).
+- `max_history_drop`: If `True`, drop oldest history entries when full (even uncompleted events). If `False` (default), reject new dispatches once history reaches `max_history_size` (except when `max_history_size=0`, which never rejects on history size)
+- `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc. (see [Middlwares](#middlwares) for more info)
 
 #### `EventBus` Properties
 
@@ -907,6 +917,8 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     event_result_type: Any | None  # Pydantic model/python type to validate handler result values (serialized as JSON Schema)
     event_version: str           # Defaults to '0.0.1' (override per class/instance for event payload versioning)
     event_timeout: float = 300.0 # Maximum execution in seconds for each handler
+    event_handler_concurrency: Literal['serial', 'parallel'] = 'serial'  # handler scheduling strategy for this event
+    event_handler_completion: Literal['all', 'first'] = 'all'  # completion strategy for this event's handlers
 
     event_status: Literal['pending', 'started', 'completed']  # event processing status (auto-set)
     event_created_at: datetime   # When event was created, auto-generated (auto-set)
@@ -938,6 +950,15 @@ completed_event = await event
 
 raw_result_values = [(await event_result) for event_result in completed_event.event_results.values()]
 # equivalent to: completed_event.event_results_list()  (see below)
+```
+
+##### `first(timeout: float | None=None, *, raise_if_any: bool=False, raise_if_none: bool=False) -> Any`
+
+Set `event_handler_completion='first'`, wait for completion, and return the first successful non-`None` handler result.
+
+```python
+event = bus.dispatch(MyEvent())
+value = await event.first()
 ```
 
 ##### `reset() -> Self`
@@ -1169,7 +1190,7 @@ The raw callable is stored on `handler`, but is excluded from JSON serialization
 
 ## 🧵 Advanced Concurrency Control
 
-### `EventBus`, `BaseEvent`, and `EventHandler` concurrency options
+### `EventBus`, `BaseEvent`, and `EventHandler` concurrency config fields
 
 These options can be set as bus-level defaults, event-level options, or as handler-specific options.
 They control the concurrency of how events are processed within a bus, across all busses, and how handlers execute within a single event.
@@ -1180,7 +1201,7 @@ They control the concurrency of how events are processed within a bus, across al
 
 ### `@retry` Decorator
 
-The `@retry` decorator provides automatic retry functionality with built-in concurrency control for any function, including event handlers. This is particularly useful when handlers interact with external services that may temporarily fail.
+The `@retry` decorator provides automatic retry functionality with built-in concurrency control for any function, including event handlers. This is particularly useful when handlers interact with external services that may temporarily fail. It can be used completely independently from the rest of the library, it does not require a bus and can be used more generally to control concurrenty/timeouts/retries of any python function.
 
 ```python
 from bubus import EventBus, BaseEvent
@@ -1188,7 +1209,7 @@ from bubus.helpers import retry
 
 bus = EventBus()
 
-class FetchDataEvent(BaseEvent):
+class FetchDataEvent(BaseEvent[dict[str, Any]]):
     url: str
 
 @retry(
@@ -1199,7 +1220,7 @@ class FetchDataEvent(BaseEvent):
     retry_backoff_factor=1.5,   # Exponential backoff: 2s, 3s, 4.5s
     retry_on_errors=[TimeoutError, ConnectionError],  # Only retry on specific exceptions
 )
-async def fetch_with_retry(event: FetchDataEvent):
+async def fetch_with_retry(event: FetchDataEvent) -> dict[str, Any]:
     # This handler will automatically retry on network failures
     async with aiohttp.ClientSession() as session:
         async with session.get(event.url) as response:
@@ -1281,6 +1302,9 @@ bus.on(DatabaseEvent, db_service.execute_query)
 
 <br/>
 
+---
+
+<br/>
 
 ## 🏃 Performance (Python)
 

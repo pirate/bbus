@@ -151,7 +151,7 @@ export class EventBus {
 
     // set configuration options
     this.max_history_size = options.max_history_size === undefined ? 100 : options.max_history_size
-    this.max_history_drop = options.max_history_drop ?? true
+    this.max_history_drop = options.max_history_drop ?? false
     this.event_concurrency_default = options.event_concurrency ?? 'bus-serial'
     this.event_handler_concurrency_default = options.event_handler_concurrency ?? 'serial'
     this.event_handler_completion_default = options.event_handler_completion ?? 'all'

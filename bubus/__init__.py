@@ -14,7 +14,17 @@ from .middlewares import (
     SyntheticReturnEventMiddleware,
     WALEventBusMiddleware,
 )
-from .models import BaseEvent, EventHandler, EventResult, EventStatus, PythonIdentifierStr, PythonIdStr, UUIDStr
+from .models import (
+    BaseEvent,
+    EventHandler,
+    EventHandlerCompletionMode,
+    EventHandlerConcurrencyMode,
+    EventResult,
+    EventStatus,
+    PythonIdentifierStr,
+    PythonIdStr,
+    UUIDStr,
+)
 from .service import EventBus
 
 __all__ = [
@@ -37,6 +47,8 @@ __all__ = [
     'EventStatus',
     'EventResult',
     'EventHandler',
+    'EventHandlerConcurrencyMode',
+    'EventHandlerCompletionMode',
     'UUIDStr',
     'PythonIdStr',
     'PythonIdentifierStr',

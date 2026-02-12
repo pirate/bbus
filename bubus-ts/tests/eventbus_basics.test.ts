@@ -17,7 +17,7 @@ test('EventBus initializes with correct defaults', async () => {
 
   assert.equal(bus.name, 'DefaultsBus')
   assert.equal(bus.max_history_size, 100)
-  assert.equal(bus.max_history_drop, true)
+  assert.equal(bus.max_history_drop, false)
   assert.equal(bus.event_concurrency_default, 'bus-serial')
   assert.equal(bus.event_handler_concurrency_default, 'serial')
   assert.equal(bus.event_handler_completion_default, 'all')
@@ -370,7 +370,7 @@ test('dispatched events appear in event_history', async () => {
 // ─── History trimming (max_history_size) ─────────────────────────────────────
 
 test('history is trimmed to max_history_size, completed events removed first', async () => {
-  const bus = new EventBus('TrimBus', { max_history_size: 5 })
+  const bus = new EventBus('TrimBus', { max_history_size: 5, max_history_drop: true })
   const TrimEvent = BaseEvent.extend('TrimEvent', { seq: z.number() })
 
   bus.on(TrimEvent, () => 'ok')

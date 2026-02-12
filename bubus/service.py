@@ -27,6 +27,8 @@ from bubus.models import (
     EventHandler,
     EventHandlerCallable,
     EventHandlerClassMethod,
+    EventHandlerCompletionMode,
+    EventHandlerConcurrencyMode,
     EventHandlerFunc,
     EventHandlerMethod,
     EventResult,
@@ -57,7 +59,6 @@ T_QueryEvent = TypeVar('T_QueryEvent', bound=BaseEvent[Any])
 T_QueryEvent = TypeVar('T_QueryEvent', bound=BaseEvent[Any])
 
 EventPatternType = PythonIdentifierStr | Literal['*'] | type[BaseEvent[Any]]
-EventHandlerConcurrencyMode = Literal['serial', 'parallel']
 
 
 class EventBusMiddleware:
@@ -293,8 +294,9 @@ class EventBus:
         'bus-serial'  # only mode supported in python for now, ts supports 'global-serial' | 'bus-serial' | 'parallel'
     )
     event_handler_concurrency: EventHandlerConcurrencyMode = 'serial'
+    event_handler_completion: EventHandlerCompletionMode = 'all'
     max_history_size: int | None = 100
-    max_history_drop: bool = True
+    max_history_drop: bool = False
 
     # Runtime State
     id: UUIDStr = '00000000-0000-0000-0000-000000000000'
@@ -316,8 +318,9 @@ class EventBus:
         self,
         name: PythonIdentifierStr | None = None,
         event_handler_concurrency: EventHandlerConcurrencyMode = 'serial',
+        event_handler_completion: EventHandlerCompletionMode = 'all',
         max_history_size: int | None = 50,  # Keep only 50 events in history
-        max_history_drop: bool = True,
+        max_history_drop: bool = False,
         middlewares: Sequence[EventBusMiddleware] | None = None,
         id: UUIDStr | str | None = None,
     ):
@@ -361,6 +364,10 @@ class EventBus:
         self.event_handler_concurrency = event_handler_concurrency or 'serial'
         assert self.event_handler_concurrency in ('serial', 'parallel'), (
             f'event_handler_concurrency must be "serial" or "parallel", got: {self.event_handler_concurrency!r}'
+        )
+        self.event_handler_completion = event_handler_completion or 'all'
+        assert self.event_handler_completion in ('all', 'first'), (
+            f'event_handler_completion must be "all" or "first", got: {self.event_handler_completion!r}'
         )
         self._on_idle = None
         self.middlewares: list[EventBusMiddleware] = list(middlewares or [])
@@ -704,6 +711,27 @@ class EventBus:
         assert event.event_id, 'Missing event.event_id: UUIDStr = uuid7str()'
         assert event.event_created_at, 'Missing event.event_created_at: datetime = datetime.now(UTC)'
         assert event.event_type and event.event_type.isidentifier(), 'Missing event.event_type: str'
+
+        # Default per-event handler concurrency from the bus unless explicitly set by caller/class.
+        event_concurrency_field = event.__class__.model_fields.get('event_handler_concurrency')
+        has_concurrency_class_override = (
+            event_concurrency_field is not None
+            and event_concurrency_field.default is not None
+            and event_concurrency_field.default != BaseEvent.model_fields['event_handler_concurrency'].default
+        )
+        if 'event_handler_concurrency' not in event.model_fields_set and not has_concurrency_class_override:
+            event.event_handler_concurrency = self.event_handler_concurrency
+
+        # Default per-event completion mode from the bus unless explicitly set by caller/class.
+        # This mirrors TS behavior where dispatch fills event_handler_completion when absent.
+        event_completion_field = event.__class__.model_fields.get('event_handler_completion')
+        has_class_override = (
+            event_completion_field is not None
+            and event_completion_field.default is not None
+            and event_completion_field.default != BaseEvent.model_fields['event_handler_completion'].default
+        )
+        if 'event_handler_completion' not in event.model_fields_set and not has_class_override:
+            event.event_handler_completion = self.event_handler_completion
 
         # Automatically set event_parent_id from context if not already set
         if event.event_parent_id is None:
@@ -1856,6 +1884,28 @@ class EventBus:
         inside_handler_context.reset(inside_handler_token)
         _current_handler_id_context.reset(current_handler_token)
 
+    @staticmethod
+    def _first_mode_result_is_winner(event_result: EventResult[Any]) -> bool:
+        if event_result.status != 'completed':
+            return False
+        if event_result.error is not None:
+            return False
+        if event_result.result is None:
+            return False
+        if isinstance(event_result.result, BaseEvent):
+            return False
+        return True
+
+    async def _mark_remaining_first_mode_result_cancelled(
+        self,
+        event: BaseEvent[Any],
+        event_result: EventResult[Any],
+    ) -> None:
+        if event_result.status in ('completed', 'error'):
+            return
+        event_result.update(error=asyncio.CancelledError('Cancelled: first() resolved'))
+        await self._on_event_result_change(event, event_result, EventStatus.COMPLETED)
+
     async def _execute_handlers(
         self,
         event: BaseEvent[Any],
@@ -1876,36 +1926,100 @@ class EventBus:
                 await self._on_event_result_change(event, pending_result, EventStatus.PENDING)
 
         # Execute handlers in the configured mode.
-        if self.event_handler_concurrency == 'parallel':
-            handler_tasks: list[asyncio.Task[Any]] = []
-            for handler_entry in applicable_handlers.values():
-                handler_tasks.append(asyncio.create_task(self.execute_handler(event, handler_entry, timeout=timeout)))
+        completion_mode = event.event_handler_completion
+        if completion_mode not in ('all', 'first'):
+            completion_mode = self.event_handler_completion
 
-            # Wait for all handlers to complete.
-            for task in handler_tasks:
+        handler_items = list(applicable_handlers.items())
+
+        concurrency_mode = event.event_handler_concurrency
+        if concurrency_mode not in ('serial', 'parallel'):
+            concurrency_mode = self.event_handler_concurrency
+
+        if concurrency_mode == 'parallel':
+            if completion_mode == 'first':
+                handler_tasks: dict[asyncio.Task[Any], PythonIdStr] = {}
+                local_handler_ids: set[PythonIdStr] = set(applicable_handlers.keys())
+                for handler_id, handler_entry in applicable_handlers.items():
+                    handler_tasks[asyncio.create_task(self.execute_handler(event, handler_entry, timeout=timeout))] = handler_id
+
+                pending_tasks: set[asyncio.Task[Any]] = set(handler_tasks.keys())
+                winner_handler_id: PythonIdStr | None = None
+
+                while pending_tasks:
+                    done_tasks, pending_tasks = await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
+                    for done_task in done_tasks:
+                        try:
+                            await done_task
+                        except Exception:
+                            # Error already logged and recorded in execute_handler
+                            pass
+
+                        done_handler_id = handler_tasks[done_task]
+                        completed_result = event.event_results.get(done_handler_id)
+                        if completed_result is not None and self._first_mode_result_is_winner(completed_result):
+                            winner_handler_id = done_handler_id
+                            break
+
+                    if winner_handler_id is not None:
+                        break
+
+                if winner_handler_id is not None:
+                    for pending_task in pending_tasks:
+                        pending_task.cancel()
+                    if pending_tasks:
+                        await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+                    for handler_id, event_result in event.event_results.items():
+                        if handler_id not in local_handler_ids or handler_id == winner_handler_id:
+                            continue
+                        await self._mark_remaining_first_mode_result_cancelled(event, event_result)
+                else:
+                    if pending_tasks:
+                        await asyncio.gather(*pending_tasks, return_exceptions=True)
+                return
+
+            parallel_tasks = [
+                asyncio.create_task(self.execute_handler(event, handler_entry, timeout=timeout))
+                for _, handler_entry in handler_items
+            ]
+            for task in parallel_tasks:
                 try:
                     await task
                 except Exception:
                     # Error already logged and recorded in execute_handler
                     pass
-        else:
-            # otherwise, execute handlers serially, wait until each one completes before moving on to the next
-            for handler_entry in applicable_handlers.values():
-                try:
-                    await self.execute_handler(event, handler_entry, timeout=timeout)
-                except Exception as e:
-                    # Error already logged and recorded in execute_handler
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(
-                            '❌ %s Handler %s#%s(%s) failed with %s: %s',
-                            self,
-                            handler_entry.handler_name,
-                            handler_entry.id[-4:] if handler_entry.id else '----',
-                            event,
-                            type(e).__name__,
-                            e,
-                        )
-                    pass
+            return
+
+        for index, (handler_id, handler_entry) in enumerate(handler_items):
+            try:
+                await self.execute_handler(event, handler_entry, timeout=timeout)
+            except Exception as e:
+                # Error already logged and recorded in execute_handler
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        '❌ %s Handler %s#%s(%s) failed with %s: %s',
+                        self,
+                        handler_entry.handler_name,
+                        handler_entry.id[-4:] if handler_entry.id else '----',
+                        event,
+                        type(e).__name__,
+                        e,
+                    )
+
+            if completion_mode != 'first':
+                continue
+
+            completed_result = event.event_results.get(handler_id)
+            if completed_result is None or not self._first_mode_result_is_winner(completed_result):
+                continue
+
+            for remaining_handler_id, _ in handler_items[index + 1 :]:
+                remaining_result = event.event_results.get(remaining_handler_id)
+                if remaining_result is None:
+                    continue
+                await self._mark_remaining_first_mode_result_cancelled(event, remaining_result)
+            break
 
         # print('FINSIHED EXECUTING ALL HANDLERS')
 

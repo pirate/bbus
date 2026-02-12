@@ -105,6 +105,7 @@ class TestEventBusBasics:
         assert bus._runloop_task is None
         assert len(bus.event_history) == 0
         assert len(bus.handlers_by_key.get('*', [])) == 0  # No default logger anymore
+        assert bus.max_history_drop is False
 
     def test_eventbus_accepts_custom_id(self):
         """EventBus constructor accepts id=... to set bus UUID."""
