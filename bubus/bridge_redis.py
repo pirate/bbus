@@ -69,6 +69,8 @@ class RedisEventBridge:
         self._inbound_bus = EventBus(name=name or f'RedisEventBridge_{uuid7str()[-8:]}', max_history_size=0)
 
         self._running = False
+        self._start_task: asyncio.Task[None] | None = None
+        self._start_lock = asyncio.Lock()
         self._listener_task: asyncio.Task[None] | None = None
         self._redis_pub: Any | None = None
         self._redis_sub: Any | None = None
@@ -95,26 +97,49 @@ class RedisEventBridge:
         return await self.dispatch(event)
 
     async def start(self) -> None:
+        current_task = asyncio.current_task()
+        if self._start_task is not None and self._start_task is not current_task and not self._start_task.done():
+            await self._start_task
+            return
+
         if self._running:
             return
 
-        redis_asyncio = self._load_redis_asyncio()
-        self._redis_pub = redis_asyncio.from_url(self.url, decode_responses=True)
-        self._redis_sub = redis_asyncio.from_url(self.url, decode_responses=True)
-        assert self._redis_pub is not None
-        assert self._redis_sub is not None
+        try:
+            async with self._start_lock:
+                if self._running:
+                    return
 
-        # Redis logical DBs are created lazily; writing a short-lived key initializes/validates the selected DB.
-        await self._redis_pub.set(_DB_INIT_KEY, '1', ex=60, nx=True)
+                redis_asyncio = self._load_redis_asyncio()
+                redis_pub = redis_asyncio.from_url(self.url, decode_responses=True)
+                redis_sub = redis_asyncio.from_url(self.url, decode_responses=True)
+                pubsub = redis_sub.pubsub()
 
-        self._pubsub = self._redis_sub.pubsub()
-        assert self._pubsub is not None
-        await self._pubsub.subscribe(self.channel)
+                try:
+                    # Redis logical DBs are created lazily; writing a short-lived key initializes/validates the selected DB.
+                    await redis_pub.set(_DB_INIT_KEY, '1', ex=60, nx=True)
+                    await pubsub.subscribe(self.channel)
+                except Exception:
+                    await self._close_pubsub(pubsub)
+                    await self._close_redis_client(redis_sub)
+                    await self._close_redis_client(redis_pub)
+                    raise
 
-        self._running = True
-        self._listener_task = asyncio.create_task(self._listen_loop())
+                self._redis_pub = redis_pub
+                self._redis_sub = redis_sub
+                self._pubsub = pubsub
+                self._running = True
+                if self._listener_task is None or self._listener_task.done():
+                    self._listener_task = asyncio.create_task(self._listen_loop())
+        finally:
+            if self._start_task is current_task:
+                self._start_task = None
 
     async def close(self, *, clear: bool = True) -> None:
+        if self._start_task is not None:
+            self._start_task.cancel()
+            await asyncio.gather(self._start_task, return_exceptions=True)
+            self._start_task = None
         self._running = False
         if self._listener_task is not None:
             self._listener_task.cancel()
@@ -122,14 +147,13 @@ class RedisEventBridge:
             self._listener_task = None
 
         if self._pubsub is not None:
-            await self._pubsub.unsubscribe(self.channel)
-            await self._pubsub.close()
+            await self._close_pubsub(self._pubsub)
             self._pubsub = None
         if self._redis_sub is not None:
-            await self._redis_sub.close()
+            await self._close_redis_client(self._redis_sub)
             self._redis_sub = None
         if self._redis_pub is not None:
-            await self._redis_pub.close()
+            await self._close_redis_client(self._redis_pub)
             self._redis_pub = None
 
         await self._inbound_bus.stop(clear=clear)
@@ -141,7 +165,8 @@ class RedisEventBridge:
             asyncio.get_running_loop()
         except RuntimeError:
             return
-        self._listener_task = asyncio.create_task(self.start())
+        if self._start_task is None or self._start_task.done():
+            self._start_task = asyncio.create_task(self.start())
 
     async def _listen_loop(self) -> None:
         assert self._pubsub is not None
@@ -177,6 +202,23 @@ class RedisEventBridge:
     async def _dispatch_inbound_payload(self, payload: Any) -> None:
         event = BaseEvent[Any].model_validate(payload).reset()
         self._inbound_bus.dispatch(event)
+
+    async def _close_pubsub(self, pubsub: Any) -> None:
+        try:
+            await pubsub.unsubscribe(self.channel)
+        except Exception:
+            pass
+        try:
+            await pubsub.close()
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _close_redis_client(client: Any) -> None:
+        try:
+            await client.close()
+        except Exception:
+            pass
 
     @staticmethod
     def _load_redis_asyncio() -> Any:

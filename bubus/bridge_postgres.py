@@ -118,36 +118,74 @@ class PostgresEventBridge:
         return await self.dispatch(event)
 
     async def start(self) -> None:
+        current_task = asyncio.current_task()
+        if self._start_task is not None and self._start_task is not current_task and not self._start_task.done():
+            await self._start_task
+            return
+
         if self._running:
             return
 
-        async with self._start_lock:
-            if self._running:
-                return
-
-            asyncpg = self._load_asyncpg()
-            self._write_conn = await asyncpg.connect(self.dsn)
-            self._listen_conn = await asyncpg.connect(self.dsn)
-            await self._ensure_table_exists()
-            await self._refresh_column_cache()
-            await self._ensure_columns(['event_id', 'event_created_at', 'event_type'])
-            await self._ensure_base_indexes()
-
-            async def _dispatch_event_id(event_id: str) -> None:
-                try:
-                    await self._dispatch_by_event_id(event_id)
-                except Exception:
+        try:
+            async with self._start_lock:
+                if self._running:
                     return
 
-            def _listener(_connection: Any, _pid: int, _channel: str, payload: str) -> None:
-                asyncio.create_task(_dispatch_event_id(payload))
+                asyncpg = self._load_asyncpg()
+                write_conn = await asyncpg.connect(self.dsn)
+                listen_conn = await asyncpg.connect(self.dsn)
+                listener_callback: Any | None = None
+                try:
+                    self._write_conn = write_conn
+                    self._listen_conn = listen_conn
+                    await self._ensure_table_exists()
+                    await self._refresh_column_cache()
+                    await self._ensure_columns(['event_id', 'event_created_at', 'event_type'])
+                    await self._ensure_base_indexes()
 
-            self._listener_callback = _listener
-            assert self._listen_conn is not None
-            await self._listen_conn.add_listener(self.channel, _listener)
-            self._running = True
+                    async def _dispatch_event_id(event_id: str) -> None:
+                        try:
+                            await self._dispatch_by_event_id(event_id)
+                        except Exception:
+                            return
+
+                    def _listener(_connection: Any, _pid: int, _channel: str, payload: str) -> None:
+                        asyncio.create_task(_dispatch_event_id(payload))
+
+                    listener_callback = _listener
+                    await listen_conn.add_listener(self.channel, listener_callback)
+                    self._listener_callback = listener_callback
+                    self._running = True
+                except Exception:
+                    if listener_callback is not None:
+                        try:
+                            await listen_conn.remove_listener(self.channel, listener_callback)
+                        except Exception:
+                            pass
+                    try:
+                        await listen_conn.close()
+                    except Exception:
+                        pass
+                    try:
+                        await write_conn.close()
+                    except Exception:
+                        pass
+                    if self._listen_conn is listen_conn:
+                        self._listen_conn = None
+                    if self._write_conn is write_conn:
+                        self._write_conn = None
+                    if self._listener_callback is listener_callback:
+                        self._listener_callback = None
+                    raise
+        finally:
+            if self._start_task is current_task:
+                self._start_task = None
 
     async def close(self, *, clear: bool = True) -> None:
+        if self._start_task is not None:
+            self._start_task.cancel()
+            await asyncio.gather(self._start_task, return_exceptions=True)
+            self._start_task = None
         self._running = False
         if self._listen_conn is not None:
             if self._listener_callback is not None:
@@ -156,10 +194,16 @@ class PostgresEventBridge:
                 except Exception:
                     pass
                 self._listener_callback = None
-            await self._listen_conn.close()
+            try:
+                await self._listen_conn.close()
+            except Exception:
+                pass
             self._listen_conn = None
         if self._write_conn is not None:
-            await self._write_conn.close()
+            try:
+                await self._write_conn.close()
+            except Exception:
+                pass
             self._write_conn = None
         await self._inbound_bus.stop(clear=clear)
 
@@ -172,10 +216,7 @@ class PostgresEventBridge:
             asyncio.get_running_loop()
         except RuntimeError:
             return
-        # `on(...)` auto-start can race with explicit `await start()`. Track one background task and let
-        # `start()` itself handle concurrent callers safely.
         self._start_task = asyncio.create_task(self.start())
-        self._start_task.add_done_callback(lambda task: setattr(self, '_start_task', None) if self._start_task is task else None)
 
     async def _dispatch_by_event_id(self, event_id: str) -> None:
         async with self._listen_query_lock:
