@@ -74,7 +74,7 @@ async def eventbus():
 @pytest.fixture
 async def parallel_eventbus():
     """Create an event bus with parallel handler execution"""
-    bus = EventBus(parallel_handlers=True)
+    bus = EventBus(event_handler_concurrency='parallel')
     yield bus
     await bus.stop()
 
@@ -95,7 +95,15 @@ class TestEventBusBasics:
         assert bus._is_running is False
         assert bus._runloop_task is None
         assert len(bus.event_history) == 0
-        assert len(bus.handlers['*']) == 0  # No default logger anymore
+        assert len(bus.handlers_by_key.get('*', [])) == 0  # No default logger anymore
+
+    def test_eventbus_accepts_custom_id(self):
+        """EventBus constructor accepts id=... to set bus UUID."""
+        custom_id = '018f8e40-1234-7000-8000-000000001234'
+        bus = EventBus(id=custom_id)
+
+        assert bus.id == custom_id
+        assert bus.label.endswith('#1234')
 
     async def test_auto_start_and_stop(self, mock_agent):
         """Test auto-start functionality and stopping the event bus"""
@@ -304,7 +312,7 @@ class TestHandlerRegistration:
             'string:DifferentNameFromClass',
             'wildcard:DifferentNameFromClass',
         ]
-        assert len(eventbus.handlers['DifferentNameFromClass']) == 2
+        assert len(eventbus.handlers_by_key.get('DifferentNameFromClass', [])) == 2
 
     async def test_multiple_handlers_parallel(self, parallel_eventbus):
         """Test that multiple handlers run in parallel"""
@@ -359,7 +367,7 @@ class TestHandlerRegistration:
         bus.on('TestEvent', async_handler)
 
         # Check both were registered
-        assert len(bus.handlers['TestEvent']) == 2
+        assert len(bus.handlers_by_key.get('TestEvent', [])) == 2
 
     async def test_class_and_instance_method_handlers(self, eventbus):
         """Test using class and instance methods as handlers"""
@@ -1345,7 +1353,7 @@ class TestEventBusHierarchy:
             buses = [peer1, peer2, peer3]
             lines: list[str] = []
             for bus in buses:
-                queue_size = bus.event_queue.qsize() if bus.event_queue else 0
+                queue_size = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
                 lines.append(
                     f'{bus.label} queue={queue_size} active={len(bus._active_event_ids)} processing={len(bus._processing_event_ids)} history={len(bus.event_history)}'
                 )
@@ -1518,14 +1526,14 @@ class TestExpectMethod:
     async def test_expect_handler_cleanup(self, eventbus):
         """Test that temporary handlers are properly cleaned up"""
         # Check initial handler count
-        initial_handlers = len(eventbus.handlers.get('TestEvent', []))
+        initial_handlers = len(eventbus.handlers_by_key.get('TestEvent', []))
 
         # Create an expect that times out
         result = await eventbus.expect('TestEvent', timeout=0.1)
         assert result is None
 
         # Handler should be cleaned up
-        assert len(eventbus.handlers.get('TestEvent', [])) == initial_handlers
+        assert len(eventbus.handlers_by_key.get('TestEvent', [])) == initial_handlers
 
         # Create an expect that succeeds
         expect_task = asyncio.create_task(eventbus.expect('TestEvent2', timeout=1.0))
@@ -1534,7 +1542,7 @@ class TestExpectMethod:
         await expect_task
 
         # Handler should be cleaned up
-        assert len(eventbus.handlers.get('TestEvent2', [])) == 0
+        assert len(eventbus.handlers_by_key.get('TestEvent2', [])) == 0
 
     async def test_expect_receives_completed_event(self, eventbus):
         """Test that expect receives events after they're fully processed"""
@@ -1788,7 +1796,7 @@ class TestEventResults:
         assert late_result is not None and late_result.result == 'late'
 
         # With empty handlers
-        eventbus.handlers['EmptyEvent'] = []
+        eventbus.handlers_by_key['EmptyEvent'] = []
         results_empty = eventbus.dispatch(BaseEvent(event_type='EmptyEvent'))
         await results_empty
         # Should have no handlers

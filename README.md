@@ -610,7 +610,7 @@ The harsh tradeoff is less deterministic ordering as handler execution order wil
 
 ```python
 # Create bus with parallel handler execution
-bus = EventBus(parallel_handlers=True)
+bus = EventBus(event_handler_concurrency='parallel')
 
 # Multiple handlers run concurrently for each event
 bus.on('DataEvent', slow_handler_1)  # Takes 1 second
@@ -672,7 +672,7 @@ The main event bus class that manages event processing and handler execution.
 ```python
 EventBus(
     name: str | None = None,
-    parallel_handlers: bool = False,
+    event_handler_concurrency: Literal['serial', 'parallel'] = 'serial',
     max_history_size: int | None = 50,
     max_history_drop: bool = True,
     middlewares: Sequence[EventBusMiddleware | type[EventBusMiddleware]] | None = None,
@@ -682,7 +682,7 @@ EventBus(
 **Parameters:**
 
 - `name`: Optional unique name for the bus (auto-generated if not provided)
-- `parallel_handlers`: If `True`, handlers run concurrently for each event, otherwise serially if `False` (the default)
+- `event_handler_concurrency`: Handler execution mode for each event: `'serial'` (default) or `'parallel'`
 - `max_history_size`: Maximum number of events to keep in history (default: 50, `None` = unlimited, `0` = keep only in-flight events and drop completed events immediately)
 - `max_history_drop`: If `True` (default), drop oldest history entries when full (even uncompleted events). If `False`, reject new dispatches once history reaches `max_history_size` (except when `max_history_size=0`, which never rejects on history size)
 - `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc.
@@ -1154,12 +1154,12 @@ class FetchDataEvent(BaseEvent):
     url: str
 
 @retry(
-    wait=2,                     # Wait 2 seconds between retries
-    retries=3,                  # Retry up to 3 times after initial failure
+    retry_after=2,              # Wait 2 seconds between retries
+    max_attempts=3,             # Total attempts including initial call
     timeout=5,                  # Each attempt times out after 5 seconds
     semaphore_limit=5,          # Max 5 concurrent executions
-    backoff_factor=1.5,         # Exponential backoff: 2s, 3s, 4.5s
-    retry_on=(TimeoutError, ConnectionError)  # Only retry on specific exceptions
+    retry_backoff_factor=1.5,   # Exponential backoff: 2s, 3s, 4.5s
+    retry_on_errors=[TimeoutError, ConnectionError],  # Only retry on specific exceptions
 )
 async def fetch_with_retry(event: FetchDataEvent):
     # This handler will automatically retry on network failures
@@ -1172,16 +1172,16 @@ bus.on(FetchDataEvent, fetch_with_retry)
 
 #### Retry Parameters
 
-- **`timeout`**: Maximum amount of time function is allowed to take per attempt, in seconds (default: 5)
-- **`retries`**: Number of additional retry attempts if function raises an exception (default: 3)
-- **`retry_on`**: Tuple of exception types to retry on (default: `None` = retry on any `Exception`)
-- **`wait`**: Base seconds to wait between retries (default: 3)
-- **`backoff_factor`**: Multiplier for wait time after each retry (default: 1.0)
+- **`timeout`**: Maximum amount of time function is allowed to take per attempt, in seconds (`None` = unbounded, default: `None`)
+- **`max_attempts`**: Total attempts including the first attempt (minimum effective value: `1`, default: `1`)
+- **`retry_on_errors`**: List of exception classes or compiled regex matchers. Regexes are matched against `f"{err.__class__.__name__}: {err}"` (default: `None` = retry on any `Exception`)
+- **`retry_after`**: Base seconds to wait between retries (default: 0)
+- **`retry_backoff_factor`**: Multiplier for wait time after each retry (default: 1.0)
 - **`semaphore_limit`**: Maximum number of concurrent calls that can run at the same time
-- **`semaphore_scope`**: Scope for the semaphore: `class`, `self`, `global`, or `multiprocess`
-- **`semaphore_timeout`**: Maximum time to wait for a semaphore slot before proceeding or failing
+- **`semaphore_scope`**: Scope for the semaphore: `class`, `instance`, `global`, or `multiprocess`
+- **`semaphore_timeout`**: Maximum time to wait for a semaphore slot before proceeding or failing. If omitted: `timeout * max(1, semaphore_limit - 1)` when `timeout` is set, otherwise wait forever
 - **`semaphore_lax`**: Continue anyway if semaphore fails to be acquired in within the given time
-- **`semaphore_name`**: Unique semaphore name to allow sharing a semaphore between functions
+- **`semaphore_name`**: Unique semaphore name (string) or callable getter that receives function args and returns a name
 
 #### Semaphore Options
 
@@ -1199,7 +1199,7 @@ class MyService:
 
 # Per-instance semaphore - each instance gets its own limit
 class MyService:
-    @retry(semaphore_limit=1, semaphore_scope='self')
+    @retry(semaphore_limit=1, semaphore_scope='instance')
     async def instance_limited_handler(self, event): ...
 
 # Cross-process semaphore - all processes share one limit
@@ -1220,15 +1220,15 @@ class DatabaseEvent(BaseEvent):
 
 class DatabaseService:
     @retry(
-        wait=1,
-        retries=5,
+        retry_after=1,
+        max_attempts=5,
         timeout=10,
         semaphore_limit=10,          # Max 10 concurrent DB operations
         semaphore_scope='class',     # Shared across all instances
         semaphore_timeout=30,        # Wait up to 30s for semaphore
         semaphore_lax=False,         # Fail if can't acquire semaphore
-        backoff_factor=2.0,          # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-        retry_on=(ConnectionError, TimeoutError)
+        retry_backoff_factor=2.0,    # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+        retry_on_errors=[ConnectionError, TimeoutError],
     )
     async def execute_query(self, event: DatabaseEvent):
         # Automatically retries on connection failures

@@ -541,7 +541,7 @@ class TestFindFutureOnly:
         try:
             # Keep one permanent handler so we can assert temporary find handlers are cleaned up.
             bus.on(ScreenshotEvent, lambda e: 'done')
-            baseline_handler_count = len(bus.handlers.get('ScreenshotEvent', []))
+            baseline_handler_count = len(bus.handlers_by_key.get('ScreenshotEvent', []))
 
             wait_for_a = asyncio.create_task(
                 bus.find(
@@ -572,7 +572,7 @@ class TestFindFutureOnly:
             assert found_b.event_id == event_b.event_id
 
             # All temporary find handlers should be removed.
-            assert len(bus.handlers.get('ScreenshotEvent', [])) == baseline_handler_count
+            assert len(bus.handlers_by_key.get('ScreenshotEvent', [])) == baseline_handler_count
         finally:
             await bus.stop(clear=True)
 

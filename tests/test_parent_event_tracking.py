@@ -138,8 +138,8 @@ class TestParentEventTracking:
         for child in event_children:
             assert child.event_parent_id == parent.event_id
 
-    async def test_parallel_handlers_parent_tracking(self, eventbus: EventBus):
-        """Test parent tracking with parallel handlers"""
+    async def test_parallel_handler_concurrency_parent_tracking(self, eventbus: EventBus):
+        """Test parent tracking with parallel handler concurrency mode."""
         events_from_handlers: dict[str, list[BaseEvent[Any]]] = {'h1': [], 'h2': []}
 
         async def handler1(event: BaseEvent[str]) -> str:

@@ -35,7 +35,7 @@ async def test_event_reset_creates_fresh_pending_event_for_cross_bus_dispatch():
     fresh = completed.reset()
     assert fresh.event_id != completed.event_id
     assert fresh.event_status == EventStatus.PENDING
-    assert fresh.event_processed_at is None
+    assert fresh.event_completed_at is None
     assert fresh.event_results == {}
 
     forwarded = await bus_b.dispatch(fresh)

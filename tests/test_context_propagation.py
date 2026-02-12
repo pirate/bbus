@@ -158,11 +158,11 @@ class TestContextPropagation:
         finally:
             await bus.stop(clear=True)
 
-    async def test_context_propagates_to_parallel_handlers(self):
+    async def test_context_propagates_to_parallel_handler_concurrency(self):
         """
-        When parallel_handlers=True, all handlers should see the dispatch context.
+        When event_handler_concurrency='parallel', all handlers should see the dispatch context.
         """
-        bus = EventBus(name='ParallelContextBus', parallel_handlers=True)
+        bus = EventBus(name='ParallelContextBus', event_handler_concurrency='parallel')
         captured_values: list[str] = []
         lock = asyncio.Lock()
 

@@ -1,4 +1,4 @@
-"""Test that the AttributeError bug related to 'event_processed_at' is fixed"""
+"""Test that the AttributeError bug related to 'event_completed_at' is fixed"""
 
 import asyncio
 from datetime import UTC, datetime
@@ -75,29 +75,29 @@ async def test_event_without_handlers():
     # Initialize the completion signal (normally done when dispatched)
     _ = event.event_completed_signal
 
-    # Mark as processed manually (simulating what happens in event_mark_complete_if_all_handlers_completed)
+    # Mark as completed manually (simulating what happens in event_mark_complete_if_all_handlers_completed)
     event.event_mark_complete_if_all_handlers_completed()
 
     # After marking complete, it should be set
-    # When no handlers but event is processed, event_started_at returns event_processed_at
-    assert event.event_started_at is not None  # Uses event_processed_at
+    # When no handlers but event is completed, event_started_at returns event_completed_at
+    assert event.event_started_at is not None  # Uses event_completed_at
     assert event.event_completed_at is not None  # Now it's complete
 
 
-def test_event_with_manually_set_processed_at():
-    """Test events where event_processed_at is manually set (like in test_log_history_tree.py)"""
+def test_event_with_manually_set_completed_at():
+    """Test events where event_completed_at is manually set (like in test_log_history_tree.py)"""
     event = SampleEvent(data='manual')
 
     # Initialize the completion signal
     _ = event.event_completed_signal
 
-    # Manually set the processed timestamp (as done in tests)
-    if hasattr(event, 'event_processed_at'):
-        event.event_processed_at = datetime.now(UTC)
+    # Manually set the completed timestamp (as done in tests)
+    if hasattr(event, 'event_completed_at'):
+        event.event_completed_at = datetime.now(UTC)
 
     # Should not raise AttributeError
-    assert event.event_started_at is not None  # Should use event_processed_at
-    # Note: Since we set event_processed_at and there are no handlers, event_completed_at will also return event_processed_at
+    assert event.event_started_at is not None  # Should use event_completed_at
+    # Note: Since we set event_completed_at and there are no handlers, event_completed_at will also return event_completed_at
     assert event.event_completed_at is not None
 
     # Add a handler result to make it incomplete

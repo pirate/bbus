@@ -54,7 +54,7 @@ async def run_generator(args: argparse.Namespace) -> None:
     db_path = resolve_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     middleware = SQLiteHistoryMirrorMiddleware(db_path)
-    bus = EventBus(name='MonitorGenerator', middlewares=[middleware], parallel_handlers=True)
+    bus = EventBus(name='MonitorGenerator', middlewares=[middleware], event_handler_concurrency='parallel')
 
     categories: Sequence[str] = args.categories or ['default']
 

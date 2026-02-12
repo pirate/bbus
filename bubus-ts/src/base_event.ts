@@ -35,7 +35,7 @@ export const BaseEventSchema = z
     event_status: z.enum(['pending', 'started', 'completed']).optional(),
     event_started_at: z.string().datetime().optional(),
     event_started_ts: z.number().optional(),
-    event_completed_at: z.string().datetime().optional(),
+    event_completed_at: z.string().datetime().nullable().optional(),
     event_completed_ts: z.number().optional(),
     event_results: z.array(z.unknown()).optional(),
     event_concurrency: z.enum(EVENT_CONCURRENCY_MODES).nullable().optional(),
@@ -130,7 +130,7 @@ export class BaseEvent {
   event_status!: 'pending' | 'started' | 'completed' // processing status of the event as a whole, no separate 'error' state because events can not error, only individual handlers can
   event_started_at?: string // ISO datetime string version of event_started_ts
   event_started_ts?: number // nanosecond monotonic version of event_started_at
-  event_completed_at?: string // ISO datetime string version of event_completed_ts
+  event_completed_at?: string | null // ISO datetime string version of event_completed_ts
   event_completed_ts?: number // nanosecond monotonic version of event_completed_at
   event_concurrency?: EventConcurrencyMode | null // concurrency mode for the event as a whole in relation to other events
   event_handler_concurrency?: EventHandlerConcurrencyMode | null // concurrency mode for the handlers within the event
@@ -204,7 +204,9 @@ export class BaseEvent {
     this.event_completed_at =
       typeof (parsed as { event_completed_at?: unknown }).event_completed_at === 'string'
         ? (parsed as { event_completed_at: string }).event_completed_at
-        : undefined
+        : (parsed as { event_completed_at?: unknown }).event_completed_at === null
+          ? null
+          : undefined
     this.event_completed_ts =
       typeof (parsed as { event_completed_ts?: unknown }).event_completed_ts === 'number'
         ? (parsed as { event_completed_ts: number }).event_completed_ts

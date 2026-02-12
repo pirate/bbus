@@ -148,11 +148,11 @@ export class EventHandler {
     return uuidv5(seed, HANDLER_ID_NAMESPACE)
   }
 
-  // "someHandlerName() (~/path/to/source/file.ts:123)"  <- best case when file path is available and its a named function
+  // "someHandlerName() @ ~/path/to/source/file.ts:123"  <- best case when file path is available and its a named function
   // "function#1234()"  <- worst case when no file path is available and its an anonymous/arrow function defined inline
   toString(): string {
     const label = this.handler_name && this.handler_name !== 'anonymous' ? `${this.handler_name}()` : `function#${this.id.slice(-4)}()`
-    return this.handler_file_path ? `${label} (${this.handler_file_path})` : label
+    return this.handler_file_path ? `${label} @ ${this.handler_file_path}` : label
   }
 
   // autodetect the path/to/source/file.ts:lineno where the handler is defined for better logs

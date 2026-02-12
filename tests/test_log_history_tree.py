@@ -26,7 +26,7 @@ def test_log_history_tree_single_event(capsys: Any) -> None:
 
     # Create and add event to history
     event = RootEvent(data='test')
-    event.event_processed_at = datetime.now(UTC)
+    event.event_completed_at = datetime.now(UTC)
     bus.event_history[event.event_id] = event
 
     captured_str = bus.log_tree()
@@ -44,7 +44,7 @@ def test_log_history_tree_with_handlers(capsys: Any) -> None:
 
     # Create event with handler results
     event = RootEvent(data='test')
-    event.event_processed_at = datetime.now(UTC)
+    event.event_completed_at = datetime.now(UTC)
 
     # Add handler result
     handler_id = f'{id(bus)}.123456'
@@ -73,7 +73,7 @@ def test_log_history_tree_with_errors(capsys: Any) -> None:
     bus = EventBus(name='ErrorBus')
 
     event = RootEvent()
-    event.event_processed_at = datetime.now(UTC)
+    event.event_completed_at = datetime.now(UTC)
 
     # Add error result
     handler_id = f'{id(bus)}.789'
@@ -102,7 +102,7 @@ def test_log_history_tree_complex_nested() -> None:
 
     # Create root event
     root = RootEvent(data='root_data')
-    root.event_processed_at = datetime.now(UTC)
+    root.event_completed_at = datetime.now(UTC)
 
     # Add root handler with child events
     root_handler_id = f'{id(bus)}.1001'
@@ -121,7 +121,7 @@ def test_log_history_tree_complex_nested() -> None:
     # Create child event
     child = ChildEvent(value=100)
     child.event_parent_id = root.event_id
-    child.event_processed_at = datetime.now(UTC)
+    child.event_completed_at = datetime.now(UTC)
 
     # Add child to root handler's event_children
     root.event_results[root_handler_id].event_children.append(child)
@@ -143,7 +143,7 @@ def test_log_history_tree_complex_nested() -> None:
     # Create grandchild
     grandchild = GrandchildEvent()
     grandchild.event_parent_id = child.event_id
-    grandchild.event_processed_at = datetime.now(UTC)
+    grandchild.event_completed_at = datetime.now(UTC)
 
     # Add grandchild to child handler's event_children
     child.event_results[child_handler_id].event_children.append(grandchild)
@@ -189,10 +189,10 @@ def test_log_history_tree_multiple_roots(capsys: Any) -> None:
 
     # Create multiple root events
     root1 = RootEvent(data='first')
-    root1.event_processed_at = datetime.now(UTC)
+    root1.event_completed_at = datetime.now(UTC)
 
     root2 = RootEvent(data='second')
-    root2.event_processed_at = datetime.now(UTC)
+    root2.event_completed_at = datetime.now(UTC)
 
     bus.event_history[root1.event_id] = root1
     bus.event_history[root2.event_id] = root2
@@ -209,7 +209,7 @@ def test_log_history_tree_timing_info(capsys: Any) -> None:
     bus = EventBus(name='TimingBus')
 
     event = RootEvent()
-    event.event_processed_at = datetime.now(UTC)
+    event.event_completed_at = datetime.now(UTC)
 
     # Add handler with timing
     start_time = datetime.now(UTC)

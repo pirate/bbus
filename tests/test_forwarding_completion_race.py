@@ -12,7 +12,7 @@ class RelayEvent(BaseEvent[str]):
 def _dump_bus_state(buses: list[EventBus]) -> str:
     lines: list[str] = []
     for bus in buses:
-        queue_size = bus.event_queue.qsize() if bus.event_queue else 0
+        queue_size = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
         lines.append(
             f'{bus.label} queue={queue_size} active={len(bus._active_event_ids)} '
             f'processing={len(bus._processing_event_ids)} history={len(bus.event_history)}'

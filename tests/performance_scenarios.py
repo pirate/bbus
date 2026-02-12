@@ -434,7 +434,7 @@ async def run_perf_single_event_many_fixed_handlers(input: PerfInput) -> dict[st
     total_handlers = 50_000
     bus = EventBus(
         name='PerfFixedHandlersBus',
-        parallel_handlers=True,
+        event_handler_concurrency='parallel',
         middlewares=[],
     )
 

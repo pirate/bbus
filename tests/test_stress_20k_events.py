@@ -5,7 +5,7 @@ import inspect
 import math
 import os
 import time
-from typing import Any
+from typing import Any, Literal
 
 import psutil
 import pytest
@@ -80,14 +80,14 @@ async def dispatch_and_measure(
 
 async def run_mode_throughput_benchmark(
     *,
-    parallel_handlers: bool,
+    event_handler_concurrency: Literal['serial', 'parallel'],
     total_events: int = 5_000,
     batch_size: int = 50,
 ) -> tuple[int, float]:
     """Run a basic no-op throughput benchmark for one handler mode."""
     bus = EventBus(
-        name=f'ThroughputFloor_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'ThroughputFloor_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
     )
 
@@ -122,7 +122,7 @@ async def run_mode_throughput_benchmark(
 
 async def run_io_fanout_benchmark(
     *,
-    parallel_handlers: bool,
+    event_handler_concurrency: Literal['serial', 'parallel'],
     total_events: int = 800,
     handlers_per_event: int = 4,
     sleep_seconds: float = 0.0015,
@@ -130,8 +130,8 @@ async def run_io_fanout_benchmark(
 ) -> tuple[int, float]:
     """Benchmark I/O-bound fanout to compare serial vs parallel handler mode."""
     bus = EventBus(
-        name=f'Fanout_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'Fanout_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
     )
 
@@ -167,11 +167,11 @@ async def run_io_fanout_benchmark(
     return handled, duration
 
 
-def throughput_floor_for_mode(parallel_handlers: bool) -> int:
+def throughput_floor_for_mode(event_handler_concurrency: Literal['serial', 'parallel']) -> int:
     """
     Conservative per-mode floor to catch severe regressions while avoiding CI flakiness.
     """
-    if parallel_handlers:
+    if event_handler_concurrency == 'parallel':
         return 500
     return 600
 
@@ -265,7 +265,7 @@ class MethodProfiler:
 
 async def run_contention_round(
     *,
-    parallel_handlers: bool,
+    event_handler_concurrency: Literal['serial', 'parallel'],
     bus_count: int = 10,
     events_per_bus: int = 120,
     batch_size: int = 20,
@@ -275,8 +275,8 @@ async def run_contention_round(
     """
     buses = [
         EventBus(
-            name=f'LockContention_{i}_{"parallel" if parallel_handlers else "serial"}',
-            parallel_handlers=parallel_handlers,
+            name=f'LockContention_{i}_{event_handler_concurrency}',
+            event_handler_concurrency=event_handler_concurrency,
             middlewares=[],
         )
         for i in range(bus_count)
@@ -358,7 +358,7 @@ async def test_20k_events_with_memory_control():
 
     print('EventBus settings:')
     print(f'  max_history_size: {bus.max_history_size}')
-    print(f'  queue maxsize: {bus.event_queue.maxsize if bus.event_queue else "not created"}')
+    print(f'  queue maxsize: {bus.pending_event_queue.maxsize if bus.pending_event_queue else "not created"}')
     print('Starting event dispatch...')
 
     processed_count = 0
@@ -710,32 +710,32 @@ async def test_history_bound_is_strict_after_idle():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'parallel_handlers',
-    [False, True],
-    ids=['serial_handlers', 'parallel_handlers'],
+    'event_handler_concurrency',
+    ['serial', 'parallel'],
+    ids=['serial_handler_concurrency', 'parallel_handler_concurrency'],
 )
-async def test_basic_throughput_floor_regression_guard(parallel_handlers: bool):
+async def test_basic_throughput_floor_regression_guard(event_handler_concurrency: Literal['serial', 'parallel']):
     """
     Throughput regression guard across Python's handler concurrency modes.
     Keeps threshold conservative to avoid CI flakiness while still catching
     severe slowdowns.
     """
-    processed, rate = await run_mode_throughput_benchmark(parallel_handlers=parallel_handlers)
+    processed, rate = await run_mode_throughput_benchmark(event_handler_concurrency=event_handler_concurrency)
 
     assert processed == 5_000
-    minimum_rate = throughput_floor_for_mode(parallel_handlers)
-    mode = 'parallel' if parallel_handlers else 'serial'
+    minimum_rate = throughput_floor_for_mode(event_handler_concurrency)
+    mode = event_handler_concurrency
     assert rate >= minimum_rate, f'{mode} throughput regression: {rate:.0f} events/sec (expected >= {minimum_rate} events/sec)'
 
 
 @pytest.mark.asyncio
-async def test_parallel_handlers_mode_improves_io_bound_fanout():
+async def test_event_handler_concurrency_mode_improves_io_bound_fanout():
     """
     For I/O-bound workloads with multiple handlers per event, parallel mode should
     provide a meaningful speedup versus serial mode.
     """
-    serial_handled, serial_duration = await run_io_fanout_benchmark(parallel_handlers=False)
-    parallel_handled, parallel_duration = await run_io_fanout_benchmark(parallel_handlers=True)
+    serial_handled, serial_duration = await run_io_fanout_benchmark(event_handler_concurrency='serial')
+    parallel_handled, parallel_duration = await run_io_fanout_benchmark(event_handler_concurrency='parallel')
 
     expected_total = 800 * 4
     assert serial_handled == expected_total
@@ -748,22 +748,22 @@ async def test_parallel_handlers_mode_improves_io_bound_fanout():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'parallel_handlers',
-    [False, True],
-    ids=['serial_handlers', 'parallel_handlers'],
+    'event_handler_concurrency',
+    ['serial', 'parallel'],
+    ids=['serial_handler_concurrency', 'parallel_handler_concurrency'],
 )
-async def test_forwarding_throughput_floor_across_modes(parallel_handlers: bool):
+async def test_forwarding_throughput_floor_across_modes(event_handler_concurrency: Literal['serial', 'parallel']):
     """
     Regression guard for forwarding path in both handler execution modes.
     """
     source_bus = EventBus(
-        name=f'ForwardSource_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'ForwardSource_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
     )
     target_bus = EventBus(
-        name=f'ForwardTarget_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'ForwardTarget_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
     )
 
@@ -800,7 +800,7 @@ async def test_forwarding_throughput_floor_across_modes(parallel_handlers: bool)
     floor = 200
 
     assert handled == total_events
-    mode = 'parallel' if parallel_handlers else 'serial'
+    mode = event_handler_concurrency
     assert throughput >= floor, (
         f'{mode} forwarding throughput regression: {throughput:.0f} events/sec (expected >= {floor} events/sec)'
     )
@@ -808,16 +808,16 @@ async def test_forwarding_throughput_floor_across_modes(parallel_handlers: bool)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'parallel_handlers',
-    [False, True],
-    ids=['serial_handlers', 'parallel_handlers'],
+    'event_handler_concurrency',
+    ['serial', 'parallel'],
+    ids=['serial_handler_concurrency', 'parallel_handler_concurrency'],
 )
-async def test_global_lock_contention_multi_bus_matrix(parallel_handlers: bool):
+async def test_global_lock_contention_multi_bus_matrix(event_handler_concurrency: Literal['serial', 'parallel']):
     """
     High-contention benchmark: many buses dispatching concurrently under global lock.
     """
-    phase1 = await run_contention_round(parallel_handlers=parallel_handlers)
-    phase2 = await run_contention_round(parallel_handlers=parallel_handlers)
+    phase1 = await run_contention_round(event_handler_concurrency=event_handler_concurrency)
+    phase2 = await run_contention_round(event_handler_concurrency=event_handler_concurrency)
 
     expected_per_bus = 120.0
     hard_floor = 120.0
@@ -850,19 +850,19 @@ async def test_global_lock_contention_multi_bus_matrix(parallel_handlers: bool):
     [10, 30],
     ids=['fanout_10_handlers', 'fanout_30_handlers'],
 )
-async def test_parallel_handlers_mode_scales_with_high_fanout(handlers_per_event: int):
+async def test_event_handler_concurrency_mode_scales_with_high_fanout(handlers_per_event: int):
     """
     High fanout benchmark to catch regressions in parallel handler scheduling.
     """
     serial_handled, serial_duration = await run_io_fanout_benchmark(
-        parallel_handlers=False,
+        event_handler_concurrency='serial',
         total_events=400,
         handlers_per_event=handlers_per_event,
         sleep_seconds=0.001,
         batch_size=25,
     )
     parallel_handled, parallel_duration = await run_io_fanout_benchmark(
-        parallel_handlers=True,
+        event_handler_concurrency='parallel',
         total_events=400,
         handlers_per_event=handlers_per_event,
         sleep_seconds=0.001,
@@ -883,11 +883,11 @@ async def test_parallel_handlers_mode_scales_with_high_fanout(handlers_per_event
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'parallel_handlers',
-    [False, True],
-    ids=['serial_handlers', 'parallel_handlers'],
+    'event_handler_concurrency',
+    ['serial', 'parallel'],
+    ids=['serial_handler_concurrency', 'parallel_handler_concurrency'],
 )
-async def test_queue_jump_perf_matrix_by_mode(parallel_handlers: bool):
+async def test_queue_jump_perf_matrix_by_mode(event_handler_concurrency: Literal['serial', 'parallel']):
     """
     Queue-jump throughput/latency matrix (parent awaits child on same bus) by mode.
     """
@@ -901,8 +901,8 @@ async def test_queue_jump_perf_matrix_by_mode(parallel_handlers: bool):
         event_timeout: float | None = 0.2
 
     bus = EventBus(
-        name=f'QueueJump_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'QueueJump_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
     )
 
@@ -951,29 +951,29 @@ async def test_queue_jump_perf_matrix_by_mode(parallel_handlers: bool):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'parallel_handlers',
-    [False, True],
-    ids=['serial_handlers', 'parallel_handlers'],
+    'event_handler_concurrency',
+    ['serial', 'parallel'],
+    ids=['serial_handler_concurrency', 'parallel_handler_concurrency'],
 )
-async def test_forwarding_chain_perf_matrix_by_mode(parallel_handlers: bool):
+async def test_forwarding_chain_perf_matrix_by_mode(event_handler_concurrency: Literal['serial', 'parallel']):
     """
     Forwarding chain A -> B -> C throughput/latency matrix by mode.
     """
     source_bus = EventBus(
-        name=f'ChainSource_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'ChainSource_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         max_history_size=120,
         middlewares=[],
     )
     middle_bus = EventBus(
-        name=f'ChainMiddle_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'ChainMiddle_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         max_history_size=120,
         middlewares=[],
     )
     sink_bus = EventBus(
-        name=f'ChainSink_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'ChainSink_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         max_history_size=120,
         middlewares=[],
     )
@@ -1035,11 +1035,11 @@ async def test_forwarding_chain_perf_matrix_by_mode(parallel_handlers: bool):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'parallel_handlers',
-    [False, True],
-    ids=['serial_handlers', 'parallel_handlers'],
+    'event_handler_concurrency',
+    ['serial', 'parallel'],
+    ids=['serial_handler_concurrency', 'parallel_handler_concurrency'],
 )
-async def test_timeout_churn_perf_matrix_by_mode(parallel_handlers: bool):
+async def test_timeout_churn_perf_matrix_by_mode(event_handler_concurrency: Literal['serial', 'parallel']):
     """
     Timeout-heavy phase followed by healthy phase should keep throughput healthy.
     """
@@ -1050,8 +1050,8 @@ async def test_timeout_churn_perf_matrix_by_mode(parallel_handlers: bool):
         event_timeout: float | None = 0.01
 
     bus = EventBus(
-        name=f'TimeoutChurn_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'TimeoutChurn_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         middlewares=[],
     )
 
@@ -1122,17 +1122,17 @@ async def test_timeout_churn_perf_matrix_by_mode(parallel_handlers: bool):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'parallel_handlers',
-    [False, True],
-    ids=['serial_handlers', 'parallel_handlers'],
+    'event_handler_concurrency',
+    ['serial', 'parallel'],
+    ids=['serial_handler_concurrency', 'parallel_handler_concurrency'],
 )
-async def test_memory_envelope_by_mode_for_capped_history(parallel_handlers: bool):
+async def test_memory_envelope_by_mode_for_capped_history(event_handler_concurrency: Literal['serial', 'parallel']):
     """
     Mode-specific memory slope/envelope check with capped history.
     """
     bus = EventBus(
-        name=f'MemoryEnvelope_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'MemoryEnvelope_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         max_history_size=60,
         middlewares=[],
     )
@@ -1158,8 +1158,8 @@ async def test_memory_envelope_by_mode_for_capped_history(parallel_handlers: boo
     gc_delta = gc_mb - before_mb
     per_dispatched_kb = (max(done_delta, 0.0) * 1024.0) / 6_000
     per_retained_mb = max(gc_delta, 0.0) / max(retained, 1)
-    done_budget = 130.0 if parallel_handlers else 110.0
-    gc_budget = 70.0 if parallel_handlers else 60.0
+    done_budget = 130.0 if event_handler_concurrency == 'parallel' else 110.0
+    gc_budget = 70.0 if event_handler_concurrency == 'parallel' else 60.0
 
     assert retained <= 60
     assert metrics[0] >= 450.0
@@ -1173,17 +1173,17 @@ async def test_memory_envelope_by_mode_for_capped_history(parallel_handlers: boo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'parallel_handlers',
-    [False, True],
-    ids=['serial_handlers', 'parallel_handlers'],
+    'event_handler_concurrency',
+    ['serial', 'parallel'],
+    ids=['serial_handler_concurrency', 'parallel_handler_concurrency'],
 )
-async def test_max_history_none_single_bus_stress_matrix(parallel_handlers: bool):
+async def test_max_history_none_single_bus_stress_matrix(event_handler_concurrency: Literal['serial', 'parallel']):
     """
     Unlimited-history mode stress for single bus: throughput + memory envelope.
     """
     bus = EventBus(
-        name=f'UnlimitedSingle_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'UnlimitedSingle_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         max_history_size=None,
         middlewares=[],
     )
@@ -1226,29 +1226,29 @@ async def test_max_history_none_single_bus_stress_matrix(parallel_handlers: bool
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'parallel_handlers',
-    [False, True],
-    ids=['serial_handlers', 'parallel_handlers'],
+    'event_handler_concurrency',
+    ['serial', 'parallel'],
+    ids=['serial_handler_concurrency', 'parallel_handler_concurrency'],
 )
-async def test_max_history_none_forwarding_chain_stress_matrix(parallel_handlers: bool):
+async def test_max_history_none_forwarding_chain_stress_matrix(event_handler_concurrency: Literal['serial', 'parallel']):
     """
     Unlimited-history forwarding chain (A -> B -> C) stress by mode.
     """
     source_bus = EventBus(
-        name=f'UnlimitedChainSource_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'UnlimitedChainSource_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         max_history_size=None,
         middlewares=[],
     )
     middle_bus = EventBus(
-        name=f'UnlimitedChainMiddle_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'UnlimitedChainMiddle_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         max_history_size=None,
         middlewares=[],
     )
     sink_bus = EventBus(
-        name=f'UnlimitedChainSink_{"parallel" if parallel_handlers else "serial"}',
-        parallel_handlers=parallel_handlers,
+        name=f'UnlimitedChainSink_{event_handler_concurrency}',
+        event_handler_concurrency=event_handler_concurrency,
         max_history_size=None,
         middlewares=[],
     )

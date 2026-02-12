@@ -1,12 +1,14 @@
 import asyncio
 import logging
+import re
 import tempfile
 import threading
 import time
 from collections.abc import Callable, Coroutine
 from functools import wraps
 from pathlib import Path
-from typing import Any, Literal, ParamSpec, TypeVar
+from types import ModuleType
+from typing import Any, Literal, ParamSpec, TypeVar, cast
 
 import portalocker
 
@@ -18,14 +20,15 @@ portalocker_logger.setLevel(logging.WARNING)
 portalocker_root_logger = logging.getLogger('portalocker')
 portalocker_root_logger.setLevel(logging.WARNING)
 
-PSUTIL_AVAILABLE = False
+psutil: ModuleType | None
 try:
-    import psutil  # type: ignore[import]
-
-    PSUTIL_AVAILABLE = True  # type: ignore[assignment]
+    import psutil as _psutil
 except ImportError:
     psutil = None
-    pass
+else:
+    psutil = _psutil
+
+PSUTIL_AVAILABLE: bool = psutil is not None
 
 
 logger = logging.getLogger(__name__)
@@ -35,6 +38,8 @@ logger = logging.getLogger(__name__)
 R = TypeVar('R')
 T = TypeVar('T')
 P = ParamSpec('P')
+RetryErrorMatcher = type[Exception] | re.Pattern[str]
+RetryOnErrors = list[RetryErrorMatcher] | tuple[RetryErrorMatcher, ...]
 
 
 def time_execution(
@@ -122,14 +127,11 @@ def _check_system_overload() -> tuple[bool, str]:
 
 
 def _get_semaphore_key(
-    func_name: str,
-    semaphore_name: str | None,
-    semaphore_scope: Literal['multiprocess', 'global', 'class', 'self'],
+    base_name: str,
+    semaphore_scope: Literal['multiprocess', 'global', 'class', 'instance'],
     args: tuple[Any, ...],
 ) -> str:
     """Determine the semaphore key based on scope."""
-    base_name = semaphore_name or func_name
-
     if semaphore_scope == 'multiprocess':
         return base_name
     elif semaphore_scope == 'global':
@@ -137,7 +139,7 @@ def _get_semaphore_key(
     elif semaphore_scope == 'class' and args and hasattr(args[0], '__class__'):
         class_name = args[0].__class__.__name__
         return f'{class_name}.{base_name}'
-    elif semaphore_scope == 'self' and args:
+    elif semaphore_scope == 'instance' and args:
         instance_id = id(args[0])
         return f'{instance_id}.{base_name}'
     else:
@@ -148,7 +150,7 @@ def _get_semaphore_key(
 def _get_or_create_semaphore(
     sem_key: str,
     semaphore_limit: int,
-    semaphore_scope: Literal['multiprocess', 'global', 'class', 'self'],
+    semaphore_scope: Literal['multiprocess', 'global', 'class', 'instance'],
 ) -> Any:
     """Get or create a semaphore based on scope."""
     if semaphore_scope == 'multiprocess':
@@ -199,26 +201,67 @@ def _get_or_create_semaphore(
 
 def _calculate_semaphore_timeout(
     semaphore_timeout: float | None,
-    timeout: float,
+    timeout: float | None,
     semaphore_limit: int,
-) -> float:
+) -> float | None:
     """Calculate the timeout for semaphore acquisition."""
-    if semaphore_timeout is None:
-        # Default: wait time is if all other slots are occupied with max timeout operations
-        # Ensure minimum of timeout value when limit=1
-        return max(timeout, timeout * (semaphore_limit - 1))
+    if semaphore_timeout is not None:
+        return semaphore_timeout
+    if timeout is None:
+        return None
+    # Default aligns with TS: timeout * max(1, semaphore_limit - 1)
+    return timeout * max(1, semaphore_limit - 1)
+
+
+def _callable_name(func: Callable[..., Any]) -> str:
+    """Return a stable name for logs even for callable instances."""
+    return getattr(func, '__name__', func.__class__.__name__)
+
+
+def _resolve_semaphore_name(
+    func_name: str,
+    semaphore_name: str | Callable[..., str] | None,
+    args: tuple[Any, ...],
+) -> str:
+    """Resolve semaphore name from a static name or call-time getter."""
+    base_name: str | Any
+    if callable(semaphore_name):
+        base_name = semaphore_name(*args)
     else:
-        # Use provided timeout, but ensure minimum of 0.01 if 0 was passed
-        return max(0.01, semaphore_timeout) if semaphore_timeout == 0 else semaphore_timeout
+        base_name = semaphore_name if semaphore_name is not None else func_name
+    return str(base_name)
+
+
+def _matches_retry_on_error(error: Exception, retry_on_errors: RetryOnErrors | None) -> bool:
+    """Return True when an error matches any configured retry matcher."""
+    if not retry_on_errors:
+        return True
+
+    error_text = f'{error.__class__.__name__}: {error}'
+    for matcher in retry_on_errors:
+        if isinstance(matcher, re.Pattern):
+            if matcher.search(error_text):
+                return True
+            continue
+        if isinstance(matcher, type) and issubclass(matcher, Exception):
+            if isinstance(error, matcher):
+                return True
+            continue
+        raise TypeError(
+            'retry_on_errors entries must be Exception subclasses or compiled regex patterns '
+            f'(got {type(matcher).__name__})'
+        )
+
+    return False
 
 
 async def _acquire_multiprocess_semaphore(
     semaphore: Any,
-    sem_timeout: float,
+    sem_timeout: float | None,
     sem_key: str,
     semaphore_lax: bool,
     semaphore_limit: int,
-    timeout: float,
+    timeout: float | None,
 ) -> tuple[bool, Any]:
     """Acquire a multiprocess semaphore with retries and exponential backoff."""
     start_time = time.time()
@@ -227,16 +270,18 @@ async def _acquire_multiprocess_semaphore(
     max_single_attempt = 1.0  # Max time for a single acquire attempt
     recreate_attempts = 0
     max_recreate_attempts = 3
+    has_timeout = sem_timeout is not None and sem_timeout > 0
 
-    while time.time() - start_time < sem_timeout:
+    while True:
         try:
-            # Calculate remaining time
-            remaining_time = sem_timeout - (time.time() - start_time)
-            if remaining_time <= 0:
+            # Calculate remaining time (when configured)
+            elapsed = time.time() - start_time
+            remaining_time: float | None = (sem_timeout - elapsed) if has_timeout and sem_timeout is not None else None
+            if remaining_time is not None and remaining_time <= 0:
                 break
 
-            # Use minimum of remaining time or max single attempt
-            attempt_timeout = min(remaining_time, max_single_attempt)
+            # Use bounded one-second acquire loops so we can recover from transient lock file errors.
+            attempt_timeout = min(remaining_time, max_single_attempt) if remaining_time is not None else max_single_attempt
 
             # Use a temporary thread to run the blocking operation
             multiprocess_lock = await asyncio.to_thread(
@@ -246,7 +291,7 @@ async def _acquire_multiprocess_semaphore(
                 return True, multiprocess_lock
 
             # If we didn't get the lock, wait before retrying
-            if remaining_time > retry_delay:
+            if remaining_time is None or remaining_time > retry_delay:
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * backoff_factor, 1.0)  # Cap at 1 second
 
@@ -299,8 +344,9 @@ async def _acquire_multiprocess_semaphore(
             if 'Already locked' in str(e) or isinstance(e, AssertionError):
                 # Lock file might be stale from a previous process crash
                 # Wait before retrying
-                remaining_time = sem_timeout - (time.time() - start_time)
-                if remaining_time > retry_delay:
+                elapsed = time.time() - start_time
+                remaining_time = (sem_timeout - elapsed) if has_timeout and sem_timeout is not None else None
+                if remaining_time is None or remaining_time > retry_delay:
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * backoff_factor, 1.0)
                 continue
@@ -309,9 +355,10 @@ async def _acquire_multiprocess_semaphore(
 
     # Timeout reached
     if not semaphore_lax:
+        timeout_str = f', timeout={timeout}s per operation' if timeout is not None else ''
         raise TimeoutError(
             f'Failed to acquire multiprocess semaphore "{sem_key}" within {sem_timeout}s '
-            f'(limit={semaphore_limit}, timeout={timeout}s per operation)'
+            f'(limit={semaphore_limit}{timeout_str})'
         )
     logger.warning(
         f'Failed to acquire multiprocess semaphore "{sem_key}" after {sem_timeout:.1f}s, proceeding without concurrency limit'
@@ -321,14 +368,18 @@ async def _acquire_multiprocess_semaphore(
 
 async def _acquire_asyncio_semaphore(
     semaphore: asyncio.Semaphore,
-    sem_timeout: float,
+    sem_timeout: float | None,
     sem_key: str,
     semaphore_lax: bool,
     semaphore_limit: int,
-    timeout: float,
+    timeout: float | None,
     sem_start: float,
 ) -> bool:
     """Acquire an asyncio semaphore."""
+    if sem_timeout is None or sem_timeout <= 0:
+        await semaphore.acquire()
+        return True
+
     try:
         async with asyncio.timeout(sem_timeout):
             await semaphore.acquire()
@@ -336,9 +387,10 @@ async def _acquire_asyncio_semaphore(
     except TimeoutError:
         sem_wait_time = time.time() - sem_start
         if not semaphore_lax:
+            timeout_str = f', timeout={timeout}s per operation' if timeout is not None else ''
             raise TimeoutError(
                 f'Failed to acquire semaphore "{sem_key}" within {sem_timeout}s '
-                f'(limit={semaphore_limit}, timeout={timeout}s per operation)'
+                f'(limit={semaphore_limit}{timeout_str})'
             )
         logger.warning(
             f'Failed to acquire semaphore "{sem_key}" after {sem_wait_time:.1f}s, proceeding without concurrency limit'
@@ -348,53 +400,52 @@ async def _acquire_asyncio_semaphore(
 
 async def _execute_with_retries(
     func: Callable[P, Coroutine[Any, Any, T]],
-    args: P.args,  # type: ignore
-    kwargs: P.kwargs,  # type: ignore
-    retries: int,
-    timeout: float,
-    wait: float,
-    backoff_factor: float,
-    retry_on: tuple[type[Exception], ...] | None,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    max_attempts: int,
+    timeout: float | None,
+    retry_after: float,
+    retry_backoff_factor: float,
+    retry_on_errors: RetryOnErrors | None,
     start_time: float,
     sem_start: float,
     semaphore_limit: int | None,
 ) -> T:
     """Execute the function with retry logic."""
-    for attempt in range(retries + 1):
+    func_name = _callable_name(func)
+    func_runner = cast(Callable[..., Coroutine[Any, Any, T]], func)
+    for attempt in range(1, max_attempts + 1):
         try:
             # Execute with per-attempt timeout
-            async with asyncio.timeout(timeout):
-                return await func(*args, **kwargs)  # type: ignore[reportCallIssue]
+            if timeout is not None and timeout > 0:
+                async with asyncio.timeout(timeout):
+                    return await func_runner(*args, **kwargs)
+            return await func_runner(*args, **kwargs)
 
         except Exception as e:
             # Check if we should retry this exception
-            if retry_on is not None and not isinstance(e, retry_on):
+            if not _matches_retry_on_error(e, retry_on_errors):
                 raise
 
-            if attempt < retries:
+            if attempt < max_attempts:
                 # Calculate wait time with backoff
-                current_wait = wait * (backoff_factor**attempt)
+                current_wait = retry_after * (retry_backoff_factor ** (attempt - 1))
 
                 # Only log warning on the final retry attempt (second-to-last overall attempt)
-                if attempt == retries - 1:
+                if attempt == max_attempts - 1:
                     logger.warning(
-                        f'{func.__name__} failed (attempt {attempt + 1}/{retries + 1}): '
+                        f'{func_name} failed (attempt {attempt}/{max_attempts}): '
                         f'{type(e).__name__}: {e}. Waiting {current_wait:.1f}s before retry...'
                     )
-                # else:
-                #     # For earlier attempts, skip logging to reduce noise
-                #     logger.debug(
-                #         f'{func.__name__} failed (attempt {attempt + 1}/{retries + 1}): '
-                #         f'{type(e).__name__}: {e}. Waiting {current_wait:.1f}s before retry...'
-                #     )
-                await asyncio.sleep(current_wait)
+                if current_wait > 0:
+                    await asyncio.sleep(current_wait)
             else:
                 # Final failure
                 total_time = time.time() - start_time
                 sem_wait = time.time() - sem_start - total_time if semaphore_limit else 0
                 sem_str = f'Semaphore wait: {sem_wait:.1f}s. ' if sem_wait > 0 else ''
                 logger.error(
-                    f'{func.__name__} failed after {retries + 1} attempts over {total_time:.1f}s. '
+                    f'{func_name} failed after {max_attempts} attempts over {total_time:.1f}s. '
                     f'{sem_str}Final error: {type(e).__name__}: {e}'
                 )
                 raise
@@ -425,53 +476,58 @@ def _check_system_overload_if_needed() -> None:
 
 
 def retry(
-    wait: float = 3,
-    retries: int = 3,
-    timeout: float = 5,
-    retry_on: tuple[type[Exception], ...] | None = None,
-    backoff_factor: float = 1.0,
+    retry_after: float = 0,
+    max_attempts: int = 1,
+    timeout: float | None = None,
+    retry_on_errors: RetryOnErrors | None = None,
+    retry_backoff_factor: float = 1.0,
     semaphore_limit: int | None = None,
-    semaphore_name: str | None = None,
+    semaphore_name: str | Callable[..., str] | None = None,
     semaphore_lax: bool = True,
-    semaphore_scope: Literal['multiprocess', 'global', 'class', 'self'] = 'global',
+    semaphore_scope: Literal['multiprocess', 'global', 'class', 'instance'] = 'global',
     semaphore_timeout: float | None = None,
 ):
     """
         Retry decorator with semaphore support for async functions.
 
         Args:
-                wait: Seconds to wait between retries
-                retries: Number of retry attempts after initial failure
-                timeout: Per-attempt timeout in seconds
-                retry_on: Tuple of exception types to retry on (None = retry all exceptions)
-                backoff_factor: Multiplier for wait time after each retry (1.0 = no backoff)
+                retry_after: Seconds to wait between retries
+                max_attempts: Total attempts including the initial call (1 = no retries)
+                timeout: Per-attempt timeout in seconds (`None` = no per-attempt timeout)
+                retry_on_errors: Error matchers to retry on (Exception subclasses or compiled regexes)
+                retry_backoff_factor: Multiplier for retry delay after each attempt (1.0 = no backoff)
                 semaphore_limit: Max concurrent executions (creates semaphore if needed)
-                semaphore_name: Name for semaphore (defaults to function name)
+                semaphore_name: Name for semaphore (defaults to function name), or callable receiving function args
                 semaphore_lax: If True, continue without semaphore on acquisition failure
                 semaphore_scope: Scope for semaphore sharing:
                         - 'global': All calls share one semaphore (default)
                         - 'class': All instances of a class share one semaphore
-                        - 'self': Each instance gets its own semaphore
+                        - 'instance': Each instance gets its own semaphore
                         - 'multiprocess': All processes on the machine share one semaphore
-                semaphore_timeout: Max time to wait for semaphore acquisition (None = timeout * (limit - 1)) or 0.01s
+                semaphore_timeout: Max time to wait for semaphore acquisition
+                                   (`None` => `timeout * max(1, limit - 1)` when timeout is set, else unbounded)
 
         Example:
-                @retry(wait=3, retries=3, timeout=5, semaphore_limit=3, semaphore_scope='self')
+                @retry(retry_after=3, max_attempts=3, timeout=5, semaphore_limit=3, semaphore_scope='instance')
                 async def some_function(self, ...):
-                        # Limited to 5s per attempt, retries up to 3 times on failure
+                        # Limited to 5s per attempt, up to 3 total attempts
                         # Max 3 concurrent executions per instance
 
     Notes:
-                - semaphore aquision happens once at start time, it's not retried
+                - semaphore acquisition happens once at start time, it is not retried
                 - semaphore_timeout is only used if semaphore_limit is set.
-                - if semaphore_timeout is set to 0, it will wait forever for a semaphore slot to become available.
-                - if semaphore_timeout is set to None, it will wait for the default (timeout * (semaphore_limit - 1)) +0.01s
-                - retries are 0-indexed, so retries=1 means the function will be called 2 times total (1 initial + 1 retry)
+                - if semaphore_timeout is set to 0, it waits forever for a semaphore slot.
+                - if semaphore_timeout is None and timeout is None, semaphore acquisition wait is unbounded.
     """
 
     def decorator(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Coroutine[Any, Any, T]]:
+        func_name = _callable_name(func)
+        effective_max_attempts = max(1, max_attempts)
+        effective_retry_after = max(0, retry_after)
+        effective_semaphore_limit = semaphore_limit if semaphore_limit is not None and semaphore_limit > 0 else None
+
         @wraps(func)
-        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:  # type: ignore[return]
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             # Initialize semaphore-related variables
             semaphore: Any = None
             semaphore_acquired = False
@@ -479,22 +535,23 @@ def retry(
             sem_start = time.time()
 
             # Handle semaphore if specified
-            if semaphore_limit is not None:
+            if effective_semaphore_limit is not None:
                 # Get semaphore key and create/retrieve semaphore
-                sem_key = _get_semaphore_key(func.__name__, semaphore_name, semaphore_scope, args)
-                semaphore = _get_or_create_semaphore(sem_key, semaphore_limit, semaphore_scope)
+                base_name = _resolve_semaphore_name(func_name, semaphore_name, tuple(args))
+                sem_key = _get_semaphore_key(base_name, semaphore_scope, tuple(args))
+                semaphore = _get_or_create_semaphore(sem_key, effective_semaphore_limit, semaphore_scope)
 
                 # Calculate timeout for semaphore acquisition
-                sem_timeout = _calculate_semaphore_timeout(semaphore_timeout, timeout, semaphore_limit)
+                sem_timeout = _calculate_semaphore_timeout(semaphore_timeout, timeout, effective_semaphore_limit)
 
                 # Acquire semaphore based on type
                 if semaphore_scope == 'multiprocess':
                     semaphore_acquired, multiprocess_lock = await _acquire_multiprocess_semaphore(
-                        semaphore, sem_timeout, sem_key, semaphore_lax, semaphore_limit, timeout
+                        semaphore, sem_timeout, sem_key, semaphore_lax, effective_semaphore_limit, timeout
                     )
                 else:
                     semaphore_acquired = await _acquire_asyncio_semaphore(
-                        semaphore, sem_timeout, sem_key, semaphore_lax, semaphore_limit, timeout, sem_start
+                        semaphore, sem_timeout, sem_key, semaphore_lax, effective_semaphore_limit, timeout, sem_start
                     )
 
             # Track active operations and check system overload
@@ -505,7 +562,17 @@ def retry(
             start_time = time.time()
             try:
                 return await _execute_with_retries(
-                    func, args, kwargs, retries, timeout, wait, backoff_factor, retry_on, start_time, sem_start, semaphore_limit
+                    func,
+                    tuple(args),
+                    dict(kwargs),
+                    effective_max_attempts,
+                    timeout,
+                    effective_retry_after,
+                    retry_backoff_factor,
+                    retry_on_errors,
+                    start_time,
+                    sem_start,
+                    effective_semaphore_limit,
                 )
             finally:
                 # Clean up: decrement active operations and release semaphore

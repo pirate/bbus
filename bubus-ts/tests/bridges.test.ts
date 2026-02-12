@@ -67,7 +67,6 @@ const normalizeRoundtripPayload = (payload: Record<string, unknown>): Record<str
   const dynamic_keys = [
     'event_id',
     'event_path',
-    'event_processed_at',
     'event_result_type',
     'event_result_schema',
     'event_results',

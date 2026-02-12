@@ -394,7 +394,7 @@ async def index() -> str:
                 const schema = data.event_schema || '—';
                 const resultType = data.event_result_type || '—';
                 const createdAt = data.event_created_at || '—';
-                const processedAt = data.event_processed_at || '—';
+                const processedAt = data.event_completed_at || '—';
 
                                 const summaryPrimary = [
                     `<span class="pill pill-type">${escapeHtml(node.event_type || 'UnknownEvent')}</span>`,

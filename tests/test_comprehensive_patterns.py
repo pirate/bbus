@@ -658,8 +658,8 @@ async def test_multi_bus_forwarding_with_queued_events():
 
         await asyncio.sleep(0)  # Let dispatch settle
 
-        print(f'Bus1 queue size: {bus1.event_queue.qsize() if bus1.event_queue else 0}')
-        print(f'Bus2 queue size: {bus2.event_queue.qsize() if bus2.event_queue else 0}')
+        print(f'Bus1 queue size: {bus1.pending_event_queue.qsize() if bus1.pending_event_queue else 0}')
+        print(f'Bus2 queue size: {bus2.pending_event_queue.qsize() if bus2.pending_event_queue else 0}')
 
         # Await E1 - child should jump Bus1's queue
         await event1

@@ -4,7 +4,7 @@ import asyncio
 import math
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from bubus.models import BaseEvent, EventResult
@@ -27,9 +27,11 @@ def format_result_value(value: Any) -> str:
     if isinstance(value, (str, int, float, bool)):
         return repr(value)
     if isinstance(value, dict):
-        return f'dict({len(value)} items)'  # type: ignore[arg-type]
+        value_dict = cast(dict[Any, Any], value)
+        return f'dict({len(value_dict)} items)'
     if isinstance(value, list):
-        return f'list({len(value)} items)'  # type: ignore[arg-type]
+        value_list = cast(list[Any], value)
+        return f'list({len(value_list)} items)'
     return f'{type(value).__name__}(...)'
 
 
@@ -413,8 +415,6 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
 
         # After showing all handlers that ran, show any registered handlers that never started
         # This is for handlers that were registered but didn't get to run due to timeouts
-        from bubus.models import get_handler_id, get_handler_name
-
         # Find which EventBus contains this event
         event_bus = None
         for bus in list(eventbus.all_instances):
@@ -422,18 +422,20 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
                 event_bus = bus
                 break
 
-        # Get all registered handlers for this event type
-        if event_bus and hasattr(event_bus, 'handlers') and evt.event_type in event_bus.handlers:
-            registered_handlers = event_bus.handlers[evt.event_type]
+        # Get all registered handlers that could match this event_type.
+        if event_bus and hasattr(event_bus, 'handlers') and hasattr(event_bus, 'handlers_by_key'):
+            indexed_ids = list(event_bus.handlers_by_key.get(evt.event_type, [])) + list(event_bus.handlers_by_key.get('*', []))
 
-            for handler in registered_handlers:
-                handler_id = get_handler_id(handler, event_bus)
+            for handler_id in indexed_ids:
+                entry = event_bus.handlers.get(handler_id)
+                if entry is None:
+                    continue
                 # Check if this handler already ran (has an EventResult)
                 if handler_id not in evt.event_results:
                     # This handler was registered but never started - use helper to format
                     print_handler_line(
                         handler_indent=handler_indent,
-                        handler_name=get_handler_name(handler),
+                        handler_name=entry.handler_name,
                         event_id_suffix=evt.event_id[-4:],
                         status='pending',  # Will show 🔲 icon
                         started_at=None,
