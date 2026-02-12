@@ -826,13 +826,16 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     @model_validator(mode='before')
     @classmethod
-    def _set_event_type_from_class_name(cls, data: dict[str, Any]) -> dict[str, Any]:
+    def _set_event_type_from_class_name(cls, data: Any) -> Any:
         """Automatically set event_type to the class name if not provided"""
+        if not isinstance(data, dict):
+            return data
+        payload = cast(dict[str, Any], data)
         is_class_default_unchanged = cls.model_fields['event_type'].default == 'UndefinedEvent'
-        is_event_type_not_provided = 'event_type' not in data or data['event_type'] == 'UndefinedEvent'
+        is_event_type_not_provided = 'event_type' not in payload or payload['event_type'] == 'UndefinedEvent'
         if is_class_default_unchanged and is_event_type_not_provided:
-            data['event_type'] = cls.__name__
-        return data
+            payload['event_type'] = cls.__name__
+        return payload
 
     @model_validator(mode='before')
     @classmethod
