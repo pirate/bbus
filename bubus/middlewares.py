@@ -75,6 +75,8 @@ class OtelTracingMiddleware(EventBusMiddleware):
             self._status_code = getattr(status_mod, 'StatusCode', None)
         except Exception:
             pass
+        if tracer is None:
+            raise ImportError('OpenTelemetry tracer unavailable')
         self._tracer = tracer
         self._event_spans: dict[tuple[str, str], Any] = {}
         self._handler_spans: dict[tuple[str, str, str], Any] = {}
@@ -167,8 +169,7 @@ class OtelTracingMiddleware(EventBusMiddleware):
             return
         error = event_result.error
         if error is not None:
-            if isinstance(error, BaseException):
-                span.record_exception(error)
+            span.record_exception(error)
             if self._status_cls and self._status_code and hasattr(span, 'set_status'):
                 span.set_status(self._status_cls(self._status_code.ERROR, str(error)))
         span.end()

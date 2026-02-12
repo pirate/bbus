@@ -24,6 +24,8 @@ class NATSEventBridge:
         self._inbound_bus = EventBus(name=name or f'NATSEventBridge_{uuid7str()[-8:]}', max_history_size=0)
 
         self._running = False
+        self._start_task: asyncio.Task[None] | None = None
+        self._start_lock = asyncio.Lock()
         self._nc: Any | None = None
 
     def on(self, event_pattern: EventPatternType, handler: Callable[[BaseEvent[Any]], Any]) -> None:
@@ -47,31 +49,62 @@ class NATSEventBridge:
         return await self.dispatch(event)
 
     async def start(self) -> None:
+        current_task = asyncio.current_task()
+        if self._start_task is not None and self._start_task is not current_task and not self._start_task.done():
+            await self._start_task
+            return
+
         if self._running:
             return
 
-        nats_module = self._load_nats()
-        self._nc = await nats_module.connect(self.server)
+        try:
+            async with self._start_lock:
+                if self._running:
+                    return
 
-        async def _on_msg(msg: Any) -> None:
-            try:
-                payload = json.loads(msg.data.decode('utf-8'))
-            except Exception:
-                return
-            try:
-                await self._dispatch_inbound_payload(payload)
-            except QueueShutDown:
-                return
+                nats_module = self._load_nats()
+                nc = await nats_module.connect(self.server)
 
-        assert self._nc is not None
-        await self._nc.subscribe(self.subject, cb=_on_msg)
-        self._running = True
+                async def _on_msg(msg: Any) -> None:
+                    try:
+                        payload = json.loads(msg.data.decode('utf-8'))
+                    except Exception:
+                        return
+                    try:
+                        await self._dispatch_inbound_payload(payload)
+                    except QueueShutDown:
+                        return
+
+                try:
+                    await nc.subscribe(self.subject, cb=_on_msg)
+                except Exception:
+                    try:
+                        await nc.close()
+                    except Exception:
+                        pass
+                    raise
+
+                self._nc = nc
+                self._running = True
+        finally:
+            if self._start_task is current_task:
+                self._start_task = None
 
     async def close(self, *, clear: bool = True) -> None:
+        if self._start_task is not None:
+            self._start_task.cancel()
+            await asyncio.gather(self._start_task, return_exceptions=True)
+            self._start_task = None
         self._running = False
         if self._nc is not None:
-            await self._nc.drain()
-            await self._nc.close()
+            try:
+                await self._nc.drain()
+            except Exception:
+                pass
+            try:
+                await self._nc.close()
+            except Exception:
+                pass
             self._nc = None
         await self._inbound_bus.stop(clear=clear)
 
@@ -82,7 +115,8 @@ class NATSEventBridge:
             asyncio.get_running_loop()
         except RuntimeError:
             return
-        asyncio.create_task(self.start())
+        if self._start_task is None or self._start_task.done():
+            self._start_task = asyncio.create_task(self.start())
 
     async def _dispatch_inbound_payload(self, payload: Any) -> None:
         event = BaseEvent[Any].model_validate(payload).reset()

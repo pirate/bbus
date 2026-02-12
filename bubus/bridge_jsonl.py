@@ -26,6 +26,8 @@ class JSONLEventBridge:
         self._inbound_bus = EventBus(name=name or f'JSONLEventBridge_{uuid7str()[-8:]}', max_history_size=0)
 
         self._running = False
+        self._start_task: asyncio.Task[None] | None = None
+        self._start_lock = asyncio.Lock()
         self._listener_task: asyncio.Task[None] | None = None
         self._byte_offset = 0
         self._pending_line = ''
@@ -50,16 +52,34 @@ class JSONLEventBridge:
         return await self.dispatch(event)
 
     async def start(self) -> None:
+        current_task = asyncio.current_task()
+        if self._start_task is not None and self._start_task is not current_task and not self._start_task.done():
+            await self._start_task
+            return
+
         if self._running:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.touch(exist_ok=True)
-        self._byte_offset = self.path.stat().st_size
-        self._pending_line = ''
-        self._running = True
-        self._listener_task = asyncio.create_task(self._listen_loop())
+
+        try:
+            async with self._start_lock:
+                if self._running:
+                    return
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.path.touch(exist_ok=True)
+                self._byte_offset = self.path.stat().st_size
+                self._pending_line = ''
+                self._running = True
+                if self._listener_task is None or self._listener_task.done():
+                    self._listener_task = asyncio.create_task(self._listen_loop())
+        finally:
+            if self._start_task is current_task:
+                self._start_task = None
 
     async def close(self, *, clear: bool = True) -> None:
+        if self._start_task is not None:
+            self._start_task.cancel()
+            await asyncio.gather(self._start_task, return_exceptions=True)
+            self._start_task = None
         self._running = False
         if self._listener_task is not None:
             self._listener_task.cancel()
@@ -74,7 +94,8 @@ class JSONLEventBridge:
             asyncio.get_running_loop()
         except RuntimeError:
             return
-        self._listener_task = asyncio.create_task(self.start())
+        if self._start_task is None or self._start_task.done():
+            self._start_task = asyncio.create_task(self.start())
 
     async def _listen_loop(self) -> None:
         while self._running:

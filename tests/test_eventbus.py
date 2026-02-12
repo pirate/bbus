@@ -1264,9 +1264,13 @@ class TestHandlerMiddleware:
             await bus.wait_until_idle()
 
             root_event_span = next(span for span in tracer.spans if span.attrs.get('bubus.event_type') == 'RootEvent')
-            root_handler_span = next(span for span in tracer.spans if str(span.attrs.get('bubus.handler_name', '')).endswith('root_handler'))
+            root_handler_span = next(
+                span for span in tracer.spans if str(span.attrs.get('bubus.handler_name', '')).endswith('root_handler')
+            )
             child_event_span = next(span for span in tracer.spans if span.attrs.get('bubus.event_type') == 'ChildEvent')
-            child_handler_span = next(span for span in tracer.spans if str(span.attrs.get('bubus.handler_name', '')).endswith('child_handler'))
+            child_handler_span = next(
+                span for span in tracer.spans if str(span.attrs.get('bubus.handler_name', '')).endswith('child_handler')
+            )
 
             assert root_handler_span.context['parent'] is root_event_span
             assert child_event_span.context['parent'] is root_handler_span
