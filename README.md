@@ -626,9 +626,50 @@ await bus.dispatch(DataEvent())
 
 <br/>
 
-### 📝 Write-Ahead Logging
+### Middlwares
 
-Persist events automatically to a `jsonl` file for future replay and debugging:
+Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need (`on_event_change`, `on_event_result_change`, `on_handler_change`):
+
+```python
+from bubus.middlewares import EventBusMiddleware
+
+class AnalyticsMiddleware(EventBusMiddleware):
+    async def on_event_result_change(self, eventbus, event, event_result, status):
+        if status == 'started':
+            await analytics_bus.dispatch(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
+        elif status == 'completed':
+            await analytics_bus.dispatch(
+                HandlerCompletedAnalyticsEvent(
+                    event_id=event_result.event_id,
+                    error=repr(event_result.error) if event_result.error else None,
+                )
+            )
+
+    async def on_handler_change(self, eventbus, handler, registered):
+        await analytics_bus.dispatch(
+            HandlerRegistryChangedEvent(handler_id=handler.id, registered=registered, bus=eventbus.name)
+        )
+```
+
+Middlewares can observe or mutate the `EventResult` at each step, dispatch additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
+
+Built-in synthetic helpers:
+- `SyntheticErrorEventMiddleware`: on handler error, fire-and-forget emits `OriginalEventTypeErrorEvent` with `{error, error_type}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful when downstream/remote consumers only see events and need explicit failure notifications.
+- `SyntheticReturnEventMiddleware`: on non-`None` handler return, fire-and-forget emits `OriginalEventTypeResultEvent` with `{data}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful for bridges/remote systems since handler return values do not cross bridge boundaries, but events do.
+- `SyntheticHandlerChangeEventMiddleware`: emits `BusHandlerRegisteredEvent({handler})` / `BusHandlerUnregisteredEvent({handler})` when handlers are added/removed via `.on()` / `.off()`.
+- `OtelTracingMiddleware`: emits OpenTelemetry spans for events and handlers with parent-child linking; can be exported to Sentry via Sentry's OpenTelemetry integration.
+- `WALEventBusMiddleware`: persists completed events to JSONL for replay/debugging.
+- `LoggerEventBusMiddleware`: writes event/handler transitions to stdout and optionally to file.
+
+Pair that with the built-in `SQLiteHistoryMirrorMiddleware` to mirror every event and handler transition into append-only `events_log` and `event_results_log` tables, making it easy to inspect or audit the bus state:
+
+```python
+from bubus import EventBus, SQLiteHistoryMirrorMiddleware
+
+bus = EventBus(middlewares=[SQLiteHistoryMirrorMiddleware('./events.sqlite')])
+```
+
+Middleware setup example:
 
 ```python
 from pathlib import Path
@@ -689,45 +730,7 @@ EventBus(
 - `max_history_size`: Maximum number of events to keep in history (default: 50, `None` = unlimited, `0` = keep only in-flight events and drop completed events immediately)
 - `max_history_drop`: If `True` (default), drop oldest history entries when full (even uncompleted events). If `False`, reject new dispatches once history reaches `max_history_size` (except when `max_history_size=0`, which never rejects on history size)
 - `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc.
-
-Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need (`on_event_change`, `on_event_result_change`, `on_handler_change`):
-
-```python
-from bubus.middlewares import EventBusMiddleware
-
-class AnalyticsMiddleware(EventBusMiddleware):
-    async def on_event_result_change(self, eventbus, event, event_result, status):
-        if status == 'started':
-            await analytics_bus.dispatch(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
-        elif status == 'completed':
-            await analytics_bus.dispatch(
-                HandlerCompletedAnalyticsEvent(
-                    event_id=event_result.event_id,
-                    error=repr(event_result.error) if event_result.error else None,
-                )
-            )
-
-    async def on_handler_change(self, eventbus, handler, registered):
-        await analytics_bus.dispatch(
-            HandlerRegistryChangedEvent(handler_id=handler.id, registered=registered, bus=eventbus.name)
-        )
-```
-
-Middlewares can observe or mutate the `EventResult` at each step, dispatch additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
-
-Built-in synthetic helpers:
-- `SyntheticErrorEventMiddleware`: on handler error, fire-and-forget emits `OriginalEventTypeErrorEvent` with `{error, error_type}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful when downstream/remote consumers only see events and need explicit failure notifications.
-- `SyntheticReturnEventMiddleware`: on non-`None` handler return, fire-and-forget emits `OriginalEventTypeResultEvent` with `{data}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful for bridges/remote systems since handler return values do not cross bridge boundaries, but events do.
-- `SyntheticHandlerChangeEventMiddleware`: emits `BusHandlerRegisteredEvent({handler})` / `BusHandlerUnregisteredEvent({handler})` when handlers are added/removed via `.on()` / `.off()`.
-- `OtelTracingMiddleware`: emits OpenTelemetry spans for events and handlers with parent-child linking; can be exported to Sentry via Sentry's OpenTelemetry integration.
-
-Pair that with the built-in `SQLiteHistoryMirrorMiddleware` to mirror every event and handler transition into append-only `events_log` and `event_results_log` tables, making it easy to inspect or audit the bus state:
-
-```python
-from bubus import EventBus, SQLiteHistoryMirrorMiddleware
-
-bus = EventBus(middlewares=[SQLiteHistoryMirrorMiddleware('./events.sqlite')])
-```
+- Middleware hook details and built-in middleware examples are documented in [Middlwares](#middlwares).
 #### `EventBus` Properties
 
 - `name`: The bus identifier
@@ -1150,6 +1153,38 @@ value = await handler_result  # Returns result or raises an exception if handler
 
 - `execute(event, handler, *, eventbus, timeout, enter_handler_context, exit_handler_context, format_exception_for_log)`  
   Low-level helper that runs the handler, updates timing/status fields, captures errors, and notifies its completion signal. `EventBus.execute_handler()` delegates to this; you generally only need it when building a custom bus or integrating the event system into another dispatcher.
+
+### `EventHandler`
+
+Serializable metadata wrapper around a registered handler callable.
+
+You usually get an `EventHandler` back from `bus.on(...)`, can pass it to `bus.off(...)`, and may see it in middleware hooks like `on_handler_change(...)`.
+
+#### `EventHandler` Fields
+
+```python
+class EventHandler(BaseModel):
+    id: str | None                   # Stable handler identifier
+    handler_name: str                # Callable name
+    handler_file_path: str | None    # Source file path (if known)
+    handler_timeout: float | None    # Optional per-handler timeout override
+    handler_slow_timeout: float | None  # Optional "slow handler" threshold
+    handler_registered_at: datetime  # Registration timestamp (datetime)
+    handler_registered_ts: int       # Registration timestamp (ns epoch)
+    event_pattern: str               # Registered event pattern (type name or '*')
+    eventbus_name: str               # Owning EventBus name
+    eventbus_id: str                 # Owning EventBus ID
+```
+
+The raw callable is stored on `handler`, but is excluded from JSON serialization (`to_json_dict()`).
+
+#### `EventHandler` Properties and Methods
+
+- `label` (property): Short display label like `my_handler#abcd`.
+- `__call__(event)`: Invokes the wrapped callable directly.
+- `to_json_dict() -> dict[str, Any]`: JSON-safe metadata dump (excludes callable).
+- `from_json_dict(data, handler=None) -> EventHandler`: Rebuilds metadata; optional callable reattachment.
+- `from_callable(...) -> EventHandler`: Build a new handler entry from a callable plus bus/pattern metadata.
 
 ---
 
