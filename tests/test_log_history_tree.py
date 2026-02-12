@@ -1,9 +1,9 @@
 """Test the EventBus.log_tree() method"""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
-from bubus import BaseEvent, EventBus, EventResult
+from bubus import BaseEvent, EventBus, EventHandler, EventResult
 
 
 class RootEvent(BaseEvent[str]):
@@ -15,9 +15,37 @@ class ChildEvent(BaseEvent[list[int]]):
 
 
 class GrandchildEvent(BaseEvent[str]):
-    event_result_type: Any = str
-
     nested: dict[str, int] = {'level': 3}
+
+
+def _result_with_handler(
+    *,
+    bus: EventBus,
+    event_id: str,
+    handler_id: str,
+    handler_name: str,
+    status: Literal['pending', 'started', 'completed', 'error'],
+    started_at: datetime | None = None,
+    completed_at: datetime | None = None,
+    result: Any = None,
+    error: BaseException | None = None,
+) -> EventResult[Any]:
+    handler = EventHandler(
+        id=handler_id,
+        handler_name=handler_name,
+        eventbus_id=str(id(bus)),
+        eventbus_name=bus.name,
+        event_pattern='*',
+    )
+    return EventResult(
+        event_id=event_id,
+        handler=handler,
+        status=status,
+        started_at=started_at,
+        completed_at=completed_at,
+        result=result,
+        error=error,
+    )
 
 
 def test_log_history_tree_single_event(capsys: Any) -> None:
@@ -48,12 +76,11 @@ def test_log_history_tree_with_handlers(capsys: Any) -> None:
 
     # Add handler result
     handler_id = f'{id(bus)}.123456'
-    event.event_results[handler_id] = EventResult[str](
+    event.event_results[handler_id] = _result_with_handler(
+        bus=bus,
         event_id=event.event_id,
         handler_id=handler_id,
         handler_name='test_handler',
-        eventbus_id=str(id(bus)),
-        eventbus_name='HandlerBus',
         status='completed',
         started_at=datetime.now(UTC),
         completed_at=datetime.now(UTC),
@@ -77,12 +104,11 @@ def test_log_history_tree_with_errors(capsys: Any) -> None:
 
     # Add error result
     handler_id = f'{id(bus)}.789'
-    event.event_results[handler_id] = EventResult[str](
+    event.event_results[handler_id] = _result_with_handler(
+        bus=bus,
         event_id=event.event_id,
         handler_id=handler_id,
         handler_name='error_handler',
-        eventbus_id=str(id(bus)),
-        eventbus_name='ErrorBus',
         status='error',
         started_at=datetime.now(UTC),
         completed_at=datetime.now(UTC),
@@ -106,12 +132,11 @@ def test_log_history_tree_complex_nested() -> None:
 
     # Add root handler with child events
     root_handler_id = f'{id(bus)}.1001'
-    root.event_results[root_handler_id] = EventResult[str](
+    root.event_results[root_handler_id] = _result_with_handler(
+        bus=bus,
         event_id=root.event_id,
         handler_id=root_handler_id,
         handler_name='root_handler',
-        eventbus_id=str(id(bus)),
-        eventbus_name='ComplexBus',
         status='completed',
         started_at=datetime.now(UTC),
         completed_at=datetime.now(UTC),
@@ -128,12 +153,11 @@ def test_log_history_tree_complex_nested() -> None:
 
     # Add child handler with grandchild
     child_handler_id = f'{id(bus)}.2001'
-    child.event_results[child_handler_id] = EventResult[list[int]](
+    child.event_results[child_handler_id] = _result_with_handler(
+        bus=bus,
         event_id=child.event_id,
         handler_id=child_handler_id,
         handler_name='child_handler',
-        eventbus_id=str(id(bus)),
-        eventbus_name='ComplexBus',
         status='completed',
         started_at=datetime.now(UTC),
         completed_at=datetime.now(UTC),
@@ -150,12 +174,11 @@ def test_log_history_tree_complex_nested() -> None:
 
     # Add grandchild handler
     grandchild_handler_id = f'{id(bus)}.3001'
-    grandchild.event_results[grandchild_handler_id] = EventResult[str](
+    grandchild.event_results[grandchild_handler_id] = _result_with_handler(
+        bus=bus,
         event_id=grandchild.event_id,
         handler_id=grandchild_handler_id,
         handler_name='grandchild_handler',
-        eventbus_id=str(id(bus)),
-        eventbus_name='ComplexBus',
         status='completed',
         started_at=datetime.now(UTC),
         completed_at=datetime.now(UTC),
@@ -216,12 +239,11 @@ def test_log_history_tree_timing_info(capsys: Any) -> None:
     end_time = datetime.now(UTC)
 
     handler_id = f'{id(bus)}.999'
-    event.event_results[handler_id] = EventResult[str](
+    event.event_results[handler_id] = _result_with_handler(
+        bus=bus,
         event_id=event.event_id,
         handler_id=handler_id,
         handler_name='timed_handler',
-        eventbus_id=str(id(bus)),
-        eventbus_name='TimingBus',
         status='completed',
         started_at=start_time,
         completed_at=end_time,
@@ -244,12 +266,11 @@ def test_log_history_tree_running_handler(capsys: Any) -> None:
 
     # Add running handler (started but not completed)
     handler_id = f'{id(bus)}.555'
-    event.event_results[handler_id] = EventResult[str](
+    event.event_results[handler_id] = _result_with_handler(
+        bus=bus,
         event_id=event.event_id,
         handler_id=handler_id,
         handler_name='running_handler',
-        eventbus_id=str(id(bus)),
-        eventbus_name='RunningBus',
         status='started',
         started_at=datetime.now(UTC),
         completed_at=None,

@@ -11,57 +11,25 @@ const typed_result_schema = z.object({
 })
 
 const TypedResultEvent = BaseEvent.extend('TypedResultEvent', {
-  event_result_schema: typed_result_schema,
-  event_result_type: 'TypedResult',
+  event_result_type: typed_result_schema,
 })
 
 const StringResultEvent = BaseEvent.extend('StringResultEvent', {
-  event_result_schema: z.string(),
-  event_result_type: 'string',
+  event_result_type: z.string(),
 })
 
 const NumberResultEvent = BaseEvent.extend('NumberResultEvent', {
-  event_result_schema: z.number(),
-  event_result_type: 'number',
+  event_result_type: z.number(),
 })
 
 const ComplexResultEvent = BaseEvent.extend('ComplexResultEvent', {
-  event_result_schema: z.object({
+  event_result_type: z.object({
     items: z.array(z.string()),
     metadata: z.record(z.string(), z.number()),
   }),
 })
 
 const NoSchemaEvent = BaseEvent.extend('NoSchemaEvent', {})
-
-const AutoObjectResultEvent = BaseEvent.extend('AutoObjectResultEvent', {
-  event_result_schema: z.object({ ok: z.boolean() }),
-})
-
-const AutoRecordResultEvent = BaseEvent.extend('AutoRecordResultEvent', {
-  event_result_schema: z.record(z.string(), z.number()),
-})
-
-const AutoMapResultEvent = BaseEvent.extend('AutoMapResultEvent', {
-  event_result_schema: z.map(z.string(), z.number()),
-})
-
-const AutoStringResultEvent = BaseEvent.extend('AutoStringResultEvent', {
-  event_result_schema: z.string(),
-})
-
-const AutoNumberResultEvent = BaseEvent.extend('AutoNumberResultEvent', {
-  event_result_schema: z.number(),
-})
-
-const AutoBooleanResultEvent = BaseEvent.extend('AutoBooleanResultEvent', {
-  event_result_schema: z.boolean(),
-})
-
-const ExplicitTypeWinsEvent = BaseEvent.extend('ExplicitTypeWinsEvent', {
-  event_result_schema: z.string(),
-  event_result_type: 'CustomResultType',
-})
 
 test('typed result schema validates and parses handler result', async () => {
   const bus = new EventBus('TypedResultBus')
@@ -74,7 +42,6 @@ test('typed result schema validates and parses handler result', async () => {
   const result = Array.from(event.event_results.values())[0]
   assert.equal(result.status, 'completed')
   assert.deepEqual(result.result, { value: 'hello', count: 42 })
-  assert.equal(event.event_result_type, 'TypedResult')
 })
 
 test('built-in result schemas validate handler results', async () => {
@@ -140,40 +107,18 @@ test('complex result schema validates nested data', async () => {
   assert.deepEqual(result.result, { items: ['a', 'b'], metadata: { a: 1, b: 2 } })
 })
 
-test('event_result_type auto-infers from common event_result_schema types', () => {
-  assert.equal(AutoObjectResultEvent.event_result_type, 'object')
-  assert.equal(AutoRecordResultEvent.event_result_type, 'object')
-  assert.equal(AutoMapResultEvent.event_result_type, 'object')
-  assert.equal(AutoStringResultEvent.event_result_type, 'string')
-  assert.equal(AutoNumberResultEvent.event_result_type, 'number')
-  assert.equal(AutoBooleanResultEvent.event_result_type, 'boolean')
-
-  assert.equal(AutoObjectResultEvent({}).event_result_type, 'object')
-  assert.equal(AutoRecordResultEvent({}).event_result_type, 'object')
-  assert.equal(AutoMapResultEvent({}).event_result_type, 'object')
-  assert.equal(AutoStringResultEvent({}).event_result_type, 'string')
-  assert.equal(AutoNumberResultEvent({}).event_result_type, 'number')
-  assert.equal(AutoBooleanResultEvent({}).event_result_type, 'boolean')
-})
-
-test('explicit event_result_type is not overridden by inference', () => {
-  assert.equal(ExplicitTypeWinsEvent.event_result_type, 'CustomResultType')
-  assert.equal(ExplicitTypeWinsEvent({}).event_result_type, 'CustomResultType')
-})
-
-test('fromJSON converts event_result_schema into zod schema', async () => {
+test('fromJSON converts event_result_type into zod schema', async () => {
   const bus = new EventBus('FromJsonResultBus')
 
   const original = TypedResultEvent({
-    event_result_schema: typed_result_schema,
-    event_result_type: 'TypedResult',
+    event_result_type: typed_result_schema,
   })
   const json = original.toJSON()
 
   const restored = TypedResultEvent.fromJSON?.(json) ?? TypedResultEvent(json as never)
 
-  assert.ok(restored.event_result_schema)
-  assert.equal(typeof (restored.event_result_schema as { safeParse?: unknown }).safeParse, 'function')
+  assert.ok(restored.event_result_type)
+  assert.equal(typeof (restored.event_result_type as { safeParse?: unknown }).safeParse, 'function')
 
   bus.on(TypedResultEvent, () => ({ value: 'from-json', count: 7 }))
 
@@ -183,6 +128,28 @@ test('fromJSON converts event_result_schema into zod schema', async () => {
   const result = Array.from(dispatched.event_results.values())[0]
   assert.equal(result.status, 'completed')
   assert.deepEqual(result.result, { value: 'from-json', count: 7 })
+})
+
+test('fromJSON reconstructs primitive JSON schema', async () => {
+  const bus = new EventBus('PrimitiveFromJsonBus')
+
+  const source = new BaseEvent({
+    event_type: 'PrimitiveResultEvent',
+    event_result_type: z.boolean(),
+  }).toJSON() as Record<string, unknown>
+
+  const restored = BaseEvent.fromJSON(source)
+
+  assert.ok(restored.event_result_type)
+  assert.equal(typeof (restored.event_result_type as { safeParse?: unknown }).safeParse, 'function')
+
+  bus.on('PrimitiveResultEvent', () => true)
+  const dispatched = bus.dispatch(restored)
+  await dispatched.done()
+
+  const result = Array.from(dispatched.event_results.values())[0]
+  assert.equal(result.status, 'completed')
+  assert.equal(result.result, true)
 })
 
 test('roundtrip preserves complex result schema types', async () => {
@@ -200,13 +167,11 @@ test('roundtrip preserves complex result schema types', async () => {
   })
 
   const ComplexRoundtripEvent = BaseEvent.extend('ComplexRoundtripEvent', {
-    event_result_schema: complex_schema,
-    event_result_type: 'ComplexRoundtrip',
+    event_result_type: complex_schema,
   })
 
   const original = ComplexRoundtripEvent({
-    event_result_schema: complex_schema,
-    event_result_type: 'ComplexRoundtrip',
+    event_result_type: complex_schema,
   })
 
   const roundtripped = ComplexRoundtripEvent.fromJSON?.(original.toJSON()) ?? ComplexRoundtripEvent(original.toJSON() as never)
@@ -216,7 +181,7 @@ test('roundtrip preserves complex result schema types', async () => {
   }
   if (typeof zod_any.toJSONSchema === 'function') {
     const original_schema_json = zod_any.toJSONSchema(complex_schema)
-    const roundtrip_schema_json = zod_any.toJSONSchema(roundtripped.event_result_schema)
+    const roundtrip_schema_json = zod_any.toJSONSchema(roundtripped.event_result_type)
     assert.deepEqual(roundtrip_schema_json, original_schema_json)
   }
 

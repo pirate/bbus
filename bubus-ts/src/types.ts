@@ -7,7 +7,7 @@ export type EventClass<T extends BaseEvent = BaseEvent> = { event_type?: string 
 
 export type EventPattern<T extends BaseEvent = BaseEvent> = string | EventClass<T>
 
-export type EventWithResult<TResult> = BaseEvent & { __event_result_type__?: TResult }
+export type EventWithResultSchema<TResult> = BaseEvent & { __event_result_type__?: TResult }
 
 export type EventResultType<TEvent extends BaseEvent> = TEvent extends { __event_result_type__?: infer TResult } ? TResult : unknown
 
@@ -51,23 +51,12 @@ export const normalizeEventPattern = (event_pattern: EventPattern | '*'): string
   )
 }
 
-const WRAPPER_TYPES = new Set(['optional', 'nullable', 'default', 'catch', 'prefault', 'readonly', 'nonoptional', 'exact_optional'])
-
-const OBJECT_LIKE_TYPES = new Set(['object', 'record', 'map', 'set'])
-
-const TYPE_ALIASES: Record<string, string> = {
-  enum: 'string',
-  tuple: 'array',
-  void: 'undefined',
-  lazy: 'unknown',
-}
-
 export const isZodSchema = (value: unknown): value is z.ZodTypeAny => !!value && typeof (value as z.ZodTypeAny).safeParse === 'function'
 
 export const extractZodShape = (raw: Record<string, unknown>): z.ZodRawShape => {
   const shape: Record<string, z.ZodTypeAny> = {}
   for (const [key, value] of Object.entries(raw)) {
-    if (key === 'event_result_schema' || key === 'event_result_type') continue
+    if (key === 'event_result_type') continue
     if (isZodSchema(value)) shape[key] = value
   }
   return shape as z.ZodRawShape
@@ -79,40 +68,37 @@ export const toJsonSchema = (schema: unknown): unknown => {
   return typeof zod_any.toJSONSchema === 'function' ? zod_any.toJSONSchema(schema) : undefined
 }
 
-export const getStringTypeName = (schema?: z.ZodTypeAny): string | undefined => {
-  if (!schema) return undefined
-
-  const visited = new Set<z.ZodTypeAny>()
-  const infer = (value: z.ZodTypeAny): string => {
-    if (visited.has(value)) return 'unknown'
-    visited.add(value)
-
-    const def = (value as unknown as { _def?: Record<string, unknown> })._def ?? {}
-    const kind = typeof def.type === 'string' ? def.type : ''
-    if (!kind) return 'unknown'
-
-    if (WRAPPER_TYPES.has(kind)) {
-      return isZodSchema(def.innerType) ? infer(def.innerType) : 'unknown'
+const getJsonSchemaTypeName = (schema: unknown): string | undefined => {
+  if (!schema || typeof schema !== 'object') return undefined
+  const raw_type = (schema as { type?: unknown }).type
+  let schema_type: string | undefined
+  if (typeof raw_type === 'string') {
+    schema_type = raw_type
+  } else if (Array.isArray(raw_type)) {
+    const non_null = raw_type.filter((value): value is string => typeof value === 'string' && value !== 'null')
+    if (non_null.length === 1) {
+      schema_type = non_null[0]
     }
-    if (kind === 'pipe') {
-      return isZodSchema(def.out) ? infer(def.out) : 'unknown'
-    }
-    if (kind === 'union') {
-      const options = (Array.isArray(def.options) ? def.options : []).filter(isZodSchema)
-      if (options.length === 0) return 'unknown'
-      const inferred = new Set(options.map((option) => infer(option)))
-      return inferred.size === 1 ? [...inferred][0] : 'unknown'
-    }
-    if (kind === 'literal') {
-      const literal = Array.isArray(def.values) ? def.values[0] : undefined
-      if (literal === null) return 'null'
-      if (typeof literal === 'object') return 'object'
-      if (typeof literal === 'function') return 'function'
-      return typeof literal
-    }
-    if (OBJECT_LIKE_TYPES.has(kind)) return 'object'
-    return TYPE_ALIASES[kind] ?? kind
   }
+  if (!schema_type) return undefined
+  if (schema_type === 'integer') return 'number'
+  if (
+    schema_type === 'string' ||
+    schema_type === 'number' ||
+    schema_type === 'boolean' ||
+    schema_type === 'object' ||
+    schema_type === 'array' ||
+    schema_type === 'null'
+  ) {
+    return schema_type
+  }
+  return undefined
+}
 
-  return infer(schema)
+export const jsonSchemaToZodPrimitive = (schema: unknown): z.ZodTypeAny | undefined => {
+  const schema_type = getJsonSchemaTypeName(schema)
+  if (schema_type === 'string') return z.string()
+  if (schema_type === 'number') return z.number()
+  if (schema_type === 'boolean') return z.boolean()
+  return undefined
 }

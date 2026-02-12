@@ -69,7 +69,6 @@ async def test_comprehensive_patterns():
         # Check that forwarded handler result is available
         print('\n3. Checking forwarded handler results...')
         print(f'   child_event_sync.event_results: {child_event_sync.event_results}')
-        print(f'   child_event_sync.event_result_type: {child_event_sync.event_result_type}')
         event_results = await child_event_sync.event_results_list(raise_if_none=False)
         print(f'   Results: {event_results}')
         # The forwarding handler (bus.dispatch) returns the event object itself
@@ -239,7 +238,7 @@ async def test_race_condition_stress():
         await asyncio.sleep(0.001)
         return f'child_done_{bus_name}'
 
-    async def parent_handler(event: BaseEvent[str]) -> str:
+    async def parent_handler(event: BaseEvent[Any]) -> str:
         # Dispatch multiple children in different ways
         children: list[BaseEvent[Any]] = []
 

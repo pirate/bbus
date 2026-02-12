@@ -13,7 +13,7 @@ import {
   EVENT_HANDLER_COMPLETION_MODES,
   withResolvers,
 } from './lock_manager.js'
-import { extractZodShape, getStringTypeName, isZodSchema, toJsonSchema } from './types.js'
+import { extractZodShape, isZodSchema, jsonSchemaToZodPrimitive, toJsonSchema } from './types.js'
 import type { EventResultType } from './types.js'
 
 export const BaseEventSchema = z
@@ -28,8 +28,7 @@ export const BaseEventSchema = z
     event_handler_slow_timeout: z.number().positive().nullable().optional(),
     event_parent_id: z.string().uuid().nullable().optional(),
     event_path: z.array(z.string()).optional(),
-    event_result_type: z.string().optional(),
-    event_result_schema: z.unknown().optional(),
+    event_result_type: z.unknown().optional(),
     event_emitted_by_handler_id: z.string().uuid().optional(),
     event_pending_bus_count: z.number().nonnegative().optional(),
     event_status: z.enum(['pending', 'started', 'completed']).optional(),
@@ -59,7 +58,6 @@ type BaseEventFields = Pick<
   | 'event_parent_id'
   | 'event_path'
   | 'event_result_type'
-  | 'event_result_schema'
   | 'event_emitted_by_handler_id'
   | 'event_pending_bus_count'
   | 'event_status'
@@ -83,27 +81,26 @@ type EventPayload<TShape extends z.ZodRawShape> = z.infer<z.ZodObject<TShape>>
 type EventInput<TShape extends z.ZodRawShape> = z.input<EventSchema<TShape>>
 export type EventInit<TShape extends z.ZodRawShape> = Omit<EventInput<TShape>, keyof BaseEventFields> & Partial<BaseEventFields>
 
-type EventWithResult<TResult> = BaseEvent & { __event_result_type__?: TResult }
+type EventWithResultSchema<TResult> = BaseEvent & { __event_result_type__?: TResult }
 
-type ResultTypeFromShape<TShape> = TShape extends { event_result_schema: infer S }
+type ResultSchemaFromShape<TShape> = TShape extends { event_result_type: infer S }
   ? S extends z.ZodTypeAny
     ? z.infer<S>
     : unknown
   : unknown
 
 export type EventFactory<TShape extends z.ZodRawShape, TResult = unknown> = {
-  (data: EventInit<TShape>): EventWithResult<TResult> & EventPayload<TShape>
-  new (data: EventInit<TShape>): EventWithResult<TResult> & EventPayload<TShape>
+  (data: EventInit<TShape>): EventWithResultSchema<TResult> & EventPayload<TShape>
+  new (data: EventInit<TShape>): EventWithResultSchema<TResult> & EventPayload<TShape>
   schema: EventSchema<TShape>
   event_type?: string
   event_version?: string
-  event_result_schema?: z.ZodTypeAny
-  event_result_type?: string
-  fromJSON?: (data: unknown) => EventWithResult<TResult> & EventPayload<TShape>
+  event_result_type?: z.ZodTypeAny
+  fromJSON?: (data: unknown) => EventWithResultSchema<TResult> & EventPayload<TShape>
 }
 
 type ZodShapeFrom<TShape extends Record<string, unknown>> = {
-  [K in keyof TShape as K extends 'event_result_schema' | 'event_result_type' | 'event_result_schema_json'
+  [K in keyof TShape as K extends 'event_result_type' | 'event_result_type_json'
     ? never
     : TShape[K] extends z.ZodTypeAny
       ? K
@@ -122,8 +119,7 @@ export class BaseEvent {
   event_handler_slow_timeout?: number | null // optional per-event slow handler warning threshold in seconds
   event_parent_id?: string | null // id of the parent event that triggered this event, if this event was emitted during handling of another event
   event_path!: string[] // list of bus labels (name#id) that the event has been dispatched to, including the current bus
-  event_result_schema?: z.ZodTypeAny // optional zod schema to enforce the shape of return values from handlers
-  event_result_type?: string // optional string identifier of the type of the return values from handlers, to make it easier to reference common shapes across networkboundaries e.g. ScreenshotEventResultType
+  event_result_type?: z.ZodTypeAny // optional zod schema to enforce the shape of return values from handlers
   event_results!: Map<string, EventResult<this>> // map of handler ids to EventResult objects for the event
   event_emitted_by_handler_id?: string // if event was emitted inside a handler while it was running, this will be set to the enclosing handler's handler id
   event_pending_bus_count!: number // number of buses that have accepted this event and not yet finished processing or removed it from their queues (for queue-jump processing)
@@ -144,7 +140,7 @@ export class BaseEvent {
   bus?: EventBus // shortcut to the bus that dispatched this event, for event.bus.dispatch(event) auto-child tracking via proxy wrapping
   _event_original?: BaseEvent // underlying event object that was dispatched, if this is a bus-scoped proxy wrapping it
   _event_dispatch_context?: unknown | null // captured AsyncLocalStorage context at dispatch site, used to restore that context when running handlers
-  _event_result_schema_json?: unknown // preserve raw JSON schema for stable cross-language roundtrips
+  _event_result_type_json?: unknown // preserve raw JSON schema for stable cross-language roundtrips
 
   _event_done_signal: Deferred<this> | null
   _event_handler_semaphore: AsyncSemaphore | null
@@ -152,13 +148,14 @@ export class BaseEvent {
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
     const ctor = this.constructor as typeof BaseEvent & {
       event_version?: string
-      event_result_schema?: z.ZodTypeAny
-      event_result_type?: string
+      event_result_type?: z.ZodTypeAny
     }
     const event_type = data.event_type ?? ctor.event_type ?? ctor.name
     const event_version = data.event_version ?? ctor.event_version ?? '0.0.1'
-    const event_result_schema = (data.event_result_schema ?? ctor.event_result_schema) as z.ZodTypeAny | undefined
-    const event_result_type = data.event_result_type ?? ctor.event_result_type ?? getStringTypeName(event_result_schema)
+    const raw_event_result_type = data.event_result_type ?? ctor.event_result_type
+    const event_result_type = isZodSchema(raw_event_result_type)
+      ? (raw_event_result_type as z.ZodTypeAny)
+      : jsonSchemaToZodPrimitive(raw_event_result_type)
     const event_id = data.event_id ?? uuidv7()
     const { isostring: default_event_created_at, ts: event_created_ts } = BaseEvent.nextTimestamp()
     const event_created_at = data.event_created_at ?? default_event_created_at
@@ -171,7 +168,6 @@ export class BaseEvent {
       event_type,
       event_version,
       event_timeout,
-      event_result_schema,
       event_result_type,
     }
 
@@ -216,8 +212,10 @@ export class BaseEvent {
         ? (parsed as { event_emitted_by_handler_id: string }).event_emitted_by_handler_id
         : undefined
 
-    this.event_result_schema = event_result_schema
     this.event_result_type = event_result_type
+    if (raw_event_result_type && !isZodSchema(raw_event_result_type)) {
+      this._event_result_type_json = raw_event_result_type
+    }
     this.event_created_ts =
       typeof (parsed as { event_created_ts?: unknown }).event_created_ts === 'number'
         ? (parsed as { event_created_ts: number }).event_created_ts
@@ -241,21 +239,21 @@ export class BaseEvent {
   }
 
   // main entry point for users to define their own event types
-  // BaseEvent.extend("MyEvent", { some_custom_field: z.string(), event_result_schema: z.string(), event_timeout: 25, ... }) -> MyEvent
-  static extend<TShape extends z.ZodRawShape>(event_type: string, shape?: TShape): EventFactory<TShape, ResultTypeFromShape<TShape>>
+  // BaseEvent.extend("MyEvent", { some_custom_field: z.string(), event_result_type: z.string(), event_timeout: 25, ... }) -> MyEvent
+  static extend<TShape extends z.ZodRawShape>(event_type: string, shape?: TShape): EventFactory<TShape, ResultSchemaFromShape<TShape>>
   static extend<TShape extends Record<string, unknown>>(
     event_type: string,
     shape?: TShape
-  ): EventFactory<ZodShapeFrom<TShape>, ResultTypeFromShape<TShape>>
+  ): EventFactory<ZodShapeFrom<TShape>, ResultSchemaFromShape<TShape>>
   static extend<TShape extends Record<string, unknown>>(
     event_type: string,
     shape: TShape = {} as TShape
-  ): EventFactory<ZodShapeFrom<TShape>, ResultTypeFromShape<TShape>> {
+  ): EventFactory<ZodShapeFrom<TShape>, ResultSchemaFromShape<TShape>> {
     const raw_shape = shape as Record<string, unknown>
-
-    const event_result_schema = isZodSchema(raw_shape.event_result_schema) ? (raw_shape.event_result_schema as z.ZodTypeAny) : undefined
-    const explicit_event_result_type = typeof raw_shape.event_result_type === 'string' ? raw_shape.event_result_type : undefined
-    const event_result_type = explicit_event_result_type ?? getStringTypeName(event_result_schema)
+    const raw_event_result_type = raw_shape.event_result_type
+    const event_result_type = isZodSchema(raw_event_result_type)
+      ? (raw_event_result_type as z.ZodTypeAny)
+      : jsonSchemaToZodPrimitive(raw_event_result_type)
     const event_version = typeof raw_shape.event_version === 'string' ? raw_shape.event_version : undefined
 
     const zod_shape = extractZodShape(raw_shape)
@@ -266,7 +264,6 @@ export class BaseEvent {
       static schema = full_schema as unknown as typeof BaseEvent.schema
       static event_type = event_type
       static event_version = event_version ?? BaseEvent.event_version
-      static event_result_schema = event_result_schema
       static event_result_type = event_result_type
 
       constructor(data: EventInit<ZodShapeFrom<TShape>>) {
@@ -274,7 +271,7 @@ export class BaseEvent {
       }
     }
 
-    type FactoryResult = EventWithResult<ResultTypeFromShape<TShape>> & EventPayload<ZodShapeFrom<TShape>>
+    type FactoryResult = EventWithResultSchema<ResultSchemaFromShape<TShape>> & EventPayload<ZodShapeFrom<TShape>>
 
     function EventFactory(data: EventInit<ZodShapeFrom<TShape>>): FactoryResult {
       return new ExtendedEvent(data) as FactoryResult
@@ -283,13 +280,12 @@ export class BaseEvent {
     EventFactory.schema = full_schema as EventSchema<ZodShapeFrom<TShape>>
     EventFactory.event_type = event_type
     EventFactory.event_version = event_version ?? BaseEvent.event_version
-    EventFactory.event_result_schema = event_result_schema
     EventFactory.event_result_type = event_result_type
     EventFactory.fromJSON = (data: unknown) => (ExtendedEvent.fromJSON as (data: unknown) => FactoryResult)(data)
     EventFactory.prototype = ExtendedEvent.prototype
     ;(EventFactory as unknown as { class: typeof ExtendedEvent }).class = ExtendedEvent
 
-    return EventFactory as unknown as EventFactory<ZodShapeFrom<TShape>, ResultTypeFromShape<TShape>>
+    return EventFactory as unknown as EventFactory<ZodShapeFrom<TShape>, ResultSchemaFromShape<TShape>>
   }
 
   static fromJSON<T extends typeof BaseEvent>(this: T, data: unknown): InstanceType<T> {
@@ -299,18 +295,29 @@ export class BaseEvent {
       return new this(parsed) as InstanceType<T>
     }
     const record = { ...(data as Record<string, unknown>) }
-    const raw_event_result_schema = record.event_result_schema
-    if (record.event_result_schema && !isZodSchema(record.event_result_schema)) {
+    const raw_event_result_type = record.event_result_type
+    if (record.event_result_type && !isZodSchema(record.event_result_type)) {
       const zod_any = z as unknown as { fromJSONSchema?: (schema: unknown) => z.ZodTypeAny }
+      let reconstructed_schema: z.ZodTypeAny | undefined
       if (typeof zod_any.fromJSONSchema === 'function') {
-        record.event_result_schema = zod_any.fromJSONSchema(record.event_result_schema)
+        try {
+          reconstructed_schema = zod_any.fromJSONSchema(record.event_result_type)
+        } catch {
+          reconstructed_schema = undefined
+        }
+      }
+      reconstructed_schema = reconstructed_schema ?? jsonSchemaToZodPrimitive(record.event_result_type)
+      if (reconstructed_schema) {
+        record.event_result_type = reconstructed_schema
+      } else {
+        delete record.event_result_type
       }
     }
     const event = new this(record as BaseEventInit<Record<string, unknown>>) as InstanceType<T> & {
-      _event_result_schema_json?: unknown
+      _event_result_type_json?: unknown
     }
-    if (raw_event_result_schema && !isZodSchema(raw_event_result_schema)) {
-      event._event_result_schema_json = raw_event_result_schema
+    if (raw_event_result_type && !isZodSchema(raw_event_result_type)) {
+      event._event_result_type_json = raw_event_result_type
     }
     return event
   }
@@ -343,9 +350,8 @@ export class BaseEvent {
       event_id: this.event_id,
       event_type: this.event_type,
       event_version: this.event_version,
-      event_result_schema:
-        this._event_result_schema_json ?? (this.event_result_schema ? toJsonSchema(this.event_result_schema) : this.event_result_schema),
-      event_result_type: this.event_result_type,
+      event_result_type:
+        this._event_result_type_json ?? (this.event_result_type ? toJsonSchema(this.event_result_type) : this.event_result_type),
 
       // static configuration options
       event_timeout: this.event_timeout,

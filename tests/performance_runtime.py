@@ -11,7 +11,7 @@ from typing import Any
 try:
     from .performance_scenarios import PERF_SCENARIO_IDS, PerfInput, run_all_perf_scenarios, run_perf_scenario_by_id
 except ImportError:  # pragma: no cover - direct script execution path
-    from performance_scenarios import PERF_SCENARIO_IDS, PerfInput, run_all_perf_scenarios, run_perf_scenario_by_id
+    from tests.performance_scenarios import PERF_SCENARIO_IDS, PerfInput, run_all_perf_scenarios, run_perf_scenario_by_id
 
 TABLE_MATRIX = [
     ('50k-events', '1 bus x 50k events x 1 handler'),

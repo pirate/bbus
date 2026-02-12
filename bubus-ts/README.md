@@ -46,7 +46,7 @@ import { z } from 'zod'
 
 const CreateUserEvent = BaseEvent.extend('CreateUserEvent', {
   email: z.string(),
-  event_result_schema: z.object({ user_id: z.string() }),
+  event_result_type: z.object({ user_id: z.string() }),
 })
 
 const bus = new EventBus('MyAuthEventBus')
@@ -336,7 +336,7 @@ const MyEvent = BaseEvent.extend('MyEvent', {
   // any other payload fields you want to include can go here
 
   // fields that start with event_* are reserved for metadata used by the library
-  event_result_schema: z.string().optional(),
+  event_result_type: z.string().optional(),
   event_timeout: 60,
   // ...
 })
@@ -362,8 +362,7 @@ API behavior and lifecycle examples:
 
 Special configuration fields you can set on each event to control processing:
 
-- `event_result_schema?: z.ZodTypeAny`
-- `event_result_type?: string`
+- `event_result_type?: z.ZodTypeAny`
 - `event_version?: string` (default: `'0.0.1'`; useful for your own schema/data migrations)
 - `event_timeout?: number | null`
 - `event_handler_timeout?: number | null`
@@ -445,7 +444,7 @@ EventFactory.fromJSON?.(data: unknown): TypedEvent
 ```
 
 - JSON format is cross-language compatible with Python implementation.
-- `event_result_schema` is serialized as JSON Schema when possible and rehydrated on `fromJSON`.
+- `event_result_type` is serialized as JSON Schema when possible and rehydrated on `fromJSON`.
 - Round-trip coverage is in `bubus-ts/tests/typed_results.test.ts` and `bubus-ts/tests/eventbus_basics.test.ts`.
 
 #### Advanced/internal public methods

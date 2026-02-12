@@ -1,6 +1,6 @@
 import { BaseEvent } from './base_event.js'
 import { EventBus } from './event_bus.js'
-import { assertOptionalDependencyAvailable, importOptionalDependency, isNodeRuntime } from './optional_deps.js'
+import { isNodeRuntime } from './optional_deps.js'
 import type { EventClass, EventHandlerFunction, EventPattern, UntypedEventHandlerFunction } from './types.js'
 
 const randomSuffix = (): string => Math.random().toString(36).slice(2, 10)
@@ -11,6 +11,15 @@ const validateIdentifier = (value: string, label: string): string => {
     throw new Error(`Invalid ${label}: ${JSON.stringify(value)}. Use only [A-Za-z0-9_] and start with a letter/_`)
   }
   return value
+}
+
+const loadNodeSqlite = async (): Promise<any> => {
+  const dynamic_import = Function('module_name', 'return import(module_name)') as (module_name: string) => Promise<unknown>
+  try {
+    return (await dynamic_import('node:sqlite')) as any
+  } catch {
+    throw new Error('SQLiteEventBridge requires Node.js with built-in "node:sqlite" support (Node 22+).')
+  }
 }
 
 export class SQLiteEventBridge {
@@ -28,8 +37,6 @@ export class SQLiteEventBridge {
   private table_columns: Set<string>
 
   constructor(path: string, table: string = 'bubus_events', poll_interval: number = 0.25, name?: string) {
-    assertOptionalDependencyAvailable('SQLiteEventBridge', 'better-sqlite3')
-
     this.path = path
     this.table = validateIdentifier(table, 'table name')
     this.poll_interval = poll_interval
@@ -40,7 +47,7 @@ export class SQLiteEventBridge {
     this.last_seen_event_id = ''
     this.listener_task = null
     this.db = null
-    this.table_columns = new Set(['event_id', 'event_created_at', 'event_type'])
+    this.table_columns = new Set(['event_id', 'event_created_at', 'event_type', 'event_payload_json'])
 
     this.dispatch = this.dispatch.bind(this)
     this.emit = this.emit.bind(this)
@@ -68,12 +75,15 @@ export class SQLiteEventBridge {
     }
 
     const payload = event.toJSON() as Record<string, unknown>
-    const payload_keys = Object.keys(payload).sort()
+    const payload_with_blob: Record<string, unknown> = { ...payload, event_payload_json: payload }
+    const payload_keys = Object.keys(payload_with_blob).sort()
     this.ensureColumns(payload_keys)
 
     const columns_sql = payload_keys.map((key) => `"${key}"`).join(', ')
     const placeholders_sql = payload_keys.map(() => '?').join(', ')
-    const values = payload_keys.map((key) => (payload[key] === null || payload[key] === undefined ? null : JSON.stringify(payload[key])))
+    const values = payload_keys.map((key) =>
+      payload_with_blob[key] === null || payload_with_blob[key] === undefined ? null : JSON.stringify(payload_with_blob[key])
+    )
 
     const update_fields = payload_keys.filter((key) => key !== 'event_id')
     let upsert_sql = `INSERT INTO "${this.table}" (${columns_sql}) VALUES (${placeholders_sql})`
@@ -97,16 +107,21 @@ export class SQLiteEventBridge {
       throw new Error('SQLiteEventBridge is only supported in Node.js runtimes')
     }
 
-    const mod = await importOptionalDependency('SQLiteEventBridge', 'better-sqlite3')
-    const Database = mod.default ?? mod
+    const mod = await loadNodeSqlite()
+    const Database = mod.DatabaseSync ?? mod.default?.DatabaseSync
+    if (typeof Database !== 'function') {
+      throw new Error('SQLiteEventBridge could not load DatabaseSync from node:sqlite. Please use Node.js 22+.')
+    }
     this.db = new Database(this.path)
-    this.db.pragma('journal_mode = WAL')
+    this.db.exec('PRAGMA journal_mode = WAL')
     this.db
-      .prepare(`CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT)`)
+      .prepare(
+        `CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT, "event_payload_json" TEXT)`
+      )
       .run()
 
     this.refreshColumnCache()
-    this.ensureColumns(['event_id', 'event_created_at', 'event_type'])
+    this.ensureColumns(['event_id', 'event_created_at', 'event_type', 'event_payload_json'])
     this.ensureBaseIndexes()
     this.setCursorToLatestRow()
 
@@ -150,8 +165,19 @@ export class SQLiteEventBridge {
             this.last_seen_event_created_at = String(row.event_created_at ?? '')
             this.last_seen_event_id = String(row.event_id ?? '')
 
+            const raw_payload_blob = row.event_payload_json
+            if (typeof raw_payload_blob === 'string') {
+              try {
+                await this.dispatchInboundPayload(JSON.parse(raw_payload_blob))
+                continue
+              } catch {
+                // fall through to best-effort row reconstruction
+              }
+            }
+
             const payload: Record<string, unknown> = {}
             for (const [key, raw_value] of Object.entries(row)) {
+              if (key === 'event_payload_json') continue
               if (raw_value === null || raw_value === undefined) continue
 
               if (typeof raw_value !== 'string') {

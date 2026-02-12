@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { z } from 'zod'
 
-import { BaseEvent } from '../src/index.js'
+import { BaseEvent, EventBus } from '../src/index.js'
 
 const tests_dir = dirname(fileURLToPath(import.meta.url))
 const ts_root = resolve(tests_dir, '..')
@@ -109,7 +109,7 @@ with open(output_path, 'w', encoding='utf-8') as f:
   }
 }
 
-test('ts_to_python_roundtrip preserves event fields and result schemas', (t) => {
+test('ts_to_python_roundtrip preserves event fields and result schemas', async (t) => {
   const python_bin = resolvePython()
   if (!python_bin) {
     t.skip('python is required for ts<->python roundtrip tests')
@@ -126,27 +126,30 @@ test('ts_to_python_roundtrip preserves event fields and result schemas', (t) => 
   const IntResultEvent = BaseEvent.extend('IntResultEvent', {
     value: z.number(),
     label: z.string(),
-    event_result_schema: z.number(),
+    event_result_type: z.number(),
   })
   const StringListResultEvent = BaseEvent.extend('StringListResultEvent', {
     names: z.array(z.string()),
     attempt: z.number(),
-    event_result_schema: z.array(z.string()),
+    event_result_type: z.array(z.string()),
   })
   const ScreenshotEvent = BaseEvent.extend('ScreenshotEvent', {
     target_id: z.string(),
     quality: z.string(),
-    event_result_schema: z.object({
+    event_result_type: z.object({
       image_url: z.string(),
       width: z.number(),
       height: z.number(),
       tags: z.array(z.string()),
+      is_animated: z.boolean(),
+      confidence_scores: z.array(z.number()),
+      metadata: z.record(z.string(), z.number()),
     }),
   })
   const MetricsEvent = BaseEvent.extend('MetricsEvent', {
     bucket: z.string(),
     counters: z.record(z.string(), z.number()),
-    event_result_schema: z.record(z.string(), z.array(z.number())),
+    event_result_type: z.record(z.string(), z.array(z.number())),
   })
 
   const parent = IntResultEvent({
@@ -178,8 +181,7 @@ test('ts_to_python_roundtrip preserves event fields and result schemas', (t) => 
     event_timeout: 4.0,
     event_parent_id: parent.event_id,
     event_path: ['TsBus#aaaa'],
-    event_result_type: 'object',
-    event_result_schema: z.record(z.string(), z.number()),
+    event_result_type: z.record(z.string(), z.number()),
     custom_payload: { tab_id: 'tab-1', bytes: 12345 },
     nested_payload: { frames: [1, 2, 3], format: 'png' },
   })
@@ -188,8 +190,8 @@ test('ts_to_python_roundtrip preserves event fields and result schemas', (t) => 
   const ts_dumped = events.map((event) => jsonSafe(event.toJSON()))
 
   for (const event_dump of ts_dumped) {
-    assert.ok('event_result_schema' in event_dump)
-    assert.equal(typeof event_dump.event_result_schema, 'object')
+    assert.ok('event_result_type' in event_dump)
+    assert.equal(typeof event_dump.event_result_type, 'object')
   }
 
   const python_roundtripped = runPythonRoundtrip(python_bin, ts_dumped)
@@ -212,4 +214,53 @@ test('ts_to_python_roundtrip preserves event fields and result schemas', (t) => 
       assertFieldEqual(key, restored_dump[key], value, 'field changed after ts reload')
     }
   }
+
+  const screenshot_payload = python_roundtripped.find((event) => event.event_type === 'ScreenshotEvent')
+  assert.ok(screenshot_payload, 'missing ScreenshotEvent in roundtrip payload')
+  assert.equal(typeof screenshot_payload.event_result_type, 'object')
+
+  const wrong_bus = new EventBus('TsPyTsWrongShape')
+  wrong_bus.on('ScreenshotEvent', () => ({
+    image_url: 123,
+    width: '1920',
+    height: 1080,
+    tags: ['hero', 'dashboard'],
+    is_animated: 'false',
+    confidence_scores: [0.95, 0.89],
+    metadata: { score: 0.99 },
+  }))
+  const wrong_event = BaseEvent.fromJSON(screenshot_payload)
+  assert.equal(typeof (wrong_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
+  const wrong_dispatched = wrong_bus.dispatch(wrong_event)
+  await wrong_dispatched.done()
+  const wrong_result = Array.from(wrong_dispatched.event_results.values())[0]
+  assert.equal(wrong_result.status, 'error')
+  wrong_bus.destroy()
+
+  const right_bus = new EventBus('TsPyTsRightShape')
+  right_bus.on('ScreenshotEvent', () => ({
+    image_url: 'https://img.local/1.png',
+    width: 1920,
+    height: 1080,
+    tags: ['hero', 'dashboard'],
+    is_animated: false,
+    confidence_scores: [0.95, 0.89],
+    metadata: { score: 0.99, variance: 0.01 },
+  }))
+  const right_event = BaseEvent.fromJSON(screenshot_payload)
+  assert.equal(typeof (right_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
+  const right_dispatched = right_bus.dispatch(right_event)
+  await right_dispatched.done()
+  const right_result = Array.from(right_dispatched.event_results.values())[0]
+  assert.equal(right_result.status, 'completed')
+  assert.deepEqual(right_result.result, {
+    image_url: 'https://img.local/1.png',
+    width: 1920,
+    height: 1080,
+    tags: ['hero', 'dashboard'],
+    is_animated: false,
+    confidence_scores: [0.95, 0.89],
+    metadata: { score: 0.99, variance: 0.01 },
+  })
+  right_bus.destroy()
 })

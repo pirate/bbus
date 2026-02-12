@@ -68,7 +68,6 @@ const normalizeRoundtripPayload = (payload: Record<string, unknown>): Record<str
     'event_id',
     'event_path',
     'event_result_type',
-    'event_result_schema',
     'event_results',
     'event_pending_bus_count',
     'event_status',

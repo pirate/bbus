@@ -43,7 +43,7 @@ async def test_event_result_execute_without_base_event() -> None:
         event_id=str(uuid4()),
         handler=handler_entry,
         timeout=stub_event.event_timeout,
-        result_type=str,
+        result_schema=str,
     )
 
     test_bus = EventBus(name='StandaloneTest1')
@@ -160,12 +160,14 @@ def test_event_result_serializes_handler_metadata_and_derived_fields() -> None:
     assert payload['eventbus_name'] == entry.eventbus_name
 
     # Legacy constructor fields still round-trip into handler metadata.
-    legacy = EventResult(
-        event_id=str(uuid4()),
-        handler_id='123.456',
-        handler_name='legacy_handler',
-        eventbus_id='42',
-        eventbus_name='LegacyBus',
+    legacy = EventResult.model_validate(
+        {
+            'event_id': str(uuid4()),
+            'handler_id': '123.456',
+            'handler_name': 'legacy_handler',
+            'eventbus_id': '42',
+            'eventbus_name': 'LegacyBus',
+        }
     )
     assert legacy.handler_id == '123.456'
     assert legacy.handler_name == 'legacy_handler'

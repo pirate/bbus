@@ -10,7 +10,7 @@ const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 test('first: returns the first non-undefined result from parallel handlers', async () => {
   const bus = new EventBus('FirstParallelBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
-  const TestEvent = BaseEvent.extend('FirstParallelEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstParallelEvent', { event_result_type: z.string() })
 
   bus.on(TestEvent, async (_event) => {
     await delay(100)
@@ -31,7 +31,7 @@ test('first: returns the first non-undefined result from parallel handlers', asy
 
 test('first: cancels remaining parallel handlers after first result', async () => {
   const bus = new EventBus('FirstCancelBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
-  const TestEvent = BaseEvent.extend('FirstCancelEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstCancelEvent', { event_result_type: z.string() })
 
   let slow_handler_completed = false
 
@@ -64,7 +64,7 @@ test('first: cancels remaining parallel handlers after first result', async () =
 
 test('first: returns the first non-undefined result from serial handlers', async () => {
   const bus = new EventBus('FirstSerialBus', { event_timeout: null, event_handler_concurrency: 'serial' })
-  const TestEvent = BaseEvent.extend('FirstSerialEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstSerialEvent', { event_result_type: z.string() })
 
   let second_handler_called = false
 
@@ -87,7 +87,7 @@ test('first: returns the first non-undefined result from serial handlers', async
 
 test('first: serial mode skips first handler returning undefined, takes second', async () => {
   const bus = new EventBus('FirstSerialSkipBus', { event_timeout: null, event_handler_concurrency: 'serial' })
-  const TestEvent = BaseEvent.extend('FirstSerialSkipEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstSerialSkipEvent', { event_result_type: z.string() })
 
   bus.on(TestEvent, async (_event) => {
     return undefined // no result
@@ -127,7 +127,7 @@ test('first: returns undefined when all handlers return undefined', async () => 
 
 test('first: returns undefined when all handlers throw errors', async () => {
   const bus = new EventBus('FirstErrorBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
-  const TestEvent = BaseEvent.extend('FirstErrorEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstErrorEvent', { event_result_type: z.string() })
 
   bus.on(TestEvent, async (_event) => {
     throw new Error('handler 1 error')
@@ -146,7 +146,7 @@ test('first: returns undefined when all handlers throw errors', async () => {
 
 test('first: skips error handlers and returns the successful one', async () => {
   const bus = new EventBus('FirstMixBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
-  const TestEvent = BaseEvent.extend('FirstMixEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstMixEvent', { event_result_type: z.string() })
 
   bus.on(TestEvent, async (_event) => {
     throw new Error('fast but fails')
@@ -186,7 +186,7 @@ test('first: @retry decorated handler retries before first() resolves', async ()
   clearSemaphoreRegistry()
 
   const bus = new EventBus('FirstRetryBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
-  const TestEvent = BaseEvent.extend('FirstRetryEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstRetryEvent', { event_result_type: z.string() })
 
   let fast_attempts = 0
 
@@ -215,7 +215,7 @@ test('first: fast handler wins and slow @retry handler gets cancelled', async ()
   clearSemaphoreRegistry()
 
   const bus = new EventBus('FirstRetryRaceBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
-  const TestEvent = BaseEvent.extend('FirstRetryRaceEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstRetryRaceEvent', { event_result_type: z.string() })
 
   let slow_attempts = 0
 
@@ -255,7 +255,7 @@ test('first: screenshot-service pattern — fast path wins, slow path with retry
   const bus = new EventBus('ScreenshotBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
   const ScreenshotEvent = BaseEvent.extend('ScreenshotEvent', {
     page_id: z.string(),
-    event_result_schema: z.string(),
+    event_result_type: z.string(),
   })
 
   let fast_called = false
@@ -301,7 +301,7 @@ test('first: screenshot-service pattern — fast path fails, slow path with retr
   const bus = new EventBus('ScreenshotFallbackBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
   const ScreenshotEvent = BaseEvent.extend('ScreenshotFallbackEvent', {
     page_id: z.string(),
-    event_result_schema: z.string(),
+    event_result_type: z.string(),
   })
 
   let slow_attempts = 0
@@ -344,7 +344,7 @@ test('first: screenshot-service pattern — fast path fails, slow path with retr
 
 test('first: works with a single handler', async () => {
   const bus = new EventBus('FirstSingleBus', { event_timeout: null })
-  const TestEvent = BaseEvent.extend('FirstSingleEvent', { event_result_schema: z.number() })
+  const TestEvent = BaseEvent.extend('FirstSingleEvent', { event_result_type: z.number() })
 
   bus.on(TestEvent, async (_event) => {
     return 42
@@ -372,7 +372,7 @@ test('first: returns null as a valid first result (not treated as undefined)', a
 
 test('first: returns 0 as a valid first result', async () => {
   const bus = new EventBus('FirstZeroBus', { event_timeout: null })
-  const TestEvent = BaseEvent.extend('FirstZeroEvent', { event_result_schema: z.number() })
+  const TestEvent = BaseEvent.extend('FirstZeroEvent', { event_result_type: z.number() })
 
   bus.on(TestEvent, async (_event) => {
     return 0
@@ -385,7 +385,7 @@ test('first: returns 0 as a valid first result', async () => {
 
 test('first: returns empty string as a valid first result', async () => {
   const bus = new EventBus('FirstEmptyBus', { event_timeout: null })
-  const TestEvent = BaseEvent.extend('FirstEmptyEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstEmptyEvent', { event_result_type: z.string() })
 
   bus.on(TestEvent, async (_event) => {
     return ''
@@ -398,7 +398,7 @@ test('first: returns empty string as a valid first result', async () => {
 
 test('first: returns false as a valid first result', async () => {
   const bus = new EventBus('FirstFalseBus', { event_timeout: null })
-  const TestEvent = BaseEvent.extend('FirstFalseEvent', { event_result_schema: z.boolean() })
+  const TestEvent = BaseEvent.extend('FirstFalseEvent', { event_result_type: z.boolean() })
 
   bus.on(TestEvent, async (_event) => {
     return false
@@ -413,7 +413,7 @@ test('first: returns false as a valid first result', async () => {
 
 test('first: cancels child events emitted by losing handlers', async () => {
   const bus = new EventBus('FirstChildBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
-  const ParentEvent = BaseEvent.extend('FirstChildParent', { event_result_schema: z.string() })
+  const ParentEvent = BaseEvent.extend('FirstChildParent', { event_result_type: z.string() })
   const ChildEvent = BaseEvent.extend('FirstChildChild', {})
 
   bus.on(ChildEvent, async (_event) => {
@@ -447,7 +447,7 @@ test('first: cancels child events emitted by losing handlers', async () => {
 
 test('first: event_handler_completion is set to "first" after calling first()', async () => {
   const bus = new EventBus('FirstFieldBus', { event_timeout: null })
-  const TestEvent = BaseEvent.extend('FirstFieldEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstFieldEvent', { event_result_type: z.string() })
 
   bus.on(TestEvent, async (_event) => {
     return 'result'
@@ -468,7 +468,7 @@ test('first: event_handler_completion is set to "first" after calling first()', 
 
 test('first: event_handler_completion appears in toJSON output', async () => {
   const bus = new EventBus('FirstJsonBus', { event_timeout: null })
-  const TestEvent = BaseEvent.extend('FirstJsonEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstJsonEvent', { event_result_type: z.string() })
 
   bus.on(TestEvent, async (_event) => {
     return 'json result'
@@ -485,7 +485,7 @@ test('first: event_handler_completion appears in toJSON output', async () => {
 
 test('first: event_handler_completion can be set via event constructor', async () => {
   const bus = new EventBus('FirstCtorBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
-  const TestEvent = BaseEvent.extend('FirstCtorEvent', { event_result_schema: z.string() })
+  const TestEvent = BaseEvent.extend('FirstCtorEvent', { event_result_type: z.string() })
 
   bus.on(TestEvent, async (_event) => {
     await delay(100)

@@ -16,7 +16,6 @@ Tests cover:
 
 import asyncio
 import json
-import os
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -26,7 +25,17 @@ import pytest
 from pydantic import Field
 
 from bubus import BaseEvent, EventBus, SQLiteHistoryMirrorMiddleware
-from bubus.middlewares import EventBusMiddleware, LoggerEventBusMiddleware, WALEventBusMiddleware
+from bubus.middlewares import (
+    BusHandlerRegisteredEvent,
+    BusHandlerUnregisteredEvent,
+    EventBusMiddleware,
+    LoggerEventBusMiddleware,
+    OtelTracingMiddleware,
+    SyntheticErrorEventMiddleware,
+    SyntheticHandlerChangeEventMiddleware,
+    SyntheticReturnEventMiddleware,
+    WALEventBusMiddleware,
+)
 
 
 class CreateAgentTaskEvent(BaseEvent):
@@ -863,26 +872,22 @@ class TestEventTypeOverride:
         assert result.event_type == 'CreateAgentTaskEvent'
         assert isinstance(result, BaseEvent)
 
-    async def test_event_schema_auto_generation(self, eventbus):
-        """Test that event_schema is automatically set with the correct format"""
-
-        version = os.getenv('LIBRARY_VERSION', '1.0.0')
-
-        # Test various event types
+    async def test_event_type_and_version_identity_fields(self, eventbus):
+        """event_type + event_version identify payload shape"""
         base_event = BaseEvent(event_type='TestEvent')
-        assert base_event.event_schema == f'bubus.models.BaseEvent@{version}'
+        assert base_event.event_type == 'TestEvent'
+        assert base_event.event_version == '0.0.1'
 
         task_event = CreateAgentTaskEvent(
             user_id='test_user', agent_session_id='12345678-1234-5678-1234-567812345678', llm_model='test-model', task='test task'
         )
-        assert task_event.event_schema == f'{CreateAgentTaskEvent.__module__}.CreateAgentTaskEvent@{version}'
+        assert task_event.event_type == 'CreateAgentTaskEvent'
+        assert task_event.event_version == '0.0.1'
 
-        user_event = UserActionEvent(action='login', user_id='user123')
-        assert user_event.event_schema == f'{UserActionEvent.__module__}.UserActionEvent@{version}'
-
-        # Check schema is preserved after emit
+        # Check identity fields are preserved after emit
         result = eventbus.dispatch(task_event)
-        assert result.event_schema == task_event.event_schema
+        assert result.event_type == task_event.event_type
+        assert result.event_version == task_event.event_version
 
     async def test_event_version_defaults_and_overrides(self, eventbus):
         """event_version supports class defaults, runtime override, and JSON roundtrip."""
@@ -1127,6 +1132,146 @@ class TestHandlerMiddleware:
             assert result.status == 'error'
             assert isinstance(result.error, ValueError)
             assert observations == [('before', 'started'), ('error', 'ValueError')]
+        finally:
+            await bus.stop()
+
+    async def test_synthetic_error_event_middleware_emits_and_guards_recursion(self):
+        seen: list[tuple[str, str]] = []
+        bus = EventBus(middlewares=[SyntheticErrorEventMiddleware()])
+
+        async def fail_handler(event: BaseEvent) -> None:
+            raise ValueError('boom')
+
+        async def fail_synthetic(event: BaseEvent) -> None:
+            raise RuntimeError('nested')
+
+        bus.on(UserActionEvent, fail_handler)
+        bus.on('UserActionEventErrorEvent', lambda event: seen.append((event.event_type, event.error_type)))
+        bus.on('UserActionEventErrorEvent', fail_synthetic)
+
+        try:
+            await bus.dispatch(UserActionEvent(action='fail', user_id='u1'))
+            await bus.wait_until_idle()
+            assert seen == [('UserActionEventErrorEvent', 'ValueError')]
+            assert await bus.find('UserActionEventErrorEventErrorEvent', past=True, future=False) is None
+        finally:
+            await bus.stop()
+
+    async def test_synthetic_return_event_middleware_emits_and_guards_recursion(self):
+        seen: list[tuple[str, Any]] = []
+        bus = EventBus(middlewares=[SyntheticReturnEventMiddleware()])
+
+        async def ok_handler(event: BaseEvent) -> int:
+            return 123
+
+        async def non_none_synthetic(event: BaseEvent) -> str:
+            return 'nested'
+
+        bus.on(UserActionEvent, ok_handler)
+        bus.on('UserActionEventResultEvent', lambda event: seen.append((event.event_type, event.data)))
+        bus.on('UserActionEventResultEvent', non_none_synthetic)
+
+        try:
+            await bus.dispatch(UserActionEvent(action='ok', user_id='u2'))
+            await bus.wait_until_idle()
+            assert seen == [('UserActionEventResultEvent', 123)]
+            assert await bus.find('UserActionEventResultEventResultEvent', past=True, future=False) is None
+        finally:
+            await bus.stop()
+
+    async def test_synthetic_handler_change_event_middleware_emits_registered_and_unregistered(self):
+        registered: list[BusHandlerRegisteredEvent] = []
+        unregistered: list[BusHandlerUnregisteredEvent] = []
+        bus = EventBus(middlewares=[SyntheticHandlerChangeEventMiddleware()])
+
+        bus.on(BusHandlerRegisteredEvent, lambda event: registered.append(event))
+        bus.on(BusHandlerUnregisteredEvent, lambda event: unregistered.append(event))
+
+        async def target_handler(event: UserActionEvent) -> None:
+            return None
+
+        try:
+            handler_entry = bus.on(UserActionEvent, target_handler)
+            await bus.wait_until_idle()
+
+            bus.off(UserActionEvent, handler_entry)
+            await bus.wait_until_idle()
+
+            matching_registered = [event for event in registered if event.handler.id == handler_entry.id]
+            matching_unregistered = [event for event in unregistered if event.handler.id == handler_entry.id]
+            assert matching_registered
+            assert matching_unregistered
+            assert matching_registered[-1].handler.eventbus_id == bus.id
+            assert matching_registered[-1].handler.eventbus_name == bus.name
+            assert matching_registered[-1].handler.event_pattern == 'UserActionEvent'
+            assert matching_unregistered[-1].handler.event_pattern == 'UserActionEvent'
+        finally:
+            await bus.stop()
+
+    async def test_otel_tracing_middleware_tracks_parent_event_and_handler_spans(self):
+        class RootEvent(BaseEvent):
+            pass
+
+        class ChildEvent(BaseEvent):
+            pass
+
+        class FakeSpan:
+            def __init__(self, name: str, context: Any = None):
+                self.name = name
+                self.context = context
+                self.attrs: dict[str, Any] = {}
+                self.errors: list[str] = []
+                self.ended = False
+
+            def set_attribute(self, key: str, value: Any):
+                self.attrs[key] = value
+
+            def record_exception(self, error: BaseException):
+                self.errors.append(type(error).__name__)
+
+            def end(self):
+                self.ended = True
+
+        class FakeTracer:
+            def __init__(self):
+                self.spans: list[FakeSpan] = []
+
+            def start_span(self, name: str, context: Any = None):
+                span = FakeSpan(name, context=context)
+                self.spans.append(span)
+                return span
+
+        class FakeTraceAPI:
+            @staticmethod
+            def set_span_in_context(span: FakeSpan):
+                return {'parent': span}
+
+        tracer = FakeTracer()
+        bus = EventBus(middlewares=[OtelTracingMiddleware(tracer=tracer, trace_api=FakeTraceAPI())], name='TraceBus')
+
+        async def child_handler(event: ChildEvent) -> None:
+            return None
+
+        async def root_handler(event: RootEvent) -> None:
+            child = event.event_bus.dispatch(ChildEvent())
+            await child
+
+        bus.on(RootEvent, root_handler)
+        bus.on(ChildEvent, child_handler)
+
+        try:
+            await bus.dispatch(RootEvent())
+            await bus.wait_until_idle()
+
+            root_event_span = next(span for span in tracer.spans if span.attrs.get('bubus.event_type') == 'RootEvent')
+            root_handler_span = next(span for span in tracer.spans if str(span.attrs.get('bubus.handler_name', '')).endswith('root_handler'))
+            child_event_span = next(span for span in tracer.spans if span.attrs.get('bubus.event_type') == 'ChildEvent')
+            child_handler_span = next(span for span in tracer.spans if str(span.attrs.get('bubus.handler_name', '')).endswith('child_handler'))
+
+            assert root_handler_span.context['parent'] is root_event_span
+            assert child_event_span.context['parent'] is root_handler_span
+            assert child_handler_span.context['parent'] is child_event_span
+            assert all(span.ended for span in tracer.spans)
         finally:
             await bus.stop()
 
@@ -2184,7 +2329,7 @@ class TestComplexIntegration:
             await data_bus.stop(timeout=0, clear=True)
 
     async def test_event_result_type_enforcement_with_dict(self):
-        """Test that handlers returning wrong types get errors when event expects dict result"""
+        """Test that handlers returning wrong types get errors when event expects dict result."""
         bus = EventBus(name='TestBus')
 
         # Create an event that expects dict results
@@ -2247,7 +2392,7 @@ class TestComplexIntegration:
             await bus.stop(timeout=0, clear=True)
 
     async def test_event_result_type_enforcement_with_list(self):
-        """Test that handlers returning wrong types get errors when event expects list result"""
+        """Test that handlers returning wrong types get errors when event expects list result."""
         bus = EventBus(name='TestBus')
 
         # Create an event that expects list results

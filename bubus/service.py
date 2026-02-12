@@ -66,6 +66,7 @@ class EventBusMiddleware:
     Hooks:
         on_event_change(eventbus, event, status): Called on event state transitions
         on_event_result_change(eventbus, event, event_result, status): Called on EventResult state transitions
+        on_handler_change(eventbus, handler, registered): Called when handlers are added/removed via on()/off()
 
     Status values: EventStatus.PENDING, STARTED, COMPLETED, ERROR
     """
@@ -81,6 +82,9 @@ class EventBusMiddleware:
         status: EventStatus,
     ) -> None:
         """Called on EventResult state transitions (pending, started, completed, error)."""
+
+    async def on_handler_change(self, eventbus: 'EventBus', handler: EventHandler, registered: bool) -> None:
+        """Called when handlers are added (registered=True) or removed (registered=False)."""
 
 
 class CleanShutdownQueue(asyncio.Queue[QueueEntryType]):
@@ -306,6 +310,7 @@ class EventBus:
     _processing_event_ids: set[str]
     _warned_about_dropping_uncompleted_events: bool
     _duplicate_handler_name_check_limit: int = 256
+    _pending_handler_changes: list[tuple[EventHandler, bool]]
 
     def __init__(
         self,
@@ -362,6 +367,7 @@ class EventBus:
         self._active_event_ids = set()
         self._processing_event_ids = set()
         self._warned_about_dropping_uncompleted_events = False
+        self._pending_handler_changes = []
 
         # Memory leak prevention settings
         self.max_history_size = max_history_size
@@ -411,6 +417,32 @@ class EventBus:
             return
         for middleware in self.middlewares:
             await middleware.on_event_result_change(self, event, event_result, status)
+
+    async def _on_handler_change(self, handler: EventHandler, registered: bool) -> None:
+        if not self.middlewares:
+            return
+        for middleware in self.middlewares:
+            await middleware.on_handler_change(self, handler, registered)
+
+    def _notify_handler_change(self, handler: EventHandler, registered: bool) -> None:
+        if not self.middlewares:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Preserve .on()/.off() notifications registered before an event loop starts.
+            self._pending_handler_changes.append((handler.model_copy(deep=True), registered))
+            return
+        loop.create_task(self._on_handler_change(handler, registered))
+
+    def _flush_pending_handler_changes(self) -> None:
+        if not self._pending_handler_changes or not self.middlewares:
+            return
+        loop = asyncio.get_running_loop()
+        queued = list(self._pending_handler_changes)
+        self._pending_handler_changes.clear()
+        for handler, registered in queued:
+            loop.create_task(self._on_handler_change(handler, registered))
 
     @staticmethod
     def _is_event_complete_fast(event: BaseEvent[Any]) -> bool:
@@ -591,6 +623,7 @@ class EventBus:
                 handler_entry.handler_name,
                 handler_entry.id[-4:],
             )
+        self._notify_handler_change(handler_entry, registered=True)
         return handler_entry
 
     @overload
@@ -642,6 +675,7 @@ class EventBus:
             if should_remove:
                 self.handlers.pop(handler_id, None)
                 self._remove_indexed_handler(event_key, handler_id)
+                self._notify_handler_change(entry, registered=False)
 
     def dispatch(self, event: T_ExpectedEvent) -> T_ExpectedEvent:
         """
@@ -670,7 +704,6 @@ class EventBus:
         assert event.event_id, 'Missing event.event_id: UUIDStr = uuid7str()'
         assert event.event_created_at, 'Missing event.event_created_at: datetime = datetime.now(UTC)'
         assert event.event_type and event.event_type.isidentifier(), 'Missing event.event_type: str'
-        assert event.event_schema and '@' in event.event_schema, 'Missing event.event_schema: str (with @version)'
 
         # Automatically set event_parent_id from context if not already set
         if event.event_parent_id is None:
@@ -735,6 +768,7 @@ class EventBus:
             )
 
         # Auto-start if needed
+        self._flush_pending_handler_changes()
         self._start()
         # Ensure every dispatched event has a completion signal tied to this loop.
         # Completion logic always sets this signal; consumers like event_results_* await it.

@@ -4,20 +4,17 @@ import { BaseEvent, EventBus } from '../src/index.js'
 
 const RootEvent = BaseEvent.extend('RootEvent', {
   url: z.string(),
-  event_result_schema: z.string(),
-  event_result_type: 'string',
+  event_result_type: z.string(),
 })
 
 const ChildEvent = BaseEvent.extend('ChildEvent', {
   tab_id: z.string(),
-  event_result_schema: z.string(),
-  event_result_type: 'string',
+  event_result_type: z.string(),
 })
 
 const GrandchildEvent = BaseEvent.extend('GrandchildEvent', {
   status: z.string(),
-  event_result_schema: z.string(),
-  event_result_type: 'string',
+  event_result_type: z.string(),
 })
 
 const delay = (ms: number): Promise<void> =>

@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+try:
+    _fastapi = importlib.import_module('fastapi')
+    _fastapi_responses = importlib.import_module('fastapi.responses')
+except ModuleNotFoundError as exc:  # pragma: no cover - optional UI dependency
+    raise ModuleNotFoundError("Install 'fastapi' to run the bubus UI module.") from exc
+
+FastAPI = getattr(_fastapi, 'FastAPI')
+Query = getattr(_fastapi, 'Query')
+WebSocket = getattr(_fastapi, 'WebSocket')
+WebSocketDisconnect = getattr(_fastapi, 'WebSocketDisconnect')
+HTMLResponse = getattr(_fastapi_responses, 'HTMLResponse')
+JSONResponse = getattr(_fastapi_responses, 'JSONResponse')
 
 from . import db
 from .config import resolve_db_path
@@ -391,8 +402,7 @@ async def index() -> str:
                 const insertedAt = node.inserted_at || '—';
                 const path = Array.isArray(data.event_path) ? data.event_path.join(' → ') : '';
                 const parentId = data.event_parent_id || '—';
-                const schema = data.event_schema || '—';
-                const resultType = data.event_result_type || '—';
+                const version = data.event_version || '—';
                 const createdAt = data.event_created_at || '—';
                 const processedAt = data.event_completed_at || '—';
 
@@ -416,8 +426,7 @@ async def index() -> str:
                     renderMetaItem('Event ID', node.event_id || '—', { code: true, icon: '🆔' }),
                     renderMetaItem('Parent ID', parentId, { code: true, icon: '👪' }),
                     renderMetaItem('Path', path || '—', { icon: '🧭' }),
-                    renderMetaItem('Schema', schema, { code: true, icon: '📦' }),
-                    renderMetaItem('Result type', resultType, { code: true, icon: '🎯' }),
+                    renderMetaItem('Version', version, { code: true, icon: '📦' }),
                 ].join('');
 
                 const resultsSection = node.results.length ? renderResults(node.results) : '';

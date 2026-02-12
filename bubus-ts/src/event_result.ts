@@ -14,6 +14,7 @@ import {
 import { HandlerLock, withResolvers } from './lock_manager.js'
 import type { Deferred } from './lock_manager.js'
 import type { EventHandlerFunction, EventResultType } from './types.js'
+import { isZodSchema } from './types.js'
 import { runWithAsyncContext } from './async_context.js'
 import { RetryTimeoutError } from './retry.js'
 
@@ -310,14 +311,14 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
         handler_result = await Promise.race([promise, abort_signal])
       }
 
-      if (event.event_result_schema && handler_result !== undefined) {
-        const parsed = event.event_result_schema.safeParse(handler_result)
+      if (event.event_result_type && handler_result !== undefined && isZodSchema(event.event_result_type)) {
+        const parsed = event.event_result_type.safeParse(handler_result)
         if (parsed.success) {
           this.markCompleted(parsed.data as EventResultType<TEvent>)
         } else {
           const bus_label = bus?.toString() ?? this.eventbus_label
           const error = new EventHandlerResultSchemaError(
-            `${bus_label}.on(${event.toString()}, ${this.handler.toString()}) return value ${JSON.stringify(handler_result).slice(0, 20)}... did not match event_result_schema ${event.event_result_type}: ${parsed.error.message}`,
+            `${bus_label}.on(${event.toString()}, ${this.handler.toString()}) return value ${JSON.stringify(handler_result).slice(0, 20)}... did not match event_result_type: ${parsed.error.message}`,
             { event_result: this, cause: parsed.error, raw_value: handler_result }
           )
           this.markError(error)

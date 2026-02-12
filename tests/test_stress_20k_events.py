@@ -5,6 +5,7 @@ import inspect
 import math
 import os
 import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 import psutil
@@ -36,7 +37,7 @@ def percentile(values: list[float], q: float) -> float:
 
 async def dispatch_and_measure(
     bus: EventBus,
-    event_factory: callable,
+    event_factory: Callable[[], BaseEvent[Any]],
     total_events: int,
     batch_size: int = 40,
 ) -> tuple[float, float, float, float, float]:
@@ -425,10 +426,10 @@ async def test_20k_events_with_memory_control():
     print(f'Final memory: {final_memory:.1f} MB (+{memory_growth:.1f} MB)')
 
     # Debug: Check if event loop is still processing
-    print(f'DEBUG: Bus is running: {bus._is_running}')  # type: ignore
-    print(f'DEBUG: Runloop task: {bus._runloop_task}')  # type: ignore
-    if bus._runloop_task:  # type: ignore
-        print(f'DEBUG: Runloop task done: {bus._runloop_task.done()}')  # type: ignore
+    print(f'DEBUG: Bus is running: {bus._is_running}')
+    print(f'DEBUG: Runloop task: {bus._runloop_task}')
+    if bus._runloop_task:
+        print(f'DEBUG: Runloop task done: {bus._runloop_task.done()}')
 
     # Safely get event history size without iterating
     try:
@@ -458,11 +459,11 @@ async def test_20k_events_with_memory_control():
 
     # Explicitly clean up the bus to prevent hanging
     print('\nCleaning up EventBus...')
-    print(f'Before stop - Running: {bus._is_running}')  # type: ignore
-    print(f'Before stop - Runloop task: {bus._runloop_task}')  # type: ignore
-    if bus._runloop_task:  # type: ignore
-        print(f'  - Done: {bus._runloop_task.done()}')  # type: ignore
-        print(f'  - Cancelled: {bus._runloop_task.cancelled()}')  # type: ignore
+    print(f'Before stop - Running: {bus._is_running}')
+    print(f'Before stop - Runloop task: {bus._runloop_task}')
+    if bus._runloop_task:
+        print(f'  - Done: {bus._runloop_task.done()}')
+        print(f'  - Cancelled: {bus._runloop_task.cancelled()}')
 
     await bus.stop(timeout=0, clear=True)
     print('EventBus stopped successfully')

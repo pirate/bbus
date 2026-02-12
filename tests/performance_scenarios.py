@@ -536,7 +536,7 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
             processed_count += 1
             checksum += event.value + weight
 
-        bus.on(PerfRequestEvent, one_off_handler)
+        handler_entry = bus.on(PerfRequestEvent, one_off_handler)
 
         try:
             ev = bus.dispatch(PerfRequestEvent(value=value))
@@ -545,9 +545,7 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
             error = f'{type(exc).__name__}: {exc}'
             break
 
-        handlers_for_key = bus.handlers.get(event_key)
-        if handlers_for_key is not None:
-            handlers_for_key.remove(one_off_handler)
+        bus.off(event_key, handler_entry.id)
 
         if i % 1000 == 0:
             memory.sample()
@@ -569,7 +567,7 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
         error is None
         and processed_count == total_events
         and checksum == expected_checksum
-        and len(bus.handlers.get(event_key, [])) == 0
+        and len(bus.handlers_by_key.get(event_key, [])) == 0
     )
 
     result = _scenario_result(
@@ -664,14 +662,12 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
                 except Exception:
                     pass
 
-            bus_a.on(WCParent, ephemeral_handler)
+            ephemeral_entry = bus_a.on(WCParent, ephemeral_handler)
             parent = WCParent(iteration=iteration, value=value)
             ev_a = bus_a.dispatch(parent)
             bus_b.dispatch(parent)
             await ev_a
-            handlers_for_key = bus_a.handlers.get(WCParent.__name__)
-            if handlers_for_key is not None:
-                handlers_for_key.remove(ephemeral_handler)
+            bus_a.off(WCParent, ephemeral_entry.id)
 
             if iteration % 10 == 0:
                 await bus_a.find(WCParent, future=0.001)
@@ -703,7 +699,7 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
         error is None
         and parent_handled_a == total_iterations
         and parent_handled_b == total_iterations
-        and len(bus_a.handlers.get(WCParent.__name__, [])) == 0
+        and len(bus_a.handlers_by_key.get(WCParent.__name__, [])) == 0
     )
 
     result = _scenario_result(

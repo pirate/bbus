@@ -6,12 +6,11 @@ import { z } from 'zod'
 import { BaseEvent, EventBus } from '../src/index.js'
 
 const StringResultEvent = BaseEvent.extend('StringResultEvent', {
-  event_result_schema: z.string(),
-  event_result_type: 'string',
+  event_result_type: z.string(),
 })
 
 const ObjectResultEvent = BaseEvent.extend('ObjectResultEvent', {
-  event_result_schema: z.object({ value: z.string(), count: z.number() }),
+  event_result_type: z.object({ value: z.string(), count: z.number() }),
 })
 
 const NoResultSchemaEvent = BaseEvent.extend('NoResultSchemaEvent', {})
@@ -30,7 +29,7 @@ test('event results capture handler return values', async () => {
   assert.equal(result.result, 'ok')
 })
 
-test('event_result_schema validates handler results', async () => {
+test('event_result_type validates handler results', async () => {
   const bus = new EventBus('ResultSchemaBus')
 
   bus.on(ObjectResultEvent, () => ({ value: 'hello', count: 2 }))
@@ -43,7 +42,7 @@ test('event_result_schema validates handler results', async () => {
   assert.deepEqual(result.result, { value: 'hello', count: 2 })
 })
 
-test('event_result_schema allows undefined handler return values', async () => {
+test('event_result_type allows undefined handler return values', async () => {
   const bus = new EventBus('ResultSchemaUndefinedBus')
 
   bus.on(ObjectResultEvent, () => {})

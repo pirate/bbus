@@ -1,6 +1,5 @@
 import asyncio
 import gc
-from typing import Any
 
 import pytest
 
@@ -18,20 +17,14 @@ async def cleanup_eventbus_instances():
 
 
 class MainEvent(BaseEvent[None]):
-    event_result_type: Any = None
-
     message: str = 'test'
 
 
 class ChildEvent(BaseEvent[None]):
-    event_result_type: Any = None
-
     data: str = 'child'
 
 
 class GrandchildEvent(BaseEvent[None]):
-    event_result_type: Any = None
-
     info: str = 'grandchild'
 
 

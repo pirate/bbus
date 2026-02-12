@@ -208,7 +208,7 @@ test('BaseEvent lifecycle methods are callable and preserve lifecycle behavior',
 
 test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', async () => {
   const RuntimeEvent = BaseEvent.extend('RuntimeSerializationEvent', {
-    event_result_schema: z.string(),
+    event_result_type: z.string(),
   })
   const bus = new EventBus('RuntimeSerializationBus')
 
@@ -278,18 +278,17 @@ test('fromJSON accepts event_parent_id: null and preserves it in toJSON output',
   assert.equal((event.toJSON() as Record<string, unknown>).event_parent_id, null)
 })
 
-test('fromJSON preserves raw event_result_schema JSON for stable roundtrip output', () => {
+test('fromJSON preserves raw event_result_type JSON for stable roundtrip output', () => {
   const raw_schema = { type: 'integer' }
   const event = BaseEvent.fromJSON({
     event_id: '018f8e40-1234-7000-8000-000000001235',
     event_created_at: new Date('2025-01-01T00:00:01.000Z').toISOString(),
     event_type: 'RawSchemaEvent',
     event_timeout: null,
-    event_result_type: 'integer',
-    event_result_schema: raw_schema,
+    event_result_type: raw_schema,
   })
   const json = event.toJSON() as Record<string, unknown>
-  assert.deepEqual(json.event_result_schema, raw_schema)
+  assert.deepEqual(json.event_result_type, raw_schema)
 })
 
 // ─── Event dispatch and status lifecycle ─────────────────────────────────────

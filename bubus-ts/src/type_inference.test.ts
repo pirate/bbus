@@ -13,7 +13,7 @@ type Assert<T extends true> = T
 
 const InferableResultEvent = BaseEvent.extend('InferableResultEvent', {
   target_id: z.string(),
-  event_result_schema: z.object({ ok: z.boolean() }),
+  event_result_type: z.object({ ok: z.boolean() }),
 })
 
 type InferableResult = EventResultType<InstanceType<typeof InferableResultEvent>>
@@ -39,7 +39,7 @@ bus.on(InferableResultEvent, (event) => {
 
 bus.on(InferableResultEvent, () => undefined)
 
-// @ts-expect-error non-void return must match event_result_schema for inferable event keys
+// @ts-expect-error non-void return must match event_result_type for inferable event keys
 bus.on(InferableResultEvent, () => 'not-ok')
 
 // String/wildcard keys remain best-effort and do not strongly enforce return shapes.

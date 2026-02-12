@@ -55,7 +55,7 @@ I) Timeouts + cancellation propagation
 - Timeout doesn’t propagate across forwarded buses (event still waits forever).
 
 J) Handler result validation
-- event_result_schema not enforced under parallel handler completion.
+- event_result_type not enforced under parallel handler completion.
 - Invalid result doesn’t mark handler error or event failure.
 - Timeout + schema error ordering wrong (e.g., schema error overwrites timeout).
 

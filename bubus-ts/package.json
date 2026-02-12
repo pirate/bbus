@@ -22,8 +22,9 @@
     "build:esm": "esbuild src/index.ts --bundle --format=esm --platform=neutral --target=es2022 --sourcemap --outdir=dist/esm",
     "build:types": "tsc -p tsconfig.json --emitDeclarationOnly",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "pnpm run prettier && eslint . && pnpm run typecheck",
     "prettier": "prettier --write .",
+    "eslint": "eslint .",
+    "lint": "pnpm run prettier && pnpm run eslint && pnpm run typecheck",
     "test": "NODE_OPTIONS='--expose-gc' node --expose-gc --test --import tsx tests/**/*.test.ts",
     "perf": "pnpm run perf:node && pnpm run perf:bun && pnpm run perf:deno && pnpm run perf:browser",
     "debug:node": "NODE_OPTIONS='--expose-gc' node --expose-gc --import tsx",
@@ -33,25 +34,24 @@
     "perf:bun": "pnpm run build && pnpm run debug:bun -- tests/performance.runtime.ts --scenario 50k-events && pnpm run debug:bun -- tests/performance.runtime.ts --scenario 500-buses-x-100-events && pnpm run debug:bun -- tests/performance.runtime.ts --scenario 1-event-x-50k-parallel-handlers && pnpm run debug:bun -- tests/performance.runtime.ts --scenario 50k-one-off-handlers && pnpm run debug:bun -- tests/performance.runtime.ts --scenario worst-case-forwarding-timeouts && pnpm run debug:bun -- tests/performance.runtime.ts --scenario cleanup-equivalence",
     "perf:deno": "pnpm run build && pnpm run debug:deno -- tests/performance.runtime.ts --scenario 50k-events && pnpm run debug:deno -- tests/performance.runtime.ts --scenario 500-buses-x-100-events && pnpm run debug:deno -- tests/performance.runtime.ts --scenario 1-event-x-50k-parallel-handlers && pnpm run debug:deno -- tests/performance.runtime.ts --scenario 50k-one-off-handlers && pnpm run debug:deno -- tests/performance.runtime.ts --scenario worst-case-forwarding-timeouts && pnpm run debug:deno -- tests/performance.runtime.ts --scenario cleanup-equivalence",
     "perf:browser": "pnpm run build && npx --yes --package=playwright -c 'PW_BIN=\"$(command -v playwright)\"; PW_NODE_MODULES=\"$(cd \"$(dirname \"$PW_BIN\")/..\" && pwd)\"; NODE_PATH=\"$PW_NODE_MODULES\" playwright test tests/performance.browser.spec.cjs --browser=chromium --workers=1 --reporter=line --output=/tmp/bubus-playwright-results'",
-    "prepack": "pnpm run build",
     "release:dry-run": "pnpm publish --access public --dry-run --no-git-checks",
     "release:check": "pnpm run typecheck && pnpm test && pnpm run build"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
-  "packageManager": "pnpm@10.23.0",
+  "packageManager": "pnpm@10.29.3",
   "dependencies": {
     "uuid": "^11.1.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@typescript-eslint/eslint-plugin": "^8.46.0",
-    "@typescript-eslint/parser": "^8.46.0",
-    "esbuild": "^0.27.2",
+    "@typescript-eslint/eslint-plugin": "^8.55.0",
+    "@typescript-eslint/parser": "^8.55.0",
+    "esbuild": "^0.27.3",
     "eslint": "^9.39.2",
     "prettier": "^3.8.1",
-    "tsx": "^4.20.6",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "repository": {
@@ -69,13 +69,11 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "better-sqlite3",
       "esbuild"
     ]
   },
   "optionalDependencies": {
-    "better-sqlite3": "^12.6.2",
-    "ioredis": "^5.9.2",
+    "ioredis": "^5.9.3",
     "nats": "^2.29.3",
     "pg": "^8.18.0"
   }

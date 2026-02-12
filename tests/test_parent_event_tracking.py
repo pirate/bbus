@@ -50,7 +50,7 @@ class TestParentEventTracking:
             event_children.append(child)
             return 'parent_handled'
 
-        eventbus.on('ParentEvent', parent_handler)  # type: ignore[reportUnknownArgumentType]
+        eventbus.on('ParentEvent', parent_handler)
 
         # Dispatch parent event
         parent = ParentEvent(message='test_parent')

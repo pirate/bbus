@@ -89,7 +89,7 @@ def worker_that_dies(
             await asyncio.sleep(die_after)
 
             # Simulate unexpected death
-            os._exit(1)  # Hard exit without cleanup  # type: ignore[attr-defined]
+            os._exit(1)  # Hard exit without cleanup
 
         asyncio.run(semaphore_protected_function())
 
@@ -232,7 +232,7 @@ class TestMultiprocessSemaphore:
         # Check that no more than 3 workers held the semaphore simultaneously
         active_workers: list[int] = []
         # Filter out events that don't have timing information
-        timed_events: list[tuple[str, int, float]] = [e for e in results if len(e) >= 3 and isinstance(e[2], (int, float))]  # type: ignore[arg-type]
+        timed_events: list[tuple[str, int, float]] = [e for e in results if len(e) >= 3 and isinstance(e[2], (int, float))]
         for event in sorted(timed_events, key=lambda x: x[2]):  # Sort all events by time
             if event[0] == 'acquired':
                 active_workers.append(event[1])
@@ -643,8 +643,6 @@ class TestRetryWithEventBus:
         class TestEvent(BaseEvent[str]):
             """Simple test event."""
 
-            event_result_type: Any = str
-
             message: str
 
         # Create an EventBus
@@ -707,8 +705,6 @@ class TestRetryWithEventBus:
 
         class WorkEvent(BaseEvent[str]):
             """Event that triggers work."""
-
-            event_result_type: Any = str
 
             work_id: int
 
@@ -840,8 +836,6 @@ class TestRetryWithEventBus:
 
         class RetryTestEvent(BaseEvent[str]):
             """Event for testing retry on specific exceptions."""
-
-            event_result_type: Any = str
 
             attempt_limit: int
 

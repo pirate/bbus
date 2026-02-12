@@ -9,7 +9,7 @@ const RegisterUserEvent = BaseEvent.extend('RegisterUserEvent', {
   email: z.string().email(),
   plan: z.enum(['free', 'pro']),
   // Handler return values for this event are validated against this schema.
-  event_result_schema: z.object({
+  event_result_type: z.object({
     user_id: z.string(),
     welcome_email_sent: z.boolean(),
   }),
@@ -43,7 +43,7 @@ async function main(): Promise<void> {
 
   // 5) Intentionally return an invalid result shape.
   //    This compiles because string-based registration is best-effort, but will fail
-  //    at runtime because RegisterUserEvent has event_result_schema enforcement.
+  //    at runtime because RegisterUserEvent has event_result_type enforcement.
   bus.on('RegisterUserEvent', () => {
     return { user_id: 123, welcome_email_sent: 'yes' } as unknown
   })

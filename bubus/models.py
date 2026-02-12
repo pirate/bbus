@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Awaitable, Callable, Generator, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -21,10 +21,13 @@ from pydantic import (
     TypeAdapter,
     computed_field,
     field_serializer,
+    field_validator,
     model_validator,
 )
 from typing_extensions import TypeVar  # needed to get TypeVar(default=...) above python 3.11
 from uuid_extensions import uuid7str
+
+from bubus.helpers import create_model_from_schema
 
 if TYPE_CHECKING:
     from bubus.service import EventBus
@@ -34,6 +37,7 @@ logger = logging.getLogger('bubus')
 
 BUBUS_LOGGING_LEVEL = os.getenv('BUBUS_LOGGING_LEVEL', 'WARNING').upper()  # WARNING normally, otherwise DEBUG when testing
 LIBRARY_VERSION = os.getenv('LIBRARY_VERSION', '1.0.0')
+JSON_SCHEMA_DRAFT = 'https://json-schema.org/draft/2020-12/schema'
 
 logger.setLevel(BUBUS_LOGGING_LEVEL)
 
@@ -425,25 +429,145 @@ def _normalize_result_dict(value: Any) -> dict[str, Any]:
     return normalized
 
 
-def _to_result_type_json_schema(result_type: Any) -> dict[str, Any] | None:
-    """Best-effort conversion of a Python result type into JSON Schema."""
-    if result_type is None:
+def _json_schema_primitive_type(schema: dict[str, Any]) -> type[Any] | None:
+    """Map simple JSON Schema primitive types to Python runtime types."""
+    raw_type = schema.get('type')
+    schema_type: str | None = None
+    if isinstance(raw_type, str):
+        schema_type = raw_type
+    elif isinstance(raw_type, Sequence) and not isinstance(raw_type, (str, bytes, bytearray)):
+        raw_type_values = cast(Sequence[Any], raw_type)
+        non_null: list[str] = []
+        for raw_item in raw_type_values:
+            if isinstance(raw_item, str) and raw_item != 'null':
+                non_null.append(raw_item)
+        if len(non_null) == 1:
+            schema_type = non_null[0]
+
+    if schema_type == 'string':
+        return str
+    if schema_type == 'number':
+        return float
+    if schema_type == 'integer':
+        return int
+    if schema_type == 'boolean':
+        return bool
+    return None
+
+
+def _json_schema_identifier(schema: dict[str, Any]) -> str | None:
+    raw_type = schema.get('type')
+    schema_type: str | None = None
+    if isinstance(raw_type, str):
+        schema_type = raw_type
+    elif isinstance(raw_type, Sequence) and not isinstance(raw_type, (str, bytes, bytearray)):
+        raw_type_values = cast(Sequence[Any], raw_type)
+        non_null: list[str] = []
+        for raw_item in raw_type_values:
+            if isinstance(raw_item, str) and raw_item != 'null':
+                non_null.append(raw_item)
+        if len(non_null) == 1:
+            schema_type = non_null[0]
+
+    if schema_type in ('number', 'integer'):
+        return 'number'
+    if schema_type in ('string', 'boolean', 'object', 'array', 'null'):
+        return schema_type
+    return None
+
+
+def _result_schema_from_json_schema(result_schema: Any) -> Any:
+    """Reconstruct runtime types from JSON Schema when possible."""
+    if not isinstance(result_schema, dict):
+        return result_schema
+    normalized_schema = _normalize_result_dict(result_schema)
+
+    primitive_type = _json_schema_primitive_type(normalized_schema)
+    if primitive_type is not None:
+        return primitive_type
+
+    # For object schemas produced by model_json_schema(), dynamically rebuild a
+    # Pydantic model so loaded events can validate results across language boundaries.
+    has_object_shape = normalized_schema.get('type') == 'object' and isinstance(normalized_schema.get('properties'), dict)
+    has_defs = isinstance(normalized_schema.get('$defs'), dict) and bool(normalized_schema.get('$defs'))
+    if has_object_shape or has_defs:
+        try:
+            dynamic_model = create_model_from_schema(normalized_schema)
+            if getattr(dynamic_model, 'model_fields', None):
+                return dynamic_model
+        except Exception:
+            # Keep raw schema dict if reconstruction fails.
+            pass
+
+    return normalized_schema
+
+
+def _to_result_schema_json_schema(result_schema: Any) -> dict[str, Any] | None:
+    """Best-effort conversion of a Python result schema/type into JSON Schema."""
+    if result_schema is None:
         return None
-    if isinstance(result_type, dict):
-        return cast(dict[str, Any], result_type)
-    if isinstance(result_type, str):
+    if isinstance(result_schema, dict):
+        schema = dict(cast(dict[str, Any], result_schema))
+        schema.setdefault('$schema', JSON_SCHEMA_DRAFT)
+        return schema
+    if isinstance(result_schema, str):
         return None
 
     try:
-        if inspect.isclass(result_type) and issubclass(result_type, BaseModel):
-            return result_type.model_json_schema()
+        if inspect.isclass(result_schema) and issubclass(result_schema, BaseModel):
+            schema = result_schema.model_json_schema()
+            schema.setdefault('$schema', JSON_SCHEMA_DRAFT)
+            return schema
     except TypeError:
         pass
 
     try:
-        return TypeAdapter(result_type).json_schema()
+        schema = TypeAdapter(result_schema).json_schema()
+        normalized_schema = _normalize_result_dict(schema)
+        normalized_schema.setdefault('$schema', JSON_SCHEMA_DRAFT)
+        return normalized_schema
     except Exception:
         return None
+
+
+def _result_schema_identifier_from_schema(result_schema: Any) -> str | None:
+    if result_schema is None:
+        return None
+    if isinstance(result_schema, str):
+        return result_schema
+    if isinstance(result_schema, dict):
+        return _json_schema_identifier(_normalize_result_dict(result_schema))
+
+    if result_schema is str:
+        return 'string'
+    if result_schema in (int, float):
+        return 'number'
+    if result_schema is bool:
+        return 'boolean'
+
+    derived_schema = _to_result_schema_json_schema(result_schema)
+    if isinstance(derived_schema, dict):
+        return _json_schema_identifier(derived_schema)
+    return None
+
+
+def _validate_result_against_schema(result_schema: Any, result: Any) -> Any:
+    if result_schema is None:
+        return result
+
+    if isinstance(result_schema, dict):
+        normalized_schema = _normalize_result_dict(result_schema)
+        primitive_type = _json_schema_primitive_type(normalized_schema)
+        if primitive_type is None:
+            # Complex JSON Schema objects/arrays are currently metadata-only in Python.
+            return result
+        result_schema = primitive_type
+
+    if inspect.isclass(result_schema) and issubclass(result_schema, BaseModel):
+        return result_schema.model_validate(result)
+
+    adapter = TypeAdapter(result_schema)
+    return adapter.validate_python(result)
 
 
 class BaseEvent(BaseModel, Generic[T_EventResultType]):
@@ -462,41 +586,40 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         revalidate_instances='always',
     )
 
-    # Class-level cache for auto-extracted event_result_type
+    # Class-level cache for auto-extracted event_result_type from BaseEvent[T]
     _event_result_type_cache: ClassVar[Any | None] = None
 
     event_type: PythonIdentifierStr = Field(default='UndefinedEvent', description='Event type name', max_length=64)
     event_version: str = Field(default='0.0.1', description='Event payload version tag')
-    event_schema: str = Field(
-        default=f'UndefinedEvent@{LIBRARY_VERSION}',
-        description='Event schema version in format ClassName@version',
-        max_length=250,
-    )  # long because it can include long function names / module paths
     event_timeout: float | None = Field(default=300.0, description='Timeout in seconds for event to finish processing')
     event_result_type: Any = Field(
-        default=None, description='Type to cast/validate handler return values (e.g. int, str, bytes, BaseModel subclass)'
+        default=None, description='Schema/type for handler result validation (serialized as JSON Schema)'
     )
-    event_result_schema: dict[str, Any] | None = Field(
-        default=None, description='JSONSchema describing the expected handler return value shape'
+    event_result_type_json: dict[str, Any] | None = Field(
+        default=None, exclude=True, repr=False, description='Original raw JSON Schema payload for stable roundtrip'
     )
 
-    @field_serializer('event_result_type')
-    def event_result_type_serializer(self, value: Any) -> str | None:
-        """Serialize event_result_type to a string representation"""
-        if value is None:
-            return None
-        # Use str() to get full representation: 'int', 'str', 'list[int]', etc.
-        return str(value)
+    @model_validator(mode='before')
+    @classmethod
+    def _capture_raw_event_result_type_json(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = cast(dict[str, Any], data)
+        if 'event_result_type_json' not in payload and isinstance(payload.get('event_result_type'), dict):
+            payload['event_result_type_json'] = dict(cast(dict[str, Any], payload['event_result_type']))
+        return payload
 
-    @field_serializer('event_result_schema', when_used='json')
-    def event_result_schema_serializer(self, value: Any) -> dict[str, Any] | None:
-        """Serialize event_result_schema, deriving from event_result_type when possible."""
-        if isinstance(value, dict):
-            return cast(dict[str, Any], value)
-        derived_schema = _to_result_type_json_schema(value)
-        if derived_schema is not None:
-            return derived_schema
-        return _to_result_type_json_schema(self.event_result_type)
+    @field_validator('event_result_type', mode='before')
+    @classmethod
+    def _deserialize_event_result_type(cls, value: Any) -> Any:
+        return _result_schema_from_json_schema(value)
+
+    @field_serializer('event_result_type', when_used='json')
+    def event_result_type_serializer(self, value: Any) -> dict[str, Any] | None:
+        """Serialize event_result_type to JSON Schema for cross-language transport."""
+        if isinstance(self.event_result_type_json, dict):
+            return self.event_result_type_json
+        return _to_result_schema_json_schema(value)
 
     # Runtime metadata
     event_id: UUIDStr = Field(default_factory=uuid7str, max_length=36)
@@ -713,51 +836,29 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     @model_validator(mode='before')
     @classmethod
-    def _set_event_schema_from_class_name(cls, data: dict[str, Any]) -> dict[str, Any]:
-        """Append the library version number to the event schema so we know what version was used to create any JSON dump"""
-        is_class_default_unchanged = cls.model_fields['event_schema'].default == f'UndefinedEvent@{LIBRARY_VERSION}'
-        is_event_schema_not_provided = 'event_schema' not in data or data['event_schema'] == f'UndefinedEvent@{LIBRARY_VERSION}'
-        if is_class_default_unchanged and is_event_schema_not_provided:
-            data['event_schema'] = f'{cls.__module__}.{cls.__qualname__}@{LIBRARY_VERSION}'
-        return data
-
-    @model_validator(mode='before')
-    @classmethod
     def _set_event_result_type_from_generic_arg(cls, data: Any) -> Any:
         """Automatically set event_result_type from Generic type parameter if not explicitly provided."""
         if not isinstance(data, dict):
             return data
 
-        # Fast path: if event_result_type is already in the data, skip all checks
         payload = cast(dict[str, Any], data)
-
         if 'event_result_type' in payload:
             return payload
 
-        # Check if class explicitly defines event_result_type in model_fields
-        # This handles cases where user explicitly sets event_result_type in class definition
         if 'event_result_type' in cls.model_fields:
             field = cls.model_fields['event_result_type']
             if field.default is not None and field.default != BaseEvent.model_fields['event_result_type'].default:
-                # Explicitly set, use the default value
                 payload['event_result_type'] = field.default
                 return payload
 
-        # Fast path: check if class has cached the result type
         if cls._event_result_type_cache is not None:
             payload['event_result_type'] = cls._event_result_type_cache
             return payload
 
-        # Extract the generic type from BaseEvent[T]
         extracted_type = _extract_basemodel_generic_arg(cls)
-
-        # Cache the result on the class
         cls._event_result_type_cache = extracted_type
-
-        # Set the type if we successfully resolved it
         if extracted_type is not None:
             payload['event_result_type'] = extracted_type
-
         return payload
 
     @property
@@ -832,7 +933,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             event_result.completed_at = None
             event_result.status = 'pending'
             event_result.timeout = timeout if timeout is not None else self.event_timeout
-            event_result.result_type = self.event_result_type
+            event_result.result_schema = self.event_result_type
             pending_results[handler_id] = event_result
         return pending_results
 
@@ -1127,7 +1228,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                     handler=handler_entry,
                     status=kwargs.get('status', 'pending'),
                     timeout=self.event_timeout,
-                    result_type=self.event_result_type,
+                    result_schema=self.event_result_type,
                 ),
             )
             # logger.debug(f'Created EventResult for handler {handler_id}: {handler and get_handler_name(handler)}')
@@ -1325,7 +1426,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
     status: Literal['pending', 'started', 'completed', 'error'] = 'pending'
     event_id: UUIDStr
     handler: EventHandler = Field(default_factory=EventHandler)
-    result_type: Any | type[T_EventResultType] | None = None
+    result_schema: Any = None
     timeout: float | None = None
     started_at: datetime | None = None
 
@@ -1458,33 +1559,29 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         if 'result' in kwargs:
             result: Any = kwargs['result']
             self.status = 'completed'
-            if self.result_type is not None and result is not None:
+            if self.result_schema is not None and result is not None:
                 # Always allow BaseEvent results without validation
                 # This is needed for event forwarding patterns like bus1.on('*', bus2.dispatch)
                 if isinstance(result, BaseEvent):
                     self.result = cast(T_EventResultType, result)
                 else:
-                    # cast the return value to the expected type using TypeAdapter
+                    # Validate/cast against event_result_type.
                     try:
-                        if issubclass(self.result_type, BaseModel):
-                            # if expected result type is a pydantic model, validate it with pydantic
-                            validated_result = self.result_type.model_validate(result)
-                        else:
-                            # cast the return value to the expected type e.g. int(result) / str(result) / list(result) / etc.
-                            ResultType = TypeAdapter(self.result_type)
-                            validated_result = ResultType.validate_python(result)
+                        validated_result = _validate_result_against_schema(self.result_schema, result)
 
                         # Normal assignment works, make sure validate_assignment=False otherwise pydantic will attempt to re-validate it a second time
                         self.result = cast(T_EventResultType, validated_result)
 
                     except Exception as cast_error:
+                        schema_id = _result_schema_identifier_from_schema(self.result_schema) or 'unknown'
                         self.error = ValueError(
-                            f'Event handler returned a value that did not match expected event_result_type: {self.result_type.__name__}({result}) -> {type(cast_error).__name__}: {cast_error}'
+                            f'Event handler returned a value that did not match expected event_result_type '
+                            f'({schema_id}): {result} -> {type(cast_error).__name__}: {cast_error}'
                         )
                         self.result = None
                         self.status = 'error'
             else:
-                # No result_type specified or result is None - assign directly
+                # No result_schema specified or result is None - assign directly
                 self.result = cast(T_EventResultType, result)
 
         if 'error' in kwargs:
@@ -1538,7 +1635,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             raise RuntimeError(f'EventResult {self.id} has no callable attached to handler {self.handler.id}')
 
         self.timeout = timeout if timeout is not None else self.timeout or event.event_timeout
-        self.result_type = event.event_result_type
+        self.result_schema = event.event_result_type
         self.update(status='started')
 
         monitor_task: asyncio.Task[None] | None = None

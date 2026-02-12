@@ -405,6 +405,9 @@ class DoSomeMathEvent(BaseEvent[int]):  # BaseEvent[int] = expect int returned f
     a: int
     b: int
 
+    # int passed above gets saved to:
+    # event_result_type = int
+
 def do_some_math(event: DoSomeMathEvent) -> int:                                                                                                                        
     return event.a + event.b
 
@@ -687,23 +690,36 @@ EventBus(
 - `max_history_drop`: If `True` (default), drop oldest history entries when full (even uncompleted events). If `False`, reject new dispatches once history reaches `max_history_size` (except when `max_history_size=0`, which never rejects on history size)
 - `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc.
 
-Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need:
+Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need (`on_event_change`, `on_event_result_change`, `on_handler_change`):
 
 ```python
 from bubus.middlewares import EventBusMiddleware
 
 class AnalyticsMiddleware(EventBusMiddleware):
-    async def process_handler_start(self, eventbus, event, event_result):
-        await analytics_bus.dispatch(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
+    async def on_event_result_change(self, eventbus, event, event_result, status):
+        if status == 'started':
+            await analytics_bus.dispatch(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
+        elif status == 'completed':
+            await analytics_bus.dispatch(
+                HandlerCompletedAnalyticsEvent(
+                    event_id=event_result.event_id,
+                    error=repr(event_result.error) if event_result.error else None,
+                )
+            )
 
-    async def process_handler_end(self, eventbus, event, event_result):
-        await analytics_bus.dispatch(HandlerCompletedAnalyticsEvent(event_id=event_result.event_id))
-
-    async def process_handler_exception(self, eventbus, event, event_result, error):
-        await analytics_bus.dispatch(HandlerCompletedAnalyticsEvent(event_id=event_result.event_id, error=error))
+    async def on_handler_change(self, eventbus, handler, registered):
+        await analytics_bus.dispatch(
+            HandlerRegistryChangedEvent(handler_id=handler.id, registered=registered, bus=eventbus.name)
+        )
 ```
 
 Middlewares can observe or mutate the `EventResult` at each step, dispatch additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
+
+Built-in synthetic helpers:
+- `SyntheticErrorEventMiddleware`: on handler error, fire-and-forget emits `OriginalEventTypeErrorEvent` with `{error, error_type}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful when downstream/remote consumers only see events and need explicit failure notifications.
+- `SyntheticReturnEventMiddleware`: on non-`None` handler return, fire-and-forget emits `OriginalEventTypeResultEvent` with `{data}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful for bridges/remote systems since handler return values do not cross bridge boundaries, but events do.
+- `SyntheticHandlerChangeEventMiddleware`: emits `BusHandlerRegisteredEvent({handler})` / `BusHandlerUnregisteredEvent({handler})` when handlers are added/removed via `.on()` / `.off()`.
+- `OtelTracingMiddleware`: emits OpenTelemetry spans for events and handlers with parent-child linking; can be exported to Sentry via Sentry's OpenTelemetry integration.
 
 Pair that with the built-in `SQLiteHistoryMirrorMiddleware` to mirror every event and handler transition into append-only `events_log` and `event_results_log` tables, making it easy to inspect or audit the bus state:
 
@@ -902,12 +918,11 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     event_version: str           # Defaults to '0.0.1' (override per class/instance for event payload versioning)
     event_id: str                # Unique UUID7 identifier, auto-generated if not provided
     event_timeout: float = 300.0 # Maximum execution in seconds for each handler
-    event_schema: str            # Module.Class@version (auto-set based on class & LIBRARY_VERSION env var)
     event_parent_id: str         # Parent event ID (auto-set)
     event_path: list[str]        # List of bus names traversed (auto-set)
     event_created_at: datetime   # When event was created, auto-generated
     event_results: dict[str, EventResult]   # Handler results
-    event_result_type: type[T_EventResultType] | None  # Auto-detected from Generic[T] parameter
+    event_result_type: Any | None  # Pydantic model/python type to validate handler result values (serialized as JSON Schema)
     
     # Data fields
     # ... subclass BaseEvent to add your own event data fields here ...
@@ -926,7 +941,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 - `event_completed_at`: `datetime` When all handlers completed processing
 - `event_children`: `list[BaseEvent]` Get any child events emitted during handling of this event
 - `event_bus`: `EventBus` Shortcut to get the bus currently processing this event
-- `event_result_type`: `type[Any] | None` Expected handler return type (auto-detected from `BaseEvent[T]` generic parameter)
+- `event_result_type`: `Any | None` Validation schema/type for handler return values
 
 #### `BaseEvent` Methods
 

@@ -66,7 +66,6 @@ def _normalize_roundtrip_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized.pop('event_id', None)
     normalized.pop('event_path', None)
     normalized.pop('event_result_type', None)
-    normalized.pop('event_result_schema', None)
     return normalized
 
 

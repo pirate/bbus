@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from bubus.models import BaseEvent, _extract_basemodel_generic_arg  # type: ignore
+from bubus.models import BaseEvent, _extract_basemodel_generic_arg
 
 
 class UserData(BaseModel):
@@ -42,7 +42,7 @@ class EmailMessage(BaseModel):
 
 
 def test_builtin_types_auto_extraction():
-    """Test that built-in types are automatically extracted from Generic parameters."""
+    """Built-in Generic[T] values populate result schema."""
 
     class StringEvent(BaseEvent[str]):
         message: str = 'Hello'
@@ -63,15 +63,13 @@ def test_builtin_types_auto_extraction():
 
 
 def test_custom_pydantic_models_auto_extraction():
-    """Test that custom Pydantic models are automatically extracted."""
+    """Custom Pydantic result schemas are extracted from Generic[T]."""
 
     class UserEvent(BaseEvent[UserData]):
         user_id: str = 'user123'
-        event_result_type: Any = UserData  # Set manually for local test scope
 
     class TaskEvent(BaseEvent[TaskResult]):
         batch_id: str = 'batch456'
-        event_result_type: Any = TaskResult  # Set manually for local test scope
 
     user_event = UserEvent()
     task_event = TaskEvent()
@@ -81,7 +79,7 @@ def test_custom_pydantic_models_auto_extraction():
 
 
 def test_complex_generic_types_auto_extraction():
-    """Test that complex generic types are automatically extracted."""
+    """Complex Generic[T] values are extracted."""
 
     class ListEvent(BaseEvent[list[str]]):
         pass
@@ -106,23 +104,28 @@ def test_complex_generic_with_custom_types():
 
     class TaskListEvent(BaseEvent[list[TaskResult]]):
         batch_id: str = 'batch456'
-        event_result_type: Any = list[TaskResult]  # Set manually for local test scope
 
     task_list_event = TaskListEvent()
 
     assert task_list_event.event_result_type == list[TaskResult]
 
 
-def test_explicit_override_still_works():
-    """Test that explicit event_result_type overrides still work (backwards compatibility)."""
+@pytest.mark.parametrize(
+    ('json_schema', 'expected_schema'),
+    [
+        ({'type': 'string'}, str),
+        ({'type': 'number'}, float),
+        ({'type': 'boolean'}, bool),
+    ],
+)
+def test_json_schema_primitive_deserialization(json_schema: dict[str, str], expected_schema: Any):
+    """Primitive JSON Schema payloads reconstruct to Python runtime types."""
+    event = BaseEvent[Any].model_validate({'event_type': 'SchemaEvent', 'event_result_type': json_schema})
 
-    class OverrideEvent(BaseEvent[str]):
-        event_result_type: Any = int  # Override to int instead of str
-
-    override_event = OverrideEvent()
-
-    # Should use the explicit override, not the auto-extracted str
-    assert override_event.event_result_type is int
+    assert event.event_result_type is expected_schema
+    serialized_schema = event.model_dump(mode='json')['event_result_type']
+    assert isinstance(serialized_schema, dict)
+    assert serialized_schema.get('type') == json_schema['type']
 
 
 def test_no_generic_parameter():
@@ -133,7 +136,7 @@ def test_no_generic_parameter():
 
     plain_event = PlainEvent()
 
-    # Should remain None since no generic parameter was provided
+    # Should remain None since no schema was provided
     assert plain_event.event_result_type is None
 
 
@@ -145,7 +148,7 @@ def test_none_generic_parameter():
 
     none_event = NoneEvent()
 
-    # Should be set to None
+    # Should remain unset
     assert none_event.event_result_type is None
 
 
@@ -153,32 +156,30 @@ def test_nested_inheritance():
     """Test that generic type extraction works with nested inheritance."""
 
     class BaseUserEvent(BaseEvent[UserData]):
-        event_result_type: Any = UserData  # Set manually for local test scope
+        pass
 
     class SpecificUserEvent(BaseUserEvent):
         specific_field: str = 'specific'
 
     specific_event = SpecificUserEvent()
 
-    # Should inherit the generic type from parent
+    # Should inherit schema/type metadata from parent generic.
     assert specific_event.event_result_type is UserData
 
 
 def test_module_level_types_auto_extraction():
-    """Test that module-level types are automatically detected without manual override."""
+    """Test that module-level schemas are automatically detected."""
 
     class ModuleEvent(BaseEvent[ModuleLevelResult]):
         operation: str = 'test_op'
-        # No manual event_result_type needed - should be auto-detected
 
     class NestedModuleEvent(BaseEvent[NestedModuleResult]):
         batch_id: str = 'batch123'
-        # No manual event_result_type needed - should be auto-detected
 
     module_event = ModuleEvent()
     nested_event = NestedModuleEvent()
 
-    # Should auto-detect the module-level types
+    # Should auto-detect module-level schemas.
     assert module_event.event_result_type is ModuleLevelResult
     assert nested_event.event_result_type is NestedModuleResult
 
@@ -188,16 +189,14 @@ def test_complex_module_level_generics():
 
     class ListModuleEvent(BaseEvent[list[ModuleLevelResult]]):
         batch_size: int = 10
-        # No manual override - should auto-detect list[ModuleLevelResult]
 
     class DictModuleEvent(BaseEvent[dict[str, NestedModuleResult]]):
         mapping_type: str = 'result_map'
-        # No manual override - should auto-detect dict[str, NestedModuleResult]
 
     list_event = ListModuleEvent()
     dict_event = DictModuleEvent()
 
-    # Should auto-detect complex generics with module-level types
+    # Should auto-detect complex schemas.
     assert list_event.event_result_type == list[ModuleLevelResult]
     assert dict_event.event_result_type == dict[str, NestedModuleResult]
 
@@ -208,7 +207,6 @@ async def test_module_level_runtime_enforcement():
 
     class RuntimeEvent(BaseEvent[ModuleLevelResult]):
         operation: str = 'runtime_test'
-        # Auto-detected type should be enforced
 
     # Verify auto-detection worked
     test_event = RuntimeEvent()

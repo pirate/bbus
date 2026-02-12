@@ -36,7 +36,7 @@ async def test_simple_typed_result():
         print(f'Result type: {type(result_obj.result)}')
         print(f'Result: {result_obj.result}')
         print(f'Status: {result_obj.status}')
-        print(f'Result type setting: {result_obj.result_type}')
+        print(f'Result schema setting: {result_obj.result_schema}')
         if result_obj.error:
             print(f'Error: {result_obj.error}')
 
