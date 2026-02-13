@@ -20,7 +20,7 @@ import importlib
 import json
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeGuard
 from urllib.parse import urlsplit, urlunsplit
 
 from uuid_extensions import uuid7str
@@ -59,6 +59,10 @@ def _parse_table_url(table_url: str) -> tuple[str, str]:
 
 def _index_name(table: str, suffix: str) -> str:
     return _validate_identifier(f'{table}_{suffix}'[:63], label='index name')
+
+
+def _is_str_keyed_dict(value: Any) -> TypeGuard[dict[str, Any]]:
+    return isinstance(value, dict)
 
 
 def _split_bridge_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -248,8 +252,8 @@ class PostgresEventBridge:
             raw_event_payload = row_values.get(_EVENT_PAYLOAD_COLUMN)
             if isinstance(raw_event_payload, str):
                 try:
-                    parsed_event_payload = json.loads(raw_event_payload)
-                    if isinstance(parsed_event_payload, dict):
+                    parsed_event_payload: Any = json.loads(raw_event_payload)
+                    if _is_str_keyed_dict(parsed_event_payload):
                         payload.update(parsed_event_payload)
                 except Exception:
                     pass

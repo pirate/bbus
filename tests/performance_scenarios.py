@@ -18,6 +18,13 @@ except ImportError:  # pragma: no cover
 
 
 TRIM_TARGET = 1
+HISTORY_LIMIT_STREAM = 512
+HISTORY_LIMIT_ON_OFF = 128
+HISTORY_LIMIT_EPHEMERAL_BUS = 128
+HISTORY_LIMIT_FIXED_HANDLERS = 128
+HISTORY_LIMIT_WORST_CASE = 128
+WORST_CASE_IMMEDIATE_TIMEOUT_MS = 0.0001
+WORST_CASE_IMMEDIATE_TIMEOUT_SECONDS = WORST_CASE_IMMEDIATE_TIMEOUT_MS / 1000.0
 
 
 @dataclass(slots=True)
@@ -145,12 +152,18 @@ async def _wait_for_runtime_settle(hooks: PerfInput) -> None:
 
 
 async def _trim_bus_history_to_one_event(bus: EventBus, trim_event_type: type[BaseEvent[Any]]) -> None:
-    prev = bus.max_history_size
+    prev_size = bus.max_history_size
+    prev_drop = bus.max_history_drop
     bus.max_history_size = TRIM_TARGET
+    bus.max_history_drop = True
     ev = bus.dispatch(trim_event_type())
     await ev
     await bus.wait_until_idle()
-    bus.max_history_size = prev
+    assert len(bus.event_history) <= TRIM_TARGET, (
+        f'trim-to-1 failed for {bus}: {len(bus.event_history)}/{TRIM_TARGET}'
+    )
+    bus.max_history_size = prev_size
+    bus.max_history_drop = prev_drop
 
 
 async def _dispatch_naive(
@@ -239,7 +252,12 @@ async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
     hooks = input
     scenario = '50k events'
     total_events = 50_000
-    bus = EventBus(name='Perf50kBus', middlewares=[])
+    bus = EventBus(
+        name='Perf50kBus',
+        max_history_size=HISTORY_LIMIT_STREAM,
+        max_history_drop=True,
+        middlewares=[],
+    )
 
     processed_count = 0
     checksum = 0
@@ -257,26 +275,34 @@ async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
     t0 = hooks.now()
     cpu_t0 = hooks.get_cpu_time_ms()
 
-    queued: list[BaseEvent[Any]] = []
+    batch_size = 512
+    dispatched_events = 0
     dispatch_error: str | None = None
-    for i in range(total_events):
-        batch_id = i // 512
-        value = (i % 97) + 1
-        expected_checksum += value + batch_id
-        try:
-            queued_event = bus.dispatch(PerfSimpleEvent(batch_id=batch_id, value=value))
-            queued.append(queued_event)
-            if len(sampled_early_event_ids) < 64:
-                sampled_early_event_ids.append(queued_event.event_id)
-        except Exception as exc:
-            dispatch_error = f'{type(exc).__name__}: {exc}'
-            break
-        if (i + 1) % 512 == 0:
+    while dispatched_events < total_events:
+        queued_batch: list[BaseEvent[Any]] = []
+        this_batch = min(batch_size, total_events - dispatched_events)
+        for _ in range(this_batch):
+            i = dispatched_events
+            batch_id = i // batch_size
+            value = (i % 97) + 1
+            expected_checksum += value + batch_id
+            try:
+                queued_event = bus.dispatch(PerfSimpleEvent(batch_id=batch_id, value=value))
+                queued_batch.append(queued_event)
+                if len(sampled_early_event_ids) < 64:
+                    sampled_early_event_ids.append(queued_event.event_id)
+                dispatched_events += 1
+            except Exception as exc:
+                dispatch_error = f'{type(exc).__name__}: {exc}'
+                break
+        if queued_batch:
+            await asyncio.gather(*queued_batch, return_exceptions=True)
+            await bus.wait_until_idle()
+        if dispatched_events % 2048 == 0:
             memory.sample()
+        if dispatch_error is not None:
+            break
 
-    if queued:
-        await asyncio.gather(*queued, return_exceptions=True)
-        await bus.wait_until_idle()
     memory.sample()
 
     await _trim_bus_history_to_one_event(bus, PerfTrimEvent)
@@ -286,7 +312,6 @@ async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
     memory.sample()
 
     total_ms = t1 - t0
-    dispatched_events = len(queued)
     ms_denominator = max(dispatched_events, 1)
     ms_per_event = total_ms / float(ms_denominator)
     throughput = int(round(dispatched_events / max(total_ms / 1000.0, 1e-9)))
@@ -354,6 +379,8 @@ async def run_perf_ephemeral_buses(input: PerfInput) -> dict[str, Any]:
     for bus_index in range(total_buses):
         bus = EventBus(
             name=f'PerfEphemeralBus_{bus_index}',
+            max_history_size=HISTORY_LIMIT_EPHEMERAL_BUS,
+            max_history_drop=True,
             middlewares=[],
         )
 
@@ -435,6 +462,8 @@ async def run_perf_single_event_many_fixed_handlers(input: PerfInput) -> dict[st
     total_handlers = 50_000
     bus = EventBus(
         name='PerfFixedHandlersBus',
+        max_history_size=HISTORY_LIMIT_FIXED_HANDLERS,
+        max_history_drop=True,
         event_handler_concurrency='parallel',
         middlewares=[],
     )
@@ -515,7 +544,12 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
     hooks = input
     scenario = '50k one-off handlers over 50k events'
     total_events = 50_000
-    bus = EventBus(name='PerfOnOffBus', middlewares=[])
+    bus = EventBus(
+        name='PerfOnOffBus',
+        max_history_size=HISTORY_LIMIT_ON_OFF,
+        max_history_drop=True,
+        middlewares=[],
+    )
 
     processed_count = 0
     checksum = 0
@@ -601,9 +635,10 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
     hooks = input
     scenario = 'worst-case forwarding + timeouts'
     total_iterations = 500
-    bus_a = EventBus(name='PerfWorstCaseA', middlewares=[])
-    bus_b = EventBus(name='PerfWorstCaseB', middlewares=[])
-    bus_c = EventBus(name='PerfWorstCaseC', middlewares=[])
+    history_limit = HISTORY_LIMIT_WORST_CASE
+    bus_a = EventBus(name='PerfWorstCaseA', max_history_size=history_limit, max_history_drop=True, middlewares=[])
+    bus_b = EventBus(name='PerfWorstCaseB', max_history_size=history_limit, max_history_drop=True, middlewares=[])
+    bus_c = EventBus(name='PerfWorstCaseC', max_history_size=history_limit, max_history_drop=True, middlewares=[])
 
     parent_handled_a = 0
     parent_handled_b = 0
@@ -654,7 +689,8 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
                     WCChild(
                         iteration=event.iteration,
                         value=event.value,
-                        event_timeout=0.0001 if should_timeout else None,
+                        # event_timeout is in seconds; mirror TS near-zero timeout value.
+                        event_timeout=WORST_CASE_IMMEDIATE_TIMEOUT_SECONDS if should_timeout else None,
                     )
                 )
                 bus_c.dispatch(child)

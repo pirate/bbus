@@ -38,8 +38,22 @@ PRIMITIVE_TYPE_MAPPING: dict[str, type[Any]] = {
 IDENTIFIER_NORMALIZATION: dict[str, str] = {schema_type: identifier for schema_type, _, identifier in _SCHEMA_TYPE_REGISTRY}
 
 JSON_SCHEMA_DRAFT = 'https://json-schema.org/draft/2020-12/schema'
+_TYPE_ADAPTER_CACHE: dict[Any, TypeAdapter[Any]] = {}
 
 FieldDefinition: TypeAlias = Any | tuple[Any, Any]
+
+
+def _get_cached_type_adapter(result_type: Any) -> TypeAdapter[Any]:
+    """Return a cached TypeAdapter for hashable result types."""
+    try:
+        cached = _TYPE_ADAPTER_CACHE.get(result_type)
+    except TypeError:
+        return TypeAdapter(result_type)
+    if cached is not None:
+        return cached
+    adapter = TypeAdapter(result_type)
+    _TYPE_ADAPTER_CACHE[result_type] = adapter
+    return adapter
 
 
 def _as_string_key_dict(value: object) -> dict[str, Any] | None:
@@ -369,7 +383,7 @@ def validate_result_against_type(result_type: Any, result: Any) -> Any:
     if inspect.isclass(result_type) and issubclass(result_type, BaseModel):
         return result_type.model_validate(result)
 
-    adapter = TypeAdapter(result_type)
+    adapter = _get_cached_type_adapter(result_type)
     return adapter.validate_python(result)
 
 

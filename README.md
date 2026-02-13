@@ -1273,7 +1273,7 @@ uv run tests/performance_runtime.py   # run the performance test suite in python
 
 | Runtime | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
 | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
-| Python | `0.239ms/event`, `8.024kb/event` | `0.259ms/event`, `0.148kb/event` | `0.077ms/handler`, `7.785kb/handler` | `0.310ms/event`, `0.025kb/event` | `0.694ms/event`, `2.464kb/event` |
+| Python | `0.179ms/event`, `0.235kb/event` | `0.191ms/event`, `0.191kb/event` | `0.035ms/handler`, `8.164kb/handler` | `0.255ms/event`, `0.185kb/event` | `0.351ms/event`, `5.867kb/event` |
 
 <br/>
 

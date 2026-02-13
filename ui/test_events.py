@@ -6,11 +6,19 @@ import argparse
 import asyncio
 import random
 import string
+import sys
+from pathlib import Path
 from typing import Sequence
 
 from bubus import BaseEvent, EventBus, SQLiteHistoryMirrorMiddleware
 
-from .config import resolve_db_path
+if __package__ in (None, ''):
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from ui.config import resolve_db_path
+else:
+    from .config import resolve_db_path
 
 
 class RandomTestEvent(BaseEvent):
@@ -54,7 +62,12 @@ async def run_generator(args: argparse.Namespace) -> None:
     db_path = resolve_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     middleware = SQLiteHistoryMirrorMiddleware(db_path)
-    bus = EventBus(name='MonitorGenerator', middlewares=[middleware], event_handler_concurrency='parallel')
+    bus = EventBus(
+        name='MonitorGenerator',
+        middlewares=[middleware],
+        event_handler_concurrency='parallel',
+        max_history_size=0,
+    )
 
     categories: Sequence[str] = args.categories or ['default']
 

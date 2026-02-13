@@ -121,3 +121,42 @@ def test_event_copy_preserves_private_attrs():
     # Should not raise AttributeError
     assert copied_event.event_started_at is None
     assert copied_event.event_completed_at is None
+
+
+def test_event_started_at_is_serialized_and_recomputed_each_dump():
+    """event_started_at should be included in JSON dumps and recomputed each read (not cached)."""
+    event = SampleEvent(data='serialize-started-at')
+
+    pending_payload = event.model_dump(mode='json')
+    assert 'event_started_at' in pending_payload
+    assert pending_payload['event_started_at'] is None
+
+    event.event_result_update(handler=lambda e: None, status='started')
+    first_started_at = event.model_dump(mode='json')['event_started_at']
+    assert isinstance(first_started_at, str)
+
+    forced_started_at = datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC)
+    result = next(iter(event.event_results.values()))
+    result.started_at = forced_started_at
+
+    second_started_at = event.model_dump(mode='json')['event_started_at']
+    assert isinstance(second_started_at, str)
+    parsed = datetime.fromisoformat(second_started_at.replace('Z', '+00:00'))
+    assert parsed == forced_started_at
+
+
+def test_event_status_is_serialized_and_recomputed_each_dump():
+    """event_status should be included in JSON dumps and track live lifecycle state."""
+    event = SampleEvent(data='serialize-status')
+
+    pending_payload = event.model_dump(mode='json')
+    assert pending_payload['event_status'] == 'pending'
+
+    result = event.event_result_update(handler=lambda e: None, status='started')
+    started_payload = event.model_dump(mode='json')
+    assert started_payload['event_status'] == 'started'
+
+    result.update(status='completed', result='ok')
+    event.event_mark_complete_if_all_handlers_completed()
+    completed_payload = event.model_dump(mode='json')
+    assert completed_payload['event_status'] == 'completed'

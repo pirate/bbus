@@ -65,6 +65,8 @@ class _FindWaiter:
 _current_event_context: ContextVar[BaseEvent[Any] | None] = ContextVar('current_event', default=None)
 # Context variable to track the current handler ID (for tracking child events)
 _current_handler_id_context: ContextVar[str | None] = ContextVar('current_handler_id', default=None)
+# Context variable to track the current EventBus while executing a handler.
+_current_eventbus_context: ContextVar['EventBus | None'] = ContextVar('current_eventbus', default=None)
 
 
 def get_current_event() -> BaseEvent[Any] | None:
@@ -75,6 +77,11 @@ def get_current_event() -> BaseEvent[Any] | None:
 def get_current_handler_id() -> str | None:
     """Return the currently active handler id in this async context, if any."""
     return _current_handler_id_context.get()
+
+
+def get_current_eventbus() -> 'EventBus | None':
+    """Return the currently active EventBus in this async context, if any."""
+    return _current_eventbus_context.get()
 
 
 def in_handler_context() -> bool:
@@ -133,7 +140,7 @@ class EventBus:
         event_concurrency: EventConcurrencyMode | str | None = None,
         event_handler_concurrency: EventHandlerConcurrencyMode | str = EventHandlerConcurrencyMode.SERIAL,
         event_handler_completion: EventHandlerCompletionMode | str = EventHandlerCompletionMode.ALL,
-        max_history_size: int | None = 50,  # Keep only 50 events in history
+        max_history_size: int | None = 100,  # Keep only 100 events in history
         max_history_drop: bool = False,
         event_timeout: float | None = 60.0,
         event_slow_timeout: float | None = 300.0,
@@ -235,6 +242,12 @@ class EventBus:
 
         # Signal the run loop to stop
         self._is_running = False
+        if self.pending_event_queue:
+            try:
+                # Wake any blocked queue.get() in the weak runloop so it can exit.
+                self.pending_event_queue.shutdown(immediate=True)
+            except Exception:
+                pass
 
         # Our custom queue handles cleanup properly in shutdown()
         # No need for manual cleanup here
@@ -720,16 +733,17 @@ class EventBus:
         # So pressure is handled by policy:
         #   - max_history_drop=True  -> absorb and trim oldest history entries
         #   - max_history_drop=False -> reject new emits at max_history_size
-        if (
-            self.max_history_size is not None
-            and self.max_history_size > 0
-            and not self.max_history_drop
-            and len(self.event_history) >= self.max_history_size
-        ):
-            raise RuntimeError(
-                f'{self} history limit reached ({len(self.event_history)}/{self.max_history_size}); '
-                'set max_history_drop=True to drop old history instead of rejecting new events'
-            )
+        if self.max_history_size is not None and self.max_history_size > 0 and not self.max_history_drop:
+            if len(self.event_history) >= self.max_history_size:
+                # Before rejecting, opportunistically evict already-completed history entries.
+                # This preserves max_history_drop=False semantics (never dropping in-flight events)
+                # while avoiding needless backpressure when only completed entries are occupying the cap.
+                self.cleanup_event_history()
+            if len(self.event_history) >= self.max_history_size:
+                raise RuntimeError(
+                    f'{self} history limit reached ({len(self.event_history)}/{self.max_history_size}); '
+                    'set max_history_drop=True to drop old history instead of rejecting new events'
+                )
 
         # Auto-start if needed
         self._flush_pending_handler_changes()
@@ -1065,7 +1079,10 @@ class EventBus:
                     # artificial queue caps; queue stores event object references.
                     self.pending_event_queue = CleanShutdownQueue[BaseEvent[Any]](maxsize=0)
                     self._on_idle = asyncio.Event()
-                    self._on_idle.clear()  # Start in a busy state unless we confirm queue is empty by running step() at least once
+                    if not self._has_inflight_events_fast() and self.pending_event_queue.qsize() == 0:
+                        self._on_idle.set()
+                    else:
+                        self._on_idle.clear()
 
                 # Create and start the run loop task.
                 # Use a weakref-based runner so an unreferenced EventBus can be GC'd
@@ -1297,22 +1314,7 @@ class EventBus:
 
                 event: BaseEvent[Any] | None = None
                 try:
-                    get_next_queued_event = asyncio.create_task(queue.get())
-                    if hasattr(get_next_queued_event, '_log_destroy_pending'):
-                        get_next_queued_event._log_destroy_pending = False  # type: ignore[attr-defined]
-                    has_next_event, _pending = await asyncio.wait({get_next_queued_event}, timeout=0.1)
-                    if not has_next_event:
-                        get_next_queued_event.cancel()
-                        bus = bus_ref()
-                        if bus is None:
-                            break
-                        if bus._on_idle and bus.pending_event_queue:
-                            if not bus._has_inflight_events_fast() and bus.pending_event_queue.qsize() == 0:
-                                bus._on_idle.set()
-                        del bus
-                        continue
-
-                    event = await get_next_queued_event
+                    event = await queue.get()
                 except QueueShutDown:
                     break
                 except asyncio.CancelledError:
@@ -1368,6 +1370,13 @@ class EventBus:
                             live_bus = bus_ref()
                             if live_bus is not None:
                                 live_bus._parallel_event_tasks.discard(done_task)
+                                if (
+                                    live_bus._on_idle
+                                    and live_bus.pending_event_queue
+                                    and not live_bus._has_inflight_events_fast()
+                                    and live_bus.pending_event_queue.qsize() == 0
+                                ):
+                                    live_bus._on_idle.set()
                             if done_task.cancelled():
                                 return
                             try:
@@ -1386,6 +1395,9 @@ class EventBus:
                                 queue.task_done()
                             except ValueError:
                                 pass
+                        if bus._on_idle and bus.pending_event_queue:
+                            if not bus._has_inflight_events_fast() and bus.pending_event_queue.qsize() == 0:
+                                bus._on_idle.set()
                 except QueueShutDown:
                     break
                 except asyncio.CancelledError:
@@ -1699,18 +1711,22 @@ class EventBus:
 
     def _enter_handler_execution_context(
         self, event: BaseEvent[Any], handler_id: str
-    ) -> tuple[contextvars.Token[Any], contextvars.Token[str | None]]:
+    ) -> tuple[contextvars.Token[Any], contextvars.Token[str | None], contextvars.Token['EventBus | None']]:
         event_token = _current_event_context.set(event)
         current_handler_token = _current_handler_id_context.set(handler_id)
-        return event_token, current_handler_token
+        current_eventbus_token = _current_eventbus_context.set(self)
+        return event_token, current_handler_token, current_eventbus_token
 
     def _exit_handler_execution_context(
         self,
-        handler_context_tokens: tuple[contextvars.Token[Any], contextvars.Token[str | None]],
+        handler_context_tokens: tuple[
+            contextvars.Token[Any], contextvars.Token[str | None], contextvars.Token['EventBus | None']
+        ],
     ) -> None:
-        event_token, current_handler_token = handler_context_tokens
+        event_token, current_handler_token, current_eventbus_token = handler_context_tokens
         _current_event_context.reset(event_token)
         _current_handler_id_context.reset(current_handler_token)
+        _current_eventbus_context.reset(current_eventbus_token)
 
     @staticmethod
     def _first_mode_result_is_winner(event_result: EventResult[Any]) -> bool:
@@ -2069,6 +2085,24 @@ class EventBus:
         if len(self.event_history) <= self.max_history_size:
             return 0
 
+        events_to_remove_count = len(self.event_history) - self.max_history_size
+
+        # Fast path: if the oldest overage window is already all completed,
+        # remove directly without scanning the full history.
+        oldest_completed_ids: list[str] = []
+        for event_id, event in self.event_history.items():
+            if len(oldest_completed_ids) >= events_to_remove_count:
+                break
+            if not self._is_event_complete_fast(event):
+                oldest_completed_ids.clear()
+                break
+            oldest_completed_ids.append(event_id)
+
+        if len(oldest_completed_ids) == events_to_remove_count and events_to_remove_count > 0:
+            for event_id in oldest_completed_ids:
+                del self.event_history[event_id]
+            return len(oldest_completed_ids)
+
         # Separate events by status
         pending_events: list[tuple[str, BaseEvent[Any]]] = []
         started_events: list[tuple[str, BaseEvent[Any]]] = []
@@ -2081,10 +2115,6 @@ class EventBus:
                 started_events.append((event_id, event))
             else:
                 pending_events.append((event_id, event))
-
-        # Calculate how many to remove
-        total_events = len(self.event_history)
-        events_to_remove_count = total_events - self.max_history_size
 
         events_to_remove: list[str] = []
 

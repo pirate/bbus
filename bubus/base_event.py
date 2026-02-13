@@ -118,7 +118,7 @@ def _default_enter_handler_context(_event: 'BaseEvent[Any]', _handler_id: str) -
     return (None, None)
 
 
-def _default_exit_handler_context(_tokens: tuple[Any, Any]) -> None:
+def _default_exit_handler_context(_tokens: tuple[Any, ...]) -> None:
     return None
 
 
@@ -212,8 +212,24 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         return self._handler_completed_signal
 
     def __str__(self) -> str:
+        """Constant-time summary for hot-path logging."""
         handler_qualname = f'{self.eventbus_label}.{self.handler_name}'
-        return f'{handler_qualname}() -> {self.result or self.error or "..."} ({self.status})'
+        if self.status == 'pending':
+            outcome = 'pending'
+        elif self.status == 'started':
+            outcome = 'started'
+        elif self.error is not None:
+            outcome = f'error:{type(self.error).__name__}'
+        elif self.result is None:
+            outcome = 'result:none'
+        elif isinstance(self.result, BaseEvent):
+            result_any = object.__getattribute__(self, 'result')
+            result_event_type = cast(str, getattr(result_any, 'event_type', 'BaseEvent'))
+            result_event_id = cast(str, getattr(result_any, 'event_id', '0000'))
+            outcome = f'event:{result_event_type}#{result_event_id[-4:]}'
+        else:
+            outcome = f'result:{type(self.result).__name__}'
+        return f'{handler_qualname}() -> {outcome} ({self.status})'
 
     def __repr__(self) -> str:
         icon = '🏃' if self.status == 'pending' else '✅' if self.status == 'completed' else '❌'
@@ -299,8 +315,8 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         eventbus: 'EventBus',
         timeout: float | None,
         handler_slow_timeout: float | None = None,
-        enter_handler_context: Callable[['BaseEvent[Any]', str], tuple[Any, Any]] | None = None,
-        exit_handler_context: Callable[[tuple[Any, Any]], None] | None = None,
+        enter_handler_context: Callable[['BaseEvent[Any]', str], tuple[Any, ...]] | None = None,
+        exit_handler_context: Callable[[tuple[Any, ...]], None] | None = None,
         format_exception_for_log: Callable[[BaseException], str] | None = None,
     ) -> T_EventResultType | 'BaseEvent[Any]' | None:
         """Execute self.handler and update internal state automatically."""
@@ -548,10 +564,10 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     def __str__(self) -> str:
         """Compact O(1) summary for hot-path logging."""
         completed_signal = self._event_completed_signal
-        is_complete = self._event_is_complete_flag or (completed_signal is not None and completed_signal.is_set())
-        if is_complete:
+        if self._event_is_complete_flag or (completed_signal is not None and completed_signal.is_set()):
             icon = '✅'
-        elif self.event_started_at is not None:
+        elif self.event_results:
+            # Avoid event_started_at/property scans; __str__ must remain O(1).
             icon = '🏃'
         else:
             icon = '⏳'
@@ -800,6 +816,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 pass  # Keep it None if no event loop
         return self._event_completed_signal
 
+    @computed_field(return_type=EventStatus)
     @property
     def event_status(self) -> EventStatus:
         """Current status of this event in the lifecycle."""
@@ -819,6 +836,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             children.extend(event_result.event_children)
         return children
 
+    @computed_field(return_type=datetime | None)
     @property
     def event_started_at(self) -> datetime | None:
         """Timestamp when event first started being processed by any handler"""
@@ -1292,10 +1310,19 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     @property
     def event_bus(self) -> 'EventBus':
         """Get the EventBus that is currently processing this event"""
-        from bubus.event_bus import EventBus, in_handler_context
+        from bubus.event_bus import EventBus, get_current_event, get_current_eventbus, in_handler_context
 
         if not in_handler_context():
             raise AttributeError('event_bus property can only be accessed from within an event handler')
+
+        current_bus = get_current_eventbus()
+        current_event = get_current_event()
+        if (
+            current_bus is not None
+            and current_event is not None
+            and current_event.event_id == self.event_id
+        ):
+            return current_bus
 
         # The event_path contains all buses this event has passed through
         # The last one in the path is the one currently processing

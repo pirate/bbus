@@ -1,6 +1,7 @@
 """Helper functions for logging event trees and formatting"""
 
 import asyncio
+import logging
 import math
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -212,6 +213,8 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
     """Log detailed timeout information showing the event tree and which handler timed out"""
 
     from bubus.base_event import logger
+    if not logger.isEnabledFor(logging.WARNING):
+        return
 
     now = datetime.now(UTC)
 

@@ -3,9 +3,11 @@ import os
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, cast, runtime_checkable
 from uuid import NAMESPACE_DNS, UUID, uuid5
+from weakref import ref as weakref
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import TypeVar
@@ -121,8 +123,33 @@ def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
     return f'{display}:{line_no}' if line_no else display
 
 
-def _get_callable_handler_file_path(handler: EventHandlerCallable) -> str | None:
+class _HandlerCacheKey:
+    __slots__ = ('handler_ref', 'handler_id', '_hash')
+
+    def __init__(self, handler: EventHandlerCallable) -> None:
+        # Some callables override __eq__ without __hash__ and become unhashable.
+        # Use identity-based hashing for a stable cache key without retaining handlers.
+        self.handler_ref = weakref(handler)
+        self.handler_id = id(handler)
+        self._hash = self.handler_id
+
+    def __hash__(self) -> int:
+        return self._hash
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _HandlerCacheKey):
+            return False
+        if self.handler_id != other.handler_id:
+            return False
+        return self.handler_ref() is other.handler_ref()
+
+
+@lru_cache(maxsize=100)
+def _get_callable_handler_file_path(handler_key: _HandlerCacheKey) -> str | None:
     """Best-effort, low-overhead source location for a handler callable."""
+    handler = handler_key.handler_ref()
+    if handler is None:
+        return None
     target: Any = handler.__func__ if inspect.ismethod(handler) else handler
     target = inspect.unwrap(target)
 
@@ -161,7 +188,7 @@ class EventHandler(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
         arbitrary_types_allowed=True,
-        validate_assignment=True,
+        validate_assignment=False,
         validate_default=True,
         revalidate_instances='always',
     )
@@ -276,7 +303,7 @@ class EventHandler(BaseModel):
     ) -> 'EventHandler':
         resolved_file_path = handler_file_path
         if resolved_file_path is None and detect_handler_file_path:
-            resolved_file_path = _get_callable_handler_file_path(handler)
+            resolved_file_path = _get_callable_handler_file_path(_HandlerCacheKey(handler))
 
         handler_params: dict[str, Any] = {
             'id': id,

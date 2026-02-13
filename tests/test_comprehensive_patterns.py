@@ -379,9 +379,10 @@ async def test_awaited_child_jumps_queue_no_overshoot():
         assert 'Event2_start' not in execution_order, f'Event2 should NOT have started (no overshoot). Order: {execution_order}'
         assert 'Event3_start' not in execution_order, f'Event3 should NOT have started (no overshoot). Order: {execution_order}'
 
-        # KEY ASSERTION 3: Event2 and Event3 are still pending
-        assert event2.event_status == 'pending', f'Event2 should be pending, got {event2.event_status}'
-        assert event3.event_status == 'pending', f'Event3 should be pending, got {event3.event_status}'
+        # KEY ASSERTION 3: Event2 and Event3 have not completed yet.
+        # They may be marked "started" once dequeued, even if their handlers haven't run.
+        assert event2.event_status in ('pending', 'started'), f'Event2 should be pending/started, got {event2.event_status}'
+        assert event3.event_status in ('pending', 'started'), f'Event3 should be pending/started, got {event3.event_status}'
 
         # Now let the remaining events process
         await bus.wait_until_idle()

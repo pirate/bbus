@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from uuid_extensions import uuid7str
 
@@ -34,6 +34,10 @@ def _validate_identifier(identifier: str, *, label: str) -> str:
     if not _IDENTIFIER_RE.match(identifier):
         raise ValueError(f'Invalid {label}: {identifier!r}. Use only [A-Za-z0-9_] and start with a letter/_')
     return identifier
+
+
+def _is_str_keyed_dict(value: Any) -> TypeGuard[dict[str, Any]]:
+    return isinstance(value, dict)
 
 
 def _split_bridge_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -160,8 +164,8 @@ class SQLiteEventBridge:
                     raw_event_payload = row.get(_EVENT_PAYLOAD_COLUMN)
                     if isinstance(raw_event_payload, str):
                         try:
-                            decoded_event_payload = json.loads(raw_event_payload)
-                            if isinstance(decoded_event_payload, dict):
+                            decoded_event_payload: Any = json.loads(raw_event_payload)
+                            if _is_str_keyed_dict(decoded_event_payload):
                                 payload.update(decoded_event_payload)
                         except Exception:
                             pass

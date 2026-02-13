@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import socket
 import subprocess
 import sys
@@ -73,6 +74,11 @@ def _normalize_roundtrip_payload(payload: dict[str, Any]) -> dict[str, Any]:
         normalized['event_handler_concurrency'] = 'serial'
     if normalized.get('event_handler_completion') is None:
         normalized['event_handler_completion'] = 'all'
+    # event_status/event_started_at are now serialized, but the receiving bus
+    # can advance them while handling the event. Normalize in-flight statuses.
+    if normalized.get('event_status') in ('pending', 'started'):
+        normalized['event_status'] = 'pending'
+        normalized['event_started_at'] = None
     return normalized
 
 
@@ -278,6 +284,8 @@ async def _assert_roundtrip(kind: str, config: dict[str, Any]) -> None:
             await sender.emit(outbound)
             await _wait_for_path(received_event_path, process=worker)
             received_payload = json.loads(received_event_path.read_text(encoding='utf-8'))
+            assert 'event_status' in received_payload
+            assert 'event_started_at' in received_payload
             assert _normalize_roundtrip_payload(received_payload) == _normalize_roundtrip_payload(
                 outbound.model_dump(mode='json')
             )
