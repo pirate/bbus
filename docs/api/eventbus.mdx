@@ -1,172 +1,39 @@
 ---
 title: EventBus
-description: EventBus constructors, methods, and runtime behavior.
+description: EventBus constructors, configuration, and core methods.
 ---
+
+`EventBus` is the central runtime for handler registration, event dispatch, history lookup, and lifecycle control.
+
+## Constructor
 
 <Tabs>
 <Tab title="Python">
 
-The main event bus class that manages event processing and handler execution.
-
 ```python
 EventBus(
     name: str | None = None,
-    event_handler_concurrency: Literal['serial', 'parallel'] = 'serial',
-    event_handler_completion: Literal['all', 'first'] = 'all',
+    event_concurrency: Literal['global-serial', 'bus-serial', 'parallel'] | str | None = None,
+    event_handler_concurrency: Literal['serial', 'parallel'] | str = 'serial',
+    event_handler_completion: Literal['all', 'first'] | str = 'all',
+    max_history_size: int | None = 50,
+    max_history_drop: bool = False,
     event_timeout: float | None = 60.0,
     event_slow_timeout: float | None = 300.0,
     event_handler_slow_timeout: float | None = 30.0,
     event_handler_detect_file_paths: bool = True,
-    max_history_size: int | None = 50,
-    max_history_drop: bool = False,
-    middlewares: Sequence[EventBusMiddleware | type[EventBusMiddleware]] | None = None,
+    middlewares: Sequence[EventBusMiddleware] | None = None,
 )
 ```
 
-**Parameters:**
-
-- `name`: Optional unique name for the bus (auto-generated if not provided)
-- `event_handler_concurrency`: Default handler execution mode for events on this bus: `'serial'` (default) or `'parallel'` (copied onto `event.event_handler_concurrency` at dispatch time unless the event sets its own value)
-- `event_handler_completion`: Handler completion mode for each event: `'all'` (default, wait for all handlers) or `'first'` (complete once first successful non-`None` result is available)
-- `event_timeout`: Default per-event timeout in seconds applied at dispatch when `event.event_timeout` is `None`
-- `event_slow_timeout`: Default slow-event warning threshold in seconds
-- `event_handler_slow_timeout`: Default slow-handler warning threshold in seconds
-- `event_handler_detect_file_paths`: Whether to auto-detect handler source file paths at registration time (slightly slower when enabled)
-- `max_history_size`: Maximum number of events to keep in history (default: 50, `None` = unlimited, `0` = keep only in-flight events and drop completed events immediately)
-- `max_history_drop`: If `True`, drop oldest history entries when full (even uncompleted events). If `False` (default), reject new dispatches once history reaches `max_history_size` (except when `max_history_size=0`, which never rejects on history size)
-- `middlewares`: Optional list of `EventBusMiddleware` subclasses or instances that hook into handler execution for analytics, logging, retries, etc. (see [Middlwares](#middlwares) for more info)
-
-Timeout precedence matches TS:
-- Effective handler timeout = `min(resolved_handler_timeout, event_timeout)` where `resolved_handler_timeout` resolves in order: `handler.handler_timeout` -> `event.event_handler_timeout` -> `bus.event_timeout`.
-- Slow handler warning threshold resolves in order: `handler.handler_slow_timeout` -> `event.event_handler_slow_timeout` -> `event.event_slow_timeout`/`event.slow_timeout` -> `bus.event_handler_slow_timeout` -> `bus.event_slow_timeout`.
-
-#### `EventBus` Properties
-
-- `name`: The bus identifier
-- `id`: Unique UUID7 for this bus instance
-- `event_history`: Dict of all events the bus has seen by event_id (limited by `max_history_size`)
-- `events_pending`: List of events waiting to be processed
-- `events_started`: List of events currently being processed
-- `events_completed`: List of completed events
-- `all_instances`: Class-level WeakSet tracking all active EventBus instances (for memory monitoring)
-
-#### `EventBus` Methods
-
-##### `on(event_type: str | Type[BaseEvent], handler: Callable)`
-
-Subscribe a handler to events matching a specific event type or `'*'` for all events.
-
-```python
-bus.on('UserEvent', handler_func)  # By event type string
-bus.on(UserEvent, handler_func)    # By event class
-bus.on('*', handler_func)          # Wildcard - all events
-```
-
-##### `dispatch(event: BaseEvent) -> BaseEvent`
-
-Enqueue an event for processing and return the pending `Event` immediately (synchronous).
-
-```python
-event = bus.dispatch(MyEvent(data="test"))
-result = await event  # await the pending Event to get the completed Event
-```
-
-**Note:** Queueing is unbounded. History pressure is controlled by `max_history_size` + `max_history_drop`:
-
-- `max_history_drop=True`: absorb new events and trim old history entries (even uncompleted events).
-- `max_history_drop=False`: raise `RuntimeError` when history is full.
-- `max_history_size=0`: keep pending/in-flight events only; completed events are immediately removed from history.
-
-##### `find(event_type: str | Literal['*'] | Type[BaseEvent], *, where: Callable[[BaseEvent], bool]=None, child_of: BaseEvent | None=None, past: bool | float | timedelta=True, future: bool | float=False, **event_fields) -> BaseEvent | None`
-
-Find an event matching criteria in history and/or future. This is the recommended unified method for event lookup.
-
-**Parameters:**
-
-- `event_type`: The event type string, `'*'` wildcard, or model class to find
-- `where`: Predicate function for filtering (default: matches all)
-- `child_of`: Only match events that are descendants of this parent event
-- `past`: Controls history search behavior (default: `True`)
-  - `True`: search all history
-  - `False`: skip history search
-  - `float`/`timedelta`: search events from last N seconds only
-- `future`: Controls future wait behavior (default: `False`)
-  - `True`: wait forever for matching event
-  - `False`: don't wait for future events
-  - `float`: wait up to N seconds for matching event
-- `**event_fields`: Optional equality filters for any event fields (for example `event_status='completed'`, `user_id='u-1'`)
-
-```python
-# Default call is non-blocking history lookup (past=True, future=False)
-event = await bus.find(ResponseEvent)
-
-# Find child of a specific parent event
-child = await bus.find(ChildEvent, child_of=parent_event, future=5)
-
-# Wait only for future events (ignore history)
-event = await bus.find(ResponseEvent, past=False, future=5)
-
-# Search recent history + optionally wait
-event = await bus.find(ResponseEvent, past=5, future=5)
-
-# Filter by event metadata
-completed = await bus.find(ResponseEvent, event_status='completed')
-
-# Wildcard match across all event types
-any_completed = await bus.find('*', event_status='completed', past=True, future=False)
-```
-
-##### `event_is_child_of(event: BaseEvent, ancestor: BaseEvent) -> bool`
-
-Check if event is a descendant of ancestor (child, grandchild, etc.).
-
-```python
-if bus.event_is_child_of(child_event, parent_event):
-    print("child_event is a descendant of parent_event")
-```
-
-##### `event_is_parent_of(event: BaseEvent, descendant: BaseEvent) -> bool`
-
-Check if event is an ancestor of descendant (parent, grandparent, etc.).
-
-```python
-if bus.event_is_parent_of(parent_event, child_event):
-    print("parent_event is an ancestor of child_event")
-```
-
-##### `wait_until_idle(timeout: float | None=None)`
-
-Wait until all events are processed and the bus is idle.
-
-```python
-await bus.wait_until_idle()             # wait indefinitely until EventBus has finished processing all events
-
-await bus.wait_until_idle(timeout=5.0)  # wait up to 5 seconds
-```
-
-##### `stop(timeout: float | None=None, clear: bool=False)`
-
-Stop the event bus, optionally waiting for pending events and clearing memory.
-
-```python
-await bus.stop(timeout=1.0)  # Graceful stop, wait up to 1sec for pending and active events to finish processing
-await bus.stop()             # Immediate shutdown, aborts all pending and actively processing events
-await bus.stop(clear=True)   # Stop and clear all event history and handlers to free memory
-```
-
----
-
 </Tab>
 <Tab title="TypeScript">
-
-The main bus class that registers handlers, schedules events, and tracks results.
-
-Constructor:
 
 ```ts
 new EventBus(name?: string, options?: {
   id?: string
   max_history_size?: number | null
+  max_history_drop?: boolean
   event_concurrency?: 'global-serial' | 'bus-serial' | 'parallel' | null
   event_timeout?: number | null
   event_slow_timeout?: number | null
@@ -177,220 +44,206 @@ new EventBus(name?: string, options?: {
 })
 ```
 
-#### Constructor options
+</Tab>
+</Tabs>
 
-| Option                            | Type                                                    | Default        | Purpose                                                                                                                                                                   |
-| --------------------------------- | ------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                              | `string`                                                | `uuidv7()`     | Override bus UUID (mostly for serialization/tests).                                                                                                                       |
-| `max_history_size`                | `number \| null`                                        | `100`          | Max events kept in `event_history`; `null` = unbounded; `0` = keep only in-flight events and drop completed events immediately.                                           |
-| `max_history_drop`                | `boolean`                                               | `false`        | If `true`, when history is full drop oldest history entries (including uncompleted if needed). If `false`, reject new dispatches when history reaches `max_history_size`. |
-| `event_concurrency`               | `'global-serial' \| 'bus-serial' \| 'parallel' \| null` | `'bus-serial'` | Event-level scheduling policy.                                                                                                                                            |
-| `event_handler_concurrency`       | `'serial' \| 'parallel' \| null`                        | `'serial'`     | Per-event handler scheduling policy.                                                                                                                                      |
-| `event_handler_completion`        | `'all' \| 'first'`                                      | `'all'`        | Event completion mode if event does not override it.                                                                                                                      |
-| `event_timeout`                   | `number \| null`                                        | `60`           | Default per-handler timeout budget in seconds (unless overridden).                                                                                                        |
-| `event_handler_slow_timeout`      | `number \| null`                                        | `30`           | Slow handler warning threshold (seconds).                                                                                                                                 |
-| `event_slow_timeout`              | `number \| null`                                        | `300`          | Slow event warning threshold (seconds).                                                                                                                                   |
-| `event_handler_detect_file_paths` | `boolean`                                               | `true`         | Capture source file:line for handlers (slower, better logs).                                                                                                              |
+### Shared configuration semantics
 
-#### Runtime state properties
+| Option | Description |
+| --- | --- |
+| `name` | Human-readable bus name used in logs/labels. |
+| `event_concurrency` | Event scheduling policy across queue processing (`global-serial`, `bus-serial`, `parallel`). |
+| `event_handler_concurrency` | How handlers for one event execute (`serial` vs `parallel`). |
+| `event_handler_completion` | Completion mode (`all` waits for all handlers, `first` resolves on first successful result). |
+| `event_timeout` | Default outer timeout budget for event/handler execution. |
+| `event_slow_timeout` | Slow-event warning threshold. |
+| `event_handler_slow_timeout` | Slow-handler warning threshold. |
+| `event_handler_detect_file_paths` | Whether to capture source path metadata for handlers. |
+| `max_history_size` | Maximum retained history (`null` = unbounded, `0` = keep only in-flight). |
+| `max_history_drop` | If `true`, drop oldest history entries when full; if `false`, reject new dispatches at limit. |
 
-- `id: string`
-- `name: string`
-- `label: string` (`${name}#${id.slice(-4)}`)
-- `handlers: Map<string, EventHandler>`
-- `handlers_by_key: Map<string, string[]>`
-- `event_history: Map<string, BaseEvent>`
-- `pending_event_queue: BaseEvent[]`
-- `in_flight_event_ids: Set<string>`
-- `locks: LockManager`
+## Runtime state
 
-#### `on()`
+Both implementations expose equivalent runtime state:
 
-```ts
-on<T extends BaseEvent>(
-  event_pattern: string | '*' | EventClass<T>,
-  handler: EventHandlerFunction<T>,
-  options?: Partial<EventHandler>
-): EventHandler
+- Bus identity: `id`, `name`, `label`
+- Registered handlers and indexes
+- Event history and pending queue
+- In-flight tracking
+- Locking/concurrency runtime objects
+
+## Handler registration
+
+### `on(...)`
+
+Registers a handler for an event key (`EventClass`, event type string, or `'*'`).
+
+<Tabs>
+<Tab title="Python">
+
+```python
+bus.on(UserEvent, handler)
+bus.on('UserEvent', handler)
+bus.on('*', wildcard_handler)
 ```
 
-Use during startup/composition to register handlers.
-
-Advanced `options` fields, these can be used to override defaults per-handler if needed:
-
-- `handler_timeout?: number | null` hard delay before handler execution is aborted with a `HandlerTimeoutError`
-- `handler_slow_timeout?: number | null` delay before emitting a slow handler warning log line
-- `handler_name?: string` optional name to use instead of `anonymous` if handler is an unnamed arrow function
-- `handler_file_path?: string` optional path/to/source/file.js:lineno where the handler is defined, used for logging only
-- `id?: string` unique UUID for the handler (normally a hash of bus_id + event_pattern + handler_name + handler_registered_at)
-
-Notes:
-
-- Prefer class/factory keys (`bus.on(MyEvent, handler)`) for typed payload/result inference.
-- String and `'*'` matching are supported (`bus.on('MyEvent', ...)`, `bus.on('*', ...)`).
-- Returns an `EventHandler` object you can later pass to `off()` to de-register the handler if needed.
-
-#### `off()`
+</Tab>
+<Tab title="TypeScript">
 
 ```ts
-off<T extends BaseEvent>(
-  event_pattern: EventPattern<T> | '*',
-  handler?: EventHandlerFunction<T> | string | EventHandler
-): void
+bus.on(UserEvent, handler)
+bus.on('UserEvent', handler)
+bus.on('*', wildcardHandler)
 ```
-
-Use when tearing down subscriptions (tests, plugin unload, hot-reload).
-
-- Omit `handler` to remove all handlers for `event_pattern`.
-- Pass handler function reference to remove one by function identity.
-- Pass handler id (`string`) or `EventHandler` object to remove by id.
-- use `bus.off('*')` to remove _all_ registered handlers from the bus
-
-#### `dispatch()` / `emit()`
-
-```ts
-dispatch<T extends BaseEvent>(event: T): T
-emit<T extends BaseEvent>(event: T): T
-```
-
-`emit()` is just an alias of `dispatch()`.
-
-Behavior notes:
-
-- Per-event configuration options like `event_timeout`, `event_handler_timeout`, etc. are copied from bus defaults at dispatch time if unset
-- If same event ends up forwarded through multiple buses, it is loop-protected using `event_path`.
-- Dispatch is synchronous and returns immediately with the same event object (`event.event_status` is initially `'pending'`).
-
-Normal lifecycle:
-
-1. Create event instance (`const event = MyEvent({...})`).
-2. Dispatch (`const queued = bus.emit(event)`).
-3. Await with `await queued.done()` (immediate/queue-jump semantics) or `await queued.waitForCompletion()` (bus queue order).
-4. Inspect `queued.event_results`, `queued.first_result`, `queued.event_errors`, etc. if you need to access handler return values
-
-#### `find()`
-
-```ts
-find<T extends BaseEvent>(event_pattern: EventPattern<T> | '*', options?: FindOptions): Promise<T | null>
-find<T extends BaseEvent>(
-  event_pattern: EventPattern<T> | '*',
-  where: (event: T) => boolean,
-  options?: FindOptions
-): Promise<T | null>
-```
-
-Where:
-
-```ts
-type FindOptions = {
-  past?: boolean | number // true to look through all past events, or number in seconds to filter time range
-  future?: boolean | number // true to wait for event to appear indefinitely, or number in seconds to wait for event to appear
-  child_of?: BaseEvent | null // filter to only match events that are a child_of: some_parent_event
-} & {
-  // event_status: 'pending' | 'started' | 'completed'
-  // event_id: 'some-exact-event-uuid-here',
-  // event_started_at: string (exact iso datetime string)
-  // ... any event field can be passed to filter events using simple equality checks
-  [key: string]: unknown
-}
-```
-
-`bus.find()` returns the first matching event (in dispatch timestamp order).
-To find multiple matching events, iterate through `bus.event_history.filter((event) => ...some condition...)` manually.
-
-`where` behavior:
-Any filter predicate function in the form of `(event) => true | false`, returning true to consider the event a match.
-
-```ts
-const matching_event = bus.find(SomeEvent, (event) => event.some_field == 123)
-// or to match all event types:
-const matching_event = bus.find('*', (event) => event.some_field == 123)
-```
-
-`past` behavior:
-
-- `true`: search all history.
-- `false`: skip searching past event history.
-- `number`: search events dispatched within last `N` seconds.
-
-`future` behavior:
-
-- `true`: wait forever for future match.
-- `false`: do not wait.
-- `number`: wait up to `N` seconds.
-
-Lifecycle use:
-
-- Use for idempotency / de-dupe before dispatch (`past: ...`).
-- Use for synchronization/waiting (`future: ...`).
-- Combine both to "check recent then wait".
-- Add `child_of` to constrain by parent/ancestor event chain.
-- Add any event field (e.g. `event_status`, `event_id`, `event_timeout`, `user_id`) to filter by strict equality.
-- Use wildcard matching with predicates when you want to search all event types: `bus.find('*', (event) => ...)`.
-
-Debouncing expensive events with `find()`:
-
-```ts
-const some_expensive_event = (await bus.find(ExpensiveEvent, { past: 15, future: 5 })) ?? bus.dispatch(ExpensiveEvent({}))
-await some_expensive_event.done()
-```
-
-Important semantics:
-
-- Past lookup matches any dispatched events, not just completed events.
-- Past/future matches resolve as soon as event is dispatched. If you need the completed event, await `event.done()` or pass `{event_status: 'completed'}` to filter only for completed events.
-- If both `past` and `future` are omitted, defaults are `past: true, future: false`.
-- If both `past` and `future` are `false`, it returns `null` immediately.
-- Detailed behavior matrix is covered in `bubus-ts/tests/find.test.ts`.
-
-#### `waitUntilIdle()`
-
-`await bus.waitUntilIdle()` is the normal "drain bus work" call to wait until bus is done processing everything queued.
-
-```ts
-bus.emit(OneEvent(...))
-bus.emit(TwoEvent(...))
-bus.emit(ThreeEvent(...))
-await bus.waitUntilIdle()   // this resolves once all three events have finished processing
-```
-
-#### Parent/child/event lookup helpers
-
-```ts
-eventIsChildOf(child_event: BaseEvent, paret_event: BaseEvent): boolean
-eventIsParentOf(parent_event: BaseEvent, child_event: BaseEvent): boolean
-findEventById(event_id: string): BaseEvent | null
-```
-
-#### `toString()` / `toJSON()` / `fromJSON()`
-
-```ts
-toString(): string
-toJSON(): EventBusJSON
-EventBus.fromJSON(data: unknown): EventBus
-```
-
-- `toString()` returns `BusName#abcd` style labels used in logs/errors.
-- `toJSON()` exports full bus state snapshot (config, handlers, indexes, event_history, pending queue, in-flight ids, find-waiter snapshots).
-- `fromJSON()` restores a new bus instance from that payload (handler functions are restored as no-op stubs).
-
-#### `logTree()`
-
-```ts
-logTree(): string
-```
-
-- `logTree()` returns a full event log hierarchy tree diagram for debugging.
-
-#### `destroy()`
-
-```ts
-destroy(): void
-```
-
-`destroy()` clears handlers/history/locks and removes this bus from global weak registry.
-
-`destroy()` and GC behavior are exercised in `bubus-ts/tests/eventbus_basics.test.ts` and `bubus-ts/tests/performance.test.ts`.
 
 </Tab>
 </Tabs>
+
+### `off(...)`
+
+Unregisters handlers by event key, handler function/reference, or handler id.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+bus.off(UserEvent, handler)
+bus.off(UserEvent)   # remove all handlers for UserEvent
+bus.off('*')         # remove all wildcard handlers
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+bus.off(UserEvent, handler)
+bus.off(UserEvent)
+bus.off('*')
+```
+
+</Tab>
+</Tabs>
+
+## Dispatch and emission
+
+`dispatch(...)` enqueues synchronously and returns the pending event immediately. `emit(...)` is an alias.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+event = bus.dispatch(MyEvent(data='x'))
+result = await event.event_result()
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const event = bus.dispatch(MyEvent({ data: 'x' }))
+const result = await event.first()
+```
+
+</Tab>
+</Tabs>
+
+## Event lookup
+
+`find(...)` supports history lookup, optional future waiting, predicate filtering, and parent/child scoping.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+event = await bus.find(ResponseEvent)  # history lookup by default
+future = await bus.find(ResponseEvent, past=False, future=5)
+child = await bus.find(ChildEvent, child_of=parent_event, future=5)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const event = await bus.find(ResponseEvent)
+const future = await bus.find(ResponseEvent, { past: false, future: 5 })
+const child = await bus.find(ChildEvent, { child_of: parentEvent, future: 5 })
+```
+
+</Tab>
+</Tabs>
+
+## Lifecycle helpers
+
+### Wait for idle
+
+<Tabs>
+<Tab title="Python">
+
+```python
+await bus.wait_until_idle()
+await bus.wait_until_idle(timeout=5)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+await bus.waitUntilIdle()
+await bus.waitUntilIdle(5)
+```
+
+</Tab>
+</Tabs>
+
+### Parent/child relationship checks
+
+<Tabs>
+<Tab title="Python">
+
+```python
+bus.event_is_child_of(child_event, parent_event)
+bus.event_is_parent_of(parent_event, child_event)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+bus.eventIsChildOf(childEvent, parentEvent)
+bus.eventIsParentOf(parentEvent, childEvent)
+```
+
+</Tab>
+</Tabs>
+
+### Serialization and teardown
+
+<Tabs>
+<Tab title="Python">
+
+```python
+await bus.stop(timeout=1.0)
+await bus.stop(clear=True)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const snapshot = bus.toJSON()
+const restored = EventBus.fromJSON(snapshot)
+bus.destroy()
+```
+
+</Tab>
+</Tabs>
+
+## Timeout and precedence
+
+Shared precedence model:
+
+1. Handler override
+2. Event override
+3. Bus default
+
+Effective handler timeout is capped by event timeout when both are set.

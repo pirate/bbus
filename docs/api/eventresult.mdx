@@ -1,99 +1,88 @@
 ---
 title: EventResult
-description: EventResult fields, getters, and lifecycle methods.
+description: EventResult fields, status, and handler execution results.
 ---
+
+Each handler execution for an event produces one `EventResult`.
+
+You usually access results through `event.event_results` (or high-level event helper methods), but this page documents the underlying object.
+
+## Common fields
+
+- `id`: unique result id
+- `status`: `pending | started | completed | error`
+- `result`: handler return value (typed by event result schema/type)
+- `error`: captured exception/error when handler fails
+- `started_at`, `completed_at`
+- `event_children`: child events emitted from inside this handler execution
+- Handler metadata (`handler_id`, `handler_name`, bus label/id/name)
+
+## Await semantics
+
+Awaiting an `EventResult` resolves to handler return value or raises captured failure.
 
 <Tabs>
 <Tab title="Python">
 
-The placeholder object that represents the pending result from a single handler executing an event.  
-`Event.event_results` contains a `dict[PythonIdStr, EventResult]` in the shape of `{handler_id: EventResult()}`.
-
-You generally won't interact with this class directly—the bus instantiates and updates it for you—but its API is documented here for advanced integrations and custom dispatch loops.
-
-#### `EventResult` Fields
-
 ```python
-class EventResult(BaseModel):
-    id: str                    # Unique identifier
-    handler_id: str           # Handler function ID
-    handler_name: str         # Handler function name
-    eventbus_id: str          # Bus that executed this handler
-    eventbus_name: str        # Bus name
-    
-    status: str               # 'pending', 'started', 'completed', 'error'
-    result: Any               # Handler return value
-    error: BaseException | None  # Captured exception if the handler failed
-    
-    started_at: datetime      # When handler started
-    completed_at: datetime    # When handler completed
-    timeout: float            # Handler timeout in seconds
-    event_children: list[BaseEvent] # child events emitted during handler execution
+entry = event.event_results[some_handler_id]
+value = await entry
 ```
-
-#### `EventResult` Methods
-
-##### `await result`
-
-Await the `EventResult` object directly to get the raw result value.
-
-```python
-handler_result = event.event_results['handler_id']
-value = await handler_result  # Returns result or raises an exception if handler hits an error
-```
-
-`execute(event, handler, *, eventbus, timeout, enter_handler_context, exit_handler_context, format_exception_for_log)` is a low-level helper that runs the handler, updates timing/status fields, captures errors, and notifies its completion signal. `EventBus.execute_handler()` delegates to this; you generally only need it when building a custom bus or integrating the event system into another dispatcher.
 
 </Tab>
 <Tab title="TypeScript">
 
-Each handler execution creates one `EventResult` stored in `event.event_results`.
-
-#### Main fields
-
-- `id: string` (uuidv7 string)
-- `status: 'pending' | 'started' | 'completed' | 'error'`
-- `event: BaseEvent`
-- `handler: EventHandler`
-- `result: EventResultType<this> | undefined`
-- `error: Error | undefined`
-- `started_at: string` (ISO Format datetime string)
-- `completed_at: string` (ISO Format datetime string)
-- `event_children: BaseEvent[]`
-
-#### Read-only getters
-
-- `event_id` -> `string` uuiv7 of the event the result is for
-- `bus` -> `EventBus` instance it's associated with
-- `handler_id` -> `string` uuidv5 of the `EventHandler`
-- `handler_name` -> `string | 'anonymous'` function name of the handler method
-- `handler_file_path` -> `string | undefined` path/to/file.js:lineno where the handler method is defined
-- `eventbus_name` -> `string` name, same as `this.bus.name`
-- `eventbus_id` -> `string` uuidv7, same as `this.bus.id`
-- `eventbus_label` -> `string` label, same as `this.bus.label`
-- `value` -> `EventResultType<this> | undefined` alias of `this.result`
-- `raw_value` -> `any` raw result value before schema validation, available when handler return value validation fails
-- `handler_timeout` -> `number` seconds before handler execution is aborted (precedence: handler config -> event config -> bus level defaults)
-- `handler_slow_timeout` -> `number` seconds before logging a slow execution warning (same prececence as `handler_timeout`)
-
-#### Advanced/Internal methods
-
 ```ts
-markStarted(): Promise<never>
-markCompleted(result): void
-markError(error): void
-
-runHandler(): Promise<void>
-signalAbort(error: Error): void
-linkEmittedChildEvent(child_event): void
+const entry = Array.from(event.event_results.values())[0]
+const value = entry.result
 ```
 
-#### `toString()` / `toJSON()` / `fromJSON()`
+</Tab>
+</Tabs>
+
+## Internal lifecycle methods
+
+Used by bus internals; generally not needed for normal app code.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+# internal methods used by EventBus
+await entry.execute(...)
+entry.update(status='started' | 'completed' | 'error', result=..., error=...)
+```
+
+</Tab>
+<Tab title="TypeScript">
 
 ```ts
-toString(): string
-toJSON(): EventResultJSON
-EventResult.fromJSON(event, data): EventResult
+entry.markStarted()
+entry.markCompleted(result)
+entry.markError(error)
+await entry.runHandler()
+entry.signalAbort(error)
+entry.linkEmittedChildEvent(childEvent)
+```
+
+</Tab>
+</Tabs>
+
+## Serialization
+
+<Tabs>
+<Tab title="Python">
+
+```python
+payload = entry.model_dump(mode='json')
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const payload = entry.toJSON()
+const restored = EventResult.fromJSON(event, payload)
 ```
 
 </Tab>
