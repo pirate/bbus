@@ -113,5 +113,30 @@
   "description": "Fast strongly-typed Python + Typescript event bus library.",
   "background": {
     "decoration": "grid"
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/pirate/bbus",
+      "x": "https://x.com/theSquashSH"
+    }
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Github",
+        "href": "https://github.com/pirate/bbus"
+      },
+      {
+        "label": "NPM",
+        "href": "https://www.npmjs.com/package/bubus"
+      },
+      {
+        "label": "PyPI",
+        "href": "https://pypi.org/project/bubus/"
+      }
+    ]
+  },
+  "seo": {
+    "indexing": "all"
   }
 }
