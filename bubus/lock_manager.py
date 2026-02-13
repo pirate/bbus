@@ -4,8 +4,8 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from bubus.event_result import EventResult
 from bubus.base_event import BaseEvent, EventConcurrencyMode, EventHandlerConcurrencyMode
+from bubus.event_result import EventResult
 
 if TYPE_CHECKING:
     from bubus.event_bus import EventBus

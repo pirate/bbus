@@ -28,9 +28,9 @@ from bubus.event_handler import EventHandler, EventHandlerCallable
 from bubus.helpers import extract_basemodel_generic_arg
 from bubus.jsonschema import (
     normalize_result_dict,
-    result_type_identifier_from_schema,
     pydantic_model_from_json_schema,
     pydantic_model_to_json_schema,
+    result_type_identifier_from_schema,
     validate_result_against_type,
 )
 

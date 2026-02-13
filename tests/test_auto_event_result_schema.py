@@ -6,8 +6,8 @@ from typing import Any, TypedDict
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from bubus.helpers import extract_basemodel_generic_arg
 from bubus.base_event import BaseEvent
+from bubus.helpers import extract_basemodel_generic_arg
 
 
 def _to_plain(value: Any) -> Any:

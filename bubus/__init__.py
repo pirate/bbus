@@ -1,5 +1,15 @@
 """Event bus for the browser-use agent."""
 
+from .base_event import (
+    BaseEvent,
+    EventConcurrencyMode,
+    EventHandlerCompletionMode,
+    EventHandlerConcurrencyMode,
+    EventStatus,
+    PythonIdentifierStr,
+    PythonIdStr,
+    UUIDStr,
+)
 from .bridges import HTTPEventBridge, SocketEventBridge
 from .event_bus import EventBus
 from .event_handler import EventHandler
@@ -16,16 +26,6 @@ from .middlewares import (
     SyntheticHandlerChangeEventMiddleware,
     SyntheticReturnEventMiddleware,
     WALEventBusMiddleware,
-)
-from .base_event import (
-    BaseEvent,
-    EventConcurrencyMode,
-    EventHandlerCompletionMode,
-    EventHandlerConcurrencyMode,
-    EventStatus,
-    PythonIdentifierStr,
-    PythonIdStr,
-    UUIDStr,
 )
 
 __all__ = [

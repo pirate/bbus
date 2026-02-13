@@ -22,8 +22,8 @@ from typing import Any
 
 from uuid_extensions import uuid7str
 
-from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 from bubus.base_event import BaseEvent
+from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 
 _IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 

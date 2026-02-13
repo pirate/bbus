@@ -11,8 +11,8 @@ from typing import Any, Literal
 import psutil
 import pytest
 
-import bubus.event_bus as event_bus_module
 import bubus.base_event as base_event_module
+import bubus.event_bus as event_bus_module
 from bubus import BaseEvent, EventBus
 
 

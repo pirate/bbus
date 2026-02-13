@@ -28,8 +28,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from uuid_extensions import uuid7str
 
-from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 from bubus.base_event import BaseEvent
+from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 
 _DEFAULT_REDIS_CHANNEL = 'bubus_events'
 _DB_INIT_KEY = '__bubus:bridge_init__'

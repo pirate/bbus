@@ -2,9 +2,9 @@ from typing import Any
 
 import pytest
 
+from bubus.base_event import BaseEvent
 from bubus.event_bus import EventBus
 from bubus.event_handler import EventHandler
-from bubus.base_event import BaseEvent
 
 
 @pytest.mark.asyncio
