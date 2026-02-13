@@ -5,11 +5,12 @@ Optional dependency: asyncpg
 Connection URL format:
     postgresql://user:pass@host:5432/dbname[/tablename]?sslmode=require
 
-Schema shape (flat):
+Schema shape:
 - event_id (PRIMARY KEY)
 - event_created_at (indexed)
 - event_type (indexed)
-- one TEXT column per event field storing JSON-serialized values
+- event_payload (JSON for non-event_* fields)
+- one TEXT column per event_* field storing JSON-serialized values
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 _IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 _DEFAULT_POSTGRES_TABLE = 'bubus_events'
 _DEFAULT_POSTGRES_CHANNEL = 'bubus_events'
+_EVENT_PAYLOAD_COLUMN = 'event_payload'
 
 
 def _validate_identifier(identifier: str, *, label: str) -> str:
@@ -59,6 +61,17 @@ def _index_name(table: str, suffix: str) -> str:
     return _validate_identifier(f'{table}_{suffix}'[:63], label='index name')
 
 
+def _split_bridge_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    event_fields: dict[str, Any] = {}
+    event_payload: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key.startswith('event_'):
+            event_fields[key] = value
+        else:
+            event_payload[key] = value
+    return event_fields, event_payload
+
+
 class PostgresEventBridge:
     def __init__(self, table_url: str, channel: str | None = None, *, name: str | None = None):
         self.table_url = table_url
@@ -74,7 +87,7 @@ class PostgresEventBridge:
         self._start_task: asyncio.Task[None] | None = None
         self._start_lock = asyncio.Lock()
         self._listen_query_lock = asyncio.Lock()
-        self._table_columns: set[str] = {'event_id', 'event_created_at', 'event_type'}
+        self._table_columns: set[str] = {'event_id', 'event_created_at', 'event_type', _EVENT_PAYLOAD_COLUMN}
 
     def on(self, event_pattern: EventPatternType, handler: Callable[[BaseEvent[Any]], Any]) -> None:
         self._ensure_started()
@@ -86,12 +99,16 @@ class PostgresEventBridge:
             await self.start()
 
         payload = event.model_dump(mode='json')
-        payload_keys = sorted(payload.keys())
+        event_fields, event_payload = _split_bridge_payload(payload)
+        write_payload = {**event_fields, _EVENT_PAYLOAD_COLUMN: event_payload}
+        payload_keys = sorted(write_payload.keys())
         await self._ensure_columns(payload_keys)
 
         columns_sql = ', '.join(f'"{key}"' for key in payload_keys)
         placeholders_sql = ', '.join(f'${index}' for index in range(1, len(payload_keys) + 1))
-        values = [json.dumps(payload[key], separators=(',', ':')) if payload[key] is not None else None for key in payload_keys]
+        values = [
+            json.dumps(write_payload[key], separators=(',', ':')) if write_payload[key] is not None else None for key in payload_keys
+        ]
 
         update_fields = [key for key in payload_keys if key != 'event_id']
         if update_fields:
@@ -140,7 +157,7 @@ class PostgresEventBridge:
                     self._listen_conn = listen_conn
                     await self._ensure_table_exists()
                     await self._refresh_column_cache()
-                    await self._ensure_columns(['event_id', 'event_created_at', 'event_type'])
+                    await self._ensure_columns(['event_id', 'event_created_at', 'event_type', _EVENT_PAYLOAD_COLUMN])
                     await self._ensure_base_indexes()
 
                     async def _dispatch_event_id(event_id: str) -> None:
@@ -225,14 +242,29 @@ class PostgresEventBridge:
             if row is None:
                 return
 
+            row_values = dict(row)
             payload: dict[str, Any] = {}
-            for key, raw_value in dict(row).items():
-                if raw_value is None:
+
+            raw_event_payload = row_values.get(_EVENT_PAYLOAD_COLUMN)
+            if isinstance(raw_event_payload, str):
+                try:
+                    parsed_event_payload = json.loads(raw_event_payload)
+                    if isinstance(parsed_event_payload, dict):
+                        payload.update(parsed_event_payload)
+                except Exception:
+                    pass
+
+            for key, raw_value in row_values.items():
+                if key == _EVENT_PAYLOAD_COLUMN or raw_value is None:
+                    continue
+                if not key.startswith('event_'):
                     continue
                 try:
-                    payload[key] = json.loads(raw_value)
+                    decoded_value = json.loads(raw_value)
                 except Exception:
-                    payload[key] = raw_value
+                    decoded_value = raw_value
+
+                payload[key] = decoded_value
 
         await self._dispatch_inbound_payload(payload)
 
@@ -247,7 +279,8 @@ class PostgresEventBridge:
             CREATE TABLE IF NOT EXISTS "{self.table}" (
                 "event_id" TEXT PRIMARY KEY,
                 "event_created_at" TEXT,
-                "event_type" TEXT
+                "event_type" TEXT,
+                "event_payload" TEXT
             )
             '''
         )
@@ -277,6 +310,10 @@ class PostgresEventBridge:
     async def _ensure_columns(self, keys: list[str]) -> None:
         for key in keys:
             _validate_identifier(key, label='event field name')
+            if key != _EVENT_PAYLOAD_COLUMN and not key.startswith('event_'):
+                raise ValueError(
+                    f'Invalid event field name for bridge column: {key!r}. Only event_* fields become columns'
+                )
 
         missing_columns = [key for key in keys if key not in self._table_columns]
         if not missing_columns:

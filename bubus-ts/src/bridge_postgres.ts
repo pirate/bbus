@@ -10,6 +10,7 @@ const randomSuffix = (): string => Math.random().toString(36).slice(2, 10)
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const DEFAULT_POSTGRES_TABLE = 'bubus_events'
 const DEFAULT_POSTGRES_CHANNEL = 'bubus_events'
+const EVENT_PAYLOAD_COLUMN = 'event_payload'
 
 const validateIdentifier = (value: string, label: string): string => {
   if (!IDENTIFIER_RE.test(value)) {
@@ -44,6 +45,19 @@ const parseTableUrl = (table_url: string): { dsn: string; table: string } => {
   return { dsn: dsn_url.toString(), table }
 }
 
+const splitBridgePayload = (payload: Record<string, unknown>): { event_fields: Record<string, unknown>; event_payload: Record<string, unknown> } => {
+  const event_fields: Record<string, unknown> = {}
+  const event_payload: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload)) {
+    if (key.startsWith('event_')) {
+      event_fields[key] = value
+    } else {
+      event_payload[key] = value
+    }
+  }
+  return { event_fields, event_payload }
+}
+
 export class PostgresEventBridge {
   readonly table_url: string
   readonly dsn: string
@@ -72,7 +86,7 @@ export class PostgresEventBridge {
     this.inbound_bus = new EventBus(this.name, { max_history_size: 0 })
     this.running = false
     this.client = null
-    this.table_columns = new Set(['event_id', 'event_created_at', 'event_type'])
+    this.table_columns = new Set(['event_id', 'event_created_at', 'event_type', EVENT_PAYLOAD_COLUMN])
     this.notification_handler = null
 
     this.dispatch = this.dispatch.bind(this)
@@ -96,12 +110,16 @@ export class PostgresEventBridge {
     if (!this.client) await this.start()
 
     const payload = event.toJSON() as Record<string, unknown>
-    const keys = Object.keys(payload).sort()
+    const { event_fields, event_payload } = splitBridgePayload(payload)
+    const write_payload: Record<string, unknown> = { ...event_fields, [EVENT_PAYLOAD_COLUMN]: event_payload }
+    const keys = Object.keys(write_payload).sort()
     await this.ensureColumns(keys)
 
     const columns_sql = keys.map((key) => `"${key}"`).join(', ')
     const placeholders_sql = keys.map((_, index) => `$${index + 1}`).join(', ')
-    const values = keys.map((key) => (payload[key] === null || payload[key] === undefined ? null : JSON.stringify(payload[key])))
+    const values = keys.map((key) =>
+      write_payload[key] === null || write_payload[key] === undefined ? null : JSON.stringify(write_payload[key])
+    )
 
     const update_fields = keys.filter((key) => key !== 'event_id')
     let upsert_sql = `INSERT INTO "${this.table}" (${columns_sql}) VALUES (${placeholders_sql})`
@@ -134,7 +152,7 @@ export class PostgresEventBridge {
 
     await this.ensureTableExists()
     await this.refreshColumnCache()
-    await this.ensureColumns(['event_id', 'event_created_at', 'event_type'])
+    await this.ensureColumns(['event_id', 'event_created_at', 'event_type', EVENT_PAYLOAD_COLUMN])
     await this.ensureBaseIndexes()
 
     this.notification_handler = (msg: { channel: string; payload?: string }) => {
@@ -181,7 +199,20 @@ export class PostgresEventBridge {
     if (!row) return
 
     const payload: Record<string, unknown> = {}
+    const raw_event_payload = row[EVENT_PAYLOAD_COLUMN]
+    if (typeof raw_event_payload === 'string') {
+      try {
+        const decoded_event_payload = JSON.parse(raw_event_payload)
+        if (decoded_event_payload && typeof decoded_event_payload === 'object' && !Array.isArray(decoded_event_payload)) {
+          Object.assign(payload, decoded_event_payload as Record<string, unknown>)
+        }
+      } catch {
+        // ignore malformed payload column
+      }
+    }
+
     for (const [key, raw_value] of Object.entries(row)) {
+      if (key === EVENT_PAYLOAD_COLUMN || !key.startsWith('event_')) continue
       if (raw_value === null || raw_value === undefined) continue
       if (typeof raw_value !== 'string') {
         payload[key] = raw_value
@@ -205,7 +236,7 @@ export class PostgresEventBridge {
   private async ensureTableExists(): Promise<void> {
     if (!this.client) return
     await this.client.query(
-      `CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT)`
+      `CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT, "event_payload" TEXT)`
     )
   }
 
@@ -232,6 +263,9 @@ export class PostgresEventBridge {
     if (!this.client) return
     for (const key of keys) {
       validateIdentifier(key, 'event field name')
+      if (key !== EVENT_PAYLOAD_COLUMN && !key.startsWith('event_')) {
+        throw new Error(`Invalid event field name for bridge column: ${JSON.stringify(key)}. Only event_* fields become columns`)
+      }
     }
 
     const missing = keys.filter((key) => !this.table_columns.has(key))

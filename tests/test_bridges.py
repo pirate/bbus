@@ -334,6 +334,20 @@ async def test_sqlite_event_bridge_roundtrip_between_processes() -> None:
     try:
         sqlite_path = temp_dir / 'events.sqlite3'
         await _assert_roundtrip('sqlite', {'path': str(sqlite_path), 'table': 'bubus_events'})
+
+        with sqlite3.connect(sqlite_path) as conn:
+            columns = {str(row[1]) for row in conn.execute('PRAGMA table_info("bubus_events")').fetchall()}
+            assert 'event_payload' in columns
+            assert 'label' not in columns
+            assert all(column == 'event_payload' or column.startswith('event_') for column in columns)
+
+            row = conn.execute(
+                'SELECT event_payload FROM "bubus_events" ORDER BY COALESCE("event_created_at", \'\') DESC LIMIT 1'
+            ).fetchone()
+            assert row is not None
+            payload = json.loads(str(row[0]))
+            assert payload.get('label') == 'sqlite_ok'
+
         measure_sqlite_path = temp_dir / 'events.measure.sqlite3'
         latency_ms = await _measure_warm_latency_ms('sqlite', {'path': str(measure_sqlite_path), 'table': 'bubus_events'})
         print(f'LATENCY python sqlite {latency_ms:.3f}ms')
@@ -399,6 +413,32 @@ async def test_postgres_event_bridge_roundtrip_between_processes() -> None:
         async with _running_process(command) as postgres_process:
             await _wait_for_port(port)
             await _assert_roundtrip('postgres', {'url': f'postgresql://postgres@127.0.0.1:{port}/postgres/bubus_events'})
+
+            asyncpg = __import__('asyncpg')
+            conn = await asyncpg.connect(f'postgresql://postgres@127.0.0.1:{port}/postgres')
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = $1
+                    """,
+                    'bubus_events',
+                )
+                columns = {str(row['column_name']) for row in rows}
+                assert 'event_payload' in columns
+                assert 'label' not in columns
+                assert all(column == 'event_payload' or column.startswith('event_') for column in columns)
+
+                row = await conn.fetchrow(
+                    'SELECT event_payload FROM "bubus_events" ORDER BY COALESCE("event_created_at", \'\') DESC LIMIT 1'
+                )
+                assert row is not None
+                payload = json.loads(str(row['event_payload']))
+                assert payload.get('label') == 'postgres_ok'
+            finally:
+                await conn.close()
+
             latency_ms = await _measure_warm_latency_ms(
                 'postgres', {'url': f'postgresql://postgres@127.0.0.1:{port}/postgres/bubus_events'}
             )

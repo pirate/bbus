@@ -1888,16 +1888,12 @@ class EventBus:
             for pending_result in new_results.values():
                 await self._on_event_result_change(event, pending_result, EventStatus.PENDING)
 
+        first_handler_id = next(iter(event.event_results), None)
         event_result = event.event_results[handler_id]
-
-        # Check if this is the first handler to start (before updating status)
-        is_first_handler = not any(r.started_at for r in event.event_results.values())
 
         event_result.update(status='started', timeout=resolved_timeout)
         await self._on_event_result_change(event, event_result, EventStatus.STARTED)
-
-        # Emit event STARTED once (when first handler starts)
-        if is_first_handler:
+        if first_handler_id == handler_id:
             await self._on_event_change(event, EventStatus.STARTED)
 
         try:

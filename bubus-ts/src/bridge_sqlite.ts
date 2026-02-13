@@ -5,6 +5,7 @@ import type { EventClass, EventHandlerFunction, EventPattern, UntypedEventHandle
 
 const randomSuffix = (): string => Math.random().toString(36).slice(2, 10)
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+const EVENT_PAYLOAD_COLUMN = 'event_payload'
 
 const validateIdentifier = (value: string, label: string): string => {
   if (!IDENTIFIER_RE.test(value)) {
@@ -20,6 +21,19 @@ const loadNodeSqlite = async (): Promise<any> => {
   } catch {
     throw new Error('SQLiteEventBridge requires Node.js with built-in "node:sqlite" support (Node 22+).')
   }
+}
+
+const splitBridgePayload = (payload: Record<string, unknown>): { event_fields: Record<string, unknown>; event_payload: Record<string, unknown> } => {
+  const event_fields: Record<string, unknown> = {}
+  const event_payload: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload)) {
+    if (key.startsWith('event_')) {
+      event_fields[key] = value
+    } else {
+      event_payload[key] = value
+    }
+  }
+  return { event_fields, event_payload }
 }
 
 export class SQLiteEventBridge {
@@ -49,7 +63,7 @@ export class SQLiteEventBridge {
     this.listener_task = null
     this.start_task = null
     this.db = null
-    this.table_columns = new Set(['event_id', 'event_created_at', 'event_type', 'event_payload_json'])
+    this.table_columns = new Set(['event_id', 'event_created_at', 'event_type', EVENT_PAYLOAD_COLUMN])
 
     this.dispatch = this.dispatch.bind(this)
     this.emit = this.emit.bind(this)
@@ -77,14 +91,15 @@ export class SQLiteEventBridge {
     }
 
     const payload = event.toJSON() as Record<string, unknown>
-    const payload_with_blob: Record<string, unknown> = { ...payload, event_payload_json: payload }
-    const payload_keys = Object.keys(payload_with_blob).sort()
+    const { event_fields, event_payload } = splitBridgePayload(payload)
+    const write_payload: Record<string, unknown> = { ...event_fields, [EVENT_PAYLOAD_COLUMN]: event_payload }
+    const payload_keys = Object.keys(write_payload).sort()
     this.ensureColumns(payload_keys)
 
     const columns_sql = payload_keys.map((key) => `"${key}"`).join(', ')
-    const placeholders_sql = payload_keys.map(() => '?').join(', ')
+    const placeholders_sql = payload_keys.map((key) => (key === EVENT_PAYLOAD_COLUMN ? 'json(?)' : '?')).join(', ')
     const values = payload_keys.map((key) =>
-      payload_with_blob[key] === null || payload_with_blob[key] === undefined ? null : JSON.stringify(payload_with_blob[key])
+      write_payload[key] === null || write_payload[key] === undefined ? null : JSON.stringify(write_payload[key])
     )
 
     const update_fields = payload_keys.filter((key) => key !== 'event_id')
@@ -124,12 +139,12 @@ export class SQLiteEventBridge {
       this.db.exec('PRAGMA journal_mode = WAL')
       this.db
         .prepare(
-          `CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT, "event_payload_json" TEXT)`
+          `CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT, "event_payload" JSON)`
         )
         .run()
 
       this.refreshColumnCache()
-      this.ensureColumns(['event_id', 'event_created_at', 'event_type', 'event_payload_json'])
+      this.ensureColumns(['event_id', 'event_created_at', 'event_type', EVENT_PAYLOAD_COLUMN])
       this.ensureBaseIndexes()
       this.setCursorToLatestRow()
 
@@ -181,19 +196,21 @@ export class SQLiteEventBridge {
             this.last_seen_event_created_at = String(row.event_created_at ?? '')
             this.last_seen_event_id = String(row.event_id ?? '')
 
-            const raw_payload_blob = row.event_payload_json
+            const raw_payload_blob = row[EVENT_PAYLOAD_COLUMN]
+            const payload: Record<string, unknown> = {}
             if (typeof raw_payload_blob === 'string') {
               try {
-                await this.dispatchInboundPayload(JSON.parse(raw_payload_blob))
-                continue
+                const decoded_event_payload = JSON.parse(raw_payload_blob)
+                if (decoded_event_payload && typeof decoded_event_payload === 'object' && !Array.isArray(decoded_event_payload)) {
+                  Object.assign(payload, decoded_event_payload as Record<string, unknown>)
+                }
               } catch {
-                // fall through to best-effort row reconstruction
+                // ignore malformed payload column
               }
             }
 
-            const payload: Record<string, unknown> = {}
             for (const [key, raw_value] of Object.entries(row)) {
-              if (key === 'event_payload_json') continue
+              if (key === EVENT_PAYLOAD_COLUMN || !key.startsWith('event_')) continue
               if (raw_value === null || raw_value === undefined) continue
 
               if (typeof raw_value !== 'string') {
@@ -234,11 +251,15 @@ export class SQLiteEventBridge {
 
     for (const key of keys) {
       validateIdentifier(key, 'event field name')
+      if (key !== EVENT_PAYLOAD_COLUMN && !key.startsWith('event_')) {
+        throw new Error(`Invalid event field name for bridge column: ${JSON.stringify(key)}. Only event_* fields become columns`)
+      }
     }
 
     const missing_columns = keys.filter((key) => !this.table_columns.has(key))
     for (const key of missing_columns) {
-      this.db.prepare(`ALTER TABLE "${this.table}" ADD COLUMN "${key}" TEXT`).run()
+      const column_type = key === EVENT_PAYLOAD_COLUMN ? 'JSON' : 'TEXT'
+      this.db.prepare(`ALTER TABLE "${this.table}" ADD COLUMN "${key}" ${column_type}`).run()
       this.table_columns.add(key)
     }
   }

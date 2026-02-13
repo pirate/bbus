@@ -5,7 +5,8 @@ Schema mirrors Postgres bridge shape:
 - event_id (PRIMARY KEY)
 - event_created_at (indexed)
 - event_type (indexed)
-- one TEXT column per event field storing JSON-serialized values
+- event_payload (JSON for non-event_* fields)
+- one TEXT column per event_* field storing JSON-serialized values
 """
 
 from __future__ import annotations
@@ -26,12 +27,24 @@ from bubus.base_event import BaseEvent
 from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 
 _IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+_EVENT_PAYLOAD_COLUMN = 'event_payload'
 
 
 def _validate_identifier(identifier: str, *, label: str) -> str:
     if not _IDENTIFIER_RE.match(identifier):
         raise ValueError(f'Invalid {label}: {identifier!r}. Use only [A-Za-z0-9_] and start with a letter/_')
     return identifier
+
+
+def _split_bridge_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    event_fields: dict[str, Any] = {}
+    event_payload: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key.startswith('event_'):
+            event_fields[key] = value
+        else:
+            event_payload[key] = value
+    return event_fields, event_payload
 
 
 class SQLiteEventBridge:
@@ -54,7 +67,7 @@ class SQLiteEventBridge:
         self._listener_task: asyncio.Task[None] | None = None
         self._last_seen_event_created_at = ''
         self._last_seen_event_id = ''
-        self._table_columns: set[str] = {'event_id', 'event_created_at', 'event_type'}
+        self._table_columns: set[str] = {'event_id', 'event_created_at', 'event_type', _EVENT_PAYLOAD_COLUMN}
 
     def on(self, event_pattern: EventPatternType, handler: Callable[[BaseEvent[Any]], Any]) -> None:
         self._ensure_started()
@@ -66,10 +79,12 @@ class SQLiteEventBridge:
             await self.start()
 
         payload = event.model_dump(mode='json')
-        payload_keys = sorted(payload.keys())
+        event_fields, event_payload = _split_bridge_payload(payload)
+        write_payload = {**event_fields, _EVENT_PAYLOAD_COLUMN: event_payload}
+        payload_keys = sorted(write_payload.keys())
 
         await asyncio.to_thread(self._ensure_columns, payload_keys)
-        await asyncio.to_thread(self._upsert_payload, payload, payload_keys)
+        await asyncio.to_thread(self._upsert_payload, write_payload, payload_keys)
 
         if in_handler_context():
             return None
@@ -94,7 +109,7 @@ class SQLiteEventBridge:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 await asyncio.to_thread(self._init_db)
                 await asyncio.to_thread(self._refresh_column_cache)
-                await asyncio.to_thread(self._ensure_columns, ['event_id', 'event_created_at', 'event_type'])
+                await asyncio.to_thread(self._ensure_columns, ['event_id', 'event_created_at', 'event_type', _EVENT_PAYLOAD_COLUMN])
                 await asyncio.to_thread(self._ensure_base_indexes)
                 await asyncio.to_thread(self._set_cursor_to_latest_row)
                 self._running = True
@@ -142,8 +157,17 @@ class SQLiteEventBridge:
                         self._last_seen_event_id = event_id
 
                     payload: dict[str, Any] = {}
+                    raw_event_payload = row.get(_EVENT_PAYLOAD_COLUMN)
+                    if isinstance(raw_event_payload, str):
+                        try:
+                            decoded_event_payload = json.loads(raw_event_payload)
+                            if isinstance(decoded_event_payload, dict):
+                                payload.update(decoded_event_payload)
+                        except Exception:
+                            pass
+
                     for key, raw_value in row.items():
-                        if raw_value is None:
+                        if key == _EVENT_PAYLOAD_COLUMN or raw_value is None or not key.startswith('event_'):
                             continue
                         if isinstance(raw_value, str):
                             try:
@@ -206,7 +230,8 @@ class SQLiteEventBridge:
                 CREATE TABLE IF NOT EXISTS "{self.table}" (
                     "event_id" TEXT PRIMARY KEY,
                     "event_created_at" TEXT,
-                    "event_type" TEXT
+                    "event_type" TEXT,
+                    "event_payload" JSON
                 )
                 '''
             )
@@ -220,6 +245,10 @@ class SQLiteEventBridge:
     def _ensure_columns(self, keys: list[str]) -> None:
         for key in keys:
             _validate_identifier(key, label='event field name')
+            if key != _EVENT_PAYLOAD_COLUMN and not key.startswith('event_'):
+                raise ValueError(
+                    f'Invalid event field name for bridge column: {key!r}. Only event_* fields become columns'
+                )
 
         missing_columns = [key for key in keys if key not in self._table_columns]
         if not missing_columns:
@@ -227,7 +256,8 @@ class SQLiteEventBridge:
 
         with closing(self._connect()) as conn:
             for key in missing_columns:
-                conn.execute(f'ALTER TABLE "{self.table}" ADD COLUMN "{key}" TEXT')
+                column_type = 'JSON' if key == _EVENT_PAYLOAD_COLUMN else 'TEXT'
+                conn.execute(f'ALTER TABLE "{self.table}" ADD COLUMN "{key}" {column_type}')
                 self._table_columns.add(key)
             conn.commit()
 
@@ -242,7 +272,7 @@ class SQLiteEventBridge:
 
     def _upsert_payload(self, payload: dict[str, Any], payload_keys: list[str]) -> None:
         columns_sql = ', '.join(f'"{key}"' for key in payload_keys)
-        placeholders_sql = ', '.join('?' for _ in payload_keys)
+        placeholders_sql = ', '.join('json(?)' if key == _EVENT_PAYLOAD_COLUMN else '?' for key in payload_keys)
         values = [json.dumps(payload[key], separators=(',', ':')) if payload[key] is not None else None for key in payload_keys]
 
         update_fields = [key for key in payload_keys if key != 'event_id']
