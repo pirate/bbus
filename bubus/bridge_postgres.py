@@ -9,7 +9,7 @@ Schema shape:
 - event_id (PRIMARY KEY)
 - event_created_at (indexed)
 - event_type (indexed)
-- event_payload (JSON for non-event_* fields)
+- event_payload (full event JSON payload)
 - one TEXT column per event_* field storing JSON-serialized values
 """
 
@@ -67,12 +67,10 @@ def _is_str_keyed_dict(value: Any) -> TypeGuard[dict[str, Any]]:
 
 def _split_bridge_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     event_fields: dict[str, Any] = {}
-    event_payload: dict[str, Any] = {}
+    event_payload: dict[str, Any] = dict(payload)
     for key, value in payload.items():
         if key.startswith('event_'):
             event_fields[key] = value
-        else:
-            event_payload[key] = value
     return event_fields, event_payload
 
 
@@ -111,7 +109,8 @@ class PostgresEventBridge:
         columns_sql = ', '.join(f'"{key}"' for key in payload_keys)
         placeholders_sql = ', '.join(f'${index}' for index in range(1, len(payload_keys) + 1))
         values = [
-            json.dumps(write_payload[key], separators=(',', ':')) if write_payload[key] is not None else None for key in payload_keys
+            json.dumps(write_payload[key], separators=(',', ':')) if write_payload[key] is not None else None
+            for key in payload_keys
         ]
 
         update_fields = [key for key in payload_keys if key != 'event_id']
@@ -315,9 +314,7 @@ class PostgresEventBridge:
         for key in keys:
             _validate_identifier(key, label='event field name')
             if key != _EVENT_PAYLOAD_COLUMN and not key.startswith('event_'):
-                raise ValueError(
-                    f'Invalid event field name for bridge column: {key!r}. Only event_* fields become columns'
-                )
+                raise ValueError(f'Invalid event field name for bridge column: {key!r}. Only event_* fields become columns')
 
         missing_columns = [key for key in keys if key not in self._table_columns]
         if not missing_columns:

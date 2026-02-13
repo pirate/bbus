@@ -58,14 +58,16 @@ Common event metadata fields available in both runtimes:
 
 - `event_status`: pending/started/completed
 - `event_created_at`, `event_started_at`, `event_completed_at`
-- `event_parent_id`: parent event link
+- `event_started_at` / `event_completed_at` are `None` (Python) / `null` (TypeScript) until set
+- `event_parent_id` and `event_emitted_by_handler_id` are `None` / `null` when unset
+- TypeScript also exposes `event_created_ts`, `event_started_ts`, `event_completed_ts` (`number | null` for started/completed timestamps)
 - `event_path`: buses traversed
 - `event_results`: per-handler result entries
 - Child-event tracking (`event_children`/descendants)
 
 ## Completion model
 
-Events are returned in pending state from `emit()/emit()`, then complete asynchronously.
+Events are returned in pending state from `emit()`/`dispatch()`, then complete asynchronously.
 
 <Tabs>
 <Tab title="Python">

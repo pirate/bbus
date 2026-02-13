@@ -45,14 +45,14 @@ const parseTableUrl = (table_url: string): { dsn: string; table: string } => {
   return { dsn: dsn_url.toString(), table }
 }
 
-const splitBridgePayload = (payload: Record<string, unknown>): { event_fields: Record<string, unknown>; event_payload: Record<string, unknown> } => {
+const splitBridgePayload = (
+  payload: Record<string, unknown>
+): { event_fields: Record<string, unknown>; event_payload: Record<string, unknown> } => {
   const event_fields: Record<string, unknown> = {}
-  const event_payload: Record<string, unknown> = {}
+  const event_payload: Record<string, unknown> = { ...payload }
   for (const [key, value] of Object.entries(payload)) {
     if (key.startsWith('event_')) {
       event_fields[key] = value
-    } else {
-      event_payload[key] = value
     }
   }
   return { event_fields, event_payload }

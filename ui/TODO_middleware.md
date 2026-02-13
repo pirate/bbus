@@ -6,6 +6,7 @@ Goal: add full EventBus middleware support in `bubus-ts`, matching Python semant
 - Middleware errors do not fail events or handlers; they are logged and suppressed.
 - Hooks are async (`Promise<void>`) and are `await`ed sequentially where invoked.
 - Keep user-facing API and behavior aligned with Python, with minimal LoC.
+- For sync code paths (e.g., `markCancelled`), use microtask scheduling to fire hooks without changing sync signatures. Use `queueMicrotask` with a `Promise.resolve().then(...)` fallback for browser/node/deno/bun.
 
 Notes on Python behavior to match:
 - Event status only uses `pending | started | completed` (errors are represented on EventResult, not Event).
@@ -113,6 +114,18 @@ this.middlewares = raw.map((item) => {
 })
 ```
 
+Microtask helper (runtime-safe):
+
+```ts
+const scheduleMicrotask = (fn: () => void | Promise<void>): void => {
+  if (typeof queueMicrotask === 'function') {
+    queueMicrotask(() => void fn())
+  } else {
+    Promise.resolve().then(() => void fn())
+  }
+}
+```
+
 ### Notification pipeline (reduce layering violations)
 
 Route all middleware execution through `EventBus`, while lower layers only notify their parent:
@@ -134,7 +147,7 @@ This keeps middleware logic centralized in `EventBus`, while `EventResult` and `
 // bubus-ts/src/event_bus.ts
 const original_event = event._event_original ?? event
 // after enqueue, before runloop kick
-queueMicrotask(async () => {
+scheduleMicrotask(async () => {
   await original_event._on_event_change('pending')
 })
 
@@ -209,11 +222,11 @@ async _on_event_result_change(event: BaseEvent, result: EventResult, status: Eve
 
 ```ts
 // bubus-ts/src/event_bus.ts
-queueMicrotask(async () => {
+scheduleMicrotask(async () => {
   await this.runMiddlewareHook('on_handler_change', [this, handler_entry, true])
 })
 
-queueMicrotask(async () => {
+scheduleMicrotask(async () => {
   await this.runMiddlewareHook('on_handler_change', [this, entry, false])
 })
 ```
@@ -254,7 +267,7 @@ For the UI, `SQLiteHistoryMirrorMiddleware` must match the table schemas read by
   - `BaseEvent.notifyEventParentsOfCompletion` calls `parent.markCompleted(false, false)`; `markCompleted` emits `completed` change to the parent bus.
 - Cancellation paths:
   - `BaseEvent.cancelPendingDescendants` and `BaseEvent.markCancelled` call `markCompleted`; `markCompleted` emits `completed`.
-  - `BaseEvent.markCancelled` calls `createPendingHandlerResults` in a sync context; if pending hooks are required there, schedule a microtask to call `event._on_event_result_change(..., 'pending')` for any newly created results.
+  - `BaseEvent.markCancelled` calls `createPendingHandlerResults` in a sync context; if pending hooks are required there, schedule a microtask (via `scheduleMicrotask`) to call `event._on_event_result_change(..., 'pending')` for any newly created results.
 
 ## Files to touch
 

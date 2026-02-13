@@ -360,9 +360,9 @@ test('SQLiteEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACT
         assert.ok(column === 'event_payload' || column.startsWith('event_'))
       }
 
-      const row = db
-        .prepare('SELECT event_payload FROM "bubus_events" ORDER BY COALESCE("event_created_at", \'\') DESC LIMIT 1')
-        .get() as { event_payload?: string } | undefined
+      const row = db.prepare('SELECT event_payload FROM "bubus_events" ORDER BY COALESCE("event_created_at", \'\') DESC LIMIT 1').get() as
+        | { event_payload?: string }
+        | undefined
       assert.ok(row?.event_payload, 'expected event_payload row')
       const payload = JSON.parse(String(row.event_payload)) as Record<string, unknown>
       assert.equal(payload.label, 'sqlite_ok')

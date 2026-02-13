@@ -9,7 +9,7 @@ import {
   LockManager,
   runWithSemaphore,
 } from './lock_manager.js'
-import { EventHandler, FindWaiter, type EphemeralFindEventHandler, type EventHandlerJSON, type FindWaiterJSON } from './event_handler.js'
+import { EventHandler, type EphemeralFindEventHandler, type EventHandlerJSON } from './event_handler.js'
 import { logTree } from './logging.js'
 import { v7 as uuidv7 } from 'uuid'
 
@@ -44,13 +44,10 @@ export type EventBusJSON = {
   event_handler_completion: EventHandlerCompletionMode
   event_handler_slow_timeout: number | null
   event_handler_detect_file_paths: boolean
-  handlers: EventHandlerJSON[]
-  handlers_by_key: Array<[string, string[]]>
-  event_history: BaseEventJSON[]
-  pending_event_queue: BaseEventJSON[]
-  in_flight_event_ids: string[]
-  runloop_running: boolean
-  find_waiters: FindWaiterJSON[]
+  handlers: Record<string, EventHandlerJSON>
+  handlers_by_key: Record<string, string[]>
+  event_history: Record<string, BaseEventJSON>
+  pending_event_queue: string[]
 }
 
 // Global registry of all EventBus instances to allow for cross-bus coordination when global-serial concurrency mode is used
@@ -181,6 +178,30 @@ export class EventBus {
   }
 
   toJSON(): EventBusJSON {
+    const handlers: Record<string, EventHandlerJSON> = {}
+    for (const [handler_id, handler] of this.handlers.entries()) {
+      handlers[handler_id] = handler.toJSON()
+    }
+
+    const handlers_by_key: Record<string, string[]> = {}
+    for (const [key, ids] of this.handlers_by_key.entries()) {
+      handlers_by_key[key] = [...ids]
+    }
+
+    const event_history: Record<string, BaseEventJSON> = {}
+    for (const [event_id, event] of this.event_history.entries()) {
+      event_history[event_id] = event.toJSON()
+    }
+
+    const pending_event_queue: string[] = []
+    for (const event of this.pending_event_queue) {
+      const event_id = event.event_id
+      if (!event_history[event_id]) {
+        event_history[event_id] = event.toJSON()
+      }
+      pending_event_queue.push(event_id)
+    }
+
     return {
       id: this.id,
       name: this.name,
@@ -193,13 +214,55 @@ export class EventBus {
       event_handler_completion: this.event_handler_completion_default,
       event_handler_slow_timeout: this.event_handler_slow_timeout,
       event_handler_detect_file_paths: this.event_handler_detect_file_paths,
-      handlers: EventHandler.toJSONArray(this.handlers.values()),
-      handlers_by_key: Array.from(this.handlers_by_key.entries()).map(([key, ids]) => [key, [...ids]]),
-      event_history: BaseEvent.toJSONArray(this.event_history.values()),
-      pending_event_queue: BaseEvent.toJSONArray(this.pending_event_queue),
-      in_flight_event_ids: Array.from(this.in_flight_event_ids),
-      runloop_running: this.runloop_running,
-      find_waiters: FindWaiter.toJSONArray(this.find_waiters),
+      handlers,
+      handlers_by_key,
+      event_history,
+      pending_event_queue,
+    }
+  }
+
+  private static _stubHandlerFn(): EventHandlerFunction {
+    return (() => undefined) as EventHandlerFunction
+  }
+
+  private static _upsertHandlerIndex(bus: EventBus, event_pattern: string, handler_id: string): void {
+    const ids = bus.handlers_by_key.get(event_pattern)
+    if (ids) {
+      if (!ids.includes(handler_id)) {
+        ids.push(handler_id)
+      }
+      return
+    }
+    bus.handlers_by_key.set(event_pattern, [handler_id])
+  }
+
+  private static _linkEventResultHandlers(event: BaseEvent, bus: EventBus): void {
+    for (const [map_key, result] of Array.from(event.event_results.entries())) {
+      const handler_id = result.handler_id
+      const existing_handler = bus.handlers.get(handler_id)
+      if (existing_handler) {
+        result.handler = existing_handler
+      } else {
+        const source = result.handler
+        const handler_entry = EventHandler.fromJSON(
+          {
+            ...source.toJSON(),
+            id: handler_id,
+            event_pattern: source.event_pattern || event.event_type,
+            eventbus_name: source.eventbus_name || bus.name,
+            eventbus_id: source.eventbus_id || bus.id,
+          },
+          EventBus._stubHandlerFn()
+        )
+        bus.handlers.set(handler_entry.id, handler_entry)
+        EventBus._upsertHandlerIndex(bus, handler_entry.event_pattern, handler_entry.id)
+        result.handler = handler_entry
+      }
+
+      if (map_key !== handler_id) {
+        event.event_results.delete(map_key)
+        event.event_results.set(handler_id, result)
+      }
     }
   }
 
@@ -222,20 +285,13 @@ export class EventBus {
       options.event_concurrency = record.event_concurrency
     }
     if (typeof record.event_timeout === 'number' || record.event_timeout === null) options.event_timeout = record.event_timeout
-    else if (typeof record.event_timeout_default === 'number' || record.event_timeout_default === null) {
-      options.event_timeout = record.event_timeout_default
-    }
     if (typeof record.event_slow_timeout === 'number' || record.event_slow_timeout === null)
       options.event_slow_timeout = record.event_slow_timeout
     if (record.event_handler_concurrency === 'serial' || record.event_handler_concurrency === 'parallel') {
       options.event_handler_concurrency = record.event_handler_concurrency
-    } else if (record.event_handler_concurrency_default === 'serial' || record.event_handler_concurrency_default === 'parallel') {
-      options.event_handler_concurrency = record.event_handler_concurrency_default
     }
     if (record.event_handler_completion === 'all' || record.event_handler_completion === 'first') {
       options.event_handler_completion = record.event_handler_completion
-    } else if (record.event_handler_completion_default === 'all' || record.event_handler_completion_default === 'first') {
-      options.event_handler_completion = record.event_handler_completion_default
     }
     if (typeof record.event_handler_slow_timeout === 'number' || record.event_handler_slow_timeout === null) {
       options.event_handler_slow_timeout = record.event_handler_slow_timeout
@@ -245,58 +301,74 @@ export class EventBus {
     }
     const bus = new EventBus(name, options)
 
-    const handler_entries = EventHandler.fromJSONArray(record.handlers)
-    for (const handler_entry of handler_entries) {
-      bus.handlers.set(handler_entry.id, handler_entry)
+    if (!record.handlers || typeof record.handlers !== 'object' || Array.isArray(record.handlers)) {
+      throw new Error('EventBus.fromJSON(data) requires handlers as an id-keyed object')
+    }
+    for (const [handler_id, payload] of Object.entries(record.handlers as Record<string, unknown>)) {
+      if (!payload || typeof payload !== 'object') {
+        continue
+      }
+      const parsed = EventHandler.fromJSON(
+        {
+          ...(payload as Record<string, unknown>),
+          id: typeof (payload as { id?: unknown }).id === 'string' ? (payload as { id: string }).id : handler_id,
+        },
+        EventBus._stubHandlerFn()
+      )
+      bus.handlers.set(parsed.id, parsed)
     }
 
-    const raw_handlers_by_key = Array.isArray(record.handlers_by_key) ? record.handlers_by_key : []
-    if (raw_handlers_by_key.length > 0) {
-      bus.handlers_by_key.clear()
-      for (const entry of raw_handlers_by_key) {
-        if (!Array.isArray(entry) || entry.length !== 2) {
-          continue
-        }
-        const [raw_key, raw_ids] = entry
-        if (typeof raw_key !== 'string' || !Array.isArray(raw_ids)) {
-          continue
-        }
-        const ids = raw_ids.filter((id): id is string => typeof id === 'string')
-        bus.handlers_by_key.set(raw_key, ids)
+    if (!record.handlers_by_key || typeof record.handlers_by_key !== 'object' || Array.isArray(record.handlers_by_key)) {
+      throw new Error('EventBus.fromJSON(data) requires handlers_by_key as an object')
+    }
+    bus.handlers_by_key.clear()
+    for (const [raw_key, raw_ids] of Object.entries(record.handlers_by_key as Record<string, unknown>)) {
+      if (!Array.isArray(raw_ids)) {
+        continue
       }
-    } else {
-      for (const handler_entry of bus.handlers.values()) {
-        const ids = bus.handlers_by_key.get(handler_entry.event_pattern)
-        if (ids) ids.push(handler_entry.id)
-        else bus.handlers_by_key.set(handler_entry.event_pattern, [handler_entry.id])
-      }
+      const ids = raw_ids.filter((id): id is string => typeof id === 'string')
+      bus.handlers_by_key.set(raw_key, ids)
     }
 
-    const history_events = BaseEvent.fromJSONArray(record.event_history)
-    for (const event of history_events) {
+    if (!record.event_history || typeof record.event_history !== 'object' || Array.isArray(record.event_history)) {
+      throw new Error('EventBus.fromJSON(data) requires event_history as an id-keyed object')
+    }
+    for (const [event_id, payload] of Object.entries(record.event_history as Record<string, unknown>)) {
+      if (!payload || typeof payload !== 'object') {
+        continue
+      }
+      const event = BaseEvent.fromJSON({
+        ...(payload as Record<string, unknown>),
+        event_id: typeof (payload as { event_id?: unknown }).event_id === 'string' ? (payload as { event_id: string }).event_id : event_id,
+      })
       event.bus = bus
       bus.event_history.set(event.event_id, event)
     }
 
-    const pending_queue_events = BaseEvent.fromJSONArray(record.pending_event_queue)
-    bus.pending_event_queue = pending_queue_events.map((event) => {
-      event.bus = bus
-      const existing = bus.event_history.get(event.event_id)
-      if (existing) {
-        return existing
+    if (!Array.isArray(record.pending_event_queue)) {
+      throw new Error('EventBus.fromJSON(data) requires pending_event_queue as an array of event ids')
+    }
+    const raw_pending_event_queue = record.pending_event_queue
+    const pending_event_ids: string[] = []
+    for (const item of raw_pending_event_queue) {
+      if (typeof item === 'string') {
+        pending_event_ids.push(item)
       }
-      bus.event_history.set(event.event_id, event)
-      return event
-    })
+    }
+    bus.pending_event_queue = pending_event_ids
+      .map((event_id) => bus.event_history.get(event_id))
+      .filter((event): event is BaseEvent => Boolean(event))
 
-    const raw_in_flight = Array.isArray(record.in_flight_event_ids) ? record.in_flight_event_ids : []
-    bus.in_flight_event_ids = new Set(raw_in_flight.filter((id): id is string => typeof id === 'string'))
+    for (const event of bus.event_history.values()) {
+      EventBus._linkEventResultHandlers(event, bus)
+    }
 
     // Reset runtime execution state after restore. Queue/history/handlers are restored,
     // but lock/semaphore internals should always restart from a clean default state.
+    bus.in_flight_event_ids.clear()
     bus.runloop_running = false
     bus.locks.clear()
-    bus.find_waiters = new Set(FindWaiter.fromJSONArray(record.find_waiters))
+    bus.find_waiters.clear()
 
     return bus
   }

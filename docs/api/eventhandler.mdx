@@ -11,7 +11,7 @@ You receive handler entries from `bus.on(...)`, can remove them with `bus.off(..
 
 - `id`: stable handler id
 - `handler_name`: callable/function name
-- `handler_file_path`: optional source path metadata
+- `handler_file_path`: source path metadata (`str | None` in Python, `string | null` in TypeScript)
 - `handler_timeout`: optional per-handler timeout override
 - `handler_slow_timeout`: optional slow-warning override
 - `handler_registered_at` / `handler_registered_ts`

@@ -29,13 +29,13 @@ export const BaseEventSchema = z
     event_parent_id: z.string().uuid().nullable().optional(),
     event_path: z.array(z.string()).optional(),
     event_result_type: z.unknown().optional(),
-    event_emitted_by_handler_id: z.string().uuid().optional(),
+    event_emitted_by_handler_id: z.string().uuid().nullable().optional(),
     event_pending_bus_count: z.number().nonnegative().optional(),
     event_status: z.enum(['pending', 'started', 'completed']).optional(),
-    event_started_at: z.string().datetime().optional(),
-    event_started_ts: z.number().optional(),
+    event_started_at: z.string().datetime().nullable().optional(),
+    event_started_ts: z.number().nullable().optional(),
     event_completed_at: z.string().datetime().nullable().optional(),
-    event_completed_ts: z.number().optional(),
+    event_completed_ts: z.number().nullable().optional(),
     event_results: z.array(z.unknown()).optional(),
     event_concurrency: z.enum(EVENT_CONCURRENCY_MODES).nullable().optional(),
     event_handler_concurrency: z.enum(EVENT_HANDLER_CONCURRENCY_MODES).nullable().optional(),
@@ -126,17 +126,17 @@ export class BaseEvent {
   event_timeout!: number | null // maximum time in seconds that the event is allowed to run before it is aborted
   event_handler_timeout?: number | null // optional per-event handler timeout override in seconds
   event_handler_slow_timeout?: number | null // optional per-event slow handler warning threshold in seconds
-  event_parent_id?: string | null // id of the parent event that triggered this event, if this event was emitted during handling of another event
+  event_parent_id!: string | null // id of the parent event that triggered this event, if this event was emitted during handling of another event, else null
   event_path!: string[] // list of bus labels (name#id) that the event has been dispatched to, including the current bus
   event_result_type?: z.ZodTypeAny // optional zod schema to enforce the shape of return values from handlers
   event_results!: Map<string, EventResult<this>> // map of handler ids to EventResult objects for the event
-  event_emitted_by_handler_id?: string // if event was emitted inside a handler while it was running, this will be set to the enclosing handler's handler id
+  event_emitted_by_handler_id!: string | null // if event was emitted inside a handler while it was running, this is set to the enclosing handler's handler id, else null
   event_pending_bus_count!: number // number of buses that have accepted this event and not yet finished processing or removed it from their queues (for queue-jump processing)
   event_status!: 'pending' | 'started' | 'completed' // processing status of the event as a whole, no separate 'error' state because events can not error, only individual handlers can
-  event_started_at?: string // ISO datetime string version of event_started_ts
-  event_started_ts?: number // nanosecond monotonic version of event_started_at
+  event_started_at?: string | null // ISO datetime string version of event_started_ts
+  event_started_ts?: number | null // nanosecond monotonic version of event_started_at
   event_completed_at?: string | null // ISO datetime string version of event_completed_ts
-  event_completed_ts?: number // nanosecond monotonic version of event_completed_at
+  event_completed_ts?: number | null // nanosecond monotonic version of event_completed_at
   event_concurrency?: EventConcurrencyMode | null // concurrency mode for the event as a whole in relation to other events
   event_handler_concurrency?: EventHandlerConcurrencyMode | null // concurrency mode for the handlers within the event
   event_handler_completion?: EventHandlerCompletionMode | null // completion strategy: 'all' (default) waits for every handler, 'first' returns earliest non-undefined result and cancels the rest
@@ -163,14 +163,16 @@ export class BaseEvent {
     const raw_event_result_type = data.event_result_type ?? ctor.event_result_type
     const event_result_type = normalizeEventResultType(raw_event_result_type)
     const event_id = data.event_id ?? uuidv7()
-    const { isostring: default_event_created_at, ts: event_created_ts } = BaseEvent.nextTimestamp()
+    const { isostring: default_event_created_at, ts: default_event_created_ts } = BaseEvent.nextTimestamp()
     const event_created_at = data.event_created_at ?? default_event_created_at
+    const event_created_ts = data.event_created_ts === undefined ? default_event_created_ts : data.event_created_ts
     const event_timeout = data.event_timeout ?? null
 
     const base_data = {
       ...data,
       event_id,
       event_created_at,
+      event_created_ts,
       event_type,
       event_version,
       event_timeout,
@@ -195,34 +197,21 @@ export class BaseEvent {
     this.event_status =
       parsed_status === 'pending' || parsed_status === 'started' || parsed_status === 'completed' ? parsed_status : 'pending'
 
-    this.event_started_at =
-      typeof (parsed as { event_started_at?: unknown }).event_started_at === 'string'
-        ? (parsed as { event_started_at: string }).event_started_at
-        : undefined
-    this.event_started_ts =
-      typeof (parsed as { event_started_ts?: unknown }).event_started_ts === 'number'
-        ? (parsed as { event_started_ts: number }).event_started_ts
-        : undefined
-    this.event_completed_at =
-      typeof (parsed as { event_completed_at?: unknown }).event_completed_at === 'string'
-        ? (parsed as { event_completed_at: string }).event_completed_at
-        : (parsed as { event_completed_at?: unknown }).event_completed_at === null
-          ? null
-          : undefined
-    this.event_completed_ts =
-      typeof (parsed as { event_completed_ts?: unknown }).event_completed_ts === 'number'
-        ? (parsed as { event_completed_ts: number }).event_completed_ts
-        : undefined
+    this.event_started_at = parsed.event_started_at ?? null
+    this.event_started_ts = parsed.event_started_ts ?? null
+    this.event_completed_at = parsed.event_completed_at ?? null
+    this.event_completed_ts = parsed.event_completed_ts ?? null
+    this.event_parent_id =
+      typeof (parsed as { event_parent_id?: unknown }).event_parent_id === 'string'
+        ? (parsed as { event_parent_id: string }).event_parent_id
+        : null
     this.event_emitted_by_handler_id =
       typeof (parsed as { event_emitted_by_handler_id?: unknown }).event_emitted_by_handler_id === 'string'
         ? (parsed as { event_emitted_by_handler_id: string }).event_emitted_by_handler_id
-        : undefined
+        : null
 
     this.event_result_type = event_result_type
-    this.event_created_ts =
-      typeof (parsed as { event_created_ts?: unknown }).event_created_ts === 'number'
-        ? (parsed as { event_created_ts: number }).event_created_ts
-        : event_created_ts
+    this.event_created_ts = parsed.event_created_ts ?? event_created_ts
 
     this._event_done_signal = null
     this._event_handler_semaphore = null
@@ -720,10 +709,10 @@ export class BaseEvent {
   markPending(): this {
     const original = this._event_original ?? this
     original.event_status = 'pending'
-    original.event_started_at = undefined
-    original.event_started_ts = undefined
-    original.event_completed_at = undefined
-    original.event_completed_ts = undefined
+    original.event_started_at = null
+    original.event_started_ts = null
+    original.event_completed_at = null
+    original.event_completed_ts = null
     original.event_results.clear()
     original.event_pending_bus_count = 0
     original._event_dispatch_context = undefined
@@ -803,7 +792,7 @@ export class BaseEvent {
     return (
       Array.from(this.event_results.values())
         // filter for events that have completed + have non-undefined error values
-        .filter((event_result) => event_result.error !== undefined && event_result.completed_ts !== undefined)
+        .filter((event_result) => event_result.error !== undefined && event_result.completed_ts !== null)
         // sort by completion time
         .sort((event_result_a, event_result_b) => (event_result_a.completed_ts ?? 0) - (event_result_b.completed_ts ?? 0))
         // assemble array of flat error values
@@ -816,7 +805,7 @@ export class BaseEvent {
     return (
       Array.from(this.event_results.values())
         // only events that have completed + have non-undefined result values
-        .filter((event_result) => event_result.completed_ts !== undefined && event_result.result !== undefined)
+        .filter((event_result) => event_result.completed_ts !== null && event_result.result !== undefined)
         // sort by completion time
         .sort((event_result_a, event_result_b) => (event_result_a.completed_ts ?? 0) - (event_result_b.completed_ts ?? 0))
         // assemble array of flat parsed handler return values

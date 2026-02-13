@@ -4,13 +4,7 @@ import { z } from 'zod'
 
 import { BaseEvent } from './base_event.js'
 import type { EventBus } from './event_bus.js'
-import {
-  EventHandler,
-  EventHandlerCancelledError,
-  EventHandlerJSONSchema,
-  EventHandlerResultSchemaError,
-  EventHandlerTimeoutError,
-} from './event_handler.js'
+import { EventHandler, EventHandlerCancelledError, EventHandlerResultSchemaError, EventHandlerTimeoutError } from './event_handler.js'
 import { HandlerLock, withResolvers } from './lock_manager.js'
 import type { Deferred } from './lock_manager.js'
 import type { EventHandlerFunction, EventResultType } from './types.js'
@@ -26,11 +20,20 @@ export const EventResultJSONSchema = z
     id: z.string(),
     status: z.enum(['pending', 'started', 'completed', 'error']),
     event_id: z.string(),
-    handler: EventHandlerJSONSchema,
-    started_at: z.string().optional(),
-    started_ts: z.number().optional(),
-    completed_at: z.string().optional(),
-    completed_ts: z.number().optional(),
+    handler_id: z.string(),
+    handler_name: z.string(),
+    handler_file_path: z.string().nullable().optional(),
+    handler_timeout: z.number().nullable().optional(),
+    handler_slow_timeout: z.number().nullable().optional(),
+    handler_registered_at: z.string().optional(),
+    handler_registered_ts: z.number().optional(),
+    handler_event_pattern: z.union([z.string(), z.literal('*')]).optional(),
+    eventbus_name: z.string(),
+    eventbus_id: z.string().uuid(),
+    started_at: z.string().nullable().optional(),
+    started_ts: z.number().nullable().optional(),
+    completed_at: z.string().nullable().optional(),
+    completed_ts: z.number().nullable().optional(),
     result: z.unknown().optional(),
     error: z.unknown().optional(),
     event_children: z.array(z.string()),
@@ -45,10 +48,10 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   status: EventResultStatus // 'pending', 'started', 'completed', or 'error'
   event: TEvent // the Event that the handler is processing
   handler: EventHandler // the EventHandler object that going to process the event
-  started_at?: string // ISO datetime string version of started_ts
-  started_ts?: number // nanosecond monotonic version of started_at
-  completed_at?: string // ISO datetime string version of completed_ts
-  completed_ts?: number // nanosecond monotonic version of completed_at
+  started_at: string | null // ISO datetime string version of started_ts
+  started_ts: number | null // nanosecond monotonic version of started_at
+  completed_at: string | null // ISO datetime string version of completed_ts
+  completed_ts: number | null // nanosecond monotonic version of completed_at
   result?: EventResultType<TEvent> // parsed return value from the event handler
   error?: unknown // error object thrown by the event handler, or null if the handler completed successfully
   event_children: BaseEvent[] // list of emitted child events
@@ -68,6 +71,10 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     this.status = 'pending'
     this.event = params.event
     this.handler = params.handler
+    this.started_at = null
+    this.started_ts = null
+    this.completed_at = null
+    this.completed_ts = null
     this.result = undefined
     this.error = undefined
     this.event_children = []
@@ -96,7 +103,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     return this.handler.handler_name
   }
 
-  get handler_file_path(): string | undefined {
+  get handler_file_path(): string | null {
     return this.handler.handler_file_path
   }
 
@@ -398,7 +405,16 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       id: this.id,
       status: this.status,
       event_id: this.event.event_id,
-      handler: this.handler.toJSON(),
+      handler_id: this.handler_id,
+      handler_name: this.handler_name,
+      handler_file_path: this.handler_file_path,
+      handler_timeout: this.handler.handler_timeout,
+      handler_slow_timeout: this.handler.handler_slow_timeout,
+      handler_registered_at: this.handler.handler_registered_at,
+      handler_registered_ts: this.handler.handler_registered_ts,
+      handler_event_pattern: this.handler.event_pattern,
+      eventbus_name: this.eventbus_name,
+      eventbus_id: this.eventbus_id,
       started_at: this.started_at,
       started_ts: this.started_ts,
       completed_at: this.completed_at,
@@ -411,15 +427,27 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
 
   static fromJSON<TEvent extends BaseEvent>(event: TEvent, data: unknown): EventResult<TEvent> {
     const record = EventResultJSONSchema.parse(data)
-    const handler_stub = EventHandler.fromJSON(record.handler, (() => undefined) as EventHandlerFunction)
+    const handler_record = {
+      id: record.handler_id,
+      eventbus_name: record.eventbus_name,
+      eventbus_id: record.eventbus_id,
+      event_pattern: record.handler_event_pattern ?? event.event_type,
+      handler_name: record.handler_name,
+      handler_file_path: record.handler_file_path ?? null,
+      handler_timeout: record.handler_timeout,
+      handler_slow_timeout: record.handler_slow_timeout,
+      handler_registered_at: record.handler_registered_at ?? event.event_created_at,
+      handler_registered_ts: record.handler_registered_ts ?? event.event_created_ts,
+    } as const
+    const handler_stub = EventHandler.fromJSON(handler_record, (() => undefined) as EventHandlerFunction)
 
     const result = new EventResult<TEvent>({ event, handler: handler_stub })
     result.id = record.id
     result.status = record.status
-    result.started_at = record.started_at
-    result.started_ts = record.started_ts
-    result.completed_at = record.completed_at
-    result.completed_ts = record.completed_ts
+    result.started_at = record.started_at ?? null
+    result.started_ts = record.started_ts ?? null
+    result.completed_at = record.completed_at ?? null
+    result.completed_ts = record.completed_ts ?? null
     if ('result' in record) {
       result.result = record.result as EventResultType<TEvent>
     }

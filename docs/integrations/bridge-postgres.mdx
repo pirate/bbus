@@ -108,6 +108,7 @@ bridge.on('*', bus.emit)
 - `on(...)` registers inbound handlers and auto-starts listener startup.
 - On notifications, the bridge fetches the full row payload, reconstructs an event, resets it, and emits locally.
 - Columns are created on demand only for `event_*` fields.
-- Non-`event_*` fields are stored together in a single `event_payload` column as a JSON-encoded blob.
+- The full event JSON is stored in `event_payload` (not just non-`event_*` fields).
+- `event_*` columns are also stored as flat mirrored fields for indexing/querying.
 - Rehydration merges `event_payload` with `event_*` column values back into a flat event object.
 - Runtime requirements: Python needs `asyncpg`, TypeScript needs `pg` and Node.js.

@@ -5,7 +5,7 @@ Schema mirrors Postgres bridge shape:
 - event_id (PRIMARY KEY)
 - event_created_at (indexed)
 - event_type (indexed)
-- event_payload (JSON for non-event_* fields)
+- event_payload (full event JSON payload)
 - one TEXT column per event_* field storing JSON-serialized values
 """
 
@@ -42,12 +42,10 @@ def _is_str_keyed_dict(value: Any) -> TypeGuard[dict[str, Any]]:
 
 def _split_bridge_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     event_fields: dict[str, Any] = {}
-    event_payload: dict[str, Any] = {}
+    event_payload: dict[str, Any] = dict(payload)
     for key, value in payload.items():
         if key.startswith('event_'):
             event_fields[key] = value
-        else:
-            event_payload[key] = value
     return event_fields, event_payload
 
 
@@ -113,7 +111,9 @@ class SQLiteEventBridge:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 await asyncio.to_thread(self._init_db)
                 await asyncio.to_thread(self._refresh_column_cache)
-                await asyncio.to_thread(self._ensure_columns, ['event_id', 'event_created_at', 'event_type', _EVENT_PAYLOAD_COLUMN])
+                await asyncio.to_thread(
+                    self._ensure_columns, ['event_id', 'event_created_at', 'event_type', _EVENT_PAYLOAD_COLUMN]
+                )
                 await asyncio.to_thread(self._ensure_base_indexes)
                 await asyncio.to_thread(self._set_cursor_to_latest_row)
                 self._running = True
@@ -250,9 +250,7 @@ class SQLiteEventBridge:
         for key in keys:
             _validate_identifier(key, label='event field name')
             if key != _EVENT_PAYLOAD_COLUMN and not key.startswith('event_'):
-                raise ValueError(
-                    f'Invalid event field name for bridge column: {key!r}. Only event_* fields become columns'
-                )
+                raise ValueError(f'Invalid event field name for bridge column: {key!r}. Only event_* fields become columns')
 
         missing_columns = [key for key in keys if key not in self._table_columns]
         if not missing_columns:

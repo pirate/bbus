@@ -92,10 +92,16 @@ def test_event_with_manually_set_completed_at():
     if hasattr(event, 'event_completed_at'):
         event.event_completed_at = datetime.now(UTC)
 
-    # Should not raise AttributeError
-    assert event.event_started_at is not None  # Should use event_completed_at
-    # Note: Since we set event_completed_at and there are no handlers, event_completed_at will also return event_completed_at
+    # Stateful runtime fields are no longer derived from event_results/event_completed_at on read.
+    # Manually assigning event_completed_at alone does not mutate status/started_at.
+    assert event.event_started_at is None
+    assert event.event_status == 'pending'
     assert event.event_completed_at is not None
+
+    # Reconcile state through the lifecycle method.
+    event.event_mark_complete_if_all_handlers_completed()
+    assert event.event_status == 'completed'
+    assert event.event_started_at is not None
 
     # Add a handler result to make it incomplete
     event.event_result_update(handler=lambda e: None, status='started')
@@ -123,8 +129,8 @@ def test_event_copy_preserves_private_attrs():
     assert copied_event.event_completed_at is None
 
 
-def test_event_started_at_is_serialized_and_recomputed_each_dump():
-    """event_started_at should be included in JSON dumps and recomputed each read (not cached)."""
+def test_event_started_at_is_serialized_and_stateful():
+    """event_started_at should be included in JSON dumps and remain stable once set."""
     event = SampleEvent(data='serialize-started-at')
 
     pending_payload = event.model_dump(mode='json')
@@ -141,12 +147,13 @@ def test_event_started_at_is_serialized_and_recomputed_each_dump():
 
     second_started_at = event.model_dump(mode='json')['event_started_at']
     assert isinstance(second_started_at, str)
+    assert second_started_at == first_started_at
     parsed = datetime.fromisoformat(second_started_at.replace('Z', '+00:00'))
-    assert parsed == forced_started_at
+    assert parsed != forced_started_at
 
 
-def test_event_status_is_serialized_and_recomputed_each_dump():
-    """event_status should be included in JSON dumps and track live lifecycle state."""
+def test_event_status_is_serialized_and_stateful():
+    """event_status should be included in JSON dumps and track lifecycle transitions via runtime updates."""
     event = SampleEvent(data='serialize-status')
 
     pending_payload = event.model_dump(mode='json')

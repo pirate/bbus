@@ -93,5 +93,8 @@ test('event result JSON omits result_type and derives from parent event', async 
   const json = result.toJSON() as Record<string, unknown>
 
   assert.equal('result_type' in json, false)
+  assert.equal('handler' in json, false)
+  assert.equal(typeof json.handler_id, 'string')
+  assert.equal(typeof json.handler_name, 'string')
   assert.equal(result.result_type, event.event_result_type)
 })

@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sqlite3
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile

@@ -99,16 +99,13 @@ test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
   assert.equal(json.event_handler_slow_timeout, 12)
   assert.equal(json.event_slow_timeout, 34)
   assert.equal(json.event_handler_detect_file_paths, false)
-  assert.equal(json.handlers.length, 1)
-  assert.equal(json.handlers_by_key.length, 1)
-  assert.ok(json.handlers_by_key.some(([event_pattern]) => event_pattern === 'SerializableEvent'))
-  assert.equal(json.event_history.length, 1)
-  assert.equal(json.event_history[0].event_id, pending_event.event_id)
+  assert.equal(Object.keys(json.handlers).length, 1)
+  assert.equal(Object.keys(json.handlers_by_key).length, 1)
+  assert.equal(Array.isArray(json.handlers_by_key.SerializableEvent), true)
+  assert.equal(Object.keys(json.event_history).length, 1)
+  assert.equal((json.event_history[pending_event.event_id] as Record<string, unknown>).event_id, pending_event.event_id)
   assert.equal(json.pending_event_queue.length, 1)
-  assert.equal(json.pending_event_queue[0].event_id, pending_event.event_id)
-  assert.deepEqual(json.in_flight_event_ids, [])
-  assert.equal(json.runloop_running, true)
-  assert.ok(Array.isArray(json.find_waiters))
+  assert.equal(json.pending_event_queue[0], pending_event.event_id)
 
   const restored = EventBus.fromJSON(json)
   assert.equal(restored.id, '018f8e40-1234-7000-8000-000000001234')
@@ -131,6 +128,30 @@ test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
 
   release_pause()
   await pending_event.done()
+})
+
+test('EventBus.fromJSON recreates missing handler entries from event_result metadata', async () => {
+  const bus = new EventBus('MissingHandlerHydrationBus', {
+    event_handler_detect_file_paths: false,
+  })
+  const SerializableEvent = BaseEvent.extend('MissingHandlerHydrationEvent', {})
+
+  bus.on(SerializableEvent, () => 'ok')
+  const event = bus.dispatch(SerializableEvent({}))
+  await event.done()
+
+  const handler_id = Array.from(event.event_results.values())[0].handler_id
+  const json = bus.toJSON()
+  json.handlers = {}
+  json.handlers_by_key = {}
+
+  const restored = EventBus.fromJSON(json)
+  const restored_event = restored.event_history.get(event.event_id)
+  assert.ok(restored_event)
+  assert.ok(restored.handlers.has(handler_id))
+  const restored_result = restored_event!.event_results.get(handler_id)
+  assert.ok(restored_result)
+  assert.equal(restored_result!.handler, restored.handlers.get(handler_id))
 })
 
 test('EventBus exposes locks API surface', () => {
@@ -228,7 +249,7 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
   assert.equal(json_results.length, 1)
   assert.equal(json_results[0].status, 'completed')
   assert.equal(json_results[0].result, 'ok')
-  assert.equal((json_results[0].handler as Record<string, unknown>).id, Array.from(event.event_results.values())[0].handler_id)
+  assert.equal(json_results[0].handler_id, Array.from(event.event_results.values())[0].handler_id)
 
   const restored = RuntimeEvent.fromJSON?.(json) ?? RuntimeEvent(json as never)
   assert.equal(restored.event_status, 'completed')
@@ -266,6 +287,14 @@ test('event_version supports defaults, extend-time defaults, runtime override, a
 })
 
 test('fromJSON accepts event_parent_id: null and preserves it in toJSON output', () => {
+  const missing_field_event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-000000001233',
+    event_created_at: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+    event_type: 'MissingParentIdEvent',
+    event_timeout: null,
+  })
+  assert.equal(missing_field_event.event_parent_id, null)
+
   const event = BaseEvent.fromJSON({
     event_id: '018f8e40-1234-7000-8000-000000001234',
     event_created_at: new Date('2025-01-01T00:00:00.000Z').toISOString(),
@@ -276,6 +305,30 @@ test('fromJSON accepts event_parent_id: null and preserves it in toJSON output',
 
   assert.equal(event.event_parent_id, null)
   assert.equal((event.toJSON() as Record<string, unknown>).event_parent_id, null)
+})
+
+test('event_emitted_by_handler_id defaults to null and accepts null in fromJSON', () => {
+  const fresh_event = BaseEvent.extend('NullEmittedByDefaultEvent')({})
+  assert.equal(fresh_event.event_emitted_by_handler_id, null)
+
+  const missing_field_event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-000000001239',
+    event_created_at: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+    event_type: 'MissingEmittedByIdEvent',
+    event_timeout: null,
+  })
+  assert.equal(missing_field_event.event_emitted_by_handler_id, null)
+
+  const json_event = BaseEvent.fromJSON({
+    event_id: '018f8e40-1234-7000-8000-00000000123a',
+    event_created_at: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+    event_type: 'NullEmittedByIdEvent',
+    event_emitted_by_handler_id: null,
+    event_timeout: null,
+  })
+
+  assert.equal(json_event.event_emitted_by_handler_id, null)
+  assert.equal((json_event.toJSON() as Record<string, unknown>).event_emitted_by_handler_id, null)
 })
 
 test('fromJSON deserializes event_result_type and toJSON reserializes schema', () => {

@@ -8,6 +8,7 @@ import { test } from 'node:test'
 import { z } from 'zod'
 
 import { BaseEvent, EventBus } from '../src/index.js'
+import { EventResult } from '../src/event_result.js'
 import { fromJsonSchema } from '../src/types.js'
 
 const tests_dir = dirname(fileURLToPath(import.meta.url))
@@ -386,6 +387,53 @@ with open(output_path, 'w', encoding='utf-8') as f:
   }
 }
 
+const runPythonBusRoundtrip = (python_bin: string, payload: Record<string, unknown>): Record<string, unknown> => {
+  const temp_dir = mkdtempSync(join(tmpdir(), 'bubus-ts-bus-to-python-'))
+  const input_path = join(temp_dir, 'ts_bus.json')
+  const output_path = join(temp_dir, 'python_bus.json')
+
+  const python_script = `
+import json
+import os
+from bubus import EventBus
+
+input_path = os.environ.get('BUBUS_TS_PY_BUS_INPUT_PATH')
+output_path = os.environ.get('BUBUS_TS_PY_BUS_OUTPUT_PATH')
+if not input_path or not output_path:
+    raise RuntimeError('missing BUBUS_TS_PY_BUS_INPUT_PATH or BUBUS_TS_PY_BUS_OUTPUT_PATH')
+
+with open(input_path, 'r', encoding='utf-8') as f:
+    raw = json.load(f)
+
+if not isinstance(raw, dict):
+    raise TypeError('expected object payload')
+
+bus = EventBus.validate(raw)
+roundtripped = bus.model_dump()
+
+with open(output_path, 'w', encoding='utf-8') as f:
+    json.dump(roundtripped, f, indent=2)
+`
+
+  try {
+    writeFileSync(input_path, JSON.stringify(payload, null, 2), 'utf8')
+    const proc = spawnSync(python_bin, ['-c', python_script], {
+      cwd: repo_root,
+      env: {
+        ...process.env,
+        BUBUS_TS_PY_BUS_INPUT_PATH: input_path,
+        BUBUS_TS_PY_BUS_OUTPUT_PATH: output_path,
+      },
+      encoding: 'utf8',
+    })
+
+    assert.equal(proc.status, 0, `python bus roundtrip failed:\nstdout:\n${proc.stdout ?? ''}\nstderr:\n${proc.stderr ?? ''}`)
+    return JSON.parse(readFileSync(output_path, 'utf8')) as Record<string, unknown>
+  } finally {
+    rmSync(temp_dir, { recursive: true, force: true })
+  }
+}
+
 test('ts_to_python_roundtrip preserves event fields and result type semantics', async (t) => {
   const python_bin = resolvePython()
   if (!python_bin) {
@@ -514,4 +562,109 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
     ],
   })
   right_bus.destroy()
+})
+
+test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', async (t) => {
+  const python_bin = resolvePython()
+  if (!python_bin) {
+    t.skip('python is required for ts<->python roundtrip tests')
+    return
+  }
+
+  try {
+    assertPythonCanImportBubus(python_bin)
+  } catch (error) {
+    t.skip(String(error))
+    return
+  }
+
+  const ResumeEvent = BaseEvent.extend('TsPyBusResumeEvent', {
+    label: z.string(),
+    event_result_type: z.string(),
+  })
+
+  const source_bus = new EventBus('TsPyBusSource', {
+    id: '018f8e40-1234-7000-8000-00000000aa11',
+    event_handler_detect_file_paths: false,
+    event_handler_concurrency: 'serial',
+    event_handler_completion: 'all',
+  })
+
+  const handler_one = source_bus.on(ResumeEvent, (event) => `h1:${(event as unknown as { label: string }).label}`)
+  const handler_two = source_bus.on(ResumeEvent, (event) => `h2:${(event as unknown as { label: string }).label}`)
+
+  const event_one = ResumeEvent({ label: 'e1' })
+  const event_two = ResumeEvent({ label: 'e2' })
+
+  const seeded = new EventResult({ event: event_one, handler: handler_one })
+  seeded.markStarted()
+  seeded.markCompleted('seeded')
+  event_one.event_results.set(handler_one.id, seeded)
+  const pending = new EventResult({ event: event_one, handler: handler_two })
+  event_one.event_results.set(handler_two.id, pending)
+
+  source_bus.event_history.set(event_one.event_id, event_one)
+  source_bus.event_history.set(event_two.event_id, event_two)
+  source_bus.pending_event_queue = [event_one, event_two]
+
+  const source_dump = jsonSafe(source_bus.toJSON())
+  const py_roundtripped = runPythonBusRoundtrip(python_bin, source_dump)
+  const restored = EventBus.fromJSON(py_roundtripped)
+  const restored_dump = jsonSafe(restored.toJSON())
+
+  assert.deepEqual(Object.keys(restored_dump.handlers), Object.keys(source_dump.handlers))
+  for (const [handler_id, handler_payload] of Object.entries(source_dump.handlers as Record<string, Record<string, unknown>>)) {
+    const restored_handler = (restored_dump.handlers as Record<string, Record<string, unknown>>)[handler_id]
+    assert.ok(restored_handler, `missing handler ${handler_id}`)
+    assert.equal(restored_handler.eventbus_id, handler_payload.eventbus_id)
+    assert.equal(restored_handler.eventbus_name, handler_payload.eventbus_name)
+    assert.equal(restored_handler.event_pattern, handler_payload.event_pattern)
+  }
+  assert.deepEqual(restored_dump.handlers_by_key, source_dump.handlers_by_key)
+  assert.deepEqual(restored_dump.pending_event_queue, source_dump.pending_event_queue)
+  assert.deepEqual(Object.keys(restored_dump.event_history), Object.keys(source_dump.event_history))
+
+  const restored_event_one = restored.event_history.get(event_one.event_id)
+  assert.ok(restored_event_one)
+  const preseeded = Array.from(restored_event_one!.event_results.values()).find((result) => result.result === 'seeded')
+  assert.ok(preseeded)
+  assert.equal(preseeded!.status, 'completed')
+  assert.equal(preseeded!.result, 'seeded')
+  assert.equal(preseeded!.handler, restored.handlers.get(preseeded!.handler_id))
+
+  const run_order: string[] = []
+  const restored_handler_one = restored.handlers.get(handler_one.id)
+  const restored_handler_two = restored.handlers.get(handler_two.id)
+  assert.ok(restored_handler_one)
+  assert.ok(restored_handler_two)
+  restored_handler_one!.handler = ((event: BaseEvent) => {
+    const label = (event as unknown as { label: string }).label
+    const value = `h1:${label}`
+    run_order.push(value)
+    return value
+  }) as any
+  restored_handler_two!.handler = ((event: BaseEvent) => {
+    const label = (event as unknown as { label: string }).label
+    const value = `h2:${label}`
+    run_order.push(value)
+    return value
+  }) as any
+
+  const trigger = restored.dispatch(ResumeEvent({ label: 'e3' }))
+  await trigger.done()
+
+  assert.deepEqual(run_order, ['h2:e1', 'h1:e2', 'h2:e2', 'h1:e3', 'h2:e3'])
+
+  const done_one = restored.event_history.get(event_one.event_id)
+  const done_two = restored.event_history.get(event_two.event_id)
+  const done_three = restored.event_history.get(trigger.event_id)
+  assert.equal(done_three?.event_status, 'completed')
+  assert.equal(restored.pending_event_queue.length, 0)
+  assert.ok(Array.from(done_one?.event_results.values() ?? []).every((result) => result.status === 'completed'))
+  assert.ok(Array.from(done_two?.event_results.values() ?? []).every((result) => result.status === 'completed'))
+  assert.equal(done_one?.event_results.get(handler_one.id)?.result, 'seeded')
+  assert.equal(done_one?.event_results.get(handler_two.id)?.result, 'h2:e1')
+
+  source_bus.destroy()
+  restored.destroy()
 })

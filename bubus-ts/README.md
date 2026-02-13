@@ -153,7 +153,7 @@ Advanced `options` fields, these can be used to override defaults per-handler if
 - `handler_timeout?: number | null` hard delay before handler execution is aborted with a `HandlerTimeoutError`
 - `handler_slow_timeout?: number | null` delay before emitting a slow handler warning log line
 - `handler_name?: string` optional name to use instead of `anonymous` if handler is an unnamed arrow function
-- `handler_file_path?: string` optional path/to/source/file.js:lineno where the handler is defined, used for logging only
+- `handler_file_path?: string | null` optional path/to/source/file.js:lineno where the handler is defined, used for logging only
 - `id?: string` unique UUID for the handler (normally a hash of bus_id + event_pattern + handler_name + handler_registered_at)
 
 Notes:
@@ -221,7 +221,7 @@ type FindOptions = {
 } & {
   // event_status: 'pending' | 'started' | 'completed'
   // event_id: 'some-exact-event-uuid-here',
-  // event_started_at: string (exact iso datetime string)
+  // event_started_at: string | null (exact iso datetime string or null)
   // ... any event field can be passed to filter events using simple equality checks
   [key: string]: unknown
 }
@@ -374,11 +374,16 @@ Special configuration fields you can set on each event to control processing:
 
 #### Runtime state fields
 
-- `event_id`, `event_type`, `event_version`, `event_path`, `event_parent_id`
+- `event_id`, `event_type`, `event_version`
+- `event_path: string[]` (bus labels like `BusName#ab12`)
+- `event_parent_id: string | null`
+- `event_emitted_by_handler_id: string | null`
 - `event_status: 'pending' | 'started' | 'completed'`
 - `event_results: Map<string, EventResult>`
-- `event_pending_bus_count`
-- `event_created_at/ts`, `event_started_at/ts`, `event_completed_at/ts`
+- `event_pending_bus_count: number`
+- `event_created_at: string`, `event_created_ts: number`
+- `event_started_at: string | null`, `event_started_ts: number | null`
+- `event_completed_at: string | null`, `event_completed_ts: number | null`
 
 #### Read-only attributes
 
@@ -471,9 +476,11 @@ Each handler execution creates one `EventResult` stored in `event.event_results`
 - `event: BaseEvent`
 - `handler: EventHandler`
 - `result: EventResultType<this> | undefined`
-- `error: Error | undefined`
-- `started_at: string` (ISO Format datetime string)
-- `completed_at: string` (ISO Format datetime string)
+- `error: unknown | undefined`
+- `started_at: string | null` (ISO datetime string)
+- `started_ts: number | null` (monotonic timestamp)
+- `completed_at: string | null` (ISO datetime string)
+- `completed_ts: number | null` (monotonic timestamp)
 - `event_children: BaseEvent[]`
 
 #### Read-only getters
@@ -482,7 +489,7 @@ Each handler execution creates one `EventResult` stored in `event.event_results`
 - `bus` -> `EventBus` instance it's associated with
 - `handler_id` -> `string` uuidv5 of the `EventHandler`
 - `handler_name` -> `string | 'anonymous'` function name of the handler method
-- `handler_file_path` -> `string | undefined` path/to/file.js:lineno where the handler method is defined
+- `handler_file_path` -> `string | null` path/to/file.js:lineno where the handler method is defined
 - `eventbus_name` -> `string` name, same as `this.bus.name`
 - `eventbus_id` -> `string` uuidv7, same as `this.bus.id`
 - `eventbus_label` -> `string` label, same as `this.bus.label`
@@ -520,7 +527,7 @@ Represents one registered handler entry on a bus. You usually get these from `bu
 - `id` unique handler UUIDv5 (deterministic hash from bus/event/handler metadata unless overridden)
 - `handler` function reference that executes for matching events
 - `handler_name` function name (or `'anonymous'`)
-- `handler_file_path` optional detected source path (`~/path/file.ts:line`)
+- `handler_file_path` detected source path (`~/path/file.ts:line`) or `null`
 - `handler_timeout` optional timeout override in seconds (`null` disables timeout limit)
 - `handler_slow_timeout` optional slow-warning threshold in seconds (`null` disables slow warning)
 - `handler_registered_at` ISO timestamp

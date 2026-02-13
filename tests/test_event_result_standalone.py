@@ -184,10 +184,10 @@ def test_event_result_serializes_handler_metadata_and_derived_fields() -> None:
     )
     payload = result.model_dump(mode='json')
 
-    assert payload['handler']['id'] == entry.id
-    assert payload['handler']['handler_name'] == entry.handler_name
+    assert 'handler' not in payload
     assert 'result_type' not in payload
     assert payload['handler_id'] == entry.id
     assert payload['handler_name'] == entry.handler_name
+    assert payload['handler_event_pattern'] == entry.event_pattern
     assert payload['eventbus_id'] == entry.eventbus_id
     assert payload['eventbus_name'] == entry.eventbus_name

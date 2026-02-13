@@ -75,7 +75,7 @@ export const EventHandlerJSONSchema = z
     eventbus_id: z.string().uuid(),
     event_pattern: z.union([z.string(), z.literal('*')]),
     handler_name: z.string(),
-    handler_file_path: z.string().optional(),
+    handler_file_path: z.string().nullable().optional(),
     handler_timeout: z.number().nullable().optional(),
     handler_slow_timeout: z.number().nullable().optional(),
     handler_registered_at: z.string(),
@@ -90,7 +90,7 @@ export class EventHandler {
   id: string // unique uuidv5 based on hash of bus name, handler name, handler file path:lineno, registered at timestamp, and event key
   handler: EventHandlerFunction // the handler function itself
   handler_name: string // name of the handler function, or 'anonymous' if the handler is an anonymous/arrow function
-  handler_file_path?: string // ~/path/to/source/file.ts:123
+  handler_file_path: string | null // ~/path/to/source/file.ts:123, or null when unknown
   handler_timeout?: number | null // maximum time in seconds that the handler is allowed to run before it is aborted, resolved at runtime if not set
   handler_slow_timeout?: number | null // warning threshold in seconds for slow handler execution
   handler_registered_at: string // ISO datetime string version of handler_registered_ts
@@ -103,7 +103,7 @@ export class EventHandler {
     id?: string
     handler: EventHandlerFunction
     handler_name: string
-    handler_file_path?: string
+    handler_file_path?: string | null
     handler_timeout?: number | null
     handler_slow_timeout?: number | null
     handler_registered_at: string
@@ -124,7 +124,7 @@ export class EventHandler {
       })
     this.handler = params.handler
     this.handler_name = params.handler_name
-    this.handler_file_path = params.handler_file_path
+    this.handler_file_path = params.handler_file_path ?? null
     this.handler_timeout = params.handler_timeout
     this.handler_slow_timeout = params.handler_slow_timeout
     this.handler_registered_at = params.handler_registered_at
@@ -138,7 +138,7 @@ export class EventHandler {
   static computeHandlerId(params: {
     eventbus_id: string
     handler_name: string
-    handler_file_path?: string
+    handler_file_path?: string | null
     handler_registered_at: string
     handler_registered_ts: number
     event_pattern: string | '*'
@@ -208,7 +208,7 @@ export class EventHandler {
       id: record.id,
       handler: handler_fn,
       handler_name,
-      handler_file_path: record.handler_file_path,
+      handler_file_path: record.handler_file_path ?? null,
       handler_timeout: record.handler_timeout,
       handler_slow_timeout: record.handler_slow_timeout,
       handler_registered_at: record.handler_registered_at,

@@ -106,11 +106,6 @@ ContravariantEventHandlerCallable: TypeAlias = (
 HANDLER_ID_NAMESPACE: UUID = uuid5(NAMESPACE_DNS, 'bubus-handler')
 
 
-def _validate_eventbus_name(value: str) -> str:
-    assert str(value).isidentifier() and not str(value).startswith('_'), f'Invalid event bus name: {value!r}'
-    return str(value)
-
-
 def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
     normalized = str(Path(path).expanduser().resolve())
     home = str(Path.home())
@@ -193,22 +188,33 @@ class EventHandler(BaseModel):
         revalidate_instances='always',
     )
 
-    id: str | None = None
+    id: str = ''
     handler: EventHandlerCallable | None = Field(default=None, exclude=True, repr=False)
     handler_name: str = 'anonymous'
     handler_file_path: str | None = None
     handler_timeout: float | None = None
     handler_slow_timeout: float | None = None
     handler_registered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    handler_registered_ts: int = Field(default_factory=time.time_ns)
+    handler_registered_ts: int | float = Field(default_factory=time.time_ns)
     event_pattern: str = '*'
     eventbus_name: str = 'EventBus'
     eventbus_id: str = '00000000-0000-0000-0000-000000000000'
 
+    @field_validator('handler_name', mode='before')
+    @classmethod
+    def _validate_handler_name_field(cls, value: Any) -> str:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+        return 'anonymous'
+
     @field_validator('eventbus_name')
     @classmethod
     def _validate_eventbus_name_field(cls, value: str) -> str:
-        return _validate_eventbus_name(value)
+        normalized = str(value)
+        assert normalized.isidentifier() and not normalized.startswith('_'), f'Invalid event bus name: {value!r}'
+        return normalized
 
     @property
     def eventbus_label(self) -> str:
@@ -231,17 +237,20 @@ class EventHandler(BaseModel):
         if not isinstance(data, dict):
             return data
         params = cast(dict[str, Any], data)
+        if params.get('id') is None:
+            params.pop('id', None)
         handler = params.get('handler')
         if handler is not None and not params.get('handler_name'):
-            params['handler_name'] = cls.get_callable_handler_name(handler)
+            try:
+                derived_name = cls.get_callable_handler_name(cast(EventHandlerCallable, handler))
+                params['handler_name'] = derived_name.strip() or 'function'
+            except Exception:
+                params['handler_name'] = 'function'
         return params
 
-    @model_validator(mode='after')
-    def _ensure_handler_id(self) -> 'EventHandler':
-        if self.id:
-            return self
-        self.id = self.compute_handler_id()
-        return self
+    def model_post_init(self, __context: Any) -> None:
+        if not self.id:
+            self.id = self.compute_handler_id()
 
     def compute_handler_id(self) -> str:
         """Match TS handler-id algorithm: uuidv5(seed, HANDLER_ID_NAMESPACE)."""
@@ -258,13 +267,13 @@ class EventHandler(BaseModel):
 
     @property
     def label(self) -> str:
-        if not self.id:
-            return self.handler_name
+        assert self.id, 'EventHandler.id must be set'
         return f'{self.handler_name}#{self.id[-4:]}'
 
     def __str__(self) -> str:
         has_name = self.handler_name and self.handler_name != 'anonymous'
-        display = f'{self.handler_name}()' if has_name else f'function#{(self.id or "")[-4:]}()'
+        assert self.id, 'EventHandler.id must be set'
+        display = f'{self.handler_name}()' if has_name else f'function#{self.id[-4:]}()'
         return f'{display} @ {self.handler_file_path}' if self.handler_file_path else display
 
     def __call__(self, event: 'BaseEvent[Any]') -> Any:
@@ -279,10 +288,17 @@ class EventHandler(BaseModel):
     @classmethod
     def from_json_dict(cls, data: Any, handler: EventHandlerCallable | None = None) -> 'EventHandler':
         entry = cls.model_validate(data)
+        if not entry.id:
+            entry.id = entry.compute_handler_id()
+        handler_name_provided = isinstance(data, dict) and bool(cast(dict[str, Any], data).get('handler_name'))
         if handler is not None:
             entry.handler = handler
-            if not entry.handler_name or entry.handler_name == 'anonymous':
-                entry.handler_name = cls.get_callable_handler_name(handler)
+            if not handler_name_provided and entry.handler_name == 'anonymous':
+                try:
+                    derived_name = cls.get_callable_handler_name(handler)
+                    entry.handler_name = derived_name.strip() or 'function'
+                except Exception:
+                    entry.handler_name = 'function'
         return entry
 
     @classmethod
@@ -306,9 +322,7 @@ class EventHandler(BaseModel):
             resolved_file_path = _get_callable_handler_file_path(_HandlerCacheKey(handler))
 
         handler_params: dict[str, Any] = {
-            'id': id,
             'handler': handler,
-            'handler_name': cls.get_callable_handler_name(handler),
             'handler_file_path': resolved_file_path,
             'handler_registered_at': handler_registered_at or datetime.now(UTC),
             'handler_registered_ts': handler_registered_ts or time.time_ns(),
@@ -316,12 +330,22 @@ class EventHandler(BaseModel):
             'eventbus_name': eventbus_name,
             'eventbus_id': eventbus_id,
         }
+        try:
+            derived_name = cls.get_callable_handler_name(handler)
+            handler_params['handler_name'] = derived_name.strip() or 'function'
+        except Exception:
+            handler_params['handler_name'] = 'function'
+        if id is not None:
+            handler_params['id'] = id
         if handler_timeout is not None:
             handler_params['handler_timeout'] = handler_timeout
         if handler_slow_timeout is not None:
             handler_params['handler_slow_timeout'] = handler_slow_timeout
 
-        return cls(**handler_params)
+        entry = cls(**handler_params)
+        if not entry.id:
+            entry.id = entry.compute_handler_id()
+        return entry
 
 
 __all__ = [

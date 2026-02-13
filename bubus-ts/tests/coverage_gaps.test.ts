@@ -22,8 +22,8 @@ test('reset creates a fresh pending event for cross-bus dispatch', async () => {
   assert.notEqual(fresh.event_id, completed.event_id)
   assert.equal(fresh.event_status, 'pending')
   assert.equal(fresh.event_results.size, 0)
-  assert.equal(fresh.event_started_at, undefined)
-  assert.equal(fresh.event_completed_at, undefined)
+  assert.equal(fresh.event_started_at, null)
+  assert.equal(fresh.event_completed_at, null)
 
   const forwarded = await bus_b.dispatch(fresh).done()
   assert.equal(forwarded.event_status, 'completed')

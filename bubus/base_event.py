@@ -19,6 +19,7 @@ from pydantic import (
     computed_field,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from typing_extensions import TypeVar  # needed to get TypeVar(default=...) above python 3.11
@@ -167,19 +168,165 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
     # Child events emitted during handler execution
     event_children: list['BaseEvent[Any]'] = Field(default_factory=list)  # pyright: ignore[reportUnknownVariableType]
 
-    @field_serializer('result', when_used='json')
-    def _serialize_result(self, value: T_EventResultType | 'BaseEvent[Any]' | None) -> Any:
-        """Preserve handler return values when serializing without extra validation."""
-        return value
+    @staticmethod
+    def _serialize_datetime_json(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).isoformat().replace('+00:00', 'Z')
+
+    @staticmethod
+    def _serialize_error_json(value: BaseException | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return {'type': type(value).__name__, 'message': str(value)}
+
+    @classmethod
+    def _serialize_jsonable(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return cls._serialize_datetime_json(value)
+        if isinstance(value, BaseException):
+            return cls._serialize_error_json(value)
+        if isinstance(value, BaseEvent):
+            return value.model_dump(mode='json')
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode='json')
+        if isinstance(value, list):
+            list_items = cast(list[Any], value)
+            serialized_list: list[Any] = []
+            for item in list_items:
+                serialized_list.append(cls._serialize_jsonable(item))
+            return serialized_list
+        if isinstance(value, tuple):
+            tuple_items = cast(tuple[Any, ...], value)
+            serialized_tuple_items: list[Any] = []
+            for item in tuple_items:
+                serialized_tuple_items.append(cls._serialize_jsonable(item))
+            return serialized_tuple_items
+        if isinstance(value, dict):
+            dict_items = cast(dict[Any, Any], value)
+            serialized_dict: dict[str, Any] = {}
+            for key, item in dict_items.items():
+                serialized_dict[str(key)] = cls._serialize_jsonable(item)
+            return serialized_dict
+        return repr(value)
+
+    @model_validator(mode='before')
+    @classmethod
+    def _hydrate_handler_from_flat_json(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = cast(dict[str, Any], data)
+        if isinstance(payload.get('handler'), dict):
+            raise ValueError('EventResult JSON no longer accepts nested handler payloads; use flat handler_* fields')
+
+        if 'handler' not in payload:
+            raw_handler_id = payload.pop('handler_id', None)
+            raw_handler_name = payload.pop('handler_name', None)
+            raw_handler_file_path = payload.pop('handler_file_path', None)
+            raw_handler_timeout = payload.pop('handler_timeout', None)
+            raw_handler_slow_timeout = payload.pop('handler_slow_timeout', None)
+            raw_handler_registered_at = payload.pop('handler_registered_at', None)
+            raw_handler_registered_ts = payload.pop('handler_registered_ts', None)
+            raw_handler_event_pattern = payload.pop('handler_event_pattern', None)
+            raw_eventbus_name = payload.pop('eventbus_name', None)
+            raw_eventbus_id = payload.pop('eventbus_id', None)
+
+            has_flat_handler_fields = any(
+                value is not None
+                for value in (
+                    raw_handler_id,
+                    raw_handler_name,
+                    raw_handler_file_path,
+                    raw_handler_timeout,
+                    raw_handler_slow_timeout,
+                    raw_handler_registered_at,
+                    raw_handler_registered_ts,
+                    raw_handler_event_pattern,
+                    raw_eventbus_name,
+                    raw_eventbus_id,
+                )
+            )
+            if has_flat_handler_fields:
+                handler_payload: dict[str, Any] = {
+                    'handler_name': raw_handler_name or 'anonymous',
+                    'event_pattern': raw_handler_event_pattern or '*',
+                    'eventbus_name': raw_eventbus_name or 'EventBus',
+                    'eventbus_id': raw_eventbus_id or '00000000-0000-0000-0000-000000000000',
+                }
+                if raw_handler_id is not None:
+                    handler_payload['id'] = raw_handler_id
+                if raw_handler_file_path is not None:
+                    handler_payload['handler_file_path'] = raw_handler_file_path
+                if raw_handler_timeout is not None:
+                    handler_payload['handler_timeout'] = raw_handler_timeout
+                if raw_handler_slow_timeout is not None:
+                    handler_payload['handler_slow_timeout'] = raw_handler_slow_timeout
+                if raw_handler_registered_at is not None:
+                    handler_payload['handler_registered_at'] = raw_handler_registered_at
+                if raw_handler_registered_ts is not None:
+                    handler_payload['handler_registered_ts'] = raw_handler_registered_ts
+                payload['handler'] = handler_payload
+
+        raw_children = payload.get('event_children')
+        if isinstance(raw_children, list):
+            child_items = cast(list[Any], raw_children)
+            has_only_event_ids = True
+            for item in child_items:
+                if not isinstance(item, str):
+                    has_only_event_ids = False
+                    break
+            if has_only_event_ids:
+                payload['event_children'] = []
+
+        raw_error = payload.get('error')
+        if raw_error is not None and not isinstance(raw_error, BaseException):
+            if isinstance(raw_error, str):
+                payload['error'] = Exception(raw_error)
+            elif isinstance(raw_error, dict):
+                raw_error_items = cast(dict[Any, Any], raw_error)
+                raw_error_json: dict[str, Any] = {}
+                for key, item in raw_error_items.items():
+                    raw_error_json[str(key)] = item
+                raw_message = raw_error_json.get('message')
+                message = raw_message if isinstance(raw_message, str) else str(raw_error_json)
+                payload['error'] = Exception(message)
+            else:
+                payload['error'] = Exception(str(raw_error))
+
+        return payload
+
+    @model_serializer(mode='plain', when_used='json')
+    def _serialize_event_result_json(self) -> dict[str, Any]:
+        handler = self.handler
+        return {
+            'id': self.id,
+            'status': self.status,
+            'event_id': self.event_id,
+            'handler_id': self.handler_id,
+            'handler_name': self.handler_name,
+            'handler_file_path': handler.handler_file_path,
+            'handler_timeout': handler.handler_timeout,
+            'handler_slow_timeout': handler.handler_slow_timeout,
+            'handler_registered_at': self._serialize_datetime_json(handler.handler_registered_at),
+            'handler_registered_ts': handler.handler_registered_ts,
+            'handler_event_pattern': handler.event_pattern,
+            'eventbus_id': self.eventbus_id,
+            'eventbus_name': self.eventbus_name,
+            'started_at': self._serialize_datetime_json(self.started_at),
+            'completed_at': self._serialize_datetime_json(self.completed_at),
+            'result': self._serialize_jsonable(self.result),
+            'error': self._serialize_error_json(self.error),
+            'event_children': [child.event_id for child in self.event_children],
+        }
 
     @computed_field(return_type=str)
     @property
     def handler_id(self) -> str:
-        handler_id = self.handler.id
-        if handler_id is None:
-            handler_id = self.handler.compute_handler_id()
-            self.handler.id = handler_id
-        return handler_id
+        return self.handler.id
 
     @computed_field(return_type=str)
     @property
@@ -468,7 +615,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         # Allow ergonomic subclass defaults like `class MyEvent(BaseEvent): event_version = '1.2.3'`
         # without requiring repetitive type annotations on every override.
         ignored_types=(str,),
-        validate_assignment=True,
+        # Runtime lifecycle updates mutate event fields very frequently; avoid
+        # assignment-time model rebuilding and keep state updates stable/O(1).
+        validate_assignment=False,
         validate_default=True,
         revalidate_instances='always',
     )
@@ -539,6 +688,14 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         default_factory=lambda: datetime.now(UTC),
         description='Timestamp when event was first dispatched to an EventBus aka marked pending',
     )
+    event_status: EventStatus = Field(
+        default=EventStatus.PENDING,
+        description='Current event lifecycle status: pending, started, or completed',
+    )
+    event_started_at: datetime | None = Field(
+        default=None,
+        description='Timestamp when event processing first started',
+    )
     event_completed_at: datetime | None = Field(
         default=None,
         description='Timestamp when event was completed by all handlers and child events',
@@ -564,10 +721,13 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     def __str__(self) -> str:
         """Compact O(1) summary for hot-path logging."""
         completed_signal = self._event_completed_signal
-        if self._event_is_complete_flag or (completed_signal is not None and completed_signal.is_set()):
+        if (
+            self.event_status == EventStatus.COMPLETED
+            or self._event_is_complete_flag
+            or (completed_signal is not None and completed_signal.is_set())
+        ):
             icon = '✅'
-        elif self.event_results:
-            # Avoid event_started_at/property scans; __str__ must remain O(1).
+        elif self.event_status == EventStatus.STARTED:
             icon = '🏃'
         else:
             icon = '⏳'
@@ -799,10 +959,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         """Rehydrate per-handler result_type from the event-level event_result_type."""
         if self.event_results:
             first_result = next(iter(self.event_results.values()))
-            if first_result.result_type == self.event_result_type:
-                return self
-            for event_result in self.event_results.values():
-                event_result.result_type = self.event_result_type
+            if first_result.result_type != self.event_result_type:
+                for event_result in self.event_results.values():
+                    event_result.result_type = self.event_result_type
         return self
 
     @property
@@ -816,18 +975,6 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 pass  # Keep it None if no event loop
         return self._event_completed_signal
 
-    @computed_field(return_type=EventStatus)
-    @property
-    def event_status(self) -> EventStatus:
-        """Current status of this event in the lifecycle."""
-        if self._event_is_complete_flag:
-            return EventStatus.COMPLETED
-        if self._event_completed_signal is not None and self._event_completed_signal.is_set():
-            return EventStatus.COMPLETED
-        if self.event_started_at is not None:
-            return EventStatus.STARTED
-        return EventStatus.PENDING
-
     @property
     def event_children(self) -> list['BaseEvent[Any]']:
         """Get all child events dispatched from within this event's handlers"""
@@ -836,21 +983,18 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             children.extend(event_result.event_children)
         return children
 
-    @computed_field(return_type=datetime | None)
-    @property
-    def event_started_at(self) -> datetime | None:
-        """Timestamp when event first started being processed by any handler"""
-        earliest_started: datetime | None = None
-        for result in self.event_results.values():
-            started_at = result.started_at
-            if started_at is None:
-                continue
-            if earliest_started is None or started_at < earliest_started:
-                earliest_started = started_at
-        # If no handlers ran but completion was recorded, use completion as start.
-        if earliest_started is None and self.event_completed_at is not None:
-            return self.event_completed_at
-        return earliest_started
+    def event_mark_started(self, started_at: datetime | None = None) -> None:
+        """Mark event runtime state as started, preserving the earliest start timestamp."""
+        if self.event_status == EventStatus.COMPLETED:
+            return
+
+        resolved_started_at = started_at or datetime.now(UTC)
+        if self.event_started_at is None or resolved_started_at < self.event_started_at:
+            self.event_started_at = resolved_started_at
+        if self.event_status == EventStatus.PENDING:
+            self.event_status = EventStatus.STARTED
+        self.event_completed_at = None
+        self._event_is_complete_flag = False
 
     def event_create_pending_results(
         self,
@@ -866,6 +1010,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         pending_results: dict[PythonIdStr, EventResult[T_EventResultType]] = {}
         self._event_is_complete_flag = False
         self.event_completed_at = None
+        if self.event_status == EventStatus.COMPLETED:
+            self.event_status = EventStatus.PENDING
+            self.event_started_at = None
         for handler_id, handler in handlers.items():
             event_result = self.event_result_update(
                 handler=handler,
@@ -1149,7 +1296,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 eventbus_id=str(eventbus.id if eventbus is not None else '00000000-0000-0000-0000-000000000000'),
             )
 
-        handler_id: PythonIdStr = handler_entry.id or handler_entry.compute_handler_id()
+        handler_id: PythonIdStr = handler_entry.id
 
         # Get or create EventResult
         if handler_id not in self.event_results:
@@ -1171,6 +1318,8 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             existing_result.handler = handler_entry
 
         existing_result.update(**kwargs)
+        if existing_result.status == 'started' and existing_result.started_at is not None:
+            self.event_mark_started(existing_result.started_at)
         if 'timeout' in kwargs:
             existing_result.timeout = kwargs['timeout']
         if kwargs.get('status') in ('pending', 'started'):
@@ -1188,6 +1337,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             self._event_is_complete_flag = True
             if self.event_completed_at is None:
                 self.event_completed_at = datetime.now(UTC)
+            if self.event_started_at is None:
+                self.event_started_at = self.event_completed_at
+            self.event_status = EventStatus.COMPLETED
             return
 
         # If there are no results at all, the event is complete.
@@ -1198,7 +1350,10 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             if not self.event_are_all_children_complete():
                 return
             self.event_completed_at = self.event_completed_at or datetime.now(UTC)
+            if self.event_started_at is None:
+                self.event_started_at = self.event_completed_at
             self._event_is_complete_flag = True
+            self.event_status = EventStatus.COMPLETED
             if completed_signal is not None:
                 completed_signal.set()
             self._event_dispatch_context = None
@@ -1227,7 +1382,10 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             if latest_completed is None or completed_at > latest_completed:
                 latest_completed = completed_at
         self.event_completed_at = latest_completed or self.event_completed_at or datetime.now(UTC)
+        if self.event_started_at is None:
+            self.event_started_at = self.event_completed_at
         self._event_is_complete_flag = True
+        self.event_status = EventStatus.COMPLETED
         if completed_signal is not None:
             completed_signal.set()
         # Clear dispatch context to avoid memory leaks (it holds references to ContextVars)
@@ -1235,6 +1393,8 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     def event_mark_pending(self) -> Self:
         """Reset mutable runtime state so this event can be dispatched again as pending."""
+        self.event_status = EventStatus.PENDING
+        self.event_started_at = None
         self._event_is_complete_flag = False
         self.event_completed_at = None
         self.event_results.clear()
@@ -1317,11 +1477,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
         current_bus = get_current_eventbus()
         current_event = get_current_event()
-        if (
-            current_bus is not None
-            and current_event is not None
-            and current_event.event_id == self.event_id
-        ):
+        if current_bus is not None and current_event is not None and current_event.event_id == self.event_id:
             return current_bus
 
         # The event_path contains all buses this event has passed through

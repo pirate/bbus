@@ -1,6 +1,7 @@
 import asyncio
 import contextvars
 import inspect
+import json
 import logging
 import warnings
 import weakref
@@ -276,6 +277,312 @@ class EventBus:
         """Public accessor for the bus-serial event lock used by LockManager."""
         return self._lock_for_event_bus_serial
 
+    @staticmethod
+    def _stub_handler_callable(_event: BaseEvent[Any]) -> None:
+        return None
+
+    @classmethod
+    def _event_json_payload(cls, event: BaseEvent[Any]) -> dict[str, Any]:
+        payload = event.model_dump(mode='json')
+        payload['event_results'] = [result.model_dump(mode='json') for result in event.event_results.values()]
+        return payload
+
+    @staticmethod
+    def _normalize_json_object(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        normalized: dict[str, Any] = {}
+        source_items = cast(dict[Any, Any], value)
+        for raw_key, raw_value in source_items.items():
+            key_value: Any = raw_key
+            item_value: Any = raw_value
+            if isinstance(key_value, str):
+                normalized[key_value] = item_value
+        return normalized
+
+    @classmethod
+    def _normalize_json_object_required(cls, value: Any, error_message: str) -> dict[str, Any]:
+        normalized = cls._normalize_json_object(value)
+        if normalized is None:
+            raise TypeError(error_message)
+        return normalized
+
+    @staticmethod
+    def _normalize_json_string_list(value: Any) -> list[str] | None:
+        if not isinstance(value, list):
+            return None
+        source_items = cast(list[Any], value)
+        normalized: list[str] = []
+        for raw_item in source_items:
+            item_value: Any = raw_item
+            if isinstance(item_value, str):
+                normalized.append(item_value)
+        return normalized
+
+    @staticmethod
+    def _upsert_handler_index(handlers_by_key: dict[str, list[PythonIdStr]], event_pattern: str, handler_id: PythonIdStr) -> None:
+        ids = handlers_by_key.setdefault(event_pattern, [])
+        if handler_id not in ids:
+            ids.append(handler_id)
+
+    @classmethod
+    def _hydrate_handler_from_event_result(
+        cls, bus: 'EventBus', event: BaseEvent[Any], result_payload: dict[str, Any]
+    ) -> EventHandler:
+        if isinstance(result_payload.get('handler'), dict):
+            raise ValueError('Legacy nested EventResult.handler payload is not supported')
+        raw_handler_id = result_payload.get('handler_id')
+        handler_id: str | None = raw_handler_id if isinstance(raw_handler_id, str) and raw_handler_id else None
+        if handler_id is None:
+            raise ValueError('EventResult JSON payload must include handler_id')
+        if handler_id in bus.handlers:
+            return bus.handlers[handler_id]
+        handler_payload: dict[str, Any] = {'id': handler_id}
+        handler_payload.setdefault('handler_name', result_payload.get('handler_name') or 'anonymous')
+        handler_payload.setdefault('handler_file_path', result_payload.get('handler_file_path'))
+        if result_payload.get('handler_timeout') is not None:
+            handler_payload.setdefault('handler_timeout', result_payload.get('handler_timeout'))
+        if result_payload.get('handler_slow_timeout') is not None:
+            handler_payload.setdefault('handler_slow_timeout', result_payload.get('handler_slow_timeout'))
+        if result_payload.get('handler_registered_at') is not None:
+            handler_payload.setdefault('handler_registered_at', result_payload.get('handler_registered_at'))
+        if result_payload.get('handler_registered_ts') is not None:
+            handler_payload.setdefault('handler_registered_ts', result_payload.get('handler_registered_ts'))
+        handler_payload.setdefault('event_pattern', result_payload.get('handler_event_pattern') or event.event_type)
+        handler_payload.setdefault('eventbus_name', result_payload.get('eventbus_name') or bus.name)
+        handler_payload.setdefault('eventbus_id', result_payload.get('eventbus_id') or bus.id)
+
+        handler_entry = EventHandler.from_json_dict(handler_payload, handler=cls._stub_handler_callable)
+        resolved_handler_id = handler_entry.id
+        bus.handlers[resolved_handler_id] = handler_entry
+        cls._upsert_handler_index(bus.handlers_by_key, handler_entry.event_pattern, resolved_handler_id)
+        return handler_entry
+
+    @classmethod
+    def _hydrate_event_result_from_json(
+        cls,
+        *,
+        bus: 'EventBus',
+        event: BaseEvent[Any],
+        result_payload: dict[str, Any],
+    ) -> tuple[EventResult[Any], list[str]]:
+        handler_entry = cls._hydrate_handler_from_event_result(bus, event, result_payload)
+        model_payload = dict(result_payload)
+        child_ids = [child_id for child_id in model_payload.pop('event_children', []) if isinstance(child_id, str)]
+        for flat_key in (
+            'handler_id',
+            'handler_name',
+            'handler_file_path',
+            'handler_timeout',
+            'handler_slow_timeout',
+            'handler_registered_at',
+            'handler_registered_ts',
+            'handler_event_pattern',
+            'eventbus_name',
+            'eventbus_id',
+            'started_ts',
+            'completed_ts',
+        ):
+            model_payload.pop(flat_key, None)
+        model_payload['event_id'] = event.event_id
+        model_payload['handler'] = handler_entry
+        event_result = EventResult[Any].model_validate(model_payload)
+        event_result.handler = handler_entry
+        return event_result, child_ids
+
+    def model_dump(self) -> dict[str, Any]:
+        handlers_payload: dict[str, dict[str, Any]] = {}
+        for handler_entry in self.handlers.values():
+            handlers_payload[handler_entry.id] = handler_entry.to_json_dict()
+
+        handlers_by_key_payload: dict[str, list[str]] = {
+            str(key): [str(handler_id) for handler_id in handler_ids] for key, handler_ids in self.handlers_by_key.items()
+        }
+        for handler_entry in self.handlers.values():
+            self._upsert_handler_index(handlers_by_key_payload, handler_entry.event_pattern, handler_entry.id)
+
+        event_history_payload: dict[str, dict[str, Any]] = {}
+        for event in self.event_history.values():
+            event_history_payload[event.event_id] = self._event_json_payload(event)
+
+        pending_event_ids: list[str] = []
+        if self.pending_event_queue is not None and hasattr(self.pending_event_queue, '_queue'):
+            queue = cast(deque[BaseEvent[Any]], getattr(self.pending_event_queue, '_queue'))
+            for queued_event in queue:
+                event_id = queued_event.event_id
+                if event_id not in event_history_payload:
+                    event_history_payload[event_id] = self._event_json_payload(queued_event)
+                pending_event_ids.append(event_id)
+
+        return {
+            'id': self.id,
+            'name': self.name,
+            'max_history_size': self.max_history_size,
+            'max_history_drop': self.max_history_drop,
+            'event_concurrency': str(self.event_concurrency),
+            'event_timeout': self.event_timeout,
+            'event_slow_timeout': self.event_slow_timeout,
+            'event_handler_concurrency': str(self.event_handler_concurrency),
+            'event_handler_completion': str(self.event_handler_completion),
+            'event_handler_slow_timeout': self.event_handler_slow_timeout,
+            'event_handler_detect_file_paths': self.event_handler_detect_file_paths,
+            'handlers': handlers_payload,
+            'handlers_by_key': handlers_by_key_payload,
+            'event_history': event_history_payload,
+            'pending_event_queue': pending_event_ids,
+        }
+
+    def model_dump_json(self, *, indent: int | None = None) -> str:
+        return json.dumps(self.model_dump(), ensure_ascii=False, default=str, indent=indent)
+
+    @classmethod
+    def validate(cls, data: Any) -> 'EventBus':
+        raw_payload: Any = data
+        if isinstance(data, (bytes, bytearray)):
+            raw_payload = data.decode('utf-8')
+        if isinstance(raw_payload, str):
+            raw_payload = json.loads(raw_payload)
+        if not isinstance(raw_payload, dict):
+            raise TypeError(f'EventBus.validate() expects dict or JSON string, got: {type(data).__name__}')
+
+        payload = cast(dict[str, Any], raw_payload)
+        name = payload.get('name')
+        requested_name = str(name) if isinstance(name, str) else None
+        bus = cls(
+            name=None,
+            event_concurrency=payload.get('event_concurrency'),
+            event_handler_concurrency=payload.get('event_handler_concurrency') or EventHandlerConcurrencyMode.SERIAL,
+            event_handler_completion=payload.get('event_handler_completion') or EventHandlerCompletionMode.ALL,
+            max_history_size=payload.get('max_history_size')
+            if isinstance(payload.get('max_history_size'), int) or payload.get('max_history_size') is None
+            else 100,
+            max_history_drop=bool(payload.get('max_history_drop', False)),
+            event_timeout=payload.get('event_timeout')
+            if isinstance(payload.get('event_timeout'), (int, float)) or payload.get('event_timeout') is None
+            else None,
+            event_slow_timeout=payload.get('event_slow_timeout')
+            if isinstance(payload.get('event_slow_timeout'), (int, float)) or payload.get('event_slow_timeout') is None
+            else 300.0,
+            event_handler_slow_timeout=payload.get('event_handler_slow_timeout')
+            if isinstance(payload.get('event_handler_slow_timeout'), (int, float))
+            or payload.get('event_handler_slow_timeout') is None
+            else 30.0,
+            event_handler_detect_file_paths=bool(payload.get('event_handler_detect_file_paths', True)),
+            id=payload.get('id') if isinstance(payload.get('id'), str) else None,
+        )
+        if requested_name is not None:
+            bus.name = requested_name
+
+        bus.handlers.clear()
+        bus.handlers_by_key = defaultdict(list)
+        bus.event_history.clear()
+
+        raw_handlers = cls._normalize_json_object_required(
+            payload.get('handlers'),
+            'EventBus.validate() expects handlers to be an id-keyed object',
+        )
+        for raw_handler_id, raw_handler_payload in raw_handlers.items():
+            handler_payload_json = cls._normalize_json_object(raw_handler_payload)
+            if handler_payload_json is None:
+                continue
+            handler_payload: dict[str, Any] = dict(handler_payload_json)
+            if 'id' not in handler_payload:
+                handler_payload['id'] = raw_handler_id
+            handler_entry = EventHandler.from_json_dict(handler_payload, handler=cls._stub_handler_callable)
+            bus.handlers[handler_entry.id] = handler_entry
+
+        raw_handlers_by_key = cls._normalize_json_object_required(
+            payload.get('handlers_by_key'),
+            'EventBus.validate() expects handlers_by_key to be an object',
+        )
+        for raw_key, raw_ids in raw_handlers_by_key.items():
+            handler_id_list = cls._normalize_json_string_list(raw_ids)
+            if handler_id_list is None:
+                continue
+            handler_ids: list[PythonIdStr] = []
+            for handler_id in handler_id_list:
+                handler_ids.append(handler_id)
+            bus.handlers_by_key[raw_key] = handler_ids
+
+        pending_child_links: list[tuple[EventResult[Any], list[str]]] = []
+
+        raw_event_history = cls._normalize_json_object_required(
+            payload.get('event_history'),
+            'EventBus.validate() expects event_history to be an id-keyed object',
+        )
+        history_items: list[tuple[str, Any]] = list(raw_event_history.items())
+
+        for event_id_hint, event_payload_any in history_items:
+            event_payload_json = cls._normalize_json_object(event_payload_any)
+            if event_payload_json is None:
+                continue
+            event_payload: dict[str, Any] = dict(event_payload_json)
+            raw_event_results = event_payload.pop('event_results', [])
+            if 'event_id' not in event_payload or not isinstance(event_payload.get('event_id'), str):
+                event_payload['event_id'] = event_id_hint
+            try:
+                event = BaseEvent[Any].model_validate(event_payload)
+            except Exception:
+                continue
+
+            hydrated_results: dict[PythonIdStr, EventResult[Any]] = {}
+            result_items: list[dict[str, Any]] = []
+            if isinstance(raw_event_results, list):
+                raw_result_items = cast(list[Any], raw_event_results)
+                for raw_item in raw_result_items:
+                    result_payload = cls._normalize_json_object(raw_item)
+                    if result_payload is None:
+                        continue
+                    result_items.append(dict(result_payload))
+
+            for result_payload in result_items:
+                try:
+                    event_result, child_ids = cls._hydrate_event_result_from_json(
+                        bus=bus,
+                        event=event,
+                        result_payload=result_payload,
+                    )
+                except Exception:
+                    continue
+                hydrated_results[event_result.handler_id] = event_result
+                pending_child_links.append((event_result, child_ids))
+
+            event.event_results = hydrated_results
+            bus.event_history[event.event_id] = event
+
+        pending_event_ids: list[str] = []
+        raw_pending_queue = cls._normalize_json_string_list(payload.get('pending_event_queue'))
+        if raw_pending_queue is None:
+            raise TypeError('EventBus.validate() expects pending_event_queue to be a list of event ids')
+        pending_event_ids.extend(raw_pending_queue)
+
+        for event_result, child_ids in pending_child_links:
+            event_result.event_children = [bus.event_history[child_id] for child_id in child_ids if child_id in bus.event_history]
+
+        if pending_event_ids:
+            queue = CleanShutdownQueue[BaseEvent[Any]](maxsize=0)
+            for event_id in pending_event_ids:
+                event = bus.event_history.get(event_id)
+                if event is None:
+                    continue
+                queue.put_nowait(event)
+            bus.pending_event_queue = queue
+            bus._on_idle = asyncio.Event()
+            if queue.qsize() == 0 and not bus._has_inflight_events_fast():
+                bus._on_idle.set()
+            else:
+                bus._on_idle.clear()
+        else:
+            bus.pending_event_queue = None
+            bus._on_idle = None
+
+        bus._is_running = False
+        bus._runloop_task = None
+        bus._parallel_event_tasks = set()
+        bus._active_event_ids = set()
+        bus._processing_event_ids = set()
+        return bus
+
     async def _on_event_change(self, event: BaseEvent[Any], status: EventStatus) -> None:
         if not self.middlewares:
             return
@@ -402,13 +709,6 @@ class EventBus:
             return True
         return event.event_completed_at is not None
 
-    @staticmethod
-    def _is_event_started_fast(event: BaseEvent[Any]) -> bool:
-        for result in event.event_results.values():
-            if result.started_at is not None or result.status == 'started':
-                return True
-        return False
-
     def _has_inflight_events_fast(self) -> bool:
         return bool(self._active_event_ids)
 
@@ -429,7 +729,7 @@ class EventBus:
         return [
             event
             for event in self.event_history.values()
-            if not self._is_event_complete_fast(event) and not self._is_event_started_fast(event)
+            if not self._is_event_complete_fast(event) and event.event_status != EventStatus.STARTED
         ]
 
     @property
@@ -438,7 +738,7 @@ class EventBus:
         return [
             event
             for event in self.event_history.values()
-            if not self._is_event_complete_fast(event) and self._is_event_started_fast(event)
+            if not self._is_event_complete_fast(event) and event.event_status == EventStatus.STARTED
         ]
 
     @property
@@ -825,12 +1125,6 @@ class EventBus:
                 return event_type_default
             return event_pattern.__name__
         raise ValueError(f'Invalid event pattern: {event_pattern}, must be a string event type, "*", or subclass of BaseEvent')
-
-    def _event_matches_pattern(self, event: BaseEvent[Any], pattern: EventPatternType) -> bool:
-        pattern_key = self._normalize_event_pattern(pattern)
-        if pattern_key == '*':
-            return True
-        return event.event_type == pattern_key
 
     def _remove_indexed_handler(self, event_pattern: str, handler_id: PythonIdStr) -> None:
         ids = self.handlers_by_key.get(event_pattern)
@@ -1886,7 +2180,7 @@ class EventBus:
     ) -> Any:
         """Safely execute a single handler with middleware support and EventResult orchestration."""
 
-        handler_id = handler_entry.id or handler_entry.compute_handler_id()
+        handler_id = handler_entry.id
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 ' ↳ %s.execute_handler(%s, handler=%s#%s)',
@@ -1908,6 +2202,7 @@ class EventBus:
         event_result = event.event_results[handler_id]
 
         event_result.update(status='started', timeout=resolved_timeout)
+        event.event_mark_started(event_result.started_at)
         await self._on_event_result_change(event, event_result, EventStatus.STARTED)
         if first_handler_id == handler_id:
             await self._on_event_change(event, EventStatus.STARTED)
@@ -1960,18 +2255,23 @@ class EventBus:
                 )
                 return True
 
-        # Second check: Check if there's already a result (pending or completed) for this handler on THIS bus
-        # We use a combination of bus ID and handler ID to allow the same handler function
-        # to run on different buses (important for forwarding)
-        handler_id = handler_entry.id or handler_entry.compute_handler_id()
+        # Second check: if this handler already has an in-flight/completed result for this
+        # event on this bus, avoid re-entrancy. Rehydrated events can legitimately contain
+        # pending placeholders from a previous process; those must remain runnable.
+        handler_id = handler_entry.id
         if handler_id in event.event_results:
             existing_result = event.event_results[handler_id]
-            if existing_result.status == 'pending' or existing_result.status == 'started':
+            if existing_result.status == 'started':
                 logger.debug(
                     f'⚠️ {self} handler {handler_entry.label}({event}) is already {existing_result.status} for event {event.event_id} (preventing recursive call)'
                 )
                 return True
-            elif existing_result.completed_at is not None:
+            if existing_result.status == 'pending' and event.event_status == EventStatus.STARTED:
+                logger.debug(
+                    f'⚠️ {self} handler {handler_entry.label}({event}) is already pending while event is started for event {event.event_id} (preventing recursive call)'
+                )
+                return True
+            if existing_result.status in ('completed', 'error') or existing_result.completed_at is not None:
                 logger.debug(
                     f'⚠️ {self} handler {handler_entry.label}({event}) already completed @ {existing_result.completed_at} for event {event.event_id} (will not re-run)'
                 )
@@ -2111,7 +2411,7 @@ class EventBus:
         for event_id, event in self.event_history.items():
             if self._is_event_complete_fast(event):
                 completed_events.append((event_id, event))
-            elif self._is_event_started_fast(event):
+            elif event.event_status == EventStatus.STARTED:
                 started_events.append((event_id, event))
             else:
                 pending_events.append((event_id, event))

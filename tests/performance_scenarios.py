@@ -159,9 +159,7 @@ async def _trim_bus_history_to_one_event(bus: EventBus, trim_event_type: type[Ba
     ev = bus.dispatch(trim_event_type())
     await ev
     await bus.wait_until_idle()
-    assert len(bus.event_history) <= TRIM_TARGET, (
-        f'trim-to-1 failed for {bus}: {len(bus.event_history)}/{TRIM_TARGET}'
-    )
+    assert len(bus.event_history) <= TRIM_TARGET, f'trim-to-1 failed for {bus}: {len(bus.event_history)}/{TRIM_TARGET}'
     bus.max_history_size = prev_size
     bus.max_history_drop = prev_drop
 

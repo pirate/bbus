@@ -315,7 +315,9 @@ async def test_forwarded_timeout_path_does_not_stall_followup_events():
     bus_b = EventBus(name='TimeoutForwardB')
 
     class ParentEvent(BaseEvent[str]):
-        event_timeout: float | None = 0.02
+        # This test validates child-timeout recovery, not parent-timeout behavior.
+        # Keep parent timeout well above observed queue/lock jitter in full-suite runs.
+        event_timeout: float | None = 1.0
 
     class ChildEvent(BaseEvent[str]):
         event_timeout: float | None = 0.01
@@ -359,7 +361,7 @@ async def test_forwarded_timeout_path_does_not_stall_followup_events():
         await bus_a.wait_until_idle()
         await bus_b.wait_until_idle()
 
-        parent_result = next(iter(parent.event_results.values()))
+        parent_result = next(result for result in parent.event_results.values() if result.handler_name.endswith('parent_handler'))
         assert parent_result.status == 'completed'
 
         assert child_ref is not None

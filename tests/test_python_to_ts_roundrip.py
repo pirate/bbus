@@ -5,13 +5,14 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from types import NoneType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from typing_extensions import TypedDict
 
 from bubus import BaseEvent, EventBus
+from bubus.helpers import CleanShutdownQueue
 
 
 class ScreenshotRegion(BaseModel):
@@ -346,6 +347,58 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
     return json.loads(out_path.read_text(encoding='utf-8'))
 
 
+def _ts_roundtrip_bus(payload: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
+    node_bin = shutil.which('node')
+    if node_bin is None:
+        pytest.skip('node is required for python<->ts roundtrip tests')
+    assert node_bin is not None
+
+    repo_root = Path(__file__).resolve().parents[1]
+    ts_root = repo_root / 'bubus-ts'
+    if not (ts_root / 'src' / 'index.ts').exists():
+        pytest.skip('bubus-ts project not found in repository root')
+
+    in_path = tmp_path / 'python_bus.json'
+    out_path = tmp_path / 'ts_bus.json'
+    in_path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+
+    ts_script = """
+import { readFileSync, writeFileSync } from 'node:fs'
+import { EventBus } from './src/index.js'
+
+const inputPath = process.env.BUBUS_PY_TS_BUS_INPUT_PATH
+const outputPath = process.env.BUBUS_PY_TS_BUS_OUTPUT_PATH
+if (!inputPath || !outputPath) {
+  throw new Error('missing BUBUS_PY_TS_BUS_INPUT_PATH or BUBUS_PY_TS_BUS_OUTPUT_PATH')
+}
+
+const raw = JSON.parse(readFileSync(inputPath, 'utf8'))
+if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+  throw new Error('expected object payload')
+}
+
+const roundtripped = EventBus.fromJSON(raw).toJSON()
+writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
+"""
+
+    env = os.environ.copy()
+    env['BUBUS_PY_TS_BUS_INPUT_PATH'] = str(in_path)
+    env['BUBUS_PY_TS_BUS_OUTPUT_PATH'] = str(out_path)
+    proc = subprocess.run(
+        [node_bin, '--import', 'tsx', '-e', ts_script],
+        cwd=ts_root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    if proc.returncode != 0 and 'Cannot find package' in proc.stderr and "'tsx'" in proc.stderr:
+        pytest.skip('tsx is not installed in bubus-ts; skipping cross-language roundtrip test')
+
+    assert proc.returncode == 0, f'node/tsx bus roundtrip failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
+    return json.loads(out_path.read_text(encoding='utf-8'))
+
+
 def test_python_to_ts_roundrip_preserves_event_fields_and_result_type_semantics(tmp_path: Path) -> None:
     cases = _build_python_roundtrip_cases()
     events = [entry.event for entry in cases]
@@ -459,3 +512,97 @@ async def test_python_to_ts_roundtrip_schema_enforcement_after_reload(tmp_path: 
     assert right_result.error is None
     assert right_result.result is not None
     await right_bus.stop()
+
+
+class PyTsBusResumeEvent(BaseEvent[str]):
+    label: str
+
+
+@pytest.mark.asyncio
+async def test_python_to_ts_to_python_bus_roundtrip_rehydrates_and_resumes(tmp_path: Path) -> None:
+    source_bus = EventBus(
+        name='PyTsBusSource',
+        id='018f8e40-1234-7000-8000-00000000bb22',
+        event_handler_detect_file_paths=False,
+        event_handler_concurrency='serial',
+        event_handler_completion='all',
+    )
+
+    async def handler_one(event: PyTsBusResumeEvent) -> str:
+        return f'h1:{event.label}'
+
+    async def handler_two(event: PyTsBusResumeEvent) -> str:
+        return f'h2:{event.label}'
+
+    handler_one_entry = source_bus.on(PyTsBusResumeEvent, handler_one)
+    handler_two_entry = source_bus.on(PyTsBusResumeEvent, handler_two)
+    assert handler_one_entry.id is not None
+    assert handler_two_entry.id is not None
+    handler_one_id = handler_one_entry.id
+    handler_two_id = handler_two_entry.id
+
+    event_one = PyTsBusResumeEvent(label='e1')
+    event_two = PyTsBusResumeEvent(label='e2')
+    seeded_results = event_one.event_create_pending_results(
+        {handler_one_id: handler_one_entry, handler_two_id: handler_two_entry}, eventbus=source_bus
+    )
+    seeded = seeded_results[handler_one_id]
+    seeded.update(status='completed', result='seeded')
+
+    source_bus.event_history[event_one.event_id] = event_one
+    source_bus.event_history[event_two.event_id] = event_two
+    source_bus.pending_event_queue = CleanShutdownQueue[BaseEvent[Any]](maxsize=0)
+    source_bus.pending_event_queue.put_nowait(event_one)
+    source_bus.pending_event_queue.put_nowait(event_two)
+
+    source_dump = source_bus.model_dump()
+    ts_roundtripped = _ts_roundtrip_bus(source_dump, tmp_path)
+    restored = EventBus.validate(ts_roundtripped)
+    restored_dump = restored.model_dump()
+
+    assert restored_dump['handlers'] == source_dump['handlers']
+    assert restored_dump['handlers_by_key'] == source_dump['handlers_by_key']
+    assert restored_dump['pending_event_queue'] == source_dump['pending_event_queue']
+    assert set(restored_dump['event_history']) == set(source_dump['event_history'])
+
+    restored_event_one = restored.event_history[event_one.event_id]
+    preseeded = restored_event_one.event_results[handler_one_id]
+    assert preseeded.status == 'completed'
+    assert preseeded.result == 'seeded'
+    assert preseeded.handler is restored.handlers[handler_one_id]
+
+    run_order: list[str] = []
+
+    async def restored_handler_one(event: BaseEvent[Any]) -> str:
+        label = cast(str, getattr(event, 'label'))
+        value = f'h1:{label}'
+        run_order.append(value)
+        return value
+
+    async def restored_handler_two(event: BaseEvent[Any]) -> str:
+        label = cast(str, getattr(event, 'label'))
+        value = f'h2:{label}'
+        run_order.append(value)
+        return value
+
+    restored.handlers[handler_one_id].handler = restored_handler_one
+    restored.handlers[handler_two_id].handler = restored_handler_two
+
+    trigger = restored.dispatch(PyTsBusResumeEvent(label='e3'))
+    await trigger
+
+    assert run_order == ['h2:e1', 'h1:e2', 'h2:e2', 'h1:e3', 'h2:e3']
+
+    done_one = restored.event_history[event_one.event_id]
+    done_two = restored.event_history[event_two.event_id]
+    done_three = restored.event_history[trigger.event_id]
+    assert done_three.event_status == 'completed'
+    if restored.pending_event_queue is not None:
+        assert restored.pending_event_queue.qsize() == 0
+    assert all(result.status == 'completed' for result in done_one.event_results.values())
+    assert all(result.status == 'completed' for result in done_two.event_results.values())
+    assert done_one.event_results[handler_one_id].result == 'seeded'
+    assert done_one.event_results[handler_two_id].result == 'h2:e1'
+
+    await source_bus.stop(clear=True)
+    await restored.stop(clear=True)
