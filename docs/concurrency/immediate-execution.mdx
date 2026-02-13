@@ -1,0 +1,177 @@
+---
+title: Immediate Execution (RPC-style)
+description: Queue-jump behavior for awaiting child events inside handlers.
+---
+
+Immediate execution lets a handler emit a child event and await it like a direct async function call.
+
+When this happens inside a handler, the child event is processed immediately (queue-jump) instead of waiting behind unrelated queued events.
+
+## Core pattern
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import BaseEvent, EventBus
+
+class ParentEvent(BaseEvent[str]):
+    pass
+
+class ChildEvent(BaseEvent[str]):
+    pass
+
+bus = EventBus('RpcBus')
+
+async def on_parent(event: ParentEvent) -> str:
+    assert event.bus is not None
+    child = event.bus.emit(ChildEvent())
+    await child  # queue-jump while still inside this handler
+    value = await child.event_result()
+    return f'parent got: {value}'
+
+async def on_child(_: ChildEvent) -> str:
+    return 'child response'
+
+bus.on(ParentEvent, on_parent)
+bus.on(ChildEvent, on_child)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const ParentEvent = BaseEvent.extend('ParentEvent', { event_result_type: z.string() })
+const ChildEvent = BaseEvent.extend('ChildEvent', { event_result_type: z.string() })
+
+const bus = new EventBus('RpcBus')
+
+bus.on(ParentEvent, async (event) => {
+  const child = event.bus!.emit(ChildEvent({}))
+  await child.done() // queue-jump while still inside this handler
+  return `parent got: ${child.event_result}`
+})
+
+bus.on(ChildEvent, async () => 'child response')
+```
+
+</Tab>
+</Tabs>
+
+## Execution order example
+
+In this pattern, sibling work can already be queued, but the awaited child still runs first.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import BaseEvent, EventBus
+
+class ParentEvent(BaseEvent):
+    pass
+
+class ChildEvent(BaseEvent):
+    pass
+
+class SiblingEvent(BaseEvent):
+    pass
+
+bus = EventBus('OrderBus', event_concurrency='bus-serial', event_handler_concurrency='serial')
+order: list[str] = []
+
+async def on_parent(event: ParentEvent) -> None:
+    assert event.bus is not None
+    order.append('parent_start')
+    event.bus.emit(SiblingEvent())
+    child = event.bus.emit(ChildEvent())
+    await child
+    order.append('parent_end')
+
+async def on_child(_: ChildEvent) -> None:
+    order.append('child')
+
+async def on_sibling(_: SiblingEvent) -> None:
+    order.append('sibling')
+
+bus.on(ParentEvent, on_parent)
+bus.on(ChildEvent, on_child)
+bus.on(SiblingEvent, on_sibling)
+
+await bus.emit(ParentEvent())
+await bus.wait_until_idle()
+
+assert order.index('child') < order.index('parent_end')
+assert order.index('parent_end') < order.index('sibling')
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+
+const ParentEvent = BaseEvent.extend('ParentEvent', {})
+const ChildEvent = BaseEvent.extend('ChildEvent', {})
+const SiblingEvent = BaseEvent.extend('SiblingEvent', {})
+
+const bus = new EventBus('OrderBus', {
+  event_concurrency: 'bus-serial',
+  event_handler_concurrency: 'serial',
+})
+const order: string[] = []
+
+bus.on(ParentEvent, async (event) => {
+  order.push('parent_start')
+  event.bus!.emit(SiblingEvent({}))
+  const child = event.bus!.emit(ChildEvent({}))
+  await child.done()
+  order.push('parent_end')
+})
+
+bus.on(ChildEvent, async () => {
+  order.push('child')
+})
+
+bus.on(SiblingEvent, async () => {
+  order.push('sibling')
+})
+
+await bus.emit(ParentEvent({})).done()
+await bus.waitUntilIdle()
+
+if (!(order.indexOf('child') < order.indexOf('parent_end'))) throw new Error('child should finish before parent resumes')
+if (!(order.indexOf('parent_end') < order.indexOf('sibling'))) throw new Error('sibling should run after parent ends')
+```
+
+</Tab>
+</Tabs>
+
+## Interaction with concurrency modes
+
+- `event_concurrency = global-serial`: queue-jump still works, but all buses still share one global event slot.
+- `event_concurrency = bus-serial`: queue-jump preempts that bus queue; other buses can continue processing independently.
+- `event_concurrency = parallel`: events may already overlap; queue-jump still reduces parent latency for awaited child calls.
+- `event_handler_concurrency = serial`: parent temporarily yields execution so child handlers can run without deadlock.
+- `event_handler_concurrency = parallel`: child handlers can overlap with other handlers for the same event.
+- `event_handler_completion = first`: winner semantics can cancel loser handlers and their in-flight child work.
+
+## Notes
+
+- In Python, `await child_event` inside a handler is the immediate path.
+- In TypeScript, use `await child_event.done()` or `await child_event.immediate()`.
+- In TypeScript, `await child_event.waitForCompletion()` keeps normal queue order (non-queue-jump wait).
+
+## Related pages
+
+- [Events: global-serial](./events-global-serial)
+- [Events: bus-serial](./events-bus-serial)
+- [Events: parallel](./events-parallel)
+- [Handlers: serial](./handlers-serial)
+- [Handlers: parallel](./handlers-parallel)
+- [Handler Completion: all](./handler-completion-all)
+- [Handler Completion: first](./handler-completion-first)
+- [BaseEvent](../api/baseevent)

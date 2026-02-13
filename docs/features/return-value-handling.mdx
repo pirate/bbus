@@ -1,0 +1,125 @@
+---
+title: Return Value Handling
+description: Define typed handler returns and collect results from one emitted event.
+---
+
+Handler return values are captured in `EventResult` records and can be consumed as a single value or aggregated across handlers.
+
+## Typed return values
+
+Use the event result type to enforce return typing across handlers.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import BaseEvent, EventBus
+
+class DoMathEvent(BaseEvent[int]):
+    a: int
+    b: int
+
+def add(event: DoMathEvent) -> int:
+    return event.a + event.b
+
+bus = EventBus('AppBus')
+bus.on(DoMathEvent, add)
+
+event = await bus.emit(DoMathEvent(a=2, b=3))
+result = await event.event_result()
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const DoMathEvent = BaseEvent.extend('DoMathEvent', {
+  a: z.number(),
+  b: z.number(),
+  event_result_type: z.number(),
+})
+
+const bus = new EventBus('AppBus')
+bus.on(DoMathEvent, (event) => event.a + event.b)
+
+const event = bus.emit(DoMathEvent({ a: 2, b: 3 }))
+await event.done()
+const result = event.event_result
+```
+
+</Tab>
+</Tabs>
+
+## Aggregating multiple handler results
+
+When multiple handlers respond to the same event, collect all results and combine them as needed.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import BaseEvent, EventBus
+
+class GetConfigEvent(BaseEvent[dict]):
+    pass
+
+async def user_config(_: GetConfigEvent) -> dict:
+    return {'debug': True, 'port': 8080}
+
+async def system_config(_: GetConfigEvent) -> dict:
+    return {'debug': False, 'timeout': 30}
+
+bus = EventBus('AppBus')
+bus.on(GetConfigEvent, user_config)
+bus.on(GetConfigEvent, system_config)
+
+event = await bus.emit(GetConfigEvent())
+merged = await event.event_results_flat_dict(raise_if_conflicts=False)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const GetConfigEvent = BaseEvent.extend('GetConfigEvent', {
+  event_result_type: z.record(z.string(), z.unknown()),
+})
+
+const bus = new EventBus('AppBus')
+bus.on(GetConfigEvent, async () => ({ debug: true, port: 8080 }))
+bus.on(GetConfigEvent, async () => ({ debug: false, timeout: 30 }))
+
+const event = bus.emit(GetConfigEvent({}))
+await event.done()
+const merged = Object.assign({}, ...event.all_results)
+```
+
+</Tab>
+</Tabs>
+
+## Per-handler inspection
+
+Both implementations keep per-handler result metadata in addition to flattened helpers.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+by_name = await event.event_results_by_handler_name(raise_if_any=False, raise_if_none=False)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const byHandler = Array.from(event.event_results.values())
+```
+
+</Tab>
+</Tabs>

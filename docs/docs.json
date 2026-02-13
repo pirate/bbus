@@ -23,19 +23,18 @@
           {
             "group": "Features",
             "pages": [
-              "features-event-pattern-matching",
-              "features-async-sync-handlers",
-              "features-typed-events",
-              "features-bus-forwarding",
-              "features-event-results",
-              "features-fifo-processing",
-              "features-nested-child-events",
-              "features-find-events",
-              "features-event-debouncing",
-              "features-handler-return-values",
-              "features-context-propagation",
-              "features-memory-management",
-              "features-parallel-handler-execution"
+              "features/event-pattern-matching",
+              "features/async-sync-handlers",
+              "features/typed-events",
+              "features/bus-forwarding",
+              "features/return-value-handling",
+              "features/fifo-processing",
+              "features/nested-child-events",
+              "features/find-events",
+              "features/event-debouncing",
+              "features/context-propagation",
+              "features/event-history-store",
+              "features/parallel-handler-execution"
             ]
           },
           {
@@ -45,6 +44,7 @@
               "api/baseevent",
               "api/eventresult",
               "api/eventhandler",
+              "api/eventbusmiddleware",
               "api/retry"
             ]
           },
@@ -56,10 +56,12 @@
               "concurrency/events-parallel",
               "concurrency/handlers-serial",
               "concurrency/handlers-parallel",
+              "concurrency/immediate-execution",
               "concurrency/handler-completion-all",
               "concurrency/handler-completion-first",
               "concurrency/timeouts",
-              "concurrency/retry-decorator"
+              "concurrency/backpressure",
+              "api/retry"
             ]
           },
           {
@@ -70,7 +72,6 @@
                 "expanded": true,
                 "pages": [
                   "integrations/middlewares",
-                  "integrations/middleware-base",
                   "integrations/middleware-otel-tracing",
                   "integrations/middleware-auto-error",
                   "integrations/middleware-auto-return",

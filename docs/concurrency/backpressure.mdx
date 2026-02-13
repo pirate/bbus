@@ -1,0 +1,107 @@
+---
+title: Backpressure
+description: How emit/dispatch, queueing, and history limits interact under high event volume.
+---
+
+Backpressure in `bubus` is intentionally not modeled as a bounded pending queue.
+
+Instead:
+
+- `dispatch()` / `emit()` is synchronous in both runtimes (it enqueues immediately and returns a pending event object).
+- the pending queue is unbounded in both runtimes.
+- pressure controls come from history retention settings (`max_history_size`, `max_history_drop`), not from queue capacity.
+
+## What "synchronous dispatch" means
+
+In both Python and TypeScript:
+
+- `dispatch()` / `emit()` returns immediately after enqueueing.
+- handlers run asynchronously in the bus runloop.
+- callers can `await` the returned event later (`await event` / `await event.done()`), but enqueue itself is not blocked by handler execution.
+
+## Queue implementation under the hood
+
+- Python: `pending_event_queue` is a custom `CleanShutdownQueue` built on `asyncio.Queue(maxsize=0)` (unbounded).
+- TypeScript: `pending_event_queue` is an in-memory `BaseEvent[]` array drained by the runloop (`shift()` from the front).
+
+Because both are unbounded, volume spikes are absorbed into queue depth unless history policy rejects or trims.
+
+## Where backpressure is expressed
+
+Backpressure is expressed by `event_history` policy:
+
+- `max_history_size = null/None`: no history limit; no history-based rejection.
+- `max_history_size > 0` + `max_history_drop = false`: new dispatches are rejected when history is full.
+- `max_history_size > 0` + `max_history_drop = true`: history is trimmed as load grows (oldest entries removed).
+- `max_history_size = 0`: keep only in-flight visibility; completed events are dropped from history immediately.
+
+For deeper retention semantics and lifecycle details, see [Event History Store](../features/event-history-store).
+
+## Errors and warnings you should expect under load
+
+- Reject mode (`max_history_drop = false` with finite `max_history_size`):
+  - Python raises `RuntimeError` on emit when history is at limit.
+  - TypeScript throws `Error` on dispatch when history is at limit.
+- Drop mode (`max_history_drop = true`):
+  - both runtimes trim oldest history first.
+  - when pressure is extreme, both runtimes may eventually drop uncompleted/pending entries and log warnings.
+
+This gives you a clear operational choice:
+
+- fail fast when overloaded (reject mode), or
+- stay available and shed oldest history visibility (drop mode).
+
+## Typical configurations
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus
+
+# Fail fast when event_history reaches 5k
+reject_bus = EventBus(max_history_size=5000, max_history_drop=False)
+
+# Keep accepting new events, trim oldest history entries
+drop_bus = EventBus(max_history_size=5000, max_history_drop=True)
+
+# No history cap (queue and history can both grow)
+unbounded_bus = EventBus(max_history_size=None)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus } from 'bubus'
+
+const rejectBus = new EventBus('RejectBus', { max_history_size: 5000, max_history_drop: false })
+const dropBus = new EventBus('DropBus', { max_history_size: 5000, max_history_drop: true })
+const unboundedBus = new EventBus('UnboundedBus', { max_history_size: null })
+```
+
+</Tab>
+</Tabs>
+
+## Observing pressure at runtime
+
+<Tabs>
+<Tab title="Python">
+
+```python
+event = bus.emit(MyEvent())
+pending = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
+history = len(bus.event_history)
+print('pending_event_queue=', pending, 'event_history=', history)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const event = bus.emit(MyEvent({}))
+console.log('pending_event_queue=', bus.pending_event_queue.length, 'event_history=', bus.event_history.size)
+```
+
+</Tab>
+</Tabs>
