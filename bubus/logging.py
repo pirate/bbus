@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from bubus.event_bus import EventBus
-    from bubus.models import BaseEvent, EventResult
+    from bubus.base_event import BaseEvent, EventResult
 
 
 def format_timestamp(dt: datetime | None) -> str:
@@ -41,7 +41,7 @@ def log_event_tree(
     is_last: bool = True,
     event_children_by_parent: dict[str | None, list['BaseEvent[Any]']] | None = None,
 ) -> str:
-    from bubus.models import logger
+    from bubus.base_event import logger
 
     """Print this event and its results with proper tree formatting"""
     # Determine the connector
@@ -109,7 +109,7 @@ def log_eventresult_tree(
 ) -> str:
     """Print this result and its child events with proper tree formatting"""
 
-    from bubus.models import logger
+    from bubus.base_event import logger
 
     # Determine the connector
     connector = '└── ' if is_last else '├── '
@@ -166,7 +166,7 @@ def log_eventresult_tree(
 def log_eventbus_tree(eventbus: 'EventBus') -> str:
     """Print a nice pretty formatted tree view of all events in the history including their results and child events recursively"""
 
-    from bubus.models import logger
+    from bubus.base_event import logger
 
     # Build a mapping of parent_id to child events
     parent_to_children: dict[str | None, list['BaseEvent[Any]']] = defaultdict(list)
@@ -211,7 +211,7 @@ def log_eventbus_tree(eventbus: 'EventBus') -> str:
 def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any]') -> None:
     """Log detailed timeout information showing the event tree and which handler timed out"""
 
-    from bubus.models import logger
+    from bubus.base_event import logger
 
     now = datetime.now(UTC)
 

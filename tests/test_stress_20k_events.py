@@ -12,7 +12,7 @@ import psutil
 import pytest
 
 import bubus.event_bus as event_bus_module
-import bubus.models as models_module
+import bubus.base_event as base_event_module
 from bubus import BaseEvent, EventBus
 
 
@@ -1327,10 +1327,10 @@ async def test_perf_debug_hot_path_breakdown() -> None:
         (event_bus_module.EventBus, '_execute_handlers'),
         (event_bus_module.EventBus, 'execute_handler'),
         (event_bus_module.EventBus, 'cleanup_event_history'),
-        (models_module.BaseEvent, 'event_create_pending_results'),
-        (models_module.BaseEvent, '_is_queued_on_any_bus'),
-        (models_module.BaseEvent, '_remove_self_from_queue'),
-        (models_module.BaseEvent, '_process_self_on_all_buses'),
+        (base_event_module.BaseEvent, 'event_create_pending_results'),
+        (base_event_module.BaseEvent, '_is_queued_on_any_bus'),
+        (base_event_module.BaseEvent, '_remove_self_from_queue'),
+        (base_event_module.BaseEvent, '_process_self_on_all_buses'),
     ]
     for owner, method_name in instrumented:
         profiler.instrument(owner, method_name)

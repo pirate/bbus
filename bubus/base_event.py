@@ -3,14 +3,12 @@ import contextvars
 import inspect
 import logging
 import os
-import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Callable, Generator
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Generic, Literal, Protocol, Self, TypeAlias, cast, runtime_checkable
-from uuid import NAMESPACE_DNS, UUID, uuid5
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Generic, Literal, Self, TypeAlias, cast
+from uuid import UUID
 
 from pydantic import (
     AfterValidator,
@@ -26,12 +24,13 @@ from pydantic import (
 from typing_extensions import TypeVar  # needed to get TypeVar(default=...) above python 3.11
 from uuid_extensions import uuid7str
 
+from bubus.event_handler import EventHandler, EventHandlerCallable
 from bubus.helpers import extract_basemodel_generic_arg
 from bubus.jsonschema import (
     normalize_result_dict,
+    result_type_identifier_from_schema,
     pydantic_model_from_json_schema,
     pydantic_model_to_json_schema,
-    result_type_identifier_from_schema,
     validate_result_against_type,
 )
 
@@ -46,20 +45,6 @@ BUBUS_LOGGING_LEVEL = os.getenv('BUBUS_LOGGING_LEVEL', 'WARNING').upper()  # WAR
 LIBRARY_VERSION = os.getenv('LIBRARY_VERSION', '0.0.1')
 
 logger.setLevel(BUBUS_LOGGING_LEVEL)
-
-
-def _default_enter_handler_context(_event: 'BaseEvent[Any]', _handler_id: str) -> tuple[Any, Any]:
-    return (None, None)
-
-
-def _default_exit_handler_context(_tokens: tuple[Any, Any]) -> None:
-    return None
-
-
-def _default_format_exception_for_log(exc: BaseException) -> str:
-    from traceback import TracebackException
-
-    return ''.join(TracebackException.from_exception(exc, capture_locals=False).format())
 
 
 class EventStatus(StrEnum):
@@ -126,284 +111,332 @@ T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
 # We use contravariant=True because if a handler accepts BaseEvent,
 # it can also handle any subclass of BaseEvent
 T_Event = TypeVar('T_Event', bound='BaseEvent[Any]', contravariant=True, default='BaseEvent[Any]')
-
-# For protocols with __func__ attributes, we need an invariant TypeVar
-T_EventInvariant = TypeVar('T_EventInvariant', bound='BaseEvent[Any]', default='BaseEvent[Any]')
-
-# For handlers, we need to be flexible about the signature since:
-# 1. Functions take just the event: handler(event)
-# 2. Methods take self + event: handler(self, event)
-# 3. Classmethods take cls + event: handler(cls, event)
-# 4. Handlers can accept BaseEvent subclasses (contravariance)
-# 5. We need to preserve BaseEvent[GenericType] generic values through the handler signature
-#
-# Python's type system cant handle this variability concicesely, so we define specific protocols for each scenario.
-
-
-@runtime_checkable
-class EventHandlerFunc(Protocol[T_Event]):
-    """Protocol for sync event handler functions"""
-
-    def __call__(self, event: T_Event, /) -> Any: ...
-
-
-@runtime_checkable
-class AsyncEventHandlerFunc(Protocol[T_Event]):
-    """Protocol for async event handler functions"""
-
-    async def __call__(self, event: T_Event, /) -> Any: ...
-
-
-@runtime_checkable
-class EventHandlerMethod(Protocol[T_Event]):
-    """Protocol for instance method event handlers"""
-
-    def __call__(self, self_: Any, event: T_Event, /) -> Any: ...
-
-    __self__: Any
-    __name__: str
-
-
-@runtime_checkable
-class AsyncEventHandlerMethod(Protocol[T_Event]):
-    """Protocol for async instance method event handlers"""
-
-    async def __call__(self, self_: Any, event: T_Event, /) -> Any: ...
-
-    __self__: Any
-    __name__: str
-
-
-@runtime_checkable
-class EventHandlerClassMethod(Protocol[T_EventInvariant]):
-    """Protocol for class method event handlers"""
-
-    def __call__(self, cls: type[Any], event: T_EventInvariant, /) -> Any: ...
-
-    __self__: type[Any]
-    __name__: str
-    __func__: Callable[[type[Any], T_EventInvariant], Any]
-
-
-@runtime_checkable
-class AsyncEventHandlerClassMethod(Protocol[T_EventInvariant]):
-    """Protocol for async class method event handlers"""
-
-    async def __call__(self, cls: type[Any], event: T_EventInvariant, /) -> Any: ...
-
-    __self__: type[Any]
-    __name__: str
-    __func__: Callable[[type[Any], T_EventInvariant], Awaitable[Any]]
-
-
-# Event handlers can be sync/async functions, methods, class methods, or coroutines.
-# This alias represents the raw callable used by EventBus execution internals.
-EventHandlerCallable: TypeAlias = (
-    EventHandlerFunc['BaseEvent[Any]']
-    | AsyncEventHandlerFunc['BaseEvent[Any]']
-    | EventHandlerMethod['BaseEvent[Any]']
-    | AsyncEventHandlerMethod['BaseEvent[Any]']
-    | EventHandlerClassMethod['BaseEvent[Any]']
-    | AsyncEventHandlerClassMethod['BaseEvent[Any]']
-)
-
-# ContravariantEventHandlerCallable is needed to allow handlers to accept any BaseEvent subclass in some signatures.
-ContravariantEventHandlerCallable: TypeAlias = (
-    EventHandlerFunc[T_Event]  # cannot be BaseEvent or type checker will complain
-    | AsyncEventHandlerFunc['BaseEvent[Any]']
-    | EventHandlerMethod['BaseEvent[Any]']
-    | AsyncEventHandlerMethod[T_Event]  # cannot be 'BaseEvent' or type checker will complain
-    | EventHandlerClassMethod['BaseEvent[Any]']
-    | AsyncEventHandlerClassMethod['BaseEvent[Any]']
-)
-
 EventResultFilter = Callable[['EventResult[Any]'], bool]
 
-HANDLER_ID_NAMESPACE: UUID = uuid5(NAMESPACE_DNS, 'bubus-handler')
+
+def _default_enter_handler_context(_event: 'BaseEvent[Any]', _handler_id: str) -> tuple[Any, Any]:
+    return (None, None)
 
 
-def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
-    normalized = str(Path(path).expanduser().resolve())
-    home = str(Path.home())
-    if normalized == home:
-        display = '~'
-    elif normalized.startswith(home + os.sep):
-        display = f'~{normalized[len(home) :]}'
-    else:
-        display = normalized
-    return f'{display}:{line_no}' if line_no else display
-
-
-def _get_callable_handler_file_path(handler: EventHandlerCallable) -> str | None:
-    """Best-effort, low-overhead source location for a handler callable."""
-    target: Any = handler.__func__ if inspect.ismethod(handler) else handler
-    target = inspect.unwrap(target)
-
-    code_obj = getattr(target, '__code__', None)
-    if code_obj is not None:
-        file_path = getattr(code_obj, 'co_filename', None)
-        line_no = getattr(code_obj, 'co_firstlineno', None)
-        if isinstance(file_path, str) and file_path.strip():
-            return _format_handler_source_path(file_path, int(line_no) if isinstance(line_no, int) else None)
-
-    try:
-        source_file = inspect.getsourcefile(target) or inspect.getfile(target)
-    except (OSError, TypeError):
-        source_file = None
-
-    line_no: int | None = None
-    try:
-        _, line_no = inspect.getsourcelines(target)
-    except (OSError, TypeError):
-        line_no = None
-
-    if isinstance(source_file, str) and source_file.strip():
-        return _format_handler_source_path(source_file, line_no)
-
-    module = inspect.getmodule(target)
-    module_file = getattr(module, '__file__', None) if module is not None else None
-    if isinstance(module_file, str) and module_file.strip():
-        return _format_handler_source_path(module_file, line_no)
-
+def _default_exit_handler_context(_tokens: tuple[Any, Any]) -> None:
     return None
 
 
-class EventHandler(BaseModel):
-    """Serializable metadata wrapper around a registered event handler callable."""
+def _default_format_exception_for_log(exc: BaseException) -> str:
+    from traceback import TracebackException
+
+    return ''.join(TracebackException.from_exception(exc, capture_locals=False).format())
+
+
+# Keep EventResult and BaseEvent co-located in this module.
+# Cross-file generic forward refs between these two models caused fragile
+# incomplete-model states and import-order dependent rebuild behavior in Pydantic.
+# Context:
+# - https://github.com/pydantic/pydantic/issues/1873
+# - https://github.com/pydantic/pydantic/issues/707
+# - https://stackoverflow.com/questions/77582955/how-can-i-separate-two-pydantic-models-into-different-files-when-these-models-ha
+# - https://github.com/pydantic/pydantic/issues/11532
+class EventResult(BaseModel, Generic[T_EventResultType]):
+    """Individual result from a single handler."""
 
     model_config = ConfigDict(
         extra='forbid',
         arbitrary_types_allowed=True,
-        validate_assignment=True,
+        validate_assignment=False,  # Validation handled in update() for flexible result types.
         validate_default=True,
         revalidate_instances='always',
     )
 
-    id: str | None = None
-    handler: EventHandlerCallable | None = Field(default=None, exclude=True, repr=False)
-    handler_name: str = 'anonymous'
-    handler_file_path: str | None = None
-    handler_timeout: float | None = None
-    handler_slow_timeout: float | None = None
-    handler_registered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    handler_registered_ts: int = Field(default_factory=time.time_ns)
-    event_pattern: str = '*'
-    eventbus_name: PythonIdentifierStr = 'EventBus'
-    eventbus_id: str = '00000000-0000-0000-0000-000000000000'
+    # Automatically set fields, setup at Event init and updated by EventBus.execute_handler()
+    id: str = Field(default_factory=uuid7str)
+    status: Literal['pending', 'started', 'completed', 'error'] = 'pending'
+    event_id: str
+    handler: EventHandler = Field(default_factory=EventHandler)
+    result_type: Any = Field(default=None, exclude=True, repr=False)
+    timeout: float | None = None
+    started_at: datetime | None = None
+
+    # Result fields, updated by EventBus.execute_handler()
+    result: T_EventResultType | 'BaseEvent[Any]' | None = None
+    error: BaseException | None = None
+    completed_at: datetime | None = None
+
+    # Completion signal
+    _handler_completed_signal: asyncio.Event | None = PrivateAttr(default=None)
+
+    # Child events emitted during handler execution
+    event_children: list['BaseEvent[Any]'] = Field(default_factory=list)  # pyright: ignore[reportUnknownVariableType]
+
+    @field_serializer('result', when_used='json')
+    def _serialize_result(self, value: T_EventResultType | 'BaseEvent[Any]' | None) -> Any:
+        """Preserve handler return values when serializing without extra validation."""
+        return value
+
+    @computed_field(return_type=str)
+    @property
+    def handler_id(self) -> str:
+        handler_id = self.handler.id
+        if handler_id is None:
+            handler_id = self.handler.compute_handler_id()
+            self.handler.id = handler_id
+        return handler_id
+
+    @computed_field(return_type=str)
+    @property
+    def handler_name(self) -> str:
+        return self.handler.handler_name
+
+    @computed_field(return_type=str)
+    @property
+    def eventbus_id(self) -> str:
+        return self.handler.eventbus_id
+
+    @computed_field(return_type=str)
+    @property
+    def eventbus_name(self) -> str:
+        return self.handler.eventbus_name
 
     @property
     def eventbus_label(self) -> str:
-        return f'{self.eventbus_name}#{self.eventbus_id[-4:]}'
-
-    @staticmethod
-    def get_callable_handler_name(handler: EventHandlerCallable) -> str:
-        assert hasattr(handler, '__name__'), f'Handler {handler} has no __name__ attribute!'
-        if inspect.ismethod(handler):
-            return f'{type(handler.__self__).__name__}.{handler.__name__}'
-        elif callable(handler):
-            handler_module = getattr(handler, '__module__', '<unknown>')
-            handler_name = getattr(handler, '__name__', type(handler).__name__)
-            return f'{handler_module}.{handler_name}'
-        else:
-            raise ValueError(f'Invalid handler: {handler} {type(handler)}, expected a function, coroutine, or method')
-
-    @model_validator(mode='before')
-    @classmethod
-    def _populate_handler_name(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        params = cast(dict[str, Any], data)
-        handler = params.get('handler')
-        if handler is not None and not params.get('handler_name'):
-            params['handler_name'] = cls.get_callable_handler_name(handler)
-        return params
-
-    @model_validator(mode='after')
-    def _ensure_handler_id(self) -> 'EventHandler':
-        if self.id:
-            return self
-        self.id = self.compute_handler_id()
-        return self
-
-    def compute_handler_id(self) -> str:
-        """Match TS handler-id algorithm: uuidv5(seed, HANDLER_ID_NAMESPACE)."""
-        file_path = self.handler_file_path or 'unknown'
-        registered_at = self.handler_registered_at
-        if registered_at.tzinfo is None:
-            registered_at = registered_at.replace(tzinfo=UTC)
-        registered_at_iso = registered_at.astimezone(UTC).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
-        seed = (
-            f'{self.eventbus_id}|{self.handler_name}|{file_path}|'
-            f'{registered_at_iso}|{self.handler_registered_ts}|{self.event_pattern}'
-        )
-        return str(uuid5(HANDLER_ID_NAMESPACE, seed))
+        return self.handler.eventbus_label
 
     @property
-    def label(self) -> str:
-        if not self.id:
-            return self.handler_name
-        return f'{self.handler_name}#{self.id[-4:]}'
+    def handler_completed_signal(self) -> asyncio.Event | None:
+        """Lazily create asyncio.Event when accessed."""
+        if self._handler_completed_signal is None:
+            try:
+                asyncio.get_running_loop()
+                self._handler_completed_signal = asyncio.Event()
+            except RuntimeError:
+                pass
+        return self._handler_completed_signal
 
     def __str__(self) -> str:
-        has_name = self.handler_name and self.handler_name != 'anonymous'
-        display = f'{self.handler_name}()' if has_name else f'function#{(self.id or "")[-4:]}()'
-        return f'{display} @ {self.handler_file_path}' if self.handler_file_path else display
+        handler_qualname = f'{self.eventbus_label}.{self.handler_name}'
+        return f'{handler_qualname}() -> {self.result or self.error or "..."} ({self.status})'
 
-    def __call__(self, event: 'BaseEvent[Any]') -> Any:
-        if self.handler is None:
-            raise RuntimeError(f'EventHandler {self.id} has no callable attached')
-        handler_callable = cast(Callable[[Any], Any], self.handler)
-        return handler_callable(event)
+    def __repr__(self) -> str:
+        icon = '🏃' if self.status == 'pending' else '✅' if self.status == 'completed' else '❌'
+        return f'{self.handler.label}() {icon}'
 
-    def to_json_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode='json', exclude={'handler'})
+    def __await__(self) -> Generator[Self, Any, T_EventResultType | 'BaseEvent[Any]' | None]:
+        """
+        Wait for this result to complete and return the result or raise error.
+        Does not execute the handler itself, only waits for completion.
+        """
 
-    @classmethod
-    def from_json_dict(cls, data: Any, handler: EventHandlerCallable | None = None) -> 'EventHandler':
-        entry = cls.model_validate(data)
-        if handler is not None:
-            entry.handler = handler
-            if not entry.handler_name or entry.handler_name == 'anonymous':
-                entry.handler_name = cls.get_callable_handler_name(handler)
-        return entry
+        async def wait_for_handler_to_complete_and_return_result() -> T_EventResultType | 'BaseEvent[Any]' | None:
+            assert self.handler_completed_signal is not None, 'EventResult cannot be awaited outside of an async context'
+            try:
+                await asyncio.wait_for(self.handler_completed_signal.wait(), timeout=self.timeout)
+            except TimeoutError:
+                raise TimeoutError(
+                    f'Event handler {self.eventbus_label}.{self.handler_name}(#{self.event_id[-4:]}) timed out after {self.timeout}s'
+                )
 
-    @classmethod
-    def from_callable(
-        cls,
+            if self.status == 'error' and self.error:
+                raise self.error if isinstance(self.error, BaseException) else Exception(self.error)  # pyright: ignore[reportUnnecessaryIsInstance]
+            return self.result
+
+        return wait_for_handler_to_complete_and_return_result().__await__()
+
+    def update(self, **kwargs: Any) -> Self:
+        """Update the EventResult with provided kwargs, called by EventBus during handler execution."""
+
+        # Common mistake: returning an exception object instead of setting error.
+        if 'result' in kwargs and isinstance(kwargs['result'], BaseException):
+            logger.warning(
+                f'ℹ Event handler {self.handler_name} returned an exception object, auto-converting to EventResult(result=None, status="error", error={kwargs["result"]})'
+            )
+            kwargs['error'] = kwargs['result']
+            kwargs['status'] = 'error'
+            kwargs['result'] = None
+
+        if 'result' in kwargs:
+            result: Any = kwargs['result']
+            self.status = 'completed'
+            if self.result_type is not None and result is not None:
+                if isinstance(result, BaseEvent):
+                    self.result = cast(T_EventResultType, result)
+                else:
+                    try:
+                        validated_result = validate_result_against_type(self.result_type, result)
+                        self.result = cast(T_EventResultType, validated_result)
+                    except Exception as cast_error:
+                        schema_id = result_type_identifier_from_schema(self.result_type) or 'unknown'
+                        self.error = ValueError(
+                            f'Event handler returned a value that did not match expected event_result_type '
+                            f'({schema_id}): {result} -> {type(cast_error).__name__}: {cast_error}'
+                        )
+                        self.result = None
+                        self.status = 'error'
+            else:
+                self.result = cast(T_EventResultType, result)
+
+        if 'error' in kwargs:
+            assert isinstance(kwargs['error'], (BaseException, str)), (
+                f'Invalid error type: {type(kwargs["error"]).__name__} {kwargs["error"]}'
+            )
+            self.error = kwargs['error'] if isinstance(kwargs['error'], BaseException) else Exception(kwargs['error'])  # pyright: ignore[reportUnnecessaryIsInstance]
+            self.status = 'error'
+
+        if 'status' in kwargs:
+            assert kwargs['status'] in ('pending', 'started', 'completed', 'error'), f'Invalid status: {kwargs["status"]}'
+            self.status = kwargs['status']
+
+        if self.status != 'pending' and not self.started_at:
+            self.started_at = datetime.now(UTC)
+        if self.status in ('completed', 'error') and not self.completed_at:
+            self.completed_at = datetime.now(UTC)
+            if self.handler_completed_signal:
+                self.handler_completed_signal.set()
+        return self
+
+    async def execute(
+        self,
+        event: 'BaseEvent[T_EventResultType]',
         *,
-        handler: EventHandlerCallable,
-        event_pattern: str,
-        eventbus_name: PythonIdentifierStr,
-        eventbus_id: str,
-        detect_handler_file_path: bool = True,
-        id: str | None = None,
-        handler_file_path: str | None = None,
-        handler_timeout: float | None = None,
-        handler_slow_timeout: float | None = None,
-        handler_registered_at: datetime | None = None,
-        handler_registered_ts: int | None = None,
-    ) -> 'EventHandler':
-        resolved_file_path = handler_file_path
-        if resolved_file_path is None and detect_handler_file_path:
-            resolved_file_path = _get_callable_handler_file_path(handler)
+        eventbus: 'EventBus',
+        timeout: float | None,
+        slow_timeout: float | None = None,
+        enter_handler_context: Callable[['BaseEvent[Any]', str], tuple[Any, Any]] | None = None,
+        exit_handler_context: Callable[[tuple[Any, Any]], None] | None = None,
+        format_exception_for_log: Callable[[BaseException], str] | None = None,
+    ) -> T_EventResultType | 'BaseEvent[Any]' | None:
+        """Execute self.handler and update internal state automatically."""
+        _enter_handler_context_callable = enter_handler_context or _default_enter_handler_context
+        _exit_handler_context_callable = exit_handler_context or _default_exit_handler_context
+        _format_exception_for_log_callable = format_exception_for_log or _default_format_exception_for_log
 
-        handler_params: dict[str, Any] = {
-            'id': id,
-            'handler': handler,
-            'handler_name': cls.get_callable_handler_name(handler),
-            'handler_file_path': resolved_file_path,
-            'handler_registered_at': handler_registered_at or datetime.now(UTC),
-            'handler_registered_ts': handler_registered_ts or time.time_ns(),
-            'event_pattern': event_pattern,
-            'eventbus_name': eventbus_name,
-            'eventbus_id': eventbus_id,
-        }
-        if handler_timeout is not None:
-            handler_params['handler_timeout'] = handler_timeout
-        if handler_slow_timeout is not None:
-            handler_params['handler_slow_timeout'] = handler_slow_timeout
+        handler = self.handler.handler
+        if handler is None:
+            raise RuntimeError(f'EventResult {self.id} has no callable attached to handler {self.handler.id}')
 
-        return cls(**handler_params)
+        self.timeout = timeout
+        self.result_type = event.event_result_type
+        self.update(status='started')
+
+        monitor_task: asyncio.Task[None] | None = None
+        handler_task: asyncio.Task[Any] | None = None
+        dispatch_context = getattr(event, '_event_dispatch_context', None)
+
+        should_warn_for_slow_handler = slow_timeout is not None and (self.timeout is None or self.timeout > slow_timeout)
+        if should_warn_for_slow_handler:
+
+            async def slow_handler_monitor() -> None:
+                assert slow_timeout is not None
+                await asyncio.sleep(slow_timeout)
+                if self.status != 'started':
+                    return
+                started_at = self.started_at or event.event_started_at or event.event_created_at
+                elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+                logger.warning(
+                    '⚠️ Slow event handler: %s.on(%s#%s, %s) still running after %.1fs',
+                    eventbus.label,
+                    event.event_type,
+                    event.event_id[-4:],
+                    self.handler.label,
+                    elapsed_seconds,
+                )
+
+            monitor_task = asyncio.create_task(
+                slow_handler_monitor(),
+                name=f'{eventbus}.slow_handler_monitor({event}, {self.handler.label})',
+            )
+
+        async def async_handler_with_context() -> Any:
+            tokens = _enter_handler_context_callable(event, self.handler_id)
+            try:
+                with eventbus.locks.lock_context_for_current_handler(eventbus, event):
+                    return await handler(event)  # type: ignore
+            finally:
+                _exit_handler_context_callable(tokens)
+
+        def sync_handler_with_context() -> Any:
+            tokens = _enter_handler_context_callable(event, self.handler_id)
+            try:
+                with eventbus.locks.lock_context_for_current_handler(eventbus, event):
+                    return handler(event)  # type: ignore[call-arg]
+            finally:
+                _exit_handler_context_callable(tokens)
+
+        try:
+            if inspect.iscoroutinefunction(handler):
+                create_task_kwargs = {'context': dispatch_context} if dispatch_context is not None else {}
+                handler_task = asyncio.create_task(async_handler_with_context(), **create_task_kwargs)
+                handler_return_value: Any = await asyncio.wait_for(handler_task, timeout=self.timeout)
+            elif inspect.isfunction(handler) or inspect.ismethod(handler):
+                if dispatch_context is not None:
+                    handler_return_value = dispatch_context.run(sync_handler_with_context)
+                else:
+                    handler_return_value = sync_handler_with_context()
+                if isinstance(handler_return_value, BaseEvent):
+                    logger.debug(f'Handler {self.handler.label} returned BaseEvent, not awaiting to avoid circular dependency')
+            else:
+                handler_name = EventHandler.get_callable_handler_name(handler)
+                raise ValueError(f'Handler {handler_name} must be a sync or async function, got: {type(handler)}')
+
+            self.update(result=handler_return_value)
+            return self.result
+
+        except asyncio.CancelledError as exc:
+            handler_interrupted_error = asyncio.CancelledError(
+                f'Event handler {self.handler.label}({event}) was interrupted because of a parent timeout'
+            )
+            self.update(error=handler_interrupted_error)
+            raise handler_interrupted_error from exc
+
+        except TimeoutError as exc:
+            children = (
+                f' and interrupted any processing of {len(event.event_children)} child events' if event.event_children else ''
+            )
+            timeout_error = TimeoutError(f'Event handler {self.handler.label}({event}) timed out after {self.timeout}s{children}')
+            self.update(error=timeout_error)
+            event.event_cancel_pending_child_processing(timeout_error)
+
+            from bubus.logging import log_timeout_tree
+
+            log_timeout_tree(event, self)
+            raise timeout_error from exc
+
+        except Exception as exc:
+            self.update(error=exc)
+
+            red = '\033[91m'
+            reset = '\033[0m'
+            logger.error(
+                f'❌ {eventbus} Error in event handler {self.handler_name}({event}) -> \n{red}{type(exc).__name__}({exc}){reset}\n{_format_exception_for_log_callable(exc)}',
+            )
+            raise
+
+        finally:
+            if handler_task and not handler_task.done():
+                handler_task.cancel()
+                try:
+                    await asyncio.wait_for(handler_task, timeout=0.1)
+                except (asyncio.CancelledError, TimeoutError):
+                    pass
+
+            if monitor_task:
+                try:
+                    if not monitor_task.done():
+                        monitor_task.cancel()
+                    await monitor_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+
+    def log_tree(
+        self,
+        indent: str = '',
+        is_last: bool = True,
+        event_children_by_parent: dict[str | None, list['BaseEvent[Any]']] | None = None,
+    ) -> None:
+        """Print this result and its child events with proper tree formatting."""
+        from bubus.logging import log_eventresult_tree
+
+        log_eventresult_tree(self, indent, is_last, event_children_by_parent)
 
 
 class BaseEvent(BaseModel, Generic[T_EventResultType]):
@@ -493,7 +526,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         description='Timestamp when event was completed by all handlers and child events',
     )
 
-    event_results: dict[PythonIdStr, 'EventResult[T_EventResultType]'] = Field(
+    event_results: dict[PythonIdStr, EventResult[T_EventResultType]] = Field(
         default_factory=dict, exclude=True
     )  # Results indexed by str(id(handler_func))
 
@@ -1292,337 +1325,7 @@ assert not illegal_attrs, (
     f'not allowed: {illegal_attrs}'
 )
 
-
-class EventResult(BaseModel, Generic[T_EventResultType]):
-    """Individual result from a single handler"""
-
-    model_config = ConfigDict(
-        extra='forbid',
-        arbitrary_types_allowed=True,
-        validate_assignment=False,  # Disable to allow flexible result types - validation handled in update()
-        validate_default=True,
-        revalidate_instances='always',
-    )
-
-    # Automatically set fields, setup at Event init and updated by the EventBus.execute_handler() calling event_result.update(...)
-    id: UUIDStr = Field(default_factory=uuid7str)
-    status: Literal['pending', 'started', 'completed', 'error'] = 'pending'
-    event_id: UUIDStr
-    handler: EventHandler = Field(default_factory=EventHandler)
-    result_type: Any = Field(default=None, exclude=True, repr=False)
-    timeout: float | None = None
-    started_at: datetime | None = None
-
-    # Result fields, updated by the EventBus.execute_handler() calling event_result.update(...)
-    result: T_EventResultType | BaseEvent[Any] | None = None
-    error: BaseException | None = None
-    completed_at: datetime | None = None
-
-    # Completion signal
-    _handler_completed_signal: asyncio.Event | None = PrivateAttr(default=None)
-
-    # any child events that were emitted during handler execution are captured automatically and stored here to track hierarchy
-    # note about why this is BaseEvent[Any] instead of a more specific type:
-    #   unfortunately we cant determine child event types statically / it's not worth it to force child event types to be defined at compile-time
-    #   so we just allow handlers to emit any BaseEvent subclass/instances with any result types
-    #   in theory it's possible to define the entire event tree hierarchy at compile-time with something like ParentEvent[ChildEvent[GrandchildEvent[FinalResultValueType]]],
-    #   it's not worth the complexity headache it would incur on users of the library though,
-    #   and it would significantly reduce runtime flexibility, e.g. you couldn't define and dispatch arbitrary server-provided event types at runtime
-    event_children: list['BaseEvent[Any]'] = Field(default_factory=list)  # pyright: ignore[reportUnknownVariableType]
-
-    @field_serializer('result', when_used='json')
-    def _serialize_result(self, value: T_EventResultType | BaseEvent[Any] | None) -> Any:
-        """Preserve handler return values when serializing without extra validation."""
-        return value
-
-    @computed_field(return_type=str)
-    @property
-    def handler_id(self) -> str:
-        handler_id = self.handler.id
-        if handler_id is None:
-            handler_id = self.handler.compute_handler_id()
-            self.handler.id = handler_id
-        return handler_id
-
-    @computed_field(return_type=str)
-    @property
-    def handler_name(self) -> str:
-        return self.handler.handler_name
-
-    @computed_field(return_type=str)
-    @property
-    def eventbus_id(self) -> str:
-        return self.handler.eventbus_id
-
-    @computed_field(return_type=str)
-    @property
-    def eventbus_name(self) -> str:
-        return self.handler.eventbus_name
-
-    @property
-    def eventbus_label(self) -> str:
-        return self.handler.eventbus_label
-
-    @property
-    def handler_completed_signal(self) -> asyncio.Event | None:
-        """Lazily create asyncio.Event when accessed"""
-        if self._handler_completed_signal is None:
-            try:
-                asyncio.get_running_loop()
-                self._handler_completed_signal = asyncio.Event()
-            except RuntimeError:
-                pass  # Keep it None if no event loop
-        return self._handler_completed_signal
-
-    def __str__(self) -> str:
-        handler_qualname = f'{self.eventbus_label}.{self.handler_name}'
-        return f'{handler_qualname}() -> {self.result or self.error or "..."} ({self.status})'
-
-    def __repr__(self) -> str:
-        icon = '🏃' if self.status == 'pending' else '✅' if self.status == 'completed' else '❌'
-        return f'{self.handler.label}() {icon}'
-
-    def __await__(self) -> Generator[Self, Any, T_EventResultType | BaseEvent[Any] | None]:
-        """
-        Wait for this result to complete and return the result or raise error.
-        Does not execute the handler itself, only waits for it to be marked completed by the EventBus.
-        EventBus triggers handlers and calls event_result.update() to mark them as started or completed.
-        """
-
-        async def wait_for_handler_to_complete_and_return_result() -> T_EventResultType | BaseEvent[Any] | None:
-            assert self.handler_completed_signal is not None, 'EventResult cannot be awaited outside of an async context'
-
-            try:
-                await asyncio.wait_for(self.handler_completed_signal.wait(), timeout=self.timeout)
-            except TimeoutError:
-                # self.handler_completed_signal.clear()
-                raise TimeoutError(
-                    f'Event handler {self.eventbus_label}.{self.handler_name}(#{self.event_id[-4:]}) timed out after {self.timeout}s'
-                )
-
-            if self.status == 'error' and self.error:
-                raise self.error if isinstance(self.error, BaseException) else Exception(self.error)  # pyright: ignore[reportUnnecessaryIsInstance]
-
-            return self.result
-
-        # do not re-raise exceptions here for now, just return the event in all cases and let the caller handle checking event.error or event.result
-
-        return wait_for_handler_to_complete_and_return_result().__await__()
-
-    def update(self, **kwargs: Any) -> Self:
-        """Update the EventResult with provided kwargs, called by EventBus during handler execution."""
-
-        # fix common mistake of returning an exception object instead of marking the event result as an error result
-        if 'result' in kwargs and isinstance(kwargs['result'], BaseException):
-            logger.warning(
-                f'ℹ Event handler {self.handler_name} returned an exception object, auto-converting to EventResult(result=None, status="error", error={kwargs["result"]})'
-            )
-            kwargs['error'] = kwargs['result']
-            kwargs['status'] = 'error'
-            kwargs['result'] = None
-
-        if 'result' in kwargs:
-            result: Any = kwargs['result']
-            self.status = 'completed'
-            if self.result_type is not None and result is not None:
-                # Always allow BaseEvent results without validation
-                # This is needed for event forwarding patterns like bus1.on('*', bus2.dispatch)
-                if isinstance(result, BaseEvent):
-                    self.result = cast(T_EventResultType, result)
-                else:
-                    # Validate/cast against event_result_type.
-                    try:
-                        validated_result = validate_result_against_type(self.result_type, result)
-
-                        # Normal assignment works, make sure validate_assignment=False otherwise pydantic will attempt to re-validate it a second time
-                        self.result = cast(T_EventResultType, validated_result)
-
-                    except Exception as cast_error:
-                        schema_id = result_type_identifier_from_schema(self.result_type) or 'unknown'
-                        self.error = ValueError(
-                            f'Event handler returned a value that did not match expected event_result_type '
-                            f'({schema_id}): {result} -> {type(cast_error).__name__}: {cast_error}'
-                        )
-                        self.result = None
-                        self.status = 'error'
-            else:
-                # No result_type specified or result is None - assign directly
-                self.result = cast(T_EventResultType, result)
-
-        if 'error' in kwargs:
-            assert isinstance(kwargs['error'], (BaseException, str)), (
-                f'Invalid error type: {type(kwargs["error"]).__name__} {kwargs["error"]}'
-            )
-            self.error = kwargs['error'] if isinstance(kwargs['error'], BaseException) else Exception(kwargs['error'])  # pyright: ignore[reportUnnecessaryIsInstance]
-            self.status = 'error'
-
-        if 'status' in kwargs:
-            assert kwargs['status'] in ('pending', 'started', 'completed', 'error'), f'Invalid status: {kwargs["status"]}'
-            self.status = kwargs['status']
-
-        if self.status != 'pending' and not self.started_at:
-            self.started_at = datetime.now(UTC)
-
-        if self.status in ('completed', 'error') and not self.completed_at:
-            self.completed_at = datetime.now(UTC)
-            if self.handler_completed_signal:
-                self.handler_completed_signal.set()
-        return self
-
-    async def execute(
-        self,
-        event: 'BaseEvent[T_EventResultType]',
-        *,
-        eventbus: 'EventBus',
-        timeout: float | None,
-        slow_timeout: float | None = None,
-        enter_handler_context: Callable[[BaseEvent[Any], str], tuple[Any, Any]] | None = None,
-        exit_handler_context: Callable[[tuple[Any, Any]], None] | None = None,
-        format_exception_for_log: Callable[[BaseException], str] | None = None,
-    ) -> T_EventResultType | BaseEvent[Any] | None:
-        """Execute self.handler and update internal state automatically."""
-        _enter_handler_context_callable = enter_handler_context or _default_enter_handler_context
-        _exit_handler_context_callable = exit_handler_context or _default_exit_handler_context
-        _format_exception_for_log_callable = format_exception_for_log or _default_format_exception_for_log
-
-        handler = self.handler.handler
-        if handler is None:
-            raise RuntimeError(f'EventResult {self.id} has no callable attached to handler {self.handler.id}')
-
-        self.timeout = timeout
-        self.result_type = event.event_result_type
-        self.update(status='started')
-
-        monitor_task: asyncio.Task[None] | None = None
-        handler_task: asyncio.Task[Any] | None = None
-
-        # Use dispatch-time context if available (GitHub issue #20)
-        # This ensures ContextVars set before dispatch() are accessible in handlers
-        # Use getattr to handle stub events that may not have this attribute
-        dispatch_context = getattr(event, '_event_dispatch_context', None)
-
-        should_warn_for_slow_handler = slow_timeout is not None and (self.timeout is None or self.timeout > slow_timeout)
-        if should_warn_for_slow_handler:
-
-            async def slow_handler_monitor() -> None:
-                assert slow_timeout is not None
-                await asyncio.sleep(slow_timeout)
-                if self.status != 'started':
-                    return
-                started_at = self.started_at or event.event_started_at or event.event_created_at
-                elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
-                logger.warning(
-                    '⚠️ Slow event handler: %s.on(%s#%s, %s) still running after %.1fs',
-                    eventbus.label,
-                    event.event_type,
-                    event.event_id[-4:],
-                    self.handler.label,
-                    elapsed_seconds,
-                )
-
-            monitor_task = asyncio.create_task(
-                slow_handler_monitor(),
-                name=f'{eventbus}.slow_handler_monitor({event}, {self.handler.label})',
-            )
-
-        # Keep all handler-invocation context setup centralized in two wrappers.
-        # For dispatch-context executions, wrappers run inside that copied context.
-        # For local executions, wrappers run directly in the current context.
-        async def async_handler_with_context() -> Any:
-            tokens = _enter_handler_context_callable(event, self.handler_id)
-            try:
-                with eventbus.locks.lock_context_for_current_handler(eventbus, event):
-                    return await handler(event)  # type: ignore
-            finally:
-                _exit_handler_context_callable(tokens)
-
-        def sync_handler_with_context() -> Any:
-            tokens = _enter_handler_context_callable(event, self.handler_id)
-            try:
-                with eventbus.locks.lock_context_for_current_handler(eventbus, event):
-                    return handler(event)  # type: ignore[call-arg]  # protocol allows _self param but we dont need it because it's already bound
-            finally:
-                _exit_handler_context_callable(tokens)
-
-        try:
-            if inspect.iscoroutinefunction(handler):
-                create_task_kwargs = {'context': dispatch_context} if dispatch_context is not None else {}
-                handler_task = asyncio.create_task(async_handler_with_context(), **create_task_kwargs)
-                handler_return_value: Any = await asyncio.wait_for(handler_task, timeout=self.timeout)
-            elif inspect.isfunction(handler) or inspect.ismethod(handler):
-                if dispatch_context is not None:
-                    handler_return_value = dispatch_context.run(sync_handler_with_context)
-                else:
-                    handler_return_value = sync_handler_with_context()
-                if isinstance(handler_return_value, BaseEvent):
-                    logger.debug(f'Handler {self.handler.label} returned BaseEvent, not awaiting to avoid circular dependency')
-            else:
-                handler_name = EventHandler.get_callable_handler_name(handler)
-                raise ValueError(f'Handler {handler_name} must be a sync or async function, got: {type(handler)}')
-
-            self.update(result=handler_return_value)
-            return self.result
-
-        except asyncio.CancelledError as exc:
-            handler_interrupted_error = asyncio.CancelledError(
-                f'Event handler {self.handler.label}({event}) was interrupted because of a parent timeout'
-            )
-            self.update(error=handler_interrupted_error)
-            raise handler_interrupted_error from exc
-
-        except TimeoutError as exc:
-            children = (
-                f' and interrupted any processing of {len(event.event_children)} child events' if event.event_children else ''
-            )
-            timeout_error = TimeoutError(f'Event handler {self.handler.label}({event}) timed out after {self.timeout}s{children}')
-            self.update(error=timeout_error)
-            event.event_cancel_pending_child_processing(timeout_error)
-
-            from bubus.logging import log_timeout_tree
-
-            log_timeout_tree(event, self)
-            raise timeout_error from exc
-
-        except Exception as exc:
-            self.update(error=exc)
-
-            red = '\033[91m'
-            reset = '\033[0m'
-            logger.error(
-                f'❌ {eventbus} Error in event handler {self.handler_name}({event}) -> \n{red}{type(exc).__name__}({exc}){reset}\n{_format_exception_for_log_callable(exc)}',
-            )
-            raise
-
-        finally:
-            if handler_task and not handler_task.done():
-                handler_task.cancel()
-                try:
-                    await asyncio.wait_for(handler_task, timeout=0.1)
-                except (asyncio.CancelledError, TimeoutError):
-                    pass
-
-            if monitor_task:
-                try:
-                    if not monitor_task.done():
-                        monitor_task.cancel()
-                    await monitor_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    pass
-
-    def log_tree(
-        self,
-        indent: str = '',
-        is_last: bool = True,
-        event_children_by_parent: dict[str | None, list[BaseEvent[Any]]] | None = None,
-    ) -> None:
-        """Print this result and its child events with proper tree formatting"""
-        from bubus.logging import log_eventresult_tree
-
-        log_eventresult_tree(self, indent, is_last, event_children_by_parent)
-
-
-# Resolve forward references
-BaseEvent.model_rebuild()
+# Resolve forward refs after both core models are defined.
 EventResult.model_rebuild()
+BaseEvent.model_rebuild()
+EventHandler.model_rebuild()

@@ -7,7 +7,7 @@ import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from bubus.helpers import extract_basemodel_generic_arg
-from bubus.models import BaseEvent
+from bubus.base_event import BaseEvent
 
 
 def _to_plain(value: Any) -> Any:

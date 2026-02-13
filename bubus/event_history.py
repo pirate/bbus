@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from .models import BaseEvent, UUIDStr
+from .base_event import BaseEvent, UUIDStr
 
 BaseEventT = TypeVar('BaseEventT', bound=BaseEvent[Any])
 

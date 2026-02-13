@@ -3,7 +3,8 @@ from typing import Any
 import pytest
 
 from bubus.event_bus import EventBus
-from bubus.models import BaseEvent, EventHandler
+from bubus.event_handler import EventHandler
+from bubus.base_event import BaseEvent
 
 
 @pytest.mark.asyncio

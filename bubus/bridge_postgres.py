@@ -25,7 +25,7 @@ from urllib.parse import urlsplit, urlunsplit
 from uuid_extensions import uuid7str
 
 from bubus.event_bus import EventBus, EventPatternType, in_handler_context
-from bubus.models import BaseEvent
+from bubus.base_event import BaseEvent
 
 _IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 _DEFAULT_POSTGRES_TABLE = 'bubus_events'

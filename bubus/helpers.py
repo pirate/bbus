@@ -1,7 +1,7 @@
 import asyncio
 import logging
-import traceback
 import time
+import traceback
 from collections import deque
 from collections.abc import Callable, Coroutine
 from functools import wraps
@@ -115,7 +115,7 @@ def extract_basemodel_generic_arg(cls: type) -> Any:
         if not args:
             return None
         # Avoid importing BaseEvent here to keep helpers.py decoupled from models.py.
-        if getattr(origin, '__name__', None) == 'BaseEvent' and getattr(origin, '__module__', None) == 'bubus.models':
+        if getattr(origin, '__name__', None) == 'BaseEvent' and getattr(origin, '__module__', None) == 'bubus.base_event':
             return args[0]
         return None
 
@@ -166,7 +166,7 @@ def time_execution(
     return decorator
 
 
-def _log_filtered_traceback(exc: BaseException) -> str:
+def log_filtered_traceback(exc: BaseException) -> str:
     """Format traceback while filtering noisy asyncio/stdlib frames."""
     trace_exc = traceback.TracebackException.from_exception(exc, capture_locals=False)
 
@@ -184,7 +184,7 @@ def _log_filtered_traceback(exc: BaseException) -> str:
 
 
 __all__ = [
-    '_log_filtered_traceback',
+    'log_filtered_traceback',
     'CleanShutdownQueue',
     'QueueShutDown',
     'extract_basemodel_generic_arg',

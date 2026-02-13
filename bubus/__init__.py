@@ -2,7 +2,9 @@
 
 from .bridges import HTTPEventBridge, SocketEventBridge
 from .event_bus import EventBus
+from .event_handler import EventHandler
 from .event_history import EventHistory, InMemoryEventHistory
+from .event_result import EventResult
 from .middlewares import (
     BusHandlerRegisteredEvent,
     BusHandlerUnregisteredEvent,
@@ -15,13 +17,11 @@ from .middlewares import (
     SyntheticReturnEventMiddleware,
     WALEventBusMiddleware,
 )
-from .models import (
+from .base_event import (
     BaseEvent,
     EventConcurrencyMode,
-    EventHandler,
     EventHandlerCompletionMode,
     EventHandlerConcurrencyMode,
-    EventResult,
     EventStatus,
     PythonIdentifierStr,
     PythonIdStr,

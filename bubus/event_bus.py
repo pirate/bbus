@@ -16,25 +16,27 @@ from uuid_extensions import uuid7str  # pyright: ignore[reportMissingImports, re
 
 uuid7str: Callable[[], str] = uuid7str  # pyright: ignore
 
-from bubus.event_history import EventHistory
-from bubus.helpers import CleanShutdownQueue, QueueShutDown, _log_filtered_traceback
-from bubus.lock_manager import LockManager, ReentrantLock
-from bubus.middlewares import EventBusMiddleware
-from bubus.models import (
-    BUBUS_LOGGING_LEVEL,
+from bubus.event_handler import (
     AsyncEventHandlerClassMethod,
     AsyncEventHandlerFunc,
     AsyncEventHandlerMethod,
-    BaseEvent,
-    EventConcurrencyMode,
     EventHandler,
     EventHandlerCallable,
     EventHandlerClassMethod,
-    EventHandlerCompletionMode,
-    EventHandlerConcurrencyMode,
     EventHandlerFunc,
     EventHandlerMethod,
-    EventResult,
+)
+from bubus.event_history import EventHistory
+from bubus.event_result import EventResult
+from bubus.helpers import CleanShutdownQueue, QueueShutDown, log_filtered_traceback
+from bubus.lock_manager import LockManager, ReentrantLock
+from bubus.middlewares import EventBusMiddleware
+from bubus.base_event import (
+    BUBUS_LOGGING_LEVEL,
+    BaseEvent,
+    EventConcurrencyMode,
+    EventHandlerCompletionMode,
+    EventHandlerConcurrencyMode,
     EventStatus,
     PythonIdentifierStr,
     PythonIdStr,
@@ -1914,7 +1916,7 @@ class EventBus:
                     slow_timeout=resolved_slow_timeout,
                     enter_handler_context=self._enter_handler_execution_context,
                     exit_handler_context=self._exit_handler_execution_context,
-                    format_exception_for_log=_log_filtered_traceback,
+                    format_exception_for_log=log_filtered_traceback,
                 )
 
             result_type_name = type(result_value).__name__ if result_value is not None else 'None'

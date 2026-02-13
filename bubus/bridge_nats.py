@@ -15,7 +15,7 @@ from uuid_extensions import uuid7str
 
 from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 from bubus.helpers import QueueShutDown
-from bubus.models import BaseEvent
+from bubus.base_event import BaseEvent
 
 
 class NATSEventBridge:

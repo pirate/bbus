@@ -10,8 +10,10 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from bubus.event_handler import EventHandler
+from bubus.event_result import EventResult
 from bubus.logging import log_eventbus_tree
-from bubus.models import BaseEvent, EventHandler, EventResult, EventStatus
+from bubus.base_event import BaseEvent, EventStatus
 
 if TYPE_CHECKING:
     from bubus.event_bus import EventBus
