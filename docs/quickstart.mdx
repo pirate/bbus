@@ -45,7 +45,8 @@ async def main() -> None:
     bus.on(CreateUserEvent, on_create_user)
 
     result = await bus.emit(CreateUserEvent(email='someuser@example.com')).event_result()
-    print(result)  # {'user_id': 'some-user-uuid'}
+    print(result)
+    # {'user_id': 'some-user-uuid'}
 
 asyncio.run(main())
 ```

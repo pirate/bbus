@@ -130,6 +130,7 @@ event = bus.emit(MyEvent())
 pending_count = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
 history_count = len(bus.event_history)
 print('pending_event_queue=', pending_count, 'event_history=', history_count)
+# pending_event_queue= 1 event_history= 1
 ```
 
 </Tab>

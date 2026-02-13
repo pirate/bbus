@@ -5,6 +5,15 @@ description: Compose multiple buses with automatic forwarding loop prevention.
 
 You can forward events across multiple buses while preserving event path metadata.
 
+Parent-child tracking also works across forwarded flows:
+
+- if a forwarded event is handled on a downstream bus and that handler emits a child event, the child still links back to the parent via `event_parent_id`
+- nested descendants emitted on downstream buses keep that lineage as they continue through forwarding
+- this remains true for both queue-jumped children (`await child`) and normally queued children (emitted but not immediately awaited)
+
+See [Parent-Child Tracking](./parent-child-tracking) for a deeper walkthrough and tree-log example.
+See [Immediate Execution (RPC-style)](../concurrency/immediate-execution) for queue-jump execution behavior.
+
 <Tabs>
 <Tab title="Python">
 
@@ -24,6 +33,7 @@ data_bus.on('*', main_bus.emit)
 
 event = await main_bus.emit(LoginEvent(user_id='u-123'))
 print(event.event_path)
+# ['MainBus#a8d1', 'AuthBus#3f2c', 'DataBus#b91e']
 ```
 
 </Tab>

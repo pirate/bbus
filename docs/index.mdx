@@ -31,6 +31,7 @@ class SomeEvent(BaseEvent):
 
 async def on_some_event(event: SomeEvent) -> None:
     print(event.some_data)
+    # 132
 
 bus = EventBus('MyBus')
 bus.on(SomeEvent, on_some_event)

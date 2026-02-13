@@ -52,13 +52,17 @@ async def on_typed(event: UserActionEvent) -> str:
 def on_by_name(event: BaseEvent[Any]) -> None:
     # string patterns are looser; payload fields are not statically known
     print('by-name', event.event_type, getattr(event, 'action', None))
+    # by-name UserActionEvent click
 
 def on_any(event: BaseEvent[Any]) -> None:
     print('wildcard', event.event_type)
+    # wildcard UserActionEvent
 
 bus.on(UserActionEvent, on_typed)
 bus.on('UserActionEvent', on_by_name)
 bus.on('*', on_any)
+
+await bus.emit(UserActionEvent(action='click')).event_result()
 
 typed_match = await bus.find(UserActionEvent)          # UserActionEvent | None
 named_match = await bus.find('UserActionEvent')        # BaseEvent[Any] | None

@@ -22,6 +22,7 @@ class AnalyticsMiddleware(EventBusMiddleware):
     async def on_event_result_change(self, eventbus, event, event_result, status):
         if status == 'completed':
             print(event.event_type, event_result.handler_name)
+            # SomeEvent on_some_event
 
 bus = EventBus('AppBus', middlewares=[AnalyticsMiddleware()])
 ```

@@ -1,30 +1,123 @@
 ---
 title: Parent-Child Tracking
-description: Emit events from handlers and keep parent/child lineage.
+description: Trace nested event flows with automatic parent-child lineage and tree logs.
 ---
 
-When handlers emit other events, parent/child relationships are tracked automatically.
+When a handler emits another event, Bubus automatically records lineage so you can understand call chains instead of guessing what triggered what.
+
+## What gets tracked
+
+- `event_parent_id`: points from child -> parent event
+- `event_children`: aggregated list of children emitted by handler execution
+- `event_emitted_by_handler_id`: which specific handler emitted the child
+
+This tracking works across nested chains (parent -> child -> grandchild) and is surfaced in event helpers and tree logs.
+
+## When links are created
+
+Parent-child links are recorded when you emit from inside a running handler context:
+
+- Python: `event.event_bus.emit(...)`
+- TypeScript: `event.bus?.emit(...)`
+
+Using the event-scoped bus keeps ancestry metadata intact automatically.
+
+## Works across forwarded buses too
+
+Parent-child lineage is preserved even when the parent event has been forwarded between buses.
+
+If a forwarded event is handled on another bus and that handler emits a child:
+
+- the child still gets `event_parent_id = <forwarded parent event_id>`
+- the child is linked under the emitting handler's `event_children`
+- forwarding that child onward keeps the same lineage metadata
+
+Use the event-scoped bus in handlers (`event.event_bus` / `event.bus`) so the runtime can attach ancestry correctly.
+
+See also: [Forwarding Between Buses](./forwarding-between-buses)
+
+## Queue-jumped vs normally queued children
+
+Lineage tracking works in both execution styles:
+
+- Queue-jumped child events:
+  - emitted inside a handler and immediately awaited (`await child` / `await child.done()`)
+  - child may execute right away (RPC-style), but still gets normal parent linkage metadata
+- Normally queued child events:
+  - emitted inside a handler but not immediately awaited
+  - child runs later via normal queue scheduling, and still keeps the same `event_parent_id` ancestry link
+
+In short: queue-jump changes *when* the child executes, not *whether* parent-child tracking is recorded.
+
+See [Immediate Execution (RPC-style)](../concurrency/immediate-execution) for queue-jump behavior details.
+
+## Full example: checkout -> reserve/charge/receipt (+ fraud grandchild)
 
 <Tabs>
 <Tab title="Python">
 
 ```python
-from bubus import EventBus, BaseEvent
+from bubus import BaseEvent, EventBus
 
-class ParentEvent(BaseEvent):
-    pass
+class CheckoutEvent(BaseEvent[str]):
+    order_id: str
 
-class ChildEvent(BaseEvent[str]):
-    pass
+class ReserveInventoryEvent(BaseEvent[str]):
+    order_id: str
 
-bus = EventBus('AppBus')
+class ChargeCardEvent(BaseEvent[str]):
+    order_id: str
 
-async def on_parent(event: ParentEvent) -> None:
-    child = await bus.emit(ChildEvent())
-    assert child.event_parent_id == event.event_id
+class FraudCheckEvent(BaseEvent[str]):
+    order_id: str
 
-bus.on(ParentEvent, on_parent)
-await bus.emit(ParentEvent())
+class SendReceiptEvent(BaseEvent[str]):
+    order_id: str
+
+bus = EventBus('TreeBus')
+
+async def on_checkout(event: CheckoutEvent) -> str:
+    reserve = event.event_bus.emit(ReserveInventoryEvent(order_id=event.order_id))
+    await reserve
+    reserve_id = await reserve.event_result()
+
+    charge = event.event_bus.emit(ChargeCardEvent(order_id=event.order_id))
+    await charge
+    charge_id = await charge.event_result()
+
+    receipt = event.event_bus.emit(SendReceiptEvent(order_id=event.order_id))
+    await receipt
+    receipt_id = await receipt.event_result()
+
+    return f'{reserve_id}|{charge_id}|{receipt_id}'
+
+async def on_reserve(event: ReserveInventoryEvent) -> str:
+    return f'reserve:{event.order_id}'
+
+async def on_charge(event: ChargeCardEvent) -> str:
+    fraud = event.event_bus.emit(FraudCheckEvent(order_id=event.order_id))
+    await fraud
+    fraud_status = await fraud.event_result()
+    return f'charge:{event.order_id}:{fraud_status}'
+
+async def on_fraud(event: FraudCheckEvent) -> str:
+    return f'fraud-ok:{event.order_id}'
+
+async def on_receipt(event: SendReceiptEvent) -> str:
+    return f'receipt:{event.order_id}'
+
+bus.on(CheckoutEvent, on_checkout)
+bus.on(ReserveInventoryEvent, on_reserve)
+bus.on(ChargeCardEvent, on_charge)
+bus.on(FraudCheckEvent, on_fraud)
+bus.on(SendReceiptEvent, on_receipt)
+
+root = bus.emit(CheckoutEvent(order_id='ord-123'))
+result = await root.event_result()
+await bus.wait_until_idle()
+
+print(result)
+print(bus.log_tree())
 ```
 
 </Tab>
@@ -32,20 +125,91 @@ await bus.emit(ParentEvent())
 
 ```ts
 import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
 
-const ParentEvent = BaseEvent.extend('ParentEvent', {})
-const ChildEvent = BaseEvent.extend('ChildEvent', {})
-
-const bus = new EventBus('AppBus')
-
-bus.on(ParentEvent, async (event) => {
-  const child = bus.emit(ChildEvent({}))
-  await child.done()
-  console.log(child.event_parent_id === event.event_id)
+const CheckoutEvent = BaseEvent.extend('CheckoutEvent', {
+  order_id: z.string(),
+  event_result_type: z.string(),
+})
+const ReserveInventoryEvent = BaseEvent.extend('ReserveInventoryEvent', {
+  order_id: z.string(),
+  event_result_type: z.string(),
+})
+const ChargeCardEvent = BaseEvent.extend('ChargeCardEvent', {
+  order_id: z.string(),
+  event_result_type: z.string(),
+})
+const FraudCheckEvent = BaseEvent.extend('FraudCheckEvent', {
+  order_id: z.string(),
+  event_result_type: z.string(),
+})
+const SendReceiptEvent = BaseEvent.extend('SendReceiptEvent', {
+  order_id: z.string(),
+  event_result_type: z.string(),
 })
 
-await bus.emit(ParentEvent({})).done()
+const bus = new EventBus('TreeBus')
+
+bus.on(CheckoutEvent, async (event) => {
+  const reserve = event.bus!.emit(ReserveInventoryEvent({ order_id: event.order_id }))
+  await reserve.done()
+
+  const charge = event.bus!.emit(ChargeCardEvent({ order_id: event.order_id }))
+  await charge.done()
+
+  const receipt = event.bus!.emit(SendReceiptEvent({ order_id: event.order_id }))
+  await receipt.done()
+
+  return `${reserve.event_result}|${charge.event_result}|${receipt.event_result}`
+})
+
+bus.on(ReserveInventoryEvent, async (event) => `reserve:${event.order_id}`)
+bus.on(ChargeCardEvent, async (event) => {
+  const fraud = event.bus!.emit(FraudCheckEvent({ order_id: event.order_id }))
+  await fraud.done()
+  return `charge:${event.order_id}:${fraud.event_result}`
+})
+
+bus.on(FraudCheckEvent, async (event) => `fraud-ok:${event.order_id}`)
+bus.on(SendReceiptEvent, async (event) => `receipt:${event.order_id}`)
+
+const root = bus.emit(CheckoutEvent({ order_id: 'ord-123' }))
+await root.done()
+await bus.waitUntilIdle()
+
+console.log(root.event_result)
+console.log(bus.logTree())
 ```
 
 </Tab>
 </Tabs>
+
+## Example tree output
+
+Captured from running the Python example above with `uv run` (IDs/timestamps vary run-to-run):
+
+```text
+└── CheckoutEvent#b7c7 [10:10:54.522 (0.003s)]
+    └── ✅ TreeBus#ef2a.__main__.on_checkout#7a12 [10:10:54.522 (0.002s)] → 'reserve:ord-123|charge:ord-123:fraud-ok:ord-123|receipt:ord-123'
+        ├── ReserveInventoryEvent#ca2f [10:10:54.522 (0.000s)]
+        │   └── ✅ TreeBus#ef2a.__main__.on_reserve#1583 [10:10:54.522 (0.000s)] → 'reserve:ord-123'
+        ├── ChargeCardEvent#b746 [10:10:54.523 (0.001s)]
+        │   └── ✅ TreeBus#ef2a.__main__.on_charge#7d9c [10:10:54.523 (0.001s)] → 'charge:ord-123:fraud-ok:ord-123'
+        │       └── FraudCheckEvent#31e0 [10:10:54.523 (0.000s)]
+        │           └── ✅ TreeBus#ef2a.__main__.on_fraud#4c4e [10:10:54.523 (0.000s)] → 'fraud-ok:ord-123'
+        └── SendReceiptEvent#c399 [10:10:54.524 (0.000s)]
+            └── ✅ TreeBus#ef2a.__main__.on_receipt#de9f [10:10:54.524 (0.000s)] → 'receipt:ord-123'
+```
+
+## Why this helps in practice
+
+- Debugging: quickly see causality chains instead of inspecting raw logs line-by-line.
+- Reliability: timeout/cancellation behavior can be reasoned about by ancestry.
+- Querying: combine lineage with `find(..., child_of=...)` to isolate event families.
+
+## Related pages
+
+- [Immediate Execution (RPC-style)](../concurrency/immediate-execution)
+- [Forwarding Between Buses](./forwarding-between-buses)
+- [Find Events](./find-events)
+- [BaseEvent](../api/baseevent)

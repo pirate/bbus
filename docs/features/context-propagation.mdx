@@ -21,6 +21,7 @@ bus = EventBus('AppBus')
 
 async def handler(_: RequestEvent) -> None:
     print(request_id.get())
+    # req-123
 
 bus.on(RequestEvent, handler)
 request_id.set('req-123')
