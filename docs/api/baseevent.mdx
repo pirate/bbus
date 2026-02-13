@@ -167,6 +167,16 @@ Events are JSON-serializable in both implementations for bridge and cross-runtim
 
 ```python
 payload = event.model_dump(mode='json')
+print(payload)
+# {
+#   "event_id": "0190...",
+#   "event_type": "CreateUserEvent",
+#   "event_status": "pending",
+#   "event_result_type": {"type": "object", "...": "..."},
+#   "email": "someuser@example.com",
+#   "...": "..."
+# }
+
 restored = type(event).model_validate(payload)
 ```
 
@@ -175,6 +185,16 @@ restored = type(event).model_validate(payload)
 
 ```ts
 const payload = event.toJSON()
+console.log(payload)
+// {
+//   event_id: '0190...',
+//   event_type: 'CreateUserEvent',
+//   event_status: 'pending',
+//   event_result_type: { type: 'object', ... },
+//   email: 'someuser@example.com',
+//   ...
+// }
+
 const restored = BaseEvent.fromJSON(payload)
 ```
 

@@ -76,6 +76,19 @@ entry.linkEmittedChildEvent(childEvent)
 
 ```python
 payload = entry.model_dump(mode='json')
+print(payload)
+# {
+#   "id": "0190...",
+#   "status": "completed",
+#   "event_id": "018f...",
+#   "handler_id": "018g...",
+#   "handler_name": "on_user_created",
+#   "result": {"user_id": "u_123"},
+#   "error": None,
+#   "...": "..."
+# }
+
+restored = EventResult.model_validate(payload)
 ```
 
 </Tab>
@@ -83,6 +96,17 @@ payload = entry.model_dump(mode='json')
 
 ```ts
 const payload = entry.toJSON()
+console.log(payload)
+// {
+//   id: '0190...',
+//   status: 'completed',
+//   event_id: '018f...',
+//   handler: { id: '018g...', handler_name: 'onUserCreated', ... },
+//   result: { user_id: 'u_123' },
+//   error: undefined,
+//   ...
+// }
+
 const restored = EventResult.fromJSON(event, payload)
 ```
 

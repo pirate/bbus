@@ -46,6 +46,16 @@ bus.off(MyEvent, entry)
 
 ```python
 payload = entry.to_json_dict()
+print(payload)
+# {
+#   "id": "018f...",
+#   "handler_name": "app.handlers.on_user_created",
+#   "event_pattern": "UserCreatedEvent",
+#   "eventbus_name": "AuthBus",
+#   "eventbus_id": "018f...",
+#   "...": "..."
+# }
+
 restored = EventHandler.from_json_dict(payload, handler=real_handler)
 ```
 
@@ -54,6 +64,16 @@ restored = EventHandler.from_json_dict(payload, handler=real_handler)
 
 ```ts
 const payload = entry.toJSON()
+console.log(payload)
+// {
+//   id: '018f...',
+//   handler_name: 'onUserCreated',
+//   event_pattern: 'UserCreatedEvent',
+//   eventbus_name: 'AuthBus',
+//   eventbus_id: '018f...',
+//   ...
+// }
+
 const restored = EventHandler.fromJSON(payload, realHandler)
 ```
 
