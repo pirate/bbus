@@ -88,8 +88,18 @@ UUIDStr: TypeAlias = Annotated[str, AfterValidator(validate_uuid_str)]
 PythonIdStr: TypeAlias = Annotated[str, AfterValidator(validate_python_id_str)]
 PythonIdentifierStr: TypeAlias = Annotated[str, AfterValidator(validate_event_name)]
 EventPathEntryStr: TypeAlias = Annotated[str, AfterValidator(validate_event_path_entry_str)]
-EventHandlerConcurrencyMode: TypeAlias = Literal['serial', 'parallel']
-EventHandlerCompletionMode: TypeAlias = Literal['all', 'first']
+
+
+class EventHandlerConcurrencyMode(StrEnum):
+    SERIAL = 'serial'
+    PARALLEL = 'parallel'
+
+
+class EventHandlerCompletionMode(StrEnum):
+    ALL = 'all'
+    FIRST = 'first'
+
+
 T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
 # TypeVar for BaseEvent and its subclasses
 # We use contravariant=True because if a handler accepts BaseEvent,
@@ -104,8 +114,9 @@ T_EventInvariant = TypeVar('T_EventInvariant', bound='BaseEvent[Any]', default='
 # 2. Methods take self + event: handler(self, event)
 # 3. Classmethods take cls + event: handler(cls, event)
 # 4. Handlers can accept BaseEvent subclasses (contravariance)
+# 5. We need to preserve BaseEvent[GenericType] generic values through the handler signature
 #
-# Python's type system doesn't handle this well, so we define specific protocols
+# Python's type system cant handle this variability concicesely, so we define specific protocols for each scenario.
 
 
 @runtime_checkable
@@ -404,17 +415,19 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     event_slow_timeout: float | None = Field(
         default=None, description='Optional per-event slow processing warning threshold in seconds'
     )
-    event_concurrency: ClassVar[Literal['global-serial']] = 'global-serial'  # only mode supported in python for now, ts supports 'global-serial' | 'bus-serial' | 'parallel'
+    event_concurrency: ClassVar[Literal['global-serial']] = (
+        'global-serial'  # only mode supported in python for now, ts supports 'global-serial' | 'bus-serial' | 'parallel'
+    )
     event_handler_timeout: float | None = Field(default=None, description='Optional per-event handler timeout cap in seconds')
     event_handler_slow_timeout: float | None = Field(
         default=None, description='Optional per-event slow handler warning threshold in seconds'
     )
     event_handler_concurrency: EventHandlerConcurrencyMode = Field(
-        default='serial',
+        default=EventHandlerConcurrencyMode.SERIAL,
         description="Handler scheduling strategy: 'serial' runs one handler at a time, 'parallel' runs handlers concurrently",
     )
     event_handler_completion: EventHandlerCompletionMode = Field(
-        default='all',
+        default=EventHandlerCompletionMode.ALL,
         description="Handler completion strategy: 'all' waits for all handlers, 'first' resolves on first successful result",
     )
     event_result_type: Any = Field(
@@ -646,7 +659,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
         This switches the event to ``event_handler_completion='first'`` before awaiting completion.
         """
-        self.event_handler_completion = 'first'
+        self.event_handler_completion = EventHandlerCompletionMode.FIRST
         await self
         return await self.event_result(timeout=timeout, raise_if_any=raise_if_any, raise_if_none=raise_if_none)
 
@@ -1220,7 +1233,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         raise RuntimeError(f'Could not find active EventBus for path entry {current_bus_label}')
 
 
-def attr_name_allowed(key: str) -> bool:
+def attr_name_allowed_on_event(key: str) -> bool:
     allowed_unprefixed_attrs = {'first'}
     return key in pydantic_builtin_attrs or key in event_builtin_attrs or key.startswith('_') or key in allowed_unprefixed_attrs
 
@@ -1230,7 +1243,7 @@ def attr_name_allowed(key: str) -> bool:
 # resist the urge to nest the event data in an inner object unless absolutely necessary, flat simplifies most of the code and makes it easier to read JSON logs with less nesting
 pydantic_builtin_attrs = dir(BaseModel)
 event_builtin_attrs = {key for key in dir(BaseEvent) if key.startswith('event_')}
-illegal_attrs = {key for key in dir(BaseEvent) if not attr_name_allowed(key)}
+illegal_attrs = {key for key in dir(BaseEvent) if not attr_name_allowed_on_event(key)}
 assert not illegal_attrs, (
     'All BaseEvent attrs and methods must be prefixed with "event_" in order to avoid clashing '
     'with BaseEvent subclass fields used to store event contents (which share a namespace with the event_ metadata). '

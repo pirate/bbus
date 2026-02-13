@@ -293,8 +293,8 @@ class EventBus:
     )
     event_timeout: float | None = 60.0
     event_slow_timeout: float | None = 300.0
-    event_handler_concurrency: EventHandlerConcurrencyMode = 'serial'
-    event_handler_completion: EventHandlerCompletionMode = 'all'
+    event_handler_concurrency: EventHandlerConcurrencyMode = EventHandlerConcurrencyMode.SERIAL
+    event_handler_completion: EventHandlerCompletionMode = EventHandlerCompletionMode.ALL
     event_handler_slow_timeout: float | None = 30.0
     event_handler_detect_file_paths: bool = True
     max_history_size: int | None = 100
@@ -319,8 +319,8 @@ class EventBus:
     def __init__(
         self,
         name: PythonIdentifierStr | None = None,
-        event_handler_concurrency: EventHandlerConcurrencyMode = 'serial',
-        event_handler_completion: EventHandlerCompletionMode = 'all',
+        event_handler_concurrency: EventHandlerConcurrencyMode | str = EventHandlerConcurrencyMode.SERIAL,
+        event_handler_completion: EventHandlerCompletionMode | str = EventHandlerCompletionMode.ALL,
         max_history_size: int | None = 50,  # Keep only 50 events in history
         max_history_drop: bool = False,
         event_timeout: float | None = 60.0,
@@ -367,14 +367,22 @@ class EventBus:
         self.event_history = EventHistory()
         self.handlers = {}
         self.handlers_by_key = defaultdict(list)
-        self.event_handler_concurrency = event_handler_concurrency or 'serial'
-        assert self.event_handler_concurrency in ('serial', 'parallel'), (
-            f'event_handler_concurrency must be "serial" or "parallel", got: {self.event_handler_concurrency!r}'
-        )
-        self.event_handler_completion = event_handler_completion or 'all'
-        assert self.event_handler_completion in ('all', 'first'), (
-            f'event_handler_completion must be "all" or "first", got: {self.event_handler_completion!r}'
-        )
+        try:
+            self.event_handler_concurrency = EventHandlerConcurrencyMode(
+                event_handler_concurrency or EventHandlerConcurrencyMode.SERIAL
+            )
+        except ValueError as exc:
+            raise AssertionError(
+                f'event_handler_concurrency must be "serial" or "parallel", got: {event_handler_concurrency!r}'
+            ) from exc
+        try:
+            self.event_handler_completion = EventHandlerCompletionMode(
+                event_handler_completion or EventHandlerCompletionMode.ALL
+            )
+        except ValueError as exc:
+            raise AssertionError(
+                f'event_handler_completion must be "all" or "first", got: {event_handler_completion!r}'
+            ) from exc
         self.event_timeout = event_timeout
         self.event_slow_timeout = event_slow_timeout
         self.event_handler_slow_timeout = event_handler_slow_timeout
@@ -2052,17 +2060,17 @@ class EventBus:
 
         # Execute handlers in the configured mode.
         completion_mode = event.event_handler_completion
-        if completion_mode not in ('all', 'first'):
+        if completion_mode not in (EventHandlerCompletionMode.ALL, EventHandlerCompletionMode.FIRST):
             completion_mode = self.event_handler_completion
 
         handler_items = list(applicable_handlers.items())
 
         concurrency_mode = event.event_handler_concurrency
-        if concurrency_mode not in ('serial', 'parallel'):
+        if concurrency_mode not in (EventHandlerConcurrencyMode.SERIAL, EventHandlerConcurrencyMode.PARALLEL):
             concurrency_mode = self.event_handler_concurrency
 
-        if concurrency_mode == 'parallel':
-            if completion_mode == 'first':
+        if concurrency_mode == EventHandlerConcurrencyMode.PARALLEL:
+            if completion_mode == EventHandlerCompletionMode.FIRST:
                 handler_tasks: dict[asyncio.Task[Any], PythonIdStr] = {}
                 local_handler_ids: set[PythonIdStr] = set(applicable_handlers.keys())
                 for handler_id, handler_entry in applicable_handlers.items():
@@ -2132,7 +2140,7 @@ class EventBus:
                         e,
                     )
 
-            if completion_mode != 'first':
+            if completion_mode != EventHandlerCompletionMode.FIRST:
                 continue
 
             completed_result = event.event_results.get(handler_id)

@@ -1,12 +1,12 @@
 import inspect
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
 
 from pydantic import BaseModel, Field, TypeAdapter, create_model
 
 _SCHEMA_TYPE_REGISTRY: tuple[tuple[str, type[Any], str], ...] = (
     ('string', str, 'string'),
-    ('integer', int, 'number'),
+    ('integer', int, 'number'),   # note both integer and number are mapped to the same JSON Schema type
     ('number', float, 'number'),
     ('boolean', bool, 'boolean'),
     ('object', dict, 'object'),
@@ -14,9 +14,7 @@ _SCHEMA_TYPE_REGISTRY: tuple[tuple[str, type[Any], str], ...] = (
     ('null', type(None), 'null'),
 )
 
-TYPE_MAPPING: dict[str, type[Any]] = {
-    schema_type: python_type for schema_type, python_type, _ in _SCHEMA_TYPE_REGISTRY
-}
+TYPE_MAPPING: dict[str, type[Any]] = {schema_type: python_type for schema_type, python_type, _ in _SCHEMA_TYPE_REGISTRY}
 
 CONSTRAINT_MAPPING: dict[str, str] = {
     'minimum': 'ge',
@@ -37,11 +35,11 @@ PRIMITIVE_TYPE_MAPPING: dict[str, type[Any]] = {
     if schema_type not in _NON_PRIMITIVE_SCHEMA_TYPES
 }
 
-IDENTIFIER_NORMALIZATION: dict[str, str] = {
-    schema_type: identifier for schema_type, _, identifier in _SCHEMA_TYPE_REGISTRY
-}
+IDENTIFIER_NORMALIZATION: dict[str, str] = {schema_type: identifier for schema_type, _, identifier in _SCHEMA_TYPE_REGISTRY}
 
 JSON_SCHEMA_DRAFT = 'https://json-schema.org/draft/2020-12/schema'
+
+FieldDefinition: TypeAlias = Any | tuple[Any, Any]
 
 
 def _as_string_key_dict(value: object) -> dict[str, Any] | None:
@@ -150,8 +148,8 @@ def _build_model_fields_from_schema(
     schema: Mapping[str, Any],
     *,
     resolve_field_type: Callable[[dict[str, Any]], Any],
-) -> dict[str, tuple[Any, Any]]:
-    fields: dict[str, tuple[Any, Any]] = {}
+) -> dict[str, FieldDefinition]:
+    fields: dict[str, FieldDefinition] = {}
     properties = _as_string_key_dict(schema.get('properties'))
     if properties is None:
         return fields
@@ -183,12 +181,13 @@ def _create_dynamic_model(
     *,
     model_name: str,
     model_schema: Mapping[str, Any],
-    fields: dict[str, tuple[Any, Any]],
+    fields: Mapping[str, FieldDefinition],
 ) -> type[BaseModel]:
+    field_definitions: dict[str, Any] = dict(fields)
     return create_model(
         model_name,
         __doc__=str(model_schema.get('description', '')),
-        **fields,
+        **field_definitions,
     )
 
 

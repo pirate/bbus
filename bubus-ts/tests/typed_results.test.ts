@@ -99,13 +99,7 @@ test('event_result_type supports constructor shorthands and enforces them', asyn
   const array_event = bus.dispatch(ConstructorArrayResultEvent({}))
   const object_event = bus.dispatch(ConstructorObjectResultEvent({}))
 
-  await Promise.all([
-    string_event.done(),
-    number_event.done(),
-    boolean_event.done(),
-    array_event.done(),
-    object_event.done(),
-  ])
+  await Promise.all([string_event.done(), number_event.done(), boolean_event.done(), array_event.done(), object_event.done()])
 
   assert.equal(typeof (string_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
   assert.equal(typeof (number_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')

@@ -11,12 +11,7 @@ export type EventWithResultSchema<TResult> = BaseEvent & { __event_result_type__
 
 export type EventResultType<TEvent extends BaseEvent> = TEvent extends { __event_result_type__?: infer TResult } ? TResult : unknown
 
-export type EventResultTypeConstructor =
-  | StringConstructor
-  | NumberConstructor
-  | BooleanConstructor
-  | ArrayConstructor
-  | ObjectConstructor
+export type EventResultTypeConstructor = StringConstructor | NumberConstructor | BooleanConstructor | ArrayConstructor | ObjectConstructor
 
 export type EventResultTypeInput = z.ZodTypeAny | EventResultTypeConstructor | unknown
 

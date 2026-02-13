@@ -97,9 +97,7 @@ type ResultTypeFromEventResultTypeInput<TInput> = TInput extends z.ZodTypeAny
             ? Record<string, unknown>
             : unknown
 
-type ResultSchemaFromShape<TShape> = TShape extends { event_result_type: infer S }
-  ? ResultTypeFromEventResultTypeInput<S>
-  : unknown
+type ResultSchemaFromShape<TShape> = TShape extends { event_result_type: infer S } ? ResultTypeFromEventResultTypeInput<S> : unknown
 
 export type EventFactory<TShape extends z.ZodRawShape, TResult = unknown> = {
   (data: EventInit<TShape>): EventWithResultSchema<TResult> & EventPayload<TShape>

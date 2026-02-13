@@ -4,6 +4,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from types import NoneType
 from typing import Any, TypedDict
 
 import pytest
@@ -67,7 +68,7 @@ class PyTsBoolResultEvent(BaseEvent[bool]):
     marker: str
 
 
-class PyTsNullResultEvent(BaseEvent[type(None)]):
+class PyTsNullResultEvent(BaseEvent[NoneType]):
     marker: str
 
 
@@ -138,8 +139,7 @@ def _assert_result_type_semantics_equal(
         original_ok = _accepts_result_type(original_result_type, value)
         candidate_ok = _accepts_result_type(candidate_result_type, value)
         assert candidate_ok == original_ok, (
-            f'{context}: schema decision mismatch for {_value_repr(value)} '
-            f'(expected {original_ok}, got {candidate_ok})'
+            f'{context}: schema decision mismatch for {_value_repr(value)} (expected {original_ok}, got {candidate_ok})'
         )
 
 
