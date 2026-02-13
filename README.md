@@ -193,7 +193,7 @@ data_bus.on('*', main_bus.emit)  # don't worry! event will only be processed onc
 # Events flow through the hierarchy with tracking
 event = main_bus.emit(LoginEvent())
 await event
-print(event.event_path)  # ['MainBus', 'AuthBus', 'DataBus']  # list of buses that have already procssed the event
+print(event.event_path)  # ['MainBus#ab12', 'AuthBus#cd34', 'DataBus#ef56']  # list of bus labels that already processed the event
 ```
 
 <br/>

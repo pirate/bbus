@@ -301,7 +301,7 @@ test('deeply nested context and parent tracking', { skip: skip_if_no_async_local
   for (const result of results) {
     assert.equal(result.request_id, 'req-deep-nesting')
   }
-  assert.equal(results[0].parent_id, undefined)
+  assert.equal(results[0].parent_id, null)
   assert.equal(results[1].parent_id, results[0].event_id)
   assert.equal(results[2].parent_id, results[1].event_id)
 })
