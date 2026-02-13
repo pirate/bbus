@@ -28,6 +28,7 @@ async def main() -> None:
     bus = EventBus(name='ParentChildTrackingBus')
 
     try:
+
         async def on_child(event: ChildEvent) -> str:
             print(f'child handler start: {event.event_type}#{short_id(event.event_id)}')
 
@@ -93,8 +94,7 @@ async def main() -> None:
                     [
                         f'{item.event_type}#{short_id(item.event_id)}',
                         (
-                            'parent='
-                            f'{parent_event.event_type}#{short_id(parent_event.event_id)}'
+                            f'parent={parent_event.event_type}#{short_id(parent_event.event_id)}'
                             if parent_event is not None
                             else 'parent=none'
                         ),

@@ -17,15 +17,15 @@ from .event_handler import EventHandler
 from .event_history import EventHistory, InMemoryEventHistory
 from .event_result import EventResult
 from .middlewares import (
+    AutoErrorEventMiddleware,
+    AutoHandlerChangeEventMiddleware,
+    AutoReturnEventMiddleware,
     BusHandlerRegisteredEvent,
     BusHandlerUnregisteredEvent,
     EventBusMiddleware,
     LoggerEventBusMiddleware,
     OtelTracingMiddleware,
     SQLiteHistoryMirrorMiddleware,
-    AutoErrorEventMiddleware,
-    AutoHandlerChangeEventMiddleware,
-    AutoReturnEventMiddleware,
     WALEventBusMiddleware,
 )
 

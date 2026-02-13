@@ -42,20 +42,20 @@ async def main() -> None:
         async def on_register_user(event: RegisterUserEvent) -> RegisterUserResult:
             print(f'[class handler] Creating account for {event.email} ({event.plan})')
             return RegisterUserResult(
-                user_id=f"user_{event.email.split('@', maxsplit=1)[0]}",
+                user_id=f'user_{event.email.split("@", maxsplit=1)[0]}',
                 welcome_email_sent=True,
             )
 
         bus.on(RegisterUserEvent, on_register_user)
 
         # 3) Register by string event type.
-        def on_audit(event: AuditEvent) -> None:
-            print(f'[string handler] Audit log: {event.message}')
+        def on_audit(event: BaseEvent[Any]) -> None:
+            print(f'[string handler] Audit log: {getattr(event, "message", "<missing>")}')
 
         bus.on('AuditEvent', on_audit)
 
         # 4) Intentionally return an invalid shape for runtime result validation.
-        def on_register_user_invalid(_event: RegisterUserEvent) -> object:
+        def on_register_user_invalid(_event: BaseEvent[Any]) -> object:
             return {'user_id': 123, 'welcome_email_sent': 'yes'}
 
         bus.on('RegisterUserEvent', on_register_user_invalid)

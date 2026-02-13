@@ -1,10 +1,11 @@
 """Test automatic event_result_type extraction from Generic type parameters."""
 
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from typing_extensions import TypedDict
 
 from bubus.base_event import BaseEvent
 from bubus.helpers import extract_basemodel_generic_arg

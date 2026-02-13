@@ -4,7 +4,7 @@
 import asyncio
 from typing import Literal
 
-from bubus import BaseEvent, EventBus
+from bubus import BaseEvent, EventBus, EventConcurrencyMode
 
 
 class ParentEvent(BaseEvent[None]):
@@ -114,7 +114,7 @@ async def main() -> None:
             parent = bus_a.emit(
                 ParentEvent(
                     mode=mode,
-                    event_concurrency='parallel',
+                    event_concurrency=EventConcurrencyMode.PARALLEL,
                 )
             )
 

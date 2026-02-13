@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import inspect
 import types
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from types import SimpleNamespace
 from typing import Any, Protocol, TypeVar, cast, get_args, get_origin
-from collections.abc import Awaitable, Callable
 
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
@@ -29,7 +28,9 @@ class GeneratedEvents(SimpleNamespace):
 
 
 def _custom_event_fields(event_cls: EventClass) -> list[tuple[str, FieldInfo]]:
-    return [(field_name, field) for field_name, field in event_cls.model_fields.items() if field_name not in _BASE_EVENT_FIELD_NAMES]
+    return [
+        (field_name, field) for field_name, field in event_cls.model_fields.items() if field_name not in _BASE_EVENT_FIELD_NAMES
+    ]
 
 
 def _event_field_default(field: FieldInfo) -> Any:
@@ -118,7 +119,7 @@ def _make_event_class(event_name: str, func: Callable[..., Any]) -> EventClass:
 
 def make_events(events: Mapping[str, Callable[..., Any]]) -> GeneratedEvents:
     by_name = {event_name: _make_event_class(event_name, func) for event_name, func in events.items()}
-    return cast(GeneratedEvents, GeneratedEvents(**by_name, by_name=by_name))
+    return GeneratedEvents(**by_name, by_name=by_name)
 
 
 def make_handler(func: Callable[..., T_Result | Awaitable[T_Result]]) -> Callable[[BaseEvent[Any]], Awaitable[T_Result]]:
@@ -136,8 +137,8 @@ def make_handler(func: Callable[..., T_Result | Awaitable[T_Result]]) -> Callabl
             kwargs.update(payload)
         result = func(**kwargs)
         if inspect.isawaitable(result):
-            return cast(T_Result, await cast(Awaitable[T_Result], result))
-        return cast(T_Result, result)
+            return await result
+        return result
 
     return _handler
 
@@ -172,10 +173,7 @@ def _build_event_method(class_name: str, method_name: str, event_cls: EventClass
     _method.__name__ = method_name
     _method.__qualname__ = f'{class_name}.{method_name}'
     _method.__annotations__ = {
-        **{
-            field_name: (field.annotation if field.annotation is not None else Any)
-            for field_name, field in event_fields
-        },
+        **{field_name: (field.annotation if field.annotation is not None else Any) for field_name, field in event_fields},
         'extra': Any,
         'return': signature.return_annotation,
     }
@@ -199,11 +197,7 @@ def wrap(class_name: str, methods: Mapping[str, EventClass]) -> type[Any]:
     for method_name, event_cls in methods.items():
         if not method_name.isidentifier() or method_name.startswith('_'):
             raise ValueError(f'Invalid method name: {method_name!r}')
-        if not inspect.isclass(event_cls) or not issubclass(event_cls, BaseEvent):
-            raise TypeError(
-                f'events_suck.wrap() expected BaseEvent subclasses, got {method_name}={event_cls!r}'
-            )
-        namespace[method_name] = _build_event_method(class_name, method_name, cast(EventClass, event_cls))
+        namespace[method_name] = _build_event_method(class_name, method_name, event_cls)
 
     return cast(type[Any], type(class_name, (), namespace))
 

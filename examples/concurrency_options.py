@@ -5,7 +5,7 @@ import asyncio
 import time
 from typing import Literal
 
-from bubus import BaseEvent, EventBus
+from bubus import BaseEvent, EventBus, EventConcurrencyMode, EventHandlerConcurrencyMode
 
 
 class WorkEvent(BaseEvent[None]):
@@ -216,9 +216,28 @@ async def event_override_demo() -> None:
             bus.on(OverrideEvent, handler_a)
             bus.on(OverrideEvent, handler_b)
 
-            overrides = {'event_concurrency': 'parallel', 'event_handler_concurrency': 'parallel'} if use_override else {}
-            bus.emit(OverrideEvent(label=label, order=0, ms=45, **overrides))
-            bus.emit(OverrideEvent(label=label, order=1, ms=45, **overrides))
+            if use_override:
+                bus.emit(
+                    OverrideEvent(
+                        label=label,
+                        order=0,
+                        ms=45,
+                        event_concurrency=EventConcurrencyMode.PARALLEL,
+                        event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL,
+                    )
+                )
+                bus.emit(
+                    OverrideEvent(
+                        label=label,
+                        order=1,
+                        ms=45,
+                        event_concurrency=EventConcurrencyMode.PARALLEL,
+                        event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL,
+                    )
+                )
+            else:
+                bus.emit(OverrideEvent(label=label, order=0, ms=45))
+                bus.emit(OverrideEvent(label=label, order=1, ms=45))
             await bus.wait_until_idle()
             log(f'{label} summary -> max events={max_events}, max handlers={max_handlers}')
 
@@ -241,6 +260,7 @@ async def handler_timeout_demo() -> None:
     )
 
     try:
+
         async def slow_handler(event: TimeoutEvent) -> str:
             log('slow handler start')
             await sleep_ms(event.ms)
@@ -266,7 +286,9 @@ async def handler_timeout_demo() -> None:
             raise RuntimeError('Expected slow handler to have an id')
         slow_result = event.event_results.get(slow_entry.id)
         slow_timeout = slow_result is not None and isinstance(slow_result.error, TimeoutError)
-        log(f'slow handler status={slow_result.status if slow_result else "missing"}, timeout_error={"yes" if slow_timeout else "no"}')
+        log(
+            f'slow handler status={slow_result.status if slow_result else "missing"}, timeout_error={"yes" if slow_timeout else "no"}'
+        )
 
         await bus.wait_until_idle()
         print('\n=== TimeoutBus.log_tree() ===')

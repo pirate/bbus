@@ -28,6 +28,7 @@ async def main() -> None:
     bus_b = EventBus('BusB')
 
     try:
+
         async def forward_to_bus_b(event: BaseEvent[Any]) -> str:
             await delay_ms(20)
             bus_b.emit(event)

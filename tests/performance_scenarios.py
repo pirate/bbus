@@ -5,9 +5,9 @@ import gc
 import math
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import Callable
 
 from bubus import BaseEvent, EventBus
 

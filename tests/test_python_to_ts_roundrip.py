@@ -5,10 +5,11 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from types import NoneType
-from typing import Any, TypedDict
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from typing_extensions import TypedDict
 
 from bubus import BaseEvent, EventBus
 

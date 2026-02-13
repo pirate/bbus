@@ -26,14 +26,14 @@ from pydantic import Field
 
 from bubus import BaseEvent, EventBus, SQLiteHistoryMirrorMiddleware
 from bubus.middlewares import (
+    AutoErrorEventMiddleware,
+    AutoHandlerChangeEventMiddleware,
+    AutoReturnEventMiddleware,
     BusHandlerRegisteredEvent,
     BusHandlerUnregisteredEvent,
     EventBusMiddleware,
     LoggerEventBusMiddleware,
     OtelTracingMiddleware,
-    AutoErrorEventMiddleware,
-    AutoHandlerChangeEventMiddleware,
-    AutoReturnEventMiddleware,
     WALEventBusMiddleware,
 )
 

@@ -8,15 +8,16 @@ type AnyFn = (...args: any[]) => any
 type FunctionMap = Record<string, AnyFn>
 type ExtraDict = Record<string, unknown>
 
-type EventFieldsFromFn<TFunc extends AnyFn> = Parameters<TFunc> extends [infer TArg]
-  ? TArg extends Record<string, unknown>
-    ? TArg
-    : ExtraDict
-  : ExtraDict
+type EventFieldsFromFn<TFunc extends AnyFn> =
+  Parameters<TFunc> extends [infer TArg] ? (TArg extends Record<string, unknown> ? TArg : ExtraDict) : ExtraDict
 
 type GeneratedEvent<TFunc extends AnyFn> = {
-  (data: EventFieldsFromFn<TFunc> & ExtraDict): BaseEvent & EventFieldsFromFn<TFunc> & { __event_result_type__?: Awaited<ReturnType<TFunc>> }
-  new (data: EventFieldsFromFn<TFunc> & ExtraDict): BaseEvent & EventFieldsFromFn<TFunc> & { __event_result_type__?: Awaited<ReturnType<TFunc>> }
+  (
+    data: EventFieldsFromFn<TFunc> & ExtraDict
+  ): BaseEvent & EventFieldsFromFn<TFunc> & { __event_result_type__?: Awaited<ReturnType<TFunc>> }
+  new (
+    data: EventFieldsFromFn<TFunc> & ExtraDict
+  ): BaseEvent & EventFieldsFromFn<TFunc> & { __event_result_type__?: Awaited<ReturnType<TFunc>> }
   event_type?: string
 }
 
@@ -26,13 +27,13 @@ export type GeneratedEvents<TEvents extends FunctionMap> = {
   [K in keyof TEvents]: GeneratedEvent<TEvents[K]>
 }
 
-type EventInit<TEventClass extends EventClass<BaseEvent>> = ConstructorParameters<TEventClass> extends [infer TInit, ...unknown[]]
-  ? TInit
-  : never
+type EventInit<TEventClass extends EventClass<BaseEvent>> =
+  ConstructorParameters<TEventClass> extends [infer TInit, ...unknown[]] ? TInit : never
 
-type EventMethodArgs<TEventClass extends EventClass<BaseEvent>> = {} extends EventInit<TEventClass>
-  ? [init?: EventInit<TEventClass>, extra?: Record<string, unknown>]
-  : [init: EventInit<TEventClass>, extra?: Record<string, unknown>]
+type EventMethodArgs<TEventClass extends EventClass<BaseEvent>> =
+  {} extends EventInit<TEventClass>
+    ? [init?: EventInit<TEventClass>, extra?: Record<string, unknown>]
+    : [init: EventInit<TEventClass>, extra?: Record<string, unknown>]
 
 type EventMethodResult<TEventClass extends EventClass<BaseEvent>> = EventResultType<InstanceType<TEventClass>> | undefined
 

@@ -4,7 +4,7 @@ set -euo pipefail
 (
   uv run ruff format
   uv run ruff check --fix
-  uv run ty check
+  uv run ty check bubus examples
   uv run pyright
   uv run pytest
   shopt -s nullglob

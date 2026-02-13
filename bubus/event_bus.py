@@ -1975,9 +1975,7 @@ class EventBus:
         # Third check: For non-forwarding handlers, check recursion depth
         # Forwarding handlers (EventBus.emit / EventBus.dispatch) are allowed to forward at any depth
         is_forwarding_handler = (
-            inspect.ismethod(handler)
-            and isinstance(handler.__self__, EventBus)
-            and handler.__name__ in ('emit', 'dispatch')
+            inspect.ismethod(handler) and isinstance(handler.__self__, EventBus) and handler.__name__ in ('emit', 'dispatch')
         )
 
         if not is_forwarding_handler:

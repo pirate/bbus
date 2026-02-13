@@ -92,11 +92,11 @@ def test_events_suck_wrap_builds_typed_method_signature():
     assert list(params) == ['self', 'id', 'name', 'age', 'extra']
     assert params['id'].annotation == str | None
     assert params['id'].default is None
-    assert params['name'].annotation == str
+    assert params['name'].annotation is str
     assert params['name'].default is inspect.Parameter.empty
-    assert params['age'].annotation == int
+    assert params['age'].annotation is int
     assert params['extra'].kind == inspect.Parameter.VAR_KEYWORD
-    assert signature.return_annotation == str
+    assert signature.return_annotation is str
 
 
 async def test_events_suck_make_events_and_make_handler_runtime_binding():
@@ -112,9 +112,9 @@ async def test_events_suck_make_events_and_make_handler_runtime_binding():
     FooBarAPIPingEvent = events.FooBarAPIPingEvent
 
     assert FooBarAPICreateEvent.model_fields['id'].annotation == str | None
-    assert FooBarAPICreateEvent.model_fields['name'].annotation == str
-    assert FooBarAPICreateEvent.model_fields['age'].annotation == int
-    assert FooBarAPICreateEvent.model_fields['event_result_type'].default == str
+    assert FooBarAPICreateEvent.model_fields['name'].annotation is str
+    assert FooBarAPICreateEvent.model_fields['age'].annotation is int
+    assert FooBarAPICreateEvent.model_fields['event_result_type'].default is str
 
     bus = EventBus('LegacyBus')
     impl = SomeLegacyImperativeClass()
