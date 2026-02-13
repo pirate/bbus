@@ -1395,16 +1395,12 @@ async def test_perf_debug_hot_path_breakdown() -> None:
     print('\n[perf-debug] scenario=global_fifo_forwarding_queue_jump')
     print(f'[perf-debug] elapsed_s={elapsed:.3f}')
     print(
-        '[perf-debug] simple throughput={:.0f}/s dispatch_p95={:.3f}ms done_p95={:.3f}ms'.format(
-            simple_metrics[0], simple_metrics[2], simple_metrics[4]
-        )
+        f'[perf-debug] simple throughput={simple_metrics[0]:.0f}/s dispatch_p95={simple_metrics[2]:.3f}ms done_p95={simple_metrics[4]:.3f}ms'
     )
     print(
-        '[perf-debug] queue_jump throughput={:.0f}/s dispatch_p95={:.3f}ms done_p95={:.3f}ms'.format(
-            parent_metrics[0], parent_metrics[2], parent_metrics[4]
-        )
+        f'[perf-debug] queue_jump throughput={parent_metrics[0]:.0f}/s dispatch_p95={parent_metrics[2]:.3f}ms done_p95={parent_metrics[4]:.3f}ms'
     )
-    print('[perf-debug] memory_mb before={:.1f} done={:.1f} gc={:.1f}'.format(before_mb, done_mb, gc_mb))
+    print(f'[perf-debug] memory_mb before={before_mb:.1f} done={done_mb:.1f} gc={gc_mb:.1f}')
     print(f'[perf-debug] forwarded_simple_count={forwarded_simple_count:,} child_count={child_count:,}')
     print('[perf-debug] hot_path_top_total_time:')
     for line in profiler.top_lines(limit=14):

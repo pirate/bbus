@@ -1,0 +1,103 @@
+---
+title: "Handler Completion: first"
+description: Complete an event on the first successful handler result.
+---
+
+`first` short-circuits event completion once the first successful non-`None` / non-`undefined` result is available.
+
+## Lifecycle impact
+
+1. The first successful result wins (`None`/`undefined` and errors do not win).
+2. In `serial` handler mode, remaining handlers are skipped once a winner appears.
+3. In `parallel` handler mode, in-flight losers are cancelled or aborted.
+4. Event completion resolves as soon as a winner is found (or all handlers fail).
+
+## Execution order example
+
+<Tabs>
+<Tab title="Python">
+
+```python
+import asyncio
+from bubus import BaseEvent, EventBus
+
+class CompletionEvent(BaseEvent[str]):
+    pass
+
+bus = EventBus(
+    'CompletionFirstBus',
+    event_handler_concurrency='parallel',
+    event_handler_completion='first',
+)
+
+state = {'slow_started': False, 'slow_cancelled': False}
+
+async def fast_handler(_: CompletionEvent) -> str:
+    await asyncio.sleep(0.01)
+    return 'winner'
+
+async def slow_handler(_: CompletionEvent) -> str:
+    state['slow_started'] = True
+    try:
+        await asyncio.sleep(0.5)
+        return 'slow'
+    except asyncio.CancelledError:
+        state['slow_cancelled'] = True
+        raise
+
+bus.on(CompletionEvent, slow_handler)
+bus.on(CompletionEvent, fast_handler)
+
+event = bus.emit(CompletionEvent())
+await event
+
+value = await event.event_result(raise_if_any=False, raise_if_none=False)
+assert value == 'winner'
+assert state['slow_started'] is True
+assert state['slow_cancelled'] is True
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const CompletionEvent = BaseEvent.extend('CompletionEvent', { event_result_type: z.string() })
+const bus = new EventBus('CompletionFirstBus', {
+  event_handler_concurrency: 'parallel',
+  event_handler_completion: 'first',
+})
+
+let slowStarted = false
+let slowCompleted = false
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+bus.on(CompletionEvent, async () => {
+  slowStarted = true
+  await delay(500)
+  slowCompleted = true
+  return 'slow'
+})
+
+bus.on(CompletionEvent, async () => {
+  await delay(10)
+  return 'winner'
+})
+
+const event = bus.emit(CompletionEvent({}))
+await event.done()
+
+if (event.event_result !== 'winner') throw new Error('expected first winner result')
+if (!slowStarted) throw new Error('expected slow handler to start')
+if (slowCompleted) throw new Error('slow handler should not complete before event resolves')
+```
+
+</Tab>
+</Tabs>
+
+## Notes
+
+- This mode is useful for fallback chains and race-to-first-response patterns.
+- `await event.first()` also forces this mode for that event at call time.

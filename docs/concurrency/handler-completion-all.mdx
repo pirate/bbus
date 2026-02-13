@@ -1,0 +1,99 @@
+---
+title: "Handler Completion: all"
+description: Wait for every matching handler before an event completes.
+---
+
+`all` is the default handler completion mode. The event completes only after every matching handler reaches a terminal state.
+
+## Lifecycle impact
+
+1. All matching handlers are allowed to run.
+2. A successful early handler does not short-circuit the event.
+3. Event completion waits for every handler to finish, fail, or time out.
+4. Result collection includes all successful non-`None` / non-`undefined` return values.
+
+## Execution order example
+
+<Tabs>
+<Tab title="Python">
+
+```python
+import asyncio
+from bubus import BaseEvent, EventBus
+
+class CompletionEvent(BaseEvent[str]):
+    pass
+
+bus = EventBus(
+    'CompletionAllBus',
+    event_handler_concurrency='parallel',
+    event_handler_completion='all',
+)
+
+seen: list[str] = []
+
+async def fast_handler(_: CompletionEvent) -> str:
+    await asyncio.sleep(0.01)
+    seen.append('fast')
+    return 'fast'
+
+async def slow_handler(_: CompletionEvent) -> str:
+    await asyncio.sleep(0.05)
+    seen.append('slow')
+    return 'slow'
+
+bus.on(CompletionEvent, fast_handler)
+bus.on(CompletionEvent, slow_handler)
+
+event = bus.emit(CompletionEvent())
+await event
+
+assert set(seen) == {'fast', 'slow'}
+results = await event.event_results_by_handler_name(raise_if_any=False, raise_if_none=False)
+assert set(results.values()) == {'fast', 'slow'}
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const CompletionEvent = BaseEvent.extend('CompletionEvent', { event_result_type: z.string() })
+const bus = new EventBus('CompletionAllBus', {
+  event_handler_concurrency: 'parallel',
+  event_handler_completion: 'all',
+})
+
+const seen: string[] = []
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+bus.on(CompletionEvent, async () => {
+  await delay(10)
+  seen.push('fast')
+  return 'fast'
+})
+
+bus.on(CompletionEvent, async () => {
+  await delay(50)
+  seen.push('slow')
+  return 'slow'
+})
+
+const event = bus.emit(CompletionEvent({}))
+await event.done()
+
+if (seen.length !== 2) throw new Error('expected all handlers to run')
+if (!event.all_results.includes('fast') || !event.all_results.includes('slow')) {
+  throw new Error('expected both handler return values')
+}
+```
+
+</Tab>
+</Tabs>
+
+## Notes
+
+- `all` is best when multiple handlers contribute required side effects.
+- Handler scheduling (`serial` vs `parallel`) changes overlap, but not the fact that all handlers must settle.

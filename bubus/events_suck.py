@@ -4,7 +4,8 @@ import inspect
 import types
 from collections.abc import Mapping
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Protocol, TypeVar, cast, get_args, get_origin
+from typing import Any, Protocol, TypeVar, cast, get_args, get_origin
+from collections.abc import Awaitable, Callable
 
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined

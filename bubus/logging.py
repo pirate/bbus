@@ -73,7 +73,7 @@ def log_event_tree(
         results_sorted = sorted(event.event_results.items(), key=lambda x: x[1].started_at or datetime.min.replace(tzinfo=UTC))
 
         # Calculate which is the last item considering both results and unmapped children
-        unmapped_children: list['BaseEvent[Any]'] = []
+        unmapped_children: list[BaseEvent[Any]] = []
         if event_children_by_parent:
             all_children = event_children_by_parent.get(event.event_id, [])
             for child in all_children:
@@ -169,7 +169,7 @@ def log_eventbus_tree(eventbus: 'EventBus') -> str:
     from bubus.base_event import logger
 
     # Build a mapping of parent_id to child events
-    parent_to_children: dict[str | None, list['BaseEvent[Any]']] = defaultdict(list)
+    parent_to_children: dict[str | None, list[BaseEvent[Any]]] = defaultdict(list)
     for event in eventbus.event_history.values():
         parent_to_children[event.event_parent_id].append(event)
 

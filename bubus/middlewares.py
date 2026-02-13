@@ -46,19 +46,19 @@ class EventBusMiddleware:
     Status values: EventStatus.PENDING, STARTED, COMPLETED, ERROR
     """
 
-    async def on_event_change(self, eventbus: 'EventBus', event: BaseEvent[Any], status: EventStatus) -> None:
+    async def on_event_change(self, eventbus: EventBus, event: BaseEvent[Any], status: EventStatus) -> None:
         """Called on event state transitions (pending, started, completed, error)."""
 
     async def on_event_result_change(
         self,
-        eventbus: 'EventBus',
+        eventbus: EventBus,
         event: BaseEvent[Any],
         event_result: EventResult[Any],
         status: EventStatus,
     ) -> None:
         """Called on EventResult state transitions (pending, started, completed, error)."""
 
-    async def on_handler_change(self, eventbus: 'EventBus', handler: EventHandler, registered: bool) -> None:
+    async def on_handler_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
         """Called when handlers are added (registered=True) or removed (registered=False)."""
 
 

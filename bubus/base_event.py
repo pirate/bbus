@@ -840,7 +840,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
         Any stale timing/error data from prior runs is cleared so consumers immediately see a fresh pending state.
         """
-        pending_results: dict[PythonIdStr, 'EventResult[T_EventResultType]'] = {}
+        pending_results: dict[PythonIdStr, EventResult[T_EventResultType]] = {}
         self._event_is_complete_flag = False
         self.event_completed_at = None
         for handler_id, handler in handlers.items():

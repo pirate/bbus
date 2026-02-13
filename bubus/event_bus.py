@@ -676,7 +676,7 @@ class EventBus:
 
         # Automatically set event_parent_id from context if not already set
         if event.event_parent_id is None:
-            current_event: 'BaseEvent[Any] | None' = _current_event_context.get()
+            current_event: BaseEvent[Any] | None = _current_event_context.get()
             if current_event is not None:
                 event.event_parent_id = current_event.event_id
 

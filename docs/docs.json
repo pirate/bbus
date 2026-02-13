@@ -35,15 +35,12 @@
               "features-handler-return-values",
               "features-context-propagation",
               "features-memory-management",
-              "features-parallel-handler-execution",
-              "features-bridges-overview",
-              "features-middlewares-overview"
+              "features-parallel-handler-execution"
             ]
           },
           {
             "group": "API Reference",
             "pages": [
-              "api/index",
               "api/eventbus",
               "api/baseevent",
               "api/eventresult",
@@ -59,6 +56,8 @@
               "concurrency/events-parallel",
               "concurrency/handlers-serial",
               "concurrency/handlers-parallel",
+              "concurrency/handler-completion-all",
+              "concurrency/handler-completion-first",
               "concurrency/timeouts",
               "concurrency/retry-decorator"
             ]
@@ -103,7 +102,8 @@
               "operations/performance",
               "operations/supported-runtimes",
               "operations/development",
-              "project/similar-projects"
+              "further-reading/events-suck",
+              "further-reading/similar-projects"
             ]
           }
         ]

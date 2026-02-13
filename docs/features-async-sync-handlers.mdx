@@ -1,9 +1,16 @@
 ---
 title: Async and Sync Handlers
-description: Mix synchronous and asynchronous handlers on the same event type.
+description: Mix sync and async handlers across functions and method styles.
 ---
 
 Both runtimes support registering sync and async handlers together.
+
+Supported handler shapes:
+
+- bare functions (sync or async)
+- static methods (sync or async)
+- class-level methods (Python `@classmethod`; in TypeScript, class-level handlers are `static` methods)
+- instance methods (sync or async)
 
 <Tabs>
 <Tab title="Python">
@@ -15,16 +22,53 @@ from bubus import EventBus, BaseEvent
 class WorkEvent(BaseEvent[str]):
     task_id: str
 
-def sync_handler(event: WorkEvent) -> str:
-    return f'sync:{event.task_id}'
+def bare_sync(event: WorkEvent) -> str:
+    return f'bare-sync:{event.task_id}'
 
-async def async_handler(event: WorkEvent) -> str:
+async def bare_async(event: WorkEvent) -> str:
     await asyncio.sleep(0.01)
-    return f'async:{event.task_id}'
+    return f'bare-async:{event.task_id}'
+
+class HandlerSet:
+    def __init__(self, prefix: str) -> None:
+        self.prefix = prefix
+
+    @staticmethod
+    def static_sync(event: WorkEvent) -> str:
+        return f'static-sync:{event.task_id}'
+
+    @staticmethod
+    async def static_async(event: WorkEvent) -> str:
+        await asyncio.sleep(0.01)
+        return f'static-async:{event.task_id}'
+
+    @classmethod
+    def class_sync(cls, event: WorkEvent) -> str:
+        return f'{cls.__name__}-class-sync:{event.task_id}'
+
+    @classmethod
+    async def class_async(cls, event: WorkEvent) -> str:
+        await asyncio.sleep(0.01)
+        return f'{cls.__name__}-class-async:{event.task_id}'
+
+    def instance_sync(self, event: WorkEvent) -> str:
+        return f'{self.prefix}-instance-sync:{event.task_id}'
+
+    async def instance_async(self, event: WorkEvent) -> str:
+        await asyncio.sleep(0.01)
+        return f'{self.prefix}-instance-async:{event.task_id}'
 
 bus = EventBus('AppBus')
-bus.on(WorkEvent, sync_handler)
-bus.on(WorkEvent, async_handler)
+handlers = HandlerSet(prefix='svc')
+
+bus.on(WorkEvent, bare_sync)
+bus.on(WorkEvent, bare_async)
+bus.on(WorkEvent, HandlerSet.static_sync)
+bus.on(WorkEvent, HandlerSet.static_async)
+bus.on(WorkEvent, HandlerSet.class_sync)
+bus.on(WorkEvent, HandlerSet.class_async)
+bus.on(WorkEvent, handlers.instance_sync)
+bus.on(WorkEvent, handlers.instance_async)
 ```
 
 </Tab>
@@ -40,11 +84,42 @@ const WorkEvent = BaseEvent.extend('WorkEvent', {
 
 const bus = new EventBus('AppBus')
 
-bus.on(WorkEvent, (event) => `sync:${event.task_id}`)
-bus.on(WorkEvent, async (event) => {
+const bareSync = (event: InstanceType<typeof WorkEvent>) => `bare-sync:${event.task_id}`
+const bareAsync = async (event: InstanceType<typeof WorkEvent>) => {
   await new Promise((resolve) => setTimeout(resolve, 10))
-  return `async:${event.task_id}`
-})
+  return `bare-async:${event.task_id}`
+}
+
+class HandlerSet {
+  constructor(private prefix: string) {}
+
+  static staticSync(event: InstanceType<typeof WorkEvent>) {
+    return `static-sync:${event.task_id}`
+  }
+
+  static async staticAsync(event: InstanceType<typeof WorkEvent>) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    return `static-async:${event.task_id}`
+  }
+
+  instanceSync(event: InstanceType<typeof WorkEvent>) {
+    return `${this.prefix}-instance-sync:${event.task_id}`
+  }
+
+  async instanceAsync(event: InstanceType<typeof WorkEvent>) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    return `${this.prefix}-instance-async:${event.task_id}`
+  }
+}
+
+const handlers = new HandlerSet('svc')
+
+bus.on(WorkEvent, bareSync)
+bus.on(WorkEvent, bareAsync)
+bus.on(WorkEvent, HandlerSet.staticSync)
+bus.on(WorkEvent, HandlerSet.staticAsync)
+bus.on(WorkEvent, handlers.instanceSync.bind(handlers))
+bus.on(WorkEvent, handlers.instanceAsync.bind(handlers))
 ```
 
 </Tab>
