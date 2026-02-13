@@ -16,6 +16,19 @@ from uuid_extensions import uuid7str  # pyright: ignore[reportMissingImports, re
 
 uuid7str: Callable[[], str] = uuid7str  # pyright: ignore
 
+from bubus.base_event import (
+    BUBUS_LOGGING_LEVEL,
+    BaseEvent,
+    EventConcurrencyMode,
+    EventHandlerCompletionMode,
+    EventHandlerConcurrencyMode,
+    EventStatus,
+    PythonIdentifierStr,
+    PythonIdStr,
+    T_Event,
+    T_EventResultType,
+    UUIDStr,
+)
 from bubus.event_handler import (
     AsyncEventHandlerClassMethod,
     AsyncEventHandlerFunc,
@@ -31,19 +44,6 @@ from bubus.event_result import EventResult
 from bubus.helpers import CleanShutdownQueue, QueueShutDown, log_filtered_traceback
 from bubus.lock_manager import LockManager, ReentrantLock
 from bubus.middlewares import EventBusMiddleware
-from bubus.base_event import (
-    BUBUS_LOGGING_LEVEL,
-    BaseEvent,
-    EventConcurrencyMode,
-    EventHandlerCompletionMode,
-    EventHandlerConcurrencyMode,
-    EventStatus,
-    PythonIdentifierStr,
-    PythonIdStr,
-    T_Event,
-    T_EventResultType,
-    UUIDStr,
-)
 
 logger = logging.getLogger('bubus')
 logger.setLevel(BUBUS_LOGGING_LEVEL)
@@ -883,7 +883,7 @@ class EventBus:
         - Default behavior with no options: `past=True`, `future=False`
         - Search history and return the most recent match
         - Optionally wait for future dispatches
-        - Supports `event_*` metadata equality filters via keyword args
+        - Supports exact-match equality filters via keyword args for any event field
 
         Args:
             event_type: The event type string or model class to find
@@ -898,8 +898,8 @@ class EventBus:
                 - True: wait forever for matching event
                 - False: don't wait for future events
                 - float: wait up to N seconds for matching event
-            **event_fields: Optional exact-match filters for `event_*` fields
-                (for example `event_status='completed'`)
+            **event_fields: Optional exact-match filters for any event field
+                (for example `event_status='completed'`, `user_id='u-1'`)
 
         Returns:
             Matching event or None if not found/timeout
@@ -922,10 +922,6 @@ class EventBus:
             return None
 
         event_key = self._normalize_event_pattern(event_type)
-        for field_name in event_fields:
-            if not field_name.startswith('event_'):
-                raise ValueError(f'find() only supports event_* keyword filters, got: {field_name!r}')
-
         where_predicate: Callable[[BaseEvent[Any]], bool]
         if where is None:
             where_predicate = lambda _: True
@@ -938,7 +934,9 @@ class EventBus:
             if child_of is not None and not self.event_is_child_of(event, child_of):
                 return False
             for field_name, expected_value in event_fields.items():
-                if getattr(event, field_name, None) != expected_value:
+                if not hasattr(event, field_name):
+                    return False
+                if getattr(event, field_name) != expected_value:
                     return False
             if not where_predicate(event):
                 return False

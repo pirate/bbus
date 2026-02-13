@@ -385,17 +385,18 @@ Avoid re-running expensive work by reusing recent events. The `find()` method ma
 
 ```python
 # Simple debouncing: reuse event from last 10 seconds, or dispatch new
-event = (
+event = await (
     await bus.find(ScreenshotEvent, past=10, future=False)  # Check last 10s of history (instant)
-    or await bus.dispatch(ScreenshotEvent())
+    or bus.dispatch(ScreenshotEvent())
 )
 
 # Advanced: check history, wait briefly for new event to appear, fallback to dispatch new event
 event = (
     await bus.find(SyncEvent, past=True, future=False)   # Check all history (instant)
     or await bus.find(SyncEvent, past=False, future=5)   # Wait up to 5s for in-flight
-    or await bus.dispatch(SyncEvent())                   # Fallback: dispatch new
+    or bus.dispatch(SyncEvent())                         # Fallback: dispatch new
 )
+await event                                              # get completed event
 ```
 
 <br/>
@@ -792,7 +793,7 @@ Find an event matching criteria in history and/or future. This is the recommende
   - `True`: wait forever for matching event
   - `False`: don't wait for future events
   - `float`: wait up to N seconds for matching event
-- `**event_fields`: Optional equality filters for event metadata fields prefixed with `event_` (for example `event_status='completed'`)
+- `**event_fields`: Optional equality filters for any event fields (for example `event_status='completed'`, `user_id='u-1'`)
 
 ```python
 # Default call is non-blocking history lookup (past=True, future=False)

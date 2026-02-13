@@ -25,15 +25,14 @@ export type UntypedEventHandlerFunction<T extends BaseEvent = BaseEvent> = (even
 
 export type FindWindow = boolean | number
 
-type FindEventFieldFilters = {
-  [K in keyof BaseEvent as K extends `event_${string}` ? K : never]?: BaseEvent[K]
-}
+type FindReservedOptionKeys = 'past' | 'future' | 'child_of'
 
-export type FindOptions = {
+export type FindOptions<T extends BaseEvent = BaseEvent> = {
   past?: FindWindow
   future?: FindWindow
   child_of?: BaseEvent | null
-} & FindEventFieldFilters
+} & Partial<Omit<T, FindReservedOptionKeys>> &
+  Record<string, unknown>
 
 export const normalizeEventPattern = (event_pattern: EventPattern | '*'): string | '*' => {
   if (event_pattern === '*') {

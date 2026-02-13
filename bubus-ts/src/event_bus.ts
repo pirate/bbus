@@ -440,14 +440,14 @@ export class EventBus {
   }
 
   // find a recent event or wait for a future event that matches some criteria
-  find(event_pattern: '*', options?: FindOptions): Promise<BaseEvent | null>
-  find(event_pattern: '*', where: (event: BaseEvent) => boolean, options?: FindOptions): Promise<BaseEvent | null>
-  find<T extends BaseEvent>(event_pattern: EventPattern<T>, options?: FindOptions): Promise<T | null>
-  find<T extends BaseEvent>(event_pattern: EventPattern<T>, where: (event: T) => boolean, options?: FindOptions): Promise<T | null>
+  find(event_pattern: '*', options?: FindOptions<BaseEvent>): Promise<BaseEvent | null>
+  find(event_pattern: '*', where: (event: BaseEvent) => boolean, options?: FindOptions<BaseEvent>): Promise<BaseEvent | null>
+  find<T extends BaseEvent>(event_pattern: EventPattern<T>, options?: FindOptions<T>): Promise<T | null>
+  find<T extends BaseEvent>(event_pattern: EventPattern<T>, where: (event: T) => boolean, options?: FindOptions<T>): Promise<T | null>
   async find<T extends BaseEvent>(
     event_pattern: EventPattern<T> | '*',
-    where_or_options: ((event: T) => boolean) | FindOptions = {},
-    maybe_options: FindOptions = {}
+    where_or_options: ((event: T) => boolean) | FindOptions<T> = {},
+    maybe_options: FindOptions<T> = {}
   ): Promise<T | null> {
     const where = typeof where_or_options === 'function' ? where_or_options : () => true
     const options = typeof where_or_options === 'function' ? maybe_options : where_or_options
@@ -455,9 +455,9 @@ export class EventBus {
     const past = options.past === undefined && options.future === undefined ? true : (options.past ?? true)
     const future = options.past === undefined && options.future === undefined ? false : (options.future ?? true)
     const child_of = options.child_of ?? null
-    const event_field_filters = Object.entries(options).filter(([key, value]) => key.startsWith('event_') && value !== undefined) as Array<
-      [`event_${string}`, unknown]
-    >
+    const event_field_filters = Object.entries(options).filter(
+      ([key, value]) => key !== 'past' && key !== 'future' && key !== 'child_of' && value !== undefined
+    )
 
     if (past === false && future === false) {
       return null

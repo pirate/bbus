@@ -281,7 +281,7 @@ test('find respects where filter', async () => {
   assert.equal(found_event.event_id, event_b.event_id)
 })
 
-test('find supports event_* filters like event_status', async () => {
+test('find supports metadata filters like event_status', async () => {
   const bus = new EventBus('FindEventStatusFilterBus')
   const release_pause = bus.locks.requestRunloopPause()
 
@@ -299,7 +299,7 @@ test('find supports event_* filters like event_status', async () => {
   assert.equal(found_completed.event_id, pending_event.event_id)
 })
 
-test('find supports event_* equality filters like event_id and event_timeout', async () => {
+test('find supports metadata equality filters like event_id and event_timeout', async () => {
   const bus = new EventBus('FindEventFieldFilterBus')
 
   const event_a = bus.dispatch(ParentEvent({ event_timeout: 11 }))
@@ -321,6 +321,31 @@ test('find supports event_* equality filters like event_id and event_timeout', a
     future: false,
     event_id: event_a.event_id,
     event_timeout: 22,
+  })
+  assert.equal(mismatch, null)
+})
+
+test('find supports non-event data field equality filters', async () => {
+  const bus = new EventBus('FindDataFieldFilterBus')
+
+  const event_a = bus.dispatch(UserActionEvent({ action: 'logout', user_id: 'u-2' }))
+  const event_b = bus.dispatch(UserActionEvent({ action: 'login', user_id: 'u-1' }))
+  await event_a.done()
+  await event_b.done()
+
+  const found = await bus.find(UserActionEvent, {
+    past: true,
+    future: false,
+    action: 'login',
+    user_id: 'u-1',
+  })
+  assert.ok(found)
+  assert.equal(found.event_id, event_b.event_id)
+
+  const mismatch = await bus.find(UserActionEvent, {
+    past: true,
+    future: false,
+    action: 'signup',
   })
   assert.equal(mismatch, null)
 })

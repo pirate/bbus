@@ -490,7 +490,7 @@ class TestFindPastOnly:
             await bus.stop(clear=True)
 
     async def test_find_supports_event_field_keyword_filters(self):
-        """find(..., event_*=...) applies metadata equality filters."""
+        """find(..., **kwargs) applies metadata equality filters."""
         bus = EventBus()
 
         try:
@@ -521,7 +521,7 @@ class TestFindPastOnly:
             await bus.stop(clear=True)
 
     async def test_find_supports_event_id_and_event_timeout_filters(self):
-        """find(..., event_*=...) supports exact-match metadata equality filters."""
+        """find(..., **kwargs) supports exact-match metadata equality filters."""
         bus = EventBus()
 
         try:
@@ -548,6 +548,25 @@ class TestFindPastOnly:
                 event_timeout=22,
             )
             assert mismatch is None
+        finally:
+            await bus.stop(clear=True)
+
+    async def test_find_supports_non_event_data_field_filters(self):
+        """find(..., **kwargs) supports exact-match filters for non event_* fields too."""
+        bus = EventBus()
+
+        try:
+            bus.on(UserActionEvent, lambda e: 'done')
+
+            await bus.dispatch(UserActionEvent(action='logout', user_id='u-2'))
+            expected = await bus.dispatch(UserActionEvent(action='login', user_id='u-1'))
+
+            found = await bus.find(UserActionEvent, past=True, future=False, action='login', user_id='u-1')
+            assert found is not None
+            assert found.event_id == expected.event_id
+
+            not_found = await bus.find(UserActionEvent, past=True, future=False, action='signup')
+            assert not_found is None
         finally:
             await bus.stop(clear=True)
 

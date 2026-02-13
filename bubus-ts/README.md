@@ -222,8 +222,8 @@ type FindOptions = {
   // event_status: 'pending' | 'started' | 'completed'
   // event_id: 'some-exact-event-uuid-here',
   // event_started_at: string (exact iso datetime string)
-  // ... any event.event_* field can be passed to filter filter events using simple equality checks
-  [K in keyof BaseEvent as K extends `event_${string}` ? K : never]?: BaseEvent[K]
+  // ... any event field can be passed to filter events using simple equality checks
+  [key: string]: unknown
 }
 ```
 
@@ -257,7 +257,7 @@ Lifecycle use:
 - Use for synchronization/waiting (`future: ...`).
 - Combine both to "check recent then wait".
 - Add `child_of` to constrain by parent/ancestor event chain.
-- Add any `event_*` field (e.g. `event_status`, `event_id`, `event_timeout`) to filter by strict equality.
+- Add any event field (e.g. `event_status`, `event_id`, `event_timeout`, `user_id`) to filter by strict equality.
 - Use wildcard matching with predicates when you want to search all event types: `bus.find('*', (event) => ...)`.
 
 Debouncing expensive events with `find()`:
