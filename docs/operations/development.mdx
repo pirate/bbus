@@ -1,0 +1,60 @@
+---
+title: Development
+description: Local development workflows for both Python and TypeScript.
+---
+
+<Tabs>
+  <Tab title="Python">
+
+Set up the python development environment using `uv`:
+
+```bash
+git clone https://github.com/browser-use/bubus && cd bubus
+
+# Create virtual environment with Python 3.12
+uv venv --python 3.12
+
+# Activate virtual environment (varies by OS)
+source .venv/bin/activate  # On Unix/macOS
+# or
+.venv\Scripts\activate  # On Windows
+
+# Install dependencies
+uv sync --dev --all-extras
+```
+
+```bash
+# Run linter & type checker
+uv run ruff check --fix
+uv run ruff format
+uv run pyright
+
+# Run all tests
+uv run pytest -vxs --full-trace tests/
+
+# Run specific test file
+uv run pytest tests/test_eventbus.py
+
+# Run Python perf suite
+uv run tests/performance_runtime.py
+
+# Run the entire lint+test+examples+perf suite for both python and ts
+./test.sh
+```
+
+> For Bubus-TS development see the `bubus-ts/README.md` `# Development` section.
+
+  </Tab>
+  <Tab title="TypeScript">
+
+```bash
+git clone https://github.com/pirate/bbus bubus && cd bubus
+
+cd ./bubus-ts
+pnpm install
+pnpm lint
+pnpm test
+```
+
+  </Tab>
+</Tabs>

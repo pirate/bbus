@@ -1,0 +1,62 @@
+---
+title: Bridges
+description: Bridge integrations for connecting buses across transports.
+---
+
+<Tabs>
+  <Tab title="Python">
+
+Bridges are optional extra connectors provided that allow you to send/receive events from an external service, and you do not need to use a bridge to use bubus since it's normally purely in-memory. These are just simple helpers to forward bubus events JSON to storage engines / other processes / other machines; they prevent loops automatically, but beyond that it's only basic forwarding with no handler pickling or anything fancy.
+
+Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
+
+**Example usage: link a bus to a redis pub/sub channel**
+```python
+bridge = RedisEventBridge('redis://redis@localhost:6379')
+
+bus.on('*', bridge.emit)  # listen for all events on bus and send them to redis channel
+bridge.on('*', bus.emit)  # listen for new events in redis channel and dispatch them to our bus
+```
+
+- `SocketEventBridge('/tmp/bubus_events.sock')`
+- `HTTPEventBridge(send_to='https://127.0.0.1:8001/bubus_events', listen_on='http://0.0.0.0:8002/bubus_events')`
+- `JSONLEventBridge('/tmp/bubus_events.jsonl')`
+- `SQLiteEventBridge('/tmp/bubus_events.sqlite3')`
+- `PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/bubus_events')`
+- `RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
+- `NATSEventBridge('nats://localhost:4222', 'bubus_events')`
+
+<br/>
+
+  </Tab>
+  <Tab title="TypeScript">
+
+Bridges are optional extra connectors provided that allow you to send/receive events from an external service, and you do not need to use a bridge to use bubus since it's normally purely in-memory. These are just simple helpers to forward bubus events JSON to storage engines / other processes / other machines; they prevent loops automatically, but beyond that it's only basic forwarding with no handler pickling or anything fancy.
+
+Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
+
+**Example usage: link a bus to a redis pub/sub channel**
+
+```ts
+const bridge = new RedisEventBridge('redis://redis@localhost:6379')
+
+bus.on('*', bridge.emit) // listen for all events on bus and send them to redis channel
+bridge.on('*', bus.emit) // listen for new events in redis channel and dispatch them to our bus
+```
+
+- `new SocketEventBridge('/tmp/bubus_events.sock')`
+- `new HTTPEventBridge({ send_to: 'https://127.0.0.1:8001/bubus_events', listen_on: 'http://0.0.0.0:8002/bubus_events' })`
+- `new JSONLEventBridge('/tmp/bubus_events.jsonl')`
+- `new SQLiteEventBridge('/tmp/bubus_events.sqlite3')`
+- `new PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/bubus_events')`
+- `new RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
+- `new NATSEventBridge('nats://localhost:4222', 'bubus_events')`
+
+<br/>
+
+---
+
+<br/>
+
+  </Tab>
+</Tabs>

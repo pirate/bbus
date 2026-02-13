@@ -1,0 +1,79 @@
+---
+title: EventHandler
+description: EventHandler structure and serialization helpers.
+---
+
+<Tabs>
+  <Tab title="Python">
+
+Serializable metadata wrapper around a registered handler callable.
+
+You usually get an `EventHandler` back from `bus.on(...)`, can pass it to `bus.off(...)`, and may see it in middleware hooks like `on_handler_change(...)`.
+
+#### `EventHandler` Fields
+
+```python
+class EventHandler(BaseModel):
+    id: str | None                   # Stable handler identifier
+    handler_name: str                # Callable name
+    handler_file_path: str | None    # Source file path (if known)
+    handler_timeout: float | None    # Optional per-handler timeout override
+    handler_slow_timeout: float | None  # Optional "slow handler" threshold
+    handler_registered_at: datetime  # Registration timestamp (datetime)
+    handler_registered_ts: int       # Registration timestamp (ns epoch)
+    event_pattern: str               # Registered event pattern (type name or '*')
+    eventbus_name: str               # Owning EventBus name
+    eventbus_id: str                 # Owning EventBus ID
+```
+
+The raw callable is stored on `handler`, but is excluded from JSON serialization (`to_json_dict()`).
+
+#### `EventHandler` Properties and Methods
+
+- `label` (property): Short display label like `my_handler#abcd`.
+- `__call__(event)`: Invokes the wrapped callable directly.
+- `to_json_dict() -> dict[str, Any]`: JSON-safe metadata dump (excludes callable).
+- `from_json_dict(data, handler=None) -> EventHandler`: Rebuilds metadata; optional callable reattachment.
+- `from_callable(...) -> EventHandler`: Build a new handler entry from a callable plus bus/pattern metadata.
+
+---
+
+  </Tab>
+  <Tab title="TypeScript">
+
+Represents one registered handler entry on a bus. You usually get these from `bus.on(...)`, then pass them to `bus.off(...)` to remove.
+
+#### Main fields
+
+- `id` unique handler UUIDv5 (deterministic hash from bus/event/handler metadata unless overridden)
+- `handler` function reference that executes for matching events
+- `handler_name` function name (or `'anonymous'`)
+- `handler_file_path` optional detected source path (`~/path/file.ts:line`)
+- `handler_timeout` optional timeout override in seconds (`null` disables timeout limit)
+- `handler_slow_timeout` optional slow-warning threshold in seconds (`null` disables slow warning)
+- `handler_registered_at` ISO timestamp
+- `handler_registered_ts` monotonic timestamp
+- `event_pattern` subscribed key (`'SomeEvent'` or `'*'`)
+- `eventbus_name` bus name where this handler was registered
+- `eventbus_id` bus UUID where this handler was registered
+
+#### `toString()` / `toJSON()` / `fromJSON()`
+
+```ts
+toString(): string
+toJSON(): EventHandlerJSON
+EventHandler.fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandler
+```
+
+- `toString()` returns `handlerName() (path:line)` when path/name are available, otherwise `function#abcd()`.
+- `toJSON()` emits only serializable handler metadata (never function bodies).
+- `fromJSON()` reconstructs the handler entry and accepts an optional real function to re-bind execution behavior.
+
+<br/>
+
+---
+
+<br/>
+
+  </Tab>
+</Tabs>

@@ -1,0 +1,328 @@
+---
+title: Concurrency And Retry
+description: Concurrency model, retry behavior, and advanced execution controls.
+---
+
+<Tabs>
+  <Tab title="Python">
+
+### `EventBus`, `BaseEvent`, and `EventHandler` concurrency config fields
+
+These options can be set as bus-level defaults, event-level options, or as handler-specific options.
+They control the concurrency of how events are processed within a bus, across all busses, and how handlers execute within a single event.
+
+- `event_concurrency`: `'global-serial' | 'bus-serial' | 'parallel'` controls event-level scheduling (`None` on events defers to bus default)
+- `event_handler_concurrency`: `'serial' | 'parallel'` should handlers on a single event run in parallel or in sequential order
+- `event_handler_completion`: `'all' | 'first'` should all handlers run, or should we stop handler execution once any handler returns a non-`None` value
+
+### `@retry` Decorator
+
+The `@retry` decorator provides automatic retry functionality with built-in concurrency control for any function, including event handlers. This is particularly useful when handlers interact with external services that may temporarily fail. It can be used completely independently from the rest of the library, it does not require a bus and can be used more generally to control concurrenty/timeouts/retries of any python function.
+
+```python
+from bubus import EventBus, BaseEvent
+from bubus.retry import retry
+
+bus = EventBus()
+
+class FetchDataEvent(BaseEvent[dict[str, Any]]):
+    url: str
+
+@retry(
+    retry_after=2,              # Wait 2 seconds between retries
+    max_attempts=3,             # Total attempts including initial call
+    timeout=5,                  # Each attempt times out after 5 seconds
+    semaphore_limit=5,          # Max 5 concurrent executions
+    retry_backoff_factor=1.5,   # Exponential backoff: 2s, 3s, 4.5s
+    retry_on_errors=[TimeoutError, ConnectionError],  # Only retry on specific exceptions
+)
+async def fetch_with_retry(event: FetchDataEvent) -> dict[str, Any]:
+    # This handler will automatically retry on network failures
+    async with aiohttp.ClientSession() as session:
+        async with session.get(event.url) as response:
+            return await response.json()
+
+bus.on(FetchDataEvent, fetch_with_retry)
+```
+
+#### Retry Parameters
+
+- **`timeout`**: Maximum amount of time function is allowed to take per attempt, in seconds (`None` = unbounded, default: `None`)
+- **`max_attempts`**: Total attempts including the first attempt (minimum effective value: `1`, default: `1`)
+- **`retry_on_errors`**: List of exception classes or compiled regex matchers. Regexes are matched against `f"{err.__class__.__name__}: {err}"` (default: `None` = retry on any `Exception`)
+- **`retry_after`**: Base seconds to wait between retries (default: 0)
+- **`retry_backoff_factor`**: Multiplier for wait time after each retry (default: 1.0)
+- **`semaphore_limit`**: Maximum number of concurrent calls that can run at the same time
+- **`semaphore_scope`**: Scope for the semaphore: `class`, `instance`, `global`, or `multiprocess`
+- **`semaphore_timeout`**: Maximum time to wait for a semaphore slot before proceeding or failing. If omitted: `timeout * max(1, semaphore_limit - 1)` when `timeout` is set, otherwise wait forever
+- **`semaphore_lax`**: Continue anyway if semaphore fails to be acquired in within the given time
+- **`semaphore_name`**: Unique semaphore name (string) or callable getter that receives function args and returns a name
+
+#### Semaphore Options
+
+Control concurrency with built-in semaphore support:
+
+```python
+# Global semaphore - all calls share one limit
+@retry(semaphore_limit=3, semaphore_scope='global')
+async def global_limited_handler(event): ...
+
+# Per-class semaphore - all instances of a class share one limit
+class MyService:
+    @retry(semaphore_limit=2, semaphore_scope='class')
+    async def class_limited_handler(self, event): ...
+
+# Per-instance semaphore - each instance gets its own limit
+class MyService:
+    @retry(semaphore_limit=1, semaphore_scope='instance')
+    async def instance_limited_handler(self, event): ...
+
+# Cross-process semaphore - all processes share one limit
+@retry(semaphore_limit=5, semaphore_scope='multiprocess')
+async def process_limited_handler(event): ...
+```
+
+#### Advanced Example
+
+```python
+import logging
+
+# Configure logging to see retry attempts
+logging.basicConfig(level=logging.INFO)
+
+class DatabaseEvent(BaseEvent):
+    query: str
+
+class DatabaseService:
+    @retry(
+        retry_after=1,
+        max_attempts=5,
+        timeout=10,
+        semaphore_limit=10,          # Max 10 concurrent DB operations
+        semaphore_scope='class',     # Shared across all instances
+        semaphore_timeout=30,        # Wait up to 30s for semaphore
+        semaphore_lax=False,         # Fail if can't acquire semaphore
+        retry_backoff_factor=2.0,    # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+        retry_on_errors=[ConnectionError, TimeoutError],
+    )
+    async def execute_query(self, event: DatabaseEvent):
+        # Automatically retries on connection failures
+        # Limited to 10 concurrent operations across all instances
+        result = await self.db.execute(event.query)
+        return result
+
+# Register the handler
+db_service = DatabaseService()
+bus.on(DatabaseEvent, db_service.execute_query)
+```
+
+<br/>
+
+---
+
+<br/>
+
+  </Tab>
+  <Tab title="TypeScript">
+
+### Concurrency Config Options
+
+#### Bus-level config options (`new EventBus(name, {...options...})`)
+
+- `max_history_size?: number | null` (default: `100`)
+  - Max events kept in history. `null` = unlimited. `bus.find(...)` uses this log to query recently dispatched events
+  - `0` keeps only pending/in-flight events; each event is removed from history immediately after completion.
+- `max_history_drop?: boolean` (default: `false`)
+  - If `true`, drop oldest history entries when history is full (including uncompleted entries if needed).
+  - If `false`, reject new dispatches when history is full.
+- `event_concurrency?: 'global-serial' | 'bus-serial' | 'parallel' | null` (default: `'bus-serial'`)
+  - Event-level scheduling policy (`global-serial`: FIFO across all buses, `bus-serial`: FIFO per bus, `parallel`: concurrent events per bus).
+- `event_handler_concurrency?: 'serial' | 'parallel' | null` (default: `'serial'`)
+  - Handler-level scheduling policy for each event (`serial`: one handler at a time per event, `parallel`: all handlers for the event can run concurrently).
+- `event_handler_completion?: 'all' | 'first'` (default: `'all'`)
+  - Completion strategy (`all`: wait for all handlers, `first`: stop after first non-`undefined` result).
+- `event_timeout?: number | null` (default: `60`)
+  - Default handler timeout budget in seconds.
+- `event_handler_slow_timeout?: number | null` (default: `30`)
+  - Slow-handler warning threshold in seconds.
+- `event_slow_timeout?: number | null` (default: `300`)
+  - Slow-event warning threshold in seconds.
+
+#### Event-level config options
+
+Override the bus defaults on a per-event basis by using these special fields in the event:
+
+```ts
+const event = MyEvent({
+  event_concurrency: 'parallel',
+  event_handler_concurrency: 'parallel',
+  event_handler_completion: 'first',
+  event_timeout: 10,
+  event_handler_timeout: 3,
+})
+```
+
+Notes:
+
+- `null` means "inherit/fall back to bus default" for event-level concurrency and timeout fields.
+- Forwarded events are processed under the target bus's config; source bus config is not inherited.
+- `event_handler_completion` is independent from handler scheduling mode (`serial` vs `parallel`).
+
+#### Handler-level config options
+
+Set at registration:
+
+```ts
+bus.on(MyEvent, handler, { handler_timeout: 2 }) // max time in seconds this handler is allowed to run before it's aborted
+```
+
+#### Precedence and interaction
+
+Event and handler concurrency precedence:
+
+1. Event instance override (`event.event_concurrency`, `event.event_handler_concurrency`)
+2. Bus defaults (`EventBus` options)
+3. Built-in defaults (`bus-serial`, `serial`)
+
+Timeout resolution for each handler run:
+
+1. Resolve handler timeout source:
+   - `bus.on(..., { handler_timeout })`
+   - else `event.event_handler_timeout`
+   - else bus `event_timeout`
+2. Apply event cap:
+   - effective timeout is `min(resolved_handler_timeout, event.event_timeout)` when both are non-null
+   - if either is `null`, the non-null value wins; both null means no timeout
+
+Additional timeout nuance:
+
+- `BaseEvent.event_timeout` starts as `null` unless set; dispatch applies bus default timeout when still unset.
+- Bus/event timeouts are outer budgets for handler execution; use `@retry({ timeout })` for per-attempt timeouts.
+
+Use `@retry` for per-handler execution timeout/retry/backoff/semaphore control. Keep bus/event timeouts as outer execution budgets.
+
+### Runtime lifecycle (bus -> event -> handler)
+
+Dispatch flow:
+
+1. `dispatch()` normalizes to original event and captures async context when available.
+2. Bus applies defaults and appends itself to `event_path`.
+3. Event enters `event_history`, `pending_event_queue`, and runloop starts.
+4. Runloop dequeues and calls `processEvent()`.
+5. Event-level semaphore (`event_concurrency`) is applied.
+6. Handler results are created and executed under handler-level semaphore (`event_handler_concurrency`).
+7. Event completion and child completion propagate through `event_pending_bus_count` and result states.
+8. History trimming evicts completed events first; if still over limit, oldest pending events can be dropped (with warning), then cleanup runs.
+
+Locking model:
+
+- Global event semaphore: `global-serial`
+- Bus event semaphore: `bus-serial`
+- Per-event handler semaphore: `serial` handler mode
+
+### Queue-jumping (`await event.done()` inside handlers)
+
+Want to dispatch and await an event like a function call? simply `await event.done()`.
+When called inside a handler, the awaited event is processed immediately (queue-jump behavior) before normal queued work continues.
+
+### `@retry` Decorator
+
+`retry()` adds retry logic and optional semaphore-based concurrency limiting to async functions/handlers.
+
+#### Why retry is handler-level
+
+Retry and timeout belong on handlers, not emit sites:
+
+- Handlers fail; events are messages.
+- Handler-level retries preserve replay semantics (one event dispatch, internal retry attempts).
+- Bus concurrency and retry concerns are orthogonal and compose cleanly.
+
+#### Recommended pattern: `@retry()` on class methods
+
+```ts
+import { retry, EventBus } from 'bubus'
+
+class ScreenshotService {
+  constructor(private bus: InstanceType<typeof EventBus>) {
+    bus.on(ScreenshotRequestEvent, this.onScreenshot.bind(this))
+  }
+
+  @retry({
+    max_attempts: 4,
+    retry_on_errors: [/timeout/i],
+    timeout: 5,
+    semaphore_scope: 'global',
+    semaphore_name: 'Screenshots',
+    semaphore_limit: 2,
+  })
+  async onScreenshot(event: InstanceType<typeof ScreenshotRequestEvent>): Promise<Buffer> {
+    return await takeScreenshot(event.data.url)
+  }
+}
+
+const ev = bus.emit(ScreenshotRequestEvent({ url: 'https://example.com' }))
+await ev.done()
+```
+
+#### Also works: inline HOF
+
+```ts
+bus.on(
+  MyEvent,
+  retry({ max_attempts: 3, timeout: 10 })(async (event) => {
+    await riskyOperation(event.data)
+  })
+)
+```
+
+#### Options
+
+| Option                 | Type                                      | Default     | Description                                     |
+| ---------------------- | ----------------------------------------- | ----------- | ----------------------------------------------- |
+| `max_attempts`         | `number`                                  | `1`         | Total attempts including first call.            |
+| `retry_after`          | `number`                                  | `0`         | Seconds between retries.                        |
+| `retry_backoff_factor` | `number`                                  | `1.0`       | Multiplier for retry delay.                     |
+| `retry_on_errors`      | `(ErrorClass \| string \| RegExp)[]`      | `undefined` | Retry filter. `undefined` retries on any error. |
+| `timeout`              | `number \| null`                          | `undefined` | Per-attempt timeout in seconds.                 |
+| `semaphore_limit`      | `number \| null`                          | `undefined` | Max concurrent executions sharing semaphore.    |
+| `semaphore_name`       | `string \| ((...args) => string) \| null` | fn name     | Semaphore key.                                  |
+| `semaphore_lax`        | `boolean`                                 | `true`      | Continue if semaphore acquisition times out.    |
+| `semaphore_scope`      | `'global' \| 'class' \| 'instance'`       | `'global'`  | Scope for semaphore identity.                   |
+| `semaphore_timeout`    | `number \| null`                          | `undefined` | Max seconds waiting for semaphore.              |
+
+#### Error types
+
+- `RetryTimeoutError`: per-attempt timeout exceeded.
+- `SemaphoreTimeoutError`: semaphore acquisition timeout (`semaphore_lax=false`).
+
+#### Re-entrancy
+
+On Node.js/Bun, `AsyncLocalStorage` tracks held semaphores and avoids deadlocks for nested calls using the same semaphore.
+In browsers, this tracking is unavailable, avoid recursive/nested same-semaphore patterns there.
+
+#### Interaction with bus concurrency
+
+Execution order when used on bus handlers:
+
+1. Bus acquires handler semaphore (`event_handler_concurrency`)
+2. `retry()` acquires retry semaphore (if configured)
+3. Handler executes (with retries)
+4. `retry()` releases retry semaphore
+5. Bus releases handler semaphore
+
+Use bus/event timeouts for outer deadlines and `retry({ timeout })` for per-handler-attempt deadlines.
+
+#### Discouraged: retrying emit sites
+
+Avoid wrapping `emit()/done()` in `retry()` unless you intentionally want multiple event dispatches (a new event for every retry).  
+Keep retries on handlers so that your logs represent the original high-level intent, with a single event per call even if handling it took multiple tries.  
+Emitting a new event for each retry is only recommended if you are using the logs for debugging more than for replayability / time-travel.
+
+<br/>
+
+---
+
+<br/>
+
+  </Tab>
+</Tabs>

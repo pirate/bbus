@@ -1,0 +1,651 @@
+---
+title: Features
+description: Core capabilities and patterns for building with bubus.
+---
+
+<Tabs>
+  <Tab title="Python">
+
+<br/>
+
+### 🔎 Event Pattern Matching
+
+Subscribe to events using multiple patterns:
+
+```python
+# By event model class (recommended for best type hinting)
+bus.on(UserActionEvent, handler)
+
+# By event type string
+bus.on('UserActionEvent', handler)
+
+# Wildcard - handle all events
+bus.on('*', universal_handler)
+```
+
+<br/>
+
+### 🔀 Async and Sync Handler Support
+
+Register both synchronous and asynchronous handlers for maximum flexibility:
+
+```python
+# Async handler
+async def async_handler(event: SomeEvent) -> str:
+    await asyncio.sleep(0.1)  # Simulate async work
+    return "async result"
+
+# Sync handler
+def sync_handler(event: SomeEvent) -> str:
+    return "sync result"
+
+bus.on(SomeEvent, async_handler)
+bus.on(SomeEvent, sync_handler)
+```
+
+Handlers can also be defined under classes for easier organization:
+
+```python
+class SomeService:
+    some_value = 'this works'
+
+    async def handlers_can_be_methods(self, event: SomeEvent) -> str:
+        return self.some_value
+    
+    @classmethod
+    async def handler_can_be_classmethods(cls, event: SomeEvent) -> str:
+        return cls.some_value
+
+    @staticmethod
+    async def handlers_can_be_staticmethods(event: SomeEvent) -> str:
+        return 'this works too'
+
+# All usage patterns behave the same:
+bus.on(SomeEvent, SomeService().handlers_can_be_methods)
+bus.on(SomeEvent, SomeService.handler_can_be_classmethods)
+bus.on(SomeEvent, SomeService.handlers_can_be_staticmethods)
+```
+
+<br/>
+
+
+### 🔠 Type-Safe Events with Pydantic
+
+Define events as Pydantic models with full type checking and validation:
+
+```python
+from typing import Any
+from bubus import BaseEvent
+
+class OrderCreatedEvent(BaseEvent):
+    order_id: str
+    customer_id: str
+    total_amount: float
+    items: list[dict[str, Any]]
+
+# Events are automatically validated
+event = OrderCreatedEvent(
+    order_id="ORD-123",
+    customer_id="CUST-456", 
+    total_amount=99.99,
+    items=[{"sku": "ITEM-1", "quantity": 2}]
+)
+```
+
+> [!TIP]
+> You can also enforce the types of [event handler return values](#-event-handler-return-values).
+
+<br/>
+
+
+
+### ⏩ Forward `Events` Between `EventBus`s 
+
+You can define separate `EventBus` instances in different "microservices" to separate different areas of concern.
+`EventBus`s can be set up to forward events between each other (with automatic loop prevention):
+
+```python
+# Create a hierarchy of buses
+main_bus = EventBus(name='MainBus')
+auth_bus = EventBus(name='AuthBus')
+data_bus = EventBus(name='DataBus')
+
+# Share all or specific events between buses
+main_bus.on('*', auth_bus.dispatch)  # if main bus gets LoginEvent, will forward to AuthBus
+auth_bus.on('*', data_bus.dispatch)  # auth bus will forward everything to DataBus
+data_bus.on('*', main_bus.dispatch)  # don't worry! event will only be processed once by each, no infinite loop occurs
+
+# Events flow through the hierarchy with tracking
+event = main_bus.dispatch(LoginEvent())
+await event
+print(event.event_path)  # ['MainBus', 'AuthBus', 'DataBus']  # list of buses that have already procssed the event
+```
+
+<br/>
+
+### Bridges
+
+Bridges are optional extra connectors provided that allow you to send/receive events from an external service, and you do not need to use a bridge to use bubus since it's normally purely in-memory. These are just simple helpers to forward bubus events JSON to storage engines / other processes / other machines; they prevent loops automatically, but beyond that it's only basic forwarding with no handler pickling or anything fancy.
+
+Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
+
+**Example usage: link a bus to a redis pub/sub channel**
+```python
+bridge = RedisEventBridge('redis://redis@localhost:6379')
+
+bus.on('*', bridge.emit)  # listen for all events on bus and send them to redis channel
+bridge.on('*', bus.emit)  # listen for new events in redis channel and dispatch them to our bus
+```
+
+- `SocketEventBridge('/tmp/bubus_events.sock')`
+- `HTTPEventBridge(send_to='https://127.0.0.1:8001/bubus_events', listen_on='http://0.0.0.0:8002/bubus_events')`
+- `JSONLEventBridge('/tmp/bubus_events.jsonl')`
+- `SQLiteEventBridge('/tmp/bubus_events.sqlite3')`
+- `PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/bubus_events')`
+- `RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
+- `NATSEventBridge('nats://localhost:4222', 'bubus_events')`
+
+<br/>
+
+### 🔱 Event Results Aggregation
+
+Collect and aggregate results from multiple handlers:
+
+```python
+async def load_user_config(event: GetConfigEvent) -> dict[str, Any]:
+    return {"debug": True, "port": 8080}
+
+async def load_system_config(event: GetConfigEvent) -> dict[str, Any]:
+    return {"debug": False, "timeout": 30}
+
+bus.on(GetConfigEvent, load_user_config)
+bus.on(GetConfigEvent, load_system_config)
+
+# Get a merger of all dict results
+# (conflicting keys raise ValueError unless raise_if_conflicts=False)
+event = await bus.dispatch(GetConfigEvent())
+config = await event.event_results_flat_dict(raise_if_conflicts=False)
+# {'debug': False, 'port': 8080, 'timeout': 30}
+
+# Or get individual results
+await event.event_results_by_handler_id()
+await event.event_results_list()
+```
+
+<br/>
+
+### 🚦 FIFO Event Processing
+
+Events are processed in strict FIFO order, maintaining consistency:
+
+```python
+# Events are processed in the order they were dispatched
+for i in range(10):
+    bus.dispatch(ProcessTaskEvent(task_id=i))
+
+# Even with async handlers, order is preserved
+await bus.wait_until_idle(timeout=30.0)
+```
+
+If a handler dispatches and awaits any child events during execution, those events will jump the FIFO queue and be processed immediately:
+```python
+def child_handler(event: SomeOtherEvent) -> str:
+    return 'xzy123'
+
+def main_handler(event: MainEvent) -> str:
+    # enqueue event for processing after main_handler exits
+    child_event = bus.dispatch(SomeOtherEvent())
+    
+    # can also await child events to process immediately instead of adding to FIFO queue
+    completed_child_event = await child_event
+    return f'result from awaiting child event: {await completed_child_event.event_result()}'  # 'xyz123'
+
+bus.on(SomeOtherEvent, child_handler)
+bus.on(MainEvent, main_handler)
+
+await bus.dispatch(MainEvent()).event_result()
+# result from awaiting child event: xyz123
+```
+
+<br/>
+
+### 🪆 Dispatch Nested Child Events From Handlers
+
+Automatically track event relationships and causality tree:
+
+```python
+async def parent_handler(event: BaseEvent):
+    # handlers can emit more events to be processed asynchronously after this handler completes
+    child = ChildEvent()
+    child_event_async = event.event_bus.dispatch(child)   # equivalent to bus.dispatch(...)
+    assert child.event_status != 'completed'
+    assert child_event_async.event_parent_id == event.event_id
+    await child_event_async
+
+    # or you can dispatch an event and block until it finishes processing by awaiting the event
+    # this recursively waits for all handlers, including if event is forwarded to other buses
+    # (note: awaiting an event from inside a handler jumps the FIFO queue and will process it immediately, before any other pending events)
+    child_event_sync = await bus.dispatch(ChildEvent())
+    # ChildEvent handlers run immediately
+    assert child_event_sync.event_status == 'completed'
+
+    # in all cases, parent-child relationships are automagically tracked
+    assert child_event_sync.event_parent_id == event.event_id
+
+async def run_main():
+    bus.on(ChildEvent, child_handler)
+    bus.on(ParentEvent, parent_handler)
+
+    parent_event = bus.dispatch(ParentEvent())
+    print(parent_event.event_children)           # show all the child events emitted during handling of an event
+    await parent_event
+    print(bus.log_tree())
+    await bus.stop()
+
+if __name__ == '__main__':
+    asyncio.run(run_main())
+```
+
+<img width="100%" alt="show the whole tree of events at any time using the logging helpers" src="https://github.com/user-attachments/assets/f94684a6-7694-4066-b948-46925f47b56c" /><br/>
+<img width="100%" alt="intelligent timeout handling to differentiate handler that timed out from handler that was interrupted" src="https://github.com/user-attachments/assets/8da341fd-6c26-4c68-8fec-aef1ca55c189" />
+
+
+<br/><br/>
+
+### 🔎 Find Events in History or Wait for Future Events
+
+`find()` is the single lookup API: search history, wait for future events, or combine both.
+
+```python
+# Default: non-blocking history lookup (past=True, future=False)
+existing = await bus.find(ResponseEvent)
+
+# Wait only for future matches
+future = await bus.find(ResponseEvent, past=False, future=5)
+
+# Combine event predicate + event metadata filters
+match = await bus.find(
+    ResponseEvent,
+    where=lambda e: e.request_id == my_id,
+    event_status='completed',
+    future=5,
+)
+
+# Wildcard: match any event type, filtered by metadata/predicate
+any_completed = await bus.find(
+    '*',
+    where=lambda e: e.event_type.endswith('ResultEvent'),
+    event_status='completed',
+    future=5,
+)
+```
+
+#### Finding Child Events
+
+When you dispatch an event that triggers child events, use `child_of` to find specific descendants:
+
+```python
+# Dispatch a parent event that triggers child events
+nav_event = await bus.dispatch(NavigateToUrlEvent(url="https://example.com"))
+
+# Find a child event (already fired while NavigateToUrlEvent was being handled)
+new_tab = await bus.find(TabCreatedEvent, child_of=nav_event, past=5)
+if new_tab:
+    print(f"New tab created: {new_tab.tab_id}")
+```
+
+This solves race conditions where child events fire before you start waiting for them.
+
+See the `EventBus.find(...)` API section below for full parameter details.
+
+> [!IMPORTANT]
+> `find()` resolves when the event is first *dispatched* to the `EventBus`, not when it completes. Use `await event` to wait for handlers to finish.
+> If no match is found (or future timeout elapses), `find()` returns `None`.
+
+<br/>
+
+### 🔁 Event Debouncing
+
+Avoid re-running expensive work by reusing recent events. The `find()` method makes debouncing simple:
+
+```python
+# Simple debouncing: reuse event from last 10 seconds, or dispatch new
+event = await (
+    await bus.find(ScreenshotEvent, past=10, future=False)  # Check last 10s of history (instant)
+    or bus.dispatch(ScreenshotEvent())
+)
+
+# Advanced: check history, wait briefly for new event to appear, fallback to dispatch new event
+event = (
+    await bus.find(SyncEvent, past=True, future=False)   # Check all history (instant)
+    or await bus.find(SyncEvent, past=False, future=5)   # Wait up to 5s for in-flight
+    or bus.dispatch(SyncEvent())                         # Fallback: dispatch new
+)
+await event                                              # get completed event
+```
+
+<br/>
+
+### 🎯 Event Handler Return Values
+
+There are two ways to get return values from event handlers:
+
+**1. Have handlers return their values directly, which puts them in `event.event_results`:**
+
+```python
+class DoSomeMathEvent(BaseEvent[int]):  # BaseEvent[int] = handlers are validated as returning int
+    a: int
+    b: int
+
+    # int passed above gets saved to:
+    # event_result_type = int
+
+def do_some_math(event: DoSomeMathEvent) -> int:                                                                                                                        
+    return event.a + event.b
+
+event_bus.on(DoSomeMathEvent, do_some_math)
+print(await event_bus.dispatch(DoSomeMathEvent(a=100, b=120)).event_result())
+# 220
+```
+
+You can use these helpers to interact with the results returned by handlers:
+
+- `BaseEvent.event_result()`
+- `BaseEvent.event_results_list()`, `BaseEvent.event_results_filtered()`
+- `BaseEvent.event_results_by_handler_id()`, `BaseEvent.event_results_by_handler_name()`
+- `BaseEvent.event_results_flat_list()`, `BaseEvent.event_results_flat_dict()`
+
+**2. Have the handler do the work, then dispatch another event containing the result value, which other code can find:**
+
+```python
+def do_some_math(event: DoSomeMathEvent[int]) -> int:
+    result = event.a + event.b
+    event.event_bus.dispatch(MathCompleteEvent(final_sum=result))
+
+event_bus.on(DoSomeMathEvent, do_some_math)
+await event_bus.dispatch(DoSomeMathEvent(a=100, b=120))
+result_event = await event_bus.find(MathCompleteEvent, past=False, future=30)
+print(result_event.final_sum)
+# 220
+```
+
+#### Annotating Event Handler Return Value Types
+
+Bubus supports optional strict typing for Event handler return values using a generic parameter passed to `BaseEvent[ReturnTypeHere]`.
+For example if you use `BaseEvent[str]`, bubus would enforce that all handler functions must return `str | None` at compile-time via IDE/`mypy`/`pyright`/`ty` type hints, and at runtime when each handler finishes.
+
+```python
+class ScreenshotEvent(BaseEvent[bytes]):  # BaseEvent[bytes] will enforce that handlers can only return bytes
+    width: int
+    height: int
+
+async def on_ScreenshotEvent(event: ScreenshotEvent) -> bytes:
+    return b'someimagebytes...'  # ✅ IDE type-hints & runtime both enforce return type matches expected: bytes
+    return 123                   # ❌ will show mypy/pyright issue + raise TypeError if the wrong type is returned
+
+event_bus.on(ScreenshotEvent, on_ScreenshotEvent)
+
+# Handler return values are automatically validated against the bytes type
+returned_bytes = await event_bus.dispatch(ScreenshotEvent(...)).event_result()
+assert isinstance(returned_bytes, bytes)
+```
+
+**Important:** The validation uses Pydantic's `TypeAdapter`, which validates but does not coerce types. Handlers must return the exact type specified or `None`:
+
+```python
+class StringEvent(BaseEvent[str]):
+    pass
+
+# ✅ This works - returns the expected str type
+def good_handler(event: StringEvent) -> str:
+    return "hello"
+
+# ❌ This fails validation - returns int instead of str
+def bad_handler(event: StringEvent) -> str:
+    return 42  # ValidationError: expected str, got int
+```
+
+This also works with complex types and Pydantic models:
+
+```python
+class EmailMessage(BaseModel):
+    subject: str
+    content_len: int
+    email_from: str
+
+class FetchInboxEvent(BaseEvent[list[EmailMessage]]):
+    account_id: UUID
+    auth_key: str
+
+async def fetch_from_gmail(event: FetchInboxEvent) -> list[EmailMessage]:
+    return [EmailMessage(subject=msg.subj, ...) for msg in GmailAPI.get_msgs(event.account_id, ...)]
+
+event_bus.on(FetchInboxEvent, fetch_from_gmail)
+
+# Return values are automatically validated as list[EmailMessage]
+email_list = await event_bus.dispatch(FetchInboxEvent(account_id='124', ...)).event_result()
+```
+
+For pure Python usage, `event_result_type` can be any Python/Pydantic type you want. For cross-language JSON roundtrips, object-like shapes (e.g. `TypedDict`, `dataclass`, model-like dict schemas) rehydrate on Python as Pydantic models, map keys are constrained to JSON object string keys, and fine-grained string constraints/custom field validator logic is not preserved.
+
+<br/>
+
+### 🧵 ContextVar Propagation
+
+ContextVars set before `dispatch()` are automatically propagated to event handlers. This is essential for request-scoped context like request IDs, user sessions, or tracing spans:
+
+```python
+from contextvars import ContextVar
+
+# Define your context variables
+request_id: ContextVar[str] = ContextVar('request_id', default='<unset>')
+user_id: ContextVar[str] = ContextVar('user_id', default='<unset>')
+
+async def handler(event: MyEvent) -> str:
+    # Handler sees the context values that were set before dispatch()
+    print(f"Request: {request_id.get()}, User: {user_id.get()}")
+    return "done"
+
+bus.on(MyEvent, handler)
+
+# Set context before dispatch (e.g., in FastAPI middleware)
+request_id.set('req-12345')
+user_id.set('user-abc')
+
+# Handler will see request_id='req-12345' and user_id='user-abc'
+await bus.dispatch(MyEvent())
+```
+
+**Context propagates through nested handlers:**
+
+```python
+async def parent_handler(event: ParentEvent) -> str:
+    # Context is captured at dispatch time
+    print(f"Parent sees: {request_id.get()}")  # 'req-12345'
+
+    # Child events inherit the same context
+    await bus.dispatch(ChildEvent())
+    return "parent_done"
+
+async def child_handler(event: ChildEvent) -> str:
+    # Child also sees the original dispatch context
+    print(f"Child sees: {request_id.get()}")  # 'req-12345'
+    return "child_done"
+```
+
+**Context isolation between dispatches:**
+
+Each dispatch captures its own context snapshot. Concurrent dispatches with different context values are properly isolated:
+
+```python
+request_id.set('req-A')
+event_a = bus.dispatch(MyEvent())  # Handler A sees 'req-A'
+
+request_id.set('req-B')
+event_b = bus.dispatch(MyEvent())  # Handler B sees 'req-B'
+
+await event_a  # Still sees 'req-A'
+await event_b  # Still sees 'req-B'
+```
+
+> [!NOTE]
+> Context is captured at `dispatch()` time, not when the handler executes. This ensures handlers see the context from the call site, even if the event is processed later from a queue.
+
+<br/>
+
+### 🧹 Memory Management
+
+EventBus includes automatic memory management to prevent unbounded growth in long-running applications:
+
+```python
+# Create a bus with memory limits (default: 50 events)
+bus = EventBus(max_history_size=100)  # Keep max 100 events in history
+
+# Or disable memory limits for unlimited history
+bus = EventBus(max_history_size=None)
+
+# Or keep only in-flight events in history (drop each event as soon as it completes)
+bus = EventBus(max_history_size=0)
+
+# Or reject new dispatches when history is full (instead of dropping old history)
+bus = EventBus(max_history_size=100, max_history_drop=False)
+```
+
+**Automatic Cleanup:**
+- When `max_history_size` is set and `max_history_drop=True`, EventBus removes old events when the limit is exceeded
+- If `max_history_size=0`, history keeps only pending/started events and drops each event immediately after completion
+- If `max_history_drop=True`, the bus may drop oldest history entries even if they are uncompleted events
+- Completed events are removed first (oldest first), then started events, then pending events
+- This ensures active events are preserved while cleaning up old completed events
+
+**Manual Memory Management:**
+```python
+# For request-scoped buses (e.g. web servers), clear all memory after each request
+try:
+    event_service = EventService()  # Creates internal EventBus
+    await event_service.process_request()
+finally:
+    # Clear all event history and remove from global tracking
+    await event_service.eventbus.stop(clear=True)
+```
+
+**Memory Monitoring:**
+- EventBus automatically monitors total memory usage across all instances
+- Warnings are logged when total memory exceeds 50MB
+- Use `bus.stop(clear=True)` to completely free memory for unused buses
+- To avoid memory leaks from big events, the default limits are intentionally kept low. events are normally processed as they come in, and there is rarely a need to keep every event in memory longer after its complete. long-term storage should be accomplished using other mechanisms, like the WAL
+
+<br/>
+
+### ⛓️ Parallel Handler Execution
+
+> [!CAUTION]
+> **Not Recommended.** Only for advanced users willing to implement their own concurrency control.
+
+Enable parallel processing of handlers for better performance.  
+The harsh tradeoff is less deterministic ordering as handler execution order will not be guaranteed when run in parallel. 
+(It's very hard to write non-flaky/reliable applications when handler execution order is not guaranteed.)
+
+```python
+# Create bus with parallel handler execution
+bus = EventBus(event_handler_concurrency='parallel')
+
+# Multiple handlers run concurrently for each event
+bus.on('DataEvent', slow_handler_1)  # Takes 1 second
+bus.on('DataEvent', slow_handler_2)  # Takes 1 second
+
+start = time.time()
+await bus.dispatch(DataEvent())
+# Total time: ~1 second (not 2)
+```
+
+<br/>
+
+### 🧩 Middlwares
+
+Middlewares can observe or mutate the `EventResult` at each step, dispatch additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
+
+```python
+from bubus import EventBus
+from bubus.middlewares import LoggerEventBusMiddleware, WALEventBusMiddleware, SQLiteHistoryMirrorMiddleware, OtelTracingMiddleware
+
+bus = EventBus(
+    name='MyBus',
+    middlewares=[
+        SQLiteHistoryMirrorMiddleware('./events.sqlite3'),
+        WALEventBusMiddleware('./events.jsonl'),
+        LoggerEventBusMiddleware('./events.log'),
+        OtelTracingMiddleware(),
+        # ...
+    ],
+)
+
+await bus.dispatch(SecondEventAbc(some_key="banana"))
+# will persist all events to sqlite + events.jsonl + events.log
+```
+
+Built-in middlwares you can import from `bubus.middlwares.*`:
+
+- `SyntheticErrorEventMiddleware`: on handler error, fire-and-forget emits `OriginalEventTypeErrorEvent` with `{error, error_type}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful when downstream/remote consumers only see events and need explicit failure notifications.
+- `SyntheticReturnEventMiddleware`: on non-`None` handler return, fire-and-forget emits `OriginalEventTypeResultEvent` with `{data}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful for bridges/remote systems since handler return values do not cross bridge boundaries, but events do.
+- `SyntheticHandlerChangeEventMiddleware`: emits `BusHandlerRegisteredEvent({handler})` / `BusHandlerUnregisteredEvent({handler})` when handlers are added/removed via `.on()` / `.off()`.
+- `OtelTracingMiddleware`: emits OpenTelemetry spans for events and handlers with parent-child linking; can be exported to Sentry via Sentry's OpenTelemetry integration.
+- `WALEventBusMiddleware`: persists completed events to JSONL for replay/debugging.
+- `LoggerEventBusMiddleware`: writes event/handler transitions to stdout and optionally to file.
+- `SQLiteHistoryMirrorMiddleware`: mirrors event and handler snapshots into append-only SQLite `events_log` and `event_results_log` tables for auditing/debugging.
+
+#### Defining a custom middleware
+
+Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need (`on_event_change`, `on_event_result_change`, `on_handler_change`):
+
+```python
+from bubus.middlewares import EventBusMiddleware
+
+class AnalyticsMiddleware(EventBusMiddleware):
+    async def on_event_result_change(self, eventbus, event, event_result, status):
+        if status == 'started':
+            await analytics_bus.dispatch(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
+        elif status == 'completed':
+            await analytics_bus.dispatch(
+                HandlerCompletedAnalyticsEvent(
+                    event_id=event_result.event_id,
+                    error=repr(event_result.error) if event_result.error else None,
+                )
+            )
+
+    async def on_handler_change(self, eventbus, handler, registered):
+        await analytics_bus.dispatch(
+            HandlerRegistryChangedEvent(handler_id=handler.id, registered=registered, bus=eventbus.name)
+        )
+```
+
+<br/>
+
+---
+---
+
+<br/>
+
+  </Tab>
+  <Tab title="TypeScript">
+
+The features offered in TS are broadly similar to the ones offered in the python library.
+
+- Typed events with Zod schemas (cross-compatible with Pydantic events from python library)
+- FIFO event queueing with configurable concurrency
+- Nested event support with automatic parent/child tracking
+- Cross-bus forwarding with loop prevention
+- Handler result tracking + validation + timeout enforcement
+- History retention controls (`max_history_size`) for memory bounds
+- Optional `@retry` decorator for easy management of per-handler retries, timeouts, and semaphore-limited execution
+
+See the [Python README](../README.md) for more details.
+
+<br/>
+
+---
+
+<br/>
+
+  </Tab>
+</Tabs>

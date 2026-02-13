@@ -1,0 +1,363 @@
+---
+title: BaseEvent
+description: BaseEvent fields, lifecycle, and helper methods.
+---
+
+<Tabs>
+  <Tab title="Python">
+
+Base class for all events. Subclass `BaseEvent` to define your own events.
+
+Make sure none of your own event data fields start with `event_` or `model_` to avoid clashing with `BaseEvent` or `pydantic` builtin attrs.
+
+#### `BaseEvent` Fields
+
+```python
+T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
+
+class BaseEvent(BaseModel, Generic[T_EventResultType]):
+    # special config fields
+    event_id: str                # Unique UUID7 identifier, auto-generated if not provided
+    event_type: str              # Defaults to class name e.g. 'BaseEvent'
+    event_result_type: Any | None  # Pydantic model/python type to validate handler return values, defaults to T_EventResultType
+    event_version: str           # Defaults to '0.0.1' (override per class/instance for event payload versioning)
+    event_timeout: float | None = None # Event timeout in seconds (bus default applied at dispatch if None)
+    event_handler_timeout: float | None = None # Optional per-event handler timeout cap in seconds
+    event_handler_slow_timeout: float | None = None # Optional per-event slow-handler warning threshold
+    event_handler_concurrency: Literal['serial', 'parallel'] = 'serial'  # handler scheduling strategy for this event
+    event_handler_completion: Literal['all', 'first'] = 'all'  # completion strategy for this event's handlers
+
+    # runtime state fields
+    event_status: Literal['pending', 'started', 'completed']  # event processing status (auto-set)
+    event_created_at: datetime   # When event was created, auto-generated (auto-set)
+    event_started_at: datetime   # When first handler started executing during event processing (auto-set)
+    event_completed_at: datetime # When all event handlers finished processing (property, derives from last event_result.completed_at)
+    event_parent_id: str | None  # Parent event ID that led to this event during handling (auto-set)
+    event_path: list[str]        # List of bus names traversed (auto-set)
+    event_results: dict[str, EventResult]   # Handler results {<handler uuid>: EventResult} (auto-set)
+    event_children: list[BaseEvent] # getter property to list any child events emitted during handling
+    event_bus: EventBus          # getter property to get the bus the event was dispatched on
+    
+    # payload fields
+    # ... subclass BaseEvent to add your own event payload fields here ...
+    # some_key: str
+    # some_other_key: dict[str, int]
+    # ...
+    # (they should not start with event_* to avoid conflict with special built-in fields)
+```
+
+#### `BaseEvent` Methods
+
+##### `await event`
+
+Await the `Event` object directly to get the completed `Event` object once all handlers have finished executing.
+
+```python
+event = bus.dispatch(MyEvent())
+completed_event = await event
+
+raw_result_values = [(await event_result) for event_result in completed_event.event_results.values()]
+# equivalent to: completed_event.event_results_list()  (see below)
+```
+
+##### `first(timeout: float | None=None, *, raise_if_any: bool=False, raise_if_none: bool=False) -> Any`
+
+Set `event_handler_completion='first'`, wait for completion, and return the first successful non-`None` handler result.
+
+```python
+event = bus.dispatch(MyEvent())
+value = await event.first()
+```
+
+##### `reset() -> Self`
+
+Return a fresh event copy with runtime processing state reset back to pending.
+
+- Intended for re-dispatching an already-seen event as a fresh event (for example after crossing a bridge boundary).
+- The original event object is not mutated, it returns a new copy with some fields reset.
+- A new UUIDv7 `event_id` is generated for the returned copy (to allow it to process as a separate event it needs a new unique uuid)
+- Runtime completion state is cleared (`event_results`, completion signal/flags, processed timestamp, dispatch context).
+
+##### `event_result(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> Any`
+
+Utility method helper to execute all the handlers and return the first handler's raw result value.
+
+**Parameters:**
+
+- `timeout`: Maximum time to wait for handlers to complete (None = use default event timeout)
+- `include`: Filter function to include only specific results (default: only non-None, non-exception results)
+- `raise_if_any`: If `True`, raise exception if any handler raises any `Exception` (`default: True`)
+- `raise_if_none`: If `True`, raise exception if results are empty / all results are `None` or `Exception` (`default: True`)
+
+```python
+# by default it returns the first successful non-None result value
+result = await event.event_result()
+
+# Get result from first handler that returns a string
+valid_result = await event.event_result(include=lambda r: isinstance(r.result, str) and len(r.result) > 100)
+
+# Get result but don't raise exceptions or error for 0 results, just return None
+result_or_none = await event.event_result(raise_if_any=False, raise_if_none=False)
+```
+
+##### `event_results_by_handler_id(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> dict`
+
+Utility method helper to get all raw result values organized by `{handler_id: result_value}`.
+
+**Parameters:**
+
+- `timeout`: Maximum time to wait for handlers to complete (None = use default event timeout)
+- `include`: Filter function to include only specific results (default: only non-None, non-exception results)
+- `raise_if_any`: If `True`, raise exception if any handler raises any `Exception` (`default: True`)
+- `raise_if_none`: If `True`, raise exception if results are empty / all results are `None` or `Exception` (`default: True`)
+
+```python
+# by default it returns all successful non-None result values
+results = await event.event_results_by_handler_id()
+# {'handler_id_1': result1, 'handler_id_2': result2}
+
+# Only include results from handlers that returned integers
+int_results = await event.event_results_by_handler_id(include=lambda r: isinstance(r.result, int))
+
+# Get all results including errors and None values
+all_results = await event.event_results_by_handler_id(raise_if_any=False, raise_if_none=False)
+```
+
+##### `event_results_list(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> list[Any]`
+
+Utility method helper to get all raw result values in a list.
+
+**Parameters:**
+
+- `timeout`: Maximum time to wait for handlers to complete (None = use default event timeout)
+- `include`: Filter function to include only specific results (default: only non-None, non-exception results)
+- `raise_if_any`: If `True`, raise exception if any handler raises any `Exception` (`default: True`)
+- `raise_if_none`: If `True`, raise exception if results are empty / all results are `None` or `Exception` (`default: True`)
+
+```python
+# by default it returns all successful non-None result values
+results = await event.event_results_list()
+# [result1, result2]
+
+# Only include results that are strings longer than 10 characters
+filtered_results = await event.event_results_list(include=lambda r: isinstance(r.result, str) and len(r.result) > 10)
+
+# Get all results without raising on errors
+all_results = await event.event_results_list(raise_if_any=False, raise_if_none=False)
+```
+
+##### `event_results_flat_dict(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=False, raise_if_conflicts: bool=True) -> dict`
+
+Utility method helper to merge all raw result values that are `dict`s into a single flat `dict`.
+
+**Parameters:**
+
+- `timeout`: Maximum time to wait for handlers to complete (None = use default event timeout)
+- `include`: Filter function to include only specific results (default: only non-None, non-exception results)
+- `raise_if_any`: If `True`, raise exception if any handler raises any `Exception` (`default: True`)
+- `raise_if_none`: If `True`, raise exception if results are empty / all results are `None` or `Exception` (`default: False`)
+- `raise_if_conflicts`: If `True`, raise exception if dict keys conflict between handlers (`default: True`)
+
+```python
+# by default it merges all successful dict results
+results = await event.event_results_flat_dict()
+# {'key1': 'value1', 'key2': 'value2'}
+
+# Merge only dicts with specific keys
+config_dicts = await event.event_results_flat_dict(include=lambda r: isinstance(r.result, dict) and 'config' in r.result)
+
+# Allow conflicts, last handler wins
+merged = await event.event_results_flat_dict(raise_if_conflicts=False)
+```
+
+##### `event_results_flat_list(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> list`
+
+Utility method helper to merge all raw result values that are `list`s into a single flat `list`.
+
+**Parameters:**
+
+- `timeout`: Maximum time to wait for handlers to complete (None = use default event timeout)
+- `include`: Filter function to include only specific results (default: only non-None, non-exception results)
+- `raise_if_any`: If `True`, raise exception if any handler raises any `Exception` (`default: True`)
+- `raise_if_none`: If `True`, raise exception if results are empty / all results are `None` or `Exception` (`default: True`)
+
+```python
+# by default it merges all successful list results
+results = await event.event_results_flat_list()
+# ['item1', 'item2', 'item3']
+
+# Merge only lists with more than 2 items
+long_lists = await event.event_results_flat_list(include=lambda r: isinstance(r.result, list) and len(r.result) > 2)
+
+# Get all list results without raising on errors
+all_items = await event.event_results_flat_list(raise_if_any=False, raise_if_none=False)
+```
+
+##### `event_create_pending_results(handlers: dict[str, EventHandler], eventbus: EventBus | None = None, timeout: float | None = None) -> dict[str, EventResult]`
+
+Create (or reset) the `EventResult` placeholders for the provided handlers. The `EventBus` uses this internally before it begins executing handlers so that the event's state is immediately visible. Advanced users can call it when coordinating handler execution manually.
+
+```python
+applicable_handlers = bus._get_applicable_handlers(event)  # internal helper shown for illustration
+pending_results = event.event_create_pending_results(applicable_handlers, eventbus=bus)
+
+assert all(result.status == 'pending' for result in pending_results.values())
+```
+
+##### `event_bus` (property)
+
+Shortcut to get the `EventBus` that is currently processing this event. Can be used to avoid having to pass an `EventBus` instance to your handlers.
+
+```python
+bus = EventBus()
+
+async def some_handler(event: MyEvent):
+    # You can always dispatch directly to any bus you have a reference to
+    child_event = bus.dispatch(ChildEvent())
+    
+    # OR use the event.event_bus shortcut to get the current bus:
+    child_event = await event.event_bus.dispatch(ChildEvent())
+```
+
+---
+
+  </Tab>
+  <Tab title="TypeScript">
+
+Base class + factory builder for typed event models.
+
+Define your own strongly typed events with `BaseEvent.extend('EventName', {...zod fields...})`:
+
+```ts
+const MyEvent = BaseEvent.extend('MyEvent', {
+  some_key: z.string(),
+  some_other_key: z.number(),
+  // ...
+  // any other payload fields you want to include can go here
+
+  // fields that start with event_* are reserved for metadata used by the library
+  event_result_type: z.string().optional(),
+  event_timeout: 60,
+  // ...
+})
+
+const pending_event = MyEvent({ some_key: 'abc', some_other_key: 234 })
+const queued_event = bus.emit(pending_event)
+const completed_event = await queued_event.done()
+```
+
+API behavior and lifecycle examples:
+
+- `bubus-ts/examples/simple.ts`
+- `bubus-ts/examples/immediate_event_processing.ts`
+- `bubus-ts/examples/forwarding_between_busses.ts`
+- `bubus-ts/tests/eventbus_basics.test.ts`
+- `bubus-ts/tests/find.test.ts`
+- `bubus-ts/tests/first.test.ts`
+- `bubus-ts/tests/event_bus_proxy.test.ts`
+- `bubus-ts/tests/timeout.test.ts`
+- `bubus-ts/tests/event_results.test.ts`
+
+#### Event configuration fields
+
+Special configuration fields you can set on each event to control processing:
+
+- `event_result_type?: z.ZodTypeAny | String | Number | Boolean | Array | Object`
+- `event_version?: string` (default: `'0.0.1'`; useful for your own schema/data migrations)
+- `event_timeout?: number | null`
+- `event_handler_timeout?: number | null`
+- `event_handler_slow_timeout?: number | null`
+- `event_concurrency?: 'global-serial' | 'bus-serial' | 'parallel' | null`
+- `event_handler_concurrency?: 'serial' | 'parallel' | null`
+- `event_handler_completion?: 'all' | 'first'`
+
+#### Runtime state fields
+
+- `event_id`, `event_type`, `event_version`, `event_path`, `event_parent_id`
+- `event_status: 'pending' | 'started' | 'completed'`
+- `event_results: Map<string, EventResult>`
+- `event_pending_bus_count`
+- `event_created_at/ts`, `event_started_at/ts`, `event_completed_at/ts`
+
+#### Read-only attributes
+
+- `event_parent` -> `BaseEvent | undefined`
+- `event_children` -> `BaseEvent[]`
+- `event_descendants` -> `BaseEvent[]`
+- `event_errors` -> `Error[]`
+- `all_results` -> `EventResultType<this>[]`
+- `first_result` -> `EventResultType<this> | undefined`
+- `last_result` -> `EventResultType<this> | undefined`
+
+#### `done()`
+
+```ts
+done(): Promise<this>
+```
+
+- `immediate()` is an alias for `done()`.
+- If called from inside a running handler, it queue-jumps child processing immediately.
+- If called outside handler context, it waits for normal completion (or processes immediately if already next).
+- Rejects if event is not attached to a bus (`event has no bus attached`).
+- Queue-jump behavior is demonstrated in `bubus-ts/examples/immediate_event_processing.ts` and `bubus-ts/tests/event_bus_proxy.test.ts`.
+
+#### `waitForCompletion()`
+
+```ts
+waitForCompletion(): Promise<this>
+```
+
+- `finished()` is an alias for `waitForCompletion()`
+- Waits for completion in normal runloop order.
+- Use inside handlers when you explicitly do not want queue-jump behavior.
+
+#### `first()`
+
+```ts
+first(): Promise<EventResultType<this> | undefined>
+```
+
+- Forces `event_handler_completion = 'first'` for this run.
+- Returns temporally first non-`undefined` successful handler result.
+- Cancels pending/running losing handlers on the same bus.
+- Returns `undefined` when no handler produces a successful non-`undefined` value.
+- Cancellation and winner-selection behavior is covered in `bubus-ts/tests/first.test.ts`.
+
+#### `reset()`
+
+```ts
+reset(): this
+```
+
+- Returns a fresh event copy with runtime state reset to pending so it can be dispatched again safely.
+- Original event object is unchanged.
+- Generates a new UUIDv7 `event_id` for the returned copy.
+- Clears runtime completion state (`event_results`, status/timestamps, dispatch context, done signal, local bus binding).
+
+#### `toString()` / `toJSON()` / `fromJSON()`
+
+```ts
+toString(): string
+toJSON(): BaseEventData
+BaseEvent.fromJSON(data: unknown): BaseEvent
+EventFactory.fromJSON?.(data: unknown): TypedEvent
+```
+
+- JSON format is cross-language compatible with Python implementation.
+- `event_result_type` is serialized as JSON Schema when possible and rehydrated on `fromJSON`.
+- In TypeScript-only usage, `event_result_type` can be any Zod schema shape or base type like `number | string | boolean | etc.`. For cross-language roundtrips, object-like schemas (including Python `TypedDict`/`dataclass`-style shapes) are reconstructed on Python as Pydantic models, JSON object keys are always strings, and some fine-grained string-shape constraints may be normalized between Zod and Pydantic.
+- Round-trip coverage is in `bubus-ts/tests/typed_results.test.ts` and `bubus-ts/tests/eventbus_basics.test.ts`.
+
+#### Advanced/internal public methods
+
+Mostly used by bus internals or custom runtimes:
+
+- `markStarted()`
+- `markCancelled(cause)`
+- `markCompleted(force?, notify_parents?)`
+- `createPendingHandlerResults(bus)`
+- `processEvent(pending_entries?)`
+- `cancelPendingDescendants(reason)`
+
+  </Tab>
+</Tabs>

@@ -1,0 +1,79 @@
+---
+title: Quickstart
+description: Get started quickly with bubus in Python or TypeScript.
+---
+
+<Tabs>
+  <Tab title="Python">
+
+Install bubus and get started with a simple event-driven application:
+
+```bash
+pip install bubus      # see ./bubus-ts/README.md for JS instructions
+```
+
+```python
+import asyncio
+from bubus import EventBus, BaseEvent
+from your_auth_events import AuthRequestEvent, AuthResponseEvent
+
+class UserLoginEvent(BaseEvent[str]):
+    username: str
+    is_admin: bool
+
+async def handle_login(event: UserLoginEvent) -> str:
+    auth_request = await event.event_bus.dispatch(AuthRequestEvent(...))  # nested events supported
+    auth_response = await event.event_bus.find(AuthResponseEvent, child_of=auth_request, future=30)
+    return f"User {event.username} logged in admin={event.is_admin} with API response: {await auth_response.event_result()}"
+
+bus = EventBus()
+bus.on(UserLoginEvent, handle_login)
+bus.on(AuthRequestEvent, AuthAPI.post)
+
+event = bus.dispatch(UserLoginEvent(username="alice", is_admin=True))
+print(await event.event_result())
+# User alice logged in admin=True with API response: {...}
+```
+
+<br/>
+
+---
+
+<br/>
+
+  </Tab>
+  <Tab title="TypeScript">
+
+```bash
+npm install bubus
+```
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const CreateUserEvent = BaseEvent.extend('CreateUserEvent', {
+  email: z.string(),
+  event_result_type: z.object({ user_id: z.string() }),
+})
+
+const bus = new EventBus('MyAuthEventBus')
+
+bus.on(CreateUserEvent, async (event) => {
+  const user = await yourCreateUserLogic(event.email)
+  return { user_id: user.id }
+})
+
+const event = bus.emit(CreateUserEvent({ email: 'someuser@example.com' }))
+await event.done()
+console.log(event.first_result) // { user_id: 'some-user-uuid' }
+```
+
+<br/>
+
+---
+
+<br/>
+
+  </Tab>
+</Tabs>
