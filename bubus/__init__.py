@@ -1,5 +1,6 @@
 """Event bus for the browser-use agent."""
 
+from . import events_suck
 from .base_event import (
     BaseEvent,
     EventConcurrencyMode,
@@ -54,4 +55,5 @@ __all__ = [
     'UUIDStr',
     'PythonIdStr',
     'PythonIdentifierStr',
+    'events_suck',
 ]

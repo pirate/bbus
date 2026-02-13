@@ -27,3 +27,5 @@ export {
   SQLiteEventBridge,
 } from './bridges.js'
 export type { HTTPEventBridgeOptions } from './bridges.js'
+export { events_suck } from './events_suck.js'
+export type { EventsSuckClient, EventsSuckClientClass, GeneratedEvents } from './events_suck.js'

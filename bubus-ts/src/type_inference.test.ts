@@ -5,6 +5,7 @@ import { z } from 'zod'
 
 import { BaseEvent } from './base_event.js'
 import { EventBus } from './event_bus.js'
+import { events_suck } from './events_suck.js'
 import type { EventResult } from './event_result.js'
 import type { EventResultType } from './types.js'
 
@@ -75,3 +76,34 @@ bus.on(InferableResultEvent, () => 'not-ok')
 // String/wildcard keys remain best-effort and do not strongly enforce return shapes.
 bus.on('InferableResultEvent', () => 'anything')
 bus.on('*', () => 123)
+
+const WrappedClient = events_suck.wrap('WrappedClient', {
+  create: InferableResultEvent,
+  update: ConstructorBooleanResultEvent,
+})
+
+const wrapped_client = new WrappedClient(new EventBus('WrappedClientBus'))
+
+const wrapped_create_call = wrapped_client.create({ target_id: 'abc-123' }, { debug_tag: 'create' })
+type WrappedCreateReturn = Awaited<typeof wrapped_create_call>
+type _assert_wrapped_create_return = Assert<IsEqual<WrappedCreateReturn, { ok: boolean } | undefined>>
+
+const wrapped_update_call = wrapped_client.update()
+type WrappedUpdateReturn = Awaited<typeof wrapped_update_call>
+type _assert_wrapped_update_return = Assert<IsEqual<WrappedUpdateReturn, boolean | undefined>>
+
+// @ts-expect-error missing required InferableResultEvent field
+wrapped_client.create({})
+
+const make_events_demo = events_suck.make_events({
+  FooBarAPIObjEvent: (payload: { id: string; age?: number }) => payload.id.length > 0,
+})
+
+const generated_event = make_events_demo.FooBarAPIObjEvent({ id: 'abc' })
+const _generated_event_id: string = generated_event.id
+bus.on(make_events_demo.FooBarAPIObjEvent, (event) => {
+  const id: string = event.id
+  return id.length > 0
+})
+// @ts-expect-error event_result_type inferred from make_events() function return type (boolean)
+bus.on(make_events_demo.FooBarAPIObjEvent, () => 'not-boolean')

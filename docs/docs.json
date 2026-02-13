@@ -1,56 +1,64 @@
 {
-  "$schema": "https://mintlify.com/schema.json",
+  "$schema": "https://mintlify.com/docs.json",
   "name": "bubus",
   "theme": "mint",
+  "favicon": "/favicon.svg",
   "colors": {
     "primary": "#0F766E",
     "light": "#14B8A6",
     "dark": "#115E59"
   },
-  "navigation": [
-    {
-      "group": "Getting Started",
-      "pages": [
-        "index",
-        "quickstart",
-        "features"
-      ]
-    },
-    {
-      "group": "API Reference",
-      "pages": [
-        "api/index",
-        "api/eventbus",
-        "api/baseevent",
-        "api/eventresult",
-        "api/eventhandler"
-      ]
-    },
-    {
-      "group": "Advanced",
-      "pages": [
-        "advanced/concurrency-retry"
-      ]
-    },
-    {
-      "group": "Integrations",
-      "pages": [
-        "integrations/middlewares",
-        "integrations/bridges"
-      ]
-    },
-    {
-      "group": "Operations",
-      "pages": [
-        "operations/performance-runtimes",
-        "operations/development"
-      ]
-    },
-    {
-      "group": "Project",
-      "pages": [
-        "project/inspiration-license"
-      ]
-    }
-  ]
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "index",
+              "quickstart",
+              "features"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "api/index",
+              "api/eventbus",
+              "api/baseevent",
+              "api/eventresult",
+              "api/eventhandler"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/concurrency-retry"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/middlewares",
+              "integrations/bridges"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/performance-runtimes",
+              "operations/development"
+            ]
+          },
+          {
+            "group": "Project",
+            "pages": [
+              "project/inspiration-license"
+            ]
+          }
+        ]
+      }
+    ]
+  }
 }
