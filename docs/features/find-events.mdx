@@ -3,15 +3,68 @@ title: Find Events
 description: Query history and optionally wait for matching future events.
 ---
 
-`find(...)` supports history lookup, future waits, predicates, and parent/child scoping.
+`find(...)` is the unified lookup API: search history, wait for future events, or combine both.
+
+## Interface
+
+<Tabs>
+<Tab title="Python">
+
+```python
+await bus.find(
+    event_type,                            # Event class, event type string, or '*'
+    where: Callable[[BaseEvent], bool] | None = None,
+    child_of: BaseEvent | None = None,
+    past: bool | float | timedelta = True,
+    future: bool | float = False,
+    **event_fields,                        # equality filters (event_status='completed', request_id='abc', ...)
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+await bus.find(event_pattern, options?)
+await bus.find(event_pattern, where, options?)
+
+// options:
+{
+  past?: boolean | number         // seconds when number
+  future?: boolean | number       // seconds when number
+  child_of?: BaseEvent | null
+  [event_field: string]: unknown  // equality filters, e.g. event_status: 'completed'
+}
+```
+
+</Tab>
+</Tabs>
+
+## Option semantics
+
+- `past`
+  - `true`: search all history (default)
+  - `false`: skip history
+  - `number` (or `timedelta` in Python): search recent history window
+- `future`
+  - `false`: do not wait (default)
+  - `true`: wait indefinitely
+  - `number`: wait up to N seconds
+- `where`: predicate filter
+- `child_of`: match only descendants of the given parent event
+- `event_fields`: strict equality filters on event fields/metadata
+
+Default behavior when omitted is history-only lookup (`past=True`, `future=False`).
+
+## Common use cases
+
+### 1) History lookup only (non-blocking)
 
 <Tabs>
 <Tab title="Python">
 
 ```python
 existing = await bus.find(ResponseEvent)
-future = await bus.find(ResponseEvent, past=False, future=5)
-child = await bus.find(ChildEvent, child_of=parent_event, past=5)
 ```
 
 </Tab>
@@ -19,9 +72,157 @@ child = await bus.find(ChildEvent, child_of=parent_event, past=5)
 
 ```ts
 const existing = await bus.find(ResponseEvent)
-const future = await bus.find(ResponseEvent, { past: false, future: 5 })
-const child = await bus.find(ChildEvent, { child_of: parentEvent, past: 5 })
 ```
 
 </Tab>
 </Tabs>
+
+### 2) Wait only for future events
+
+<Tabs>
+<Tab title="Python">
+
+```python
+future = await bus.find(ResponseEvent, past=False, future=5)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const future = await bus.find(ResponseEvent, { past: false, future: 5 })
+```
+
+</Tab>
+</Tabs>
+
+### 3) Check recent history, then keep waiting briefly
+
+<Tabs>
+<Tab title="Python">
+
+```python
+match = await bus.find(ResponseEvent, past=5, future=5)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const match = await bus.find(ResponseEvent, { past: 5, future: 5 })
+```
+
+</Tab>
+</Tabs>
+
+### 4) Filter by fields + predicate
+
+<Tabs>
+<Tab title="Python">
+
+```python
+match = await bus.find(
+    ResponseEvent,
+    where=lambda e: e.request_id == my_id,
+    event_status='completed',
+    future=5,
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const match = await bus.find(
+  ResponseEvent,
+  (event) => event.request_id === myId,
+  { event_status: 'completed', future: 5 }
+)
+```
+
+</Tab>
+</Tabs>
+
+### 5) Wildcard lookup across all event types
+
+<Tabs>
+<Tab title="Python">
+
+```python
+any_completed = await bus.find(
+    '*',
+    where=lambda e: e.event_type.endswith('ResultEvent'),
+    event_status='completed',
+    future=5,
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const anyCompleted = await bus.find(
+  '*',
+  (event) => event.event_type.endsWith('ResultEvent'),
+  { event_status: 'completed', future: 5 }
+)
+```
+
+</Tab>
+</Tabs>
+
+### 6) Find descendants of a specific parent event
+
+<Tabs>
+<Tab title="Python">
+
+```python
+parent_event = await bus.emit(NavigateToUrlEvent(url='https://example.com'))
+child = await bus.find(TabCreatedEvent, child_of=parent_event, past=5)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const parentEvent = await bus.emit(NavigateToUrlEvent({ url: 'https://example.com' })).done()
+const child = await bus.find(TabCreatedEvent, { child_of: parentEvent, past: 5 })
+```
+
+</Tab>
+</Tabs>
+
+### 7) Debounce expensive work
+
+<Tabs>
+<Tab title="Python">
+
+```python
+event = (
+    await bus.find(ScreenshotEvent, past=10, future=False)
+    or await bus.find(ScreenshotEvent, past=False, future=5)
+    or bus.emit(ScreenshotEvent())
+)
+await event
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const event =
+  (await bus.find(ScreenshotEvent, { past: 10, future: false })) ??
+  (await bus.find(ScreenshotEvent, { past: false, future: 5 })) ??
+  bus.emit(ScreenshotEvent({}))
+await event.done()
+```
+
+</Tab>
+</Tabs>
+
+## Important behavior
+
+- `find()` resolves when an event is emitted, not when handlers finish.
+- To wait for handler completion, await the returned event (`await event` in Python, `await event.done()` in TypeScript).
+- If no match is found (or `future` times out), `find()` returns `None` / `null`.
+- If both `past` and `future` are `false`, it returns immediately with no match.

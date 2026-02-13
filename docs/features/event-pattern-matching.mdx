@@ -1,24 +1,68 @@
 ---
 title: Event Pattern Matching
-description: Subscribe handlers using event classes, names, or wildcards.
+description: Use classes, strings, or wildcards for both handler registration and event lookup.
 ---
 
-Use event classes for strongest typing, event type strings for dynamic routing, or `'*'` for catch-all listeners.
+Event patterns are shared across both APIs:
+
+- `bus.on(pattern, handler)` for subscriptions
+- `bus.find(pattern, ...)` for history/future lookup
+
+Both accept the same pattern forms:
+
+- event class
+- string event type name
+- `'*'` wildcard (match everything)
+
+## Supported pattern forms
+
+| Pattern | Matches | Best for |
+| --- | --- | --- |
+| Event class (`UserActionEvent`) | One concrete event type | Strong typing end-to-end |
+| String (`'UserActionEvent'`) | Events by type name | Dynamic routing/config-driven keys |
+| `'*'` | All event types | Global observers, logging, bridges |
+
+## `.on(...)` and `.find(...)` use the same pattern model
+
+Use whichever operation you need, with the same pattern key:
+
+- subscribe: `bus.on(UserActionEvent, handler)`
+- find by class: `await bus.find(UserActionEvent)`
+- find by string: `await bus.find('UserActionEvent')`
+- wildcard subscribe/find: `bus.on('*', ...)`, `await bus.find('*', ...)`
+
+## Examples
 
 <Tabs>
 <Tab title="Python">
 
 ```python
-from bubus import EventBus, BaseEvent
+from typing import Any
+from bubus import BaseEvent, EventBus
 
-class UserActionEvent(BaseEvent):
+class UserActionEvent(BaseEvent[str]):
     action: str
 
 bus = EventBus('AppBus')
 
-bus.on(UserActionEvent, lambda e: print(e.action))
-bus.on('UserActionEvent', lambda e: print('by-name', e.event_type))
-bus.on('*', lambda e: print('wildcard', e.event_type))
+async def on_typed(event: UserActionEvent) -> str:
+    # event is strongly typed here
+    return f'action:{event.action}'
+
+def on_by_name(event: BaseEvent[Any]) -> None:
+    # string patterns are looser; payload fields are not statically known
+    print('by-name', event.event_type, getattr(event, 'action', None))
+
+def on_any(event: BaseEvent[Any]) -> None:
+    print('wildcard', event.event_type)
+
+bus.on(UserActionEvent, on_typed)
+bus.on('UserActionEvent', on_by_name)
+bus.on('*', on_any)
+
+typed_match = await bus.find(UserActionEvent)          # UserActionEvent | None
+named_match = await bus.find('UserActionEvent')        # BaseEvent[Any] | None
+wildcard_match = await bus.find('*', future=5)         # BaseEvent[Any] | None
 ```
 
 </Tab>
@@ -30,14 +74,46 @@ import { z } from 'zod'
 
 const UserActionEvent = BaseEvent.extend('UserActionEvent', {
   action: z.string(),
+  event_result_type: z.string(),
 })
 
 const bus = new EventBus('AppBus')
 
-bus.on(UserActionEvent, (event) => console.log(event.action))
-bus.on('UserActionEvent', (event) => console.log('by-name', event.event_type))
-bus.on('*', (event) => console.log('wildcard', event.event_type))
+bus.on(UserActionEvent, (event) => {
+  // event is strongly typed here
+  return `action:${event.action}`
+})
+
+bus.on('UserActionEvent', (event) => {
+  // string patterns are looser; event is BaseEvent-like at compile time
+  console.log('by-name', event.event_type)
+  return undefined
+})
+
+bus.on('*', (event) => {
+  console.log('wildcard', event.event_type)
+  return undefined
+})
+
+const typedMatch = await bus.find(UserActionEvent)      // InstanceType<typeof UserActionEvent> | null
+const namedMatch = await bus.find('UserActionEvent')    // BaseEvent | null
+const wildcardMatch = await bus.find('*', { future: 5 }) // BaseEvent | null
 ```
 
 </Tab>
 </Tabs>
+
+## Why event classes are preferred for typing
+
+Event classes preserve the most useful static typing:
+
+- handler input shape is specific (payload fields are known)
+- event result typing stays aligned with `event_result_type` / generic result type
+- `.find(EventClass)` returns the specific event type
+
+String keys and `'*'` are intentionally looser:
+
+- Python: treat as `BaseEvent[Any]`
+- TypeScript: typed as base `BaseEvent`/unknown-oriented handler return checks
+
+Use string/wildcard patterns when you need dynamic behavior. Use classes whenever you want strict payload/result type hints through handlers and lookups.
