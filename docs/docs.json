@@ -1,12 +1,12 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "name": "bubus",
-  "theme": "mint",
+  "theme": "almond",
   "favicon": "/favicon.svg",
   "colors": {
-    "primary": "#0F766E",
-    "light": "#14B8A6",
-    "dark": "#115E59"
+    "primary": "#440f75",
+    "light": "#725dc0",
+    "dark": "#24053b"
   },
   "navigation": {
     "tabs": [
@@ -60,5 +60,9 @@
         ]
       }
     ]
+  },
+  "description": "Fast strongly-typed Python + Typescript event bus library.",
+  "background": {
+    "decoration": "grid"
   }
 }
