@@ -1,0 +1,83 @@
+---
+title: Handlers: serial
+description: Run handlers one at a time per event, in registration order.
+---
+
+`serial` executes handlers for a single event sequentially.
+
+## Lifecycle impact
+
+1. Event starts processing.
+2. Handler A runs to completion (or failure/timeout).
+3. Handler B starts afterward, then C, and so on.
+4. Event completion waits for the serial chain (or completion-mode short-circuit rules).
+
+## Execution order example
+
+<Tabs>
+<Tab title="Python">
+
+```python
+import asyncio
+from bubus import BaseEvent, EventBus
+
+class HandlerEvent(BaseEvent):
+    pass
+
+bus = EventBus('SerialHandlerBus', event_handler_concurrency='serial')
+log: list[str] = []
+
+async def h1(_: HandlerEvent) -> None:
+    log.append('h1_start')
+    await asyncio.sleep(0.01)
+    log.append('h1_end')
+
+async def h2(_: HandlerEvent) -> None:
+    log.append('h2_start')
+    await asyncio.sleep(0.01)
+    log.append('h2_end')
+
+bus.on(HandlerEvent, h1)
+bus.on(HandlerEvent, h2)
+
+await bus.emit(HandlerEvent())
+
+assert log == ['h1_start', 'h1_end', 'h2_start', 'h2_end']
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+
+const HandlerEvent = BaseEvent.extend('HandlerEvent', {})
+const bus = new EventBus('SerialHandlerBus', { event_handler_concurrency: 'serial' })
+const log: string[] = []
+
+bus.on(HandlerEvent, async () => {
+  log.push('h1_start')
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  log.push('h1_end')
+})
+
+bus.on(HandlerEvent, async () => {
+  log.push('h2_start')
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  log.push('h2_end')
+})
+
+await bus.emit(HandlerEvent({})).done()
+
+if (JSON.stringify(log) !== JSON.stringify(['h1_start', 'h1_end', 'h2_start', 'h2_end'])) {
+  throw new Error('expected serial handler execution order')
+}
+```
+
+</Tab>
+</Tabs>
+
+## Notes
+
+- Best when handlers share mutable state or require strict ordering.
+- Execution remains predictable but may increase per-event latency.

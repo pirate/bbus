@@ -1,0 +1,175 @@
+---
+title: Timeouts
+description: Configure execution deadlines and slow-warning thresholds at bus, event, and handler levels.
+---
+
+Timeout controls operate at three levels:
+
+- Bus defaults (applies to all events/handlers unless overridden)
+- Per-event overrides (applies to one emitted event instance)
+- Per-handler overrides (applies to one handler registration)
+
+## Timeout types
+
+### 1) Event timeout (`event_timeout`)
+
+The outer execution budget for an event. This also acts as an upper cap for each handler run for that event.
+
+### 2) Handler timeout (`event_handler_timeout` / `handler_timeout`)
+
+A handler-specific timeout budget. The effective handler timeout is resolved from handler -> event -> bus, then capped by `event_timeout` when both are set.
+
+### 3) Slow-warning thresholds (`event_slow_timeout`, `event_handler_slow_timeout`, `handler_slow_timeout`)
+
+These emit warnings when work is taking longer than expected:
+
+- `event_slow_timeout`: warns when event processing is still running past the threshold.
+- `event_handler_slow_timeout` / `handler_slow_timeout`: warns when a handler run is still running past the threshold.
+
+Slow thresholds are warnings, not forced cancellation.
+
+## Where to set each value
+
+| Level | Execution timeout fields | Slow-warning fields |
+| --- | --- | --- |
+| Bus | `event_timeout` | `event_slow_timeout`, `event_handler_slow_timeout` |
+| Event | `event_timeout`, `event_handler_timeout` | `event_slow_timeout`, `event_handler_slow_timeout` |
+| Handler | `handler_timeout` | `handler_slow_timeout` |
+
+## Bus-level defaults
+
+Set default budgets and warning thresholds once when creating a bus.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus
+
+bus = EventBus(
+    'TimeoutBus',
+    event_timeout=30.0,
+    event_slow_timeout=10.0,
+    event_handler_slow_timeout=3.0,
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus } from 'bubus'
+
+const bus = new EventBus('TimeoutBus', {
+  event_timeout: 30,
+  event_slow_timeout: 10,
+  event_handler_slow_timeout: 3,
+})
+```
+
+</Tab>
+</Tabs>
+
+## Event-level overrides
+
+Set per-event values when emitting/dispatching an event instance.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import BaseEvent
+
+class WorkEvent(BaseEvent):
+    pass
+
+event = bus.emit(
+    WorkEvent(
+        event_timeout=8.0,
+        event_handler_timeout=2.0,
+        event_slow_timeout=4.0,
+        event_handler_slow_timeout=1.0,
+    )
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent } from 'bubus'
+
+const WorkEvent = BaseEvent.extend('WorkEvent', {})
+
+const event = bus.emit(
+  WorkEvent({
+    event_timeout: 8,
+    event_handler_timeout: 2,
+    event_slow_timeout: 4,
+    event_handler_slow_timeout: 1,
+  })
+)
+```
+
+</Tab>
+</Tabs>
+
+## Handler-level overrides
+
+Set per-handler timeout and slow-warning overrides at registration time (or by updating the returned handler metadata).
+
+<Tabs>
+<Tab title="Python">
+
+```python
+entry = bus.on(WorkEvent, slow_handler)
+entry.handler_timeout = 1.5
+entry.handler_slow_timeout = 0.5
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+bus.on(WorkEvent, slowHandler, {
+  handler_timeout: 1.5,
+  handler_slow_timeout: 0.5,
+})
+```
+
+</Tab>
+</Tabs>
+
+## Precedence rules
+
+### Effective handler timeout
+
+1. Resolve handler timeout source:
+   - `handler_timeout` (handler level)
+   - else `event_handler_timeout` (event level)
+   - else bus `event_timeout`
+2. Apply event cap:
+   - effective timeout is `min(resolved_handler_timeout, event_timeout)` when both are set
+   - if one is unset, the other value is used
+   - if both are unset, no timeout is enforced
+
+### Effective handler slow-warning threshold
+
+Resolved in this order:
+
+1. `handler_slow_timeout`
+2. `event_handler_slow_timeout`
+3. `event_slow_timeout` (or legacy `slow_timeout`)
+4. bus `event_handler_slow_timeout`
+5. bus `event_slow_timeout`
+
+### Effective event slow-warning threshold
+
+Resolved in this order:
+
+1. `event_slow_timeout` (or legacy `slow_timeout`)
+2. bus `event_slow_timeout`
+
+## Note on retry
+
+Bus/event timeouts are outer budgets. If you need per-attempt limits for retried handlers, use the `retry` decorator's `timeout` option.

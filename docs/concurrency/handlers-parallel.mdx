@@ -1,0 +1,91 @@
+---
+title: Handlers: parallel
+description: Run handlers for one event concurrently.
+---
+
+`parallel` allows multiple handlers for the same event to run at the same time.
+
+## Lifecycle impact
+
+1. Event starts processing.
+2. All applicable handlers are scheduled concurrently.
+3. Event completion waits based on completion mode (`all` or `first`).
+4. Per-handler timeout/error behavior remains independent per handler.
+
+## Execution order example
+
+<Tabs>
+<Tab title="Python">
+
+```python
+import asyncio
+from bubus import BaseEvent, EventBus
+
+class HandlerEvent(BaseEvent):
+    pass
+
+bus = EventBus('ParallelHandlerBus', event_handler_concurrency='parallel')
+
+in_flight = 0
+max_in_flight = 0
+release = asyncio.Event()
+
+async def tracked(_: HandlerEvent) -> None:
+    global in_flight, max_in_flight
+    in_flight += 1
+    max_in_flight = max(max_in_flight, in_flight)
+    await release.wait()
+    in_flight -= 1
+
+bus.on(HandlerEvent, tracked)
+bus.on(HandlerEvent, tracked)
+
+event = bus.emit(HandlerEvent())
+await asyncio.sleep(0)
+release.set()
+await event
+
+assert max_in_flight >= 2
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+
+const HandlerEvent = BaseEvent.extend('HandlerEvent', {})
+const bus = new EventBus('ParallelHandlerBus', { event_handler_concurrency: 'parallel' })
+
+let inFlight = 0
+let maxInFlight = 0
+let release!: () => void
+const gate = new Promise<void>((resolve) => {
+  release = resolve
+})
+
+const tracked = async () => {
+  inFlight += 1
+  maxInFlight = Math.max(maxInFlight, inFlight)
+  await gate
+  inFlight -= 1
+}
+
+bus.on(HandlerEvent, tracked)
+bus.on(HandlerEvent, tracked)
+
+const event = bus.emit(HandlerEvent({}))
+await new Promise((resolve) => setTimeout(resolve, 0))
+release()
+await event.done()
+
+if (maxInFlight < 2) throw new Error('expected overlapping handlers')
+```
+
+</Tab>
+</Tabs>
+
+## Notes
+
+- Best for independent I/O-bound handlers where overlap reduces total latency.
+- If handlers mutate shared resources, add explicit synchronization.

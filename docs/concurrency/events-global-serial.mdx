@@ -1,0 +1,105 @@
+---
+title: Events: global-serial
+description: Process only one event at a time across all buses.
+---
+
+`global-serial` enforces a single global event-processing slot across all `EventBus` instances.
+
+## Lifecycle impact
+
+1. An emitted event is queued on its target bus as usual.
+2. Before handler execution starts, the bus acquires the shared global event lock.
+3. While one event is running anywhere, other buses wait.
+4. Handler-level concurrency still applies inside that one active event.
+
+## Execution order example
+
+<Tabs>
+<Tab title="Python">
+
+```python
+import asyncio
+from bubus import BaseEvent, EventBus
+
+class SerialEvent(BaseEvent):
+    order: int
+    source: str
+
+bus_a = EventBus('GlobalSerialA', event_concurrency='global-serial')
+bus_b = EventBus('GlobalSerialB', event_concurrency='global-serial')
+
+in_flight = 0
+max_in_flight = 0
+starts: list[str] = []
+
+async def handler(event: SerialEvent) -> None:
+    global in_flight, max_in_flight
+    in_flight += 1
+    max_in_flight = max(max_in_flight, in_flight)
+    starts.append(f'{event.source}:{event.order}')
+    await asyncio.sleep(0.01)
+    in_flight -= 1
+
+bus_a.on(SerialEvent, handler)
+bus_b.on(SerialEvent, handler)
+
+for i in range(3):
+    bus_a.emit(SerialEvent(order=i, source='a'))
+    bus_b.emit(SerialEvent(order=i, source='b'))
+
+await bus_a.wait_until_idle()
+await bus_b.wait_until_idle()
+
+assert max_in_flight == 1
+assert [s for s in starts if s.startswith('a:')] == ['a:0', 'a:1', 'a:2']
+assert [s for s in starts if s.startswith('b:')] == ['b:0', 'b:1', 'b:2']
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const SerialEvent = BaseEvent.extend('SerialEvent', {
+  order: z.number(),
+  source: z.string(),
+})
+
+const busA = new EventBus('GlobalSerialA', { event_concurrency: 'global-serial' })
+const busB = new EventBus('GlobalSerialB', { event_concurrency: 'global-serial' })
+
+let inFlight = 0
+let maxInFlight = 0
+const starts: string[] = []
+
+const handler = async (event: InstanceType<typeof SerialEvent>) => {
+  inFlight += 1
+  maxInFlight = Math.max(maxInFlight, inFlight)
+  starts.push(`${event.source}:${event.order}`)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  inFlight -= 1
+}
+
+busA.on(SerialEvent, handler)
+busB.on(SerialEvent, handler)
+
+for (let i = 0; i < 3; i += 1) {
+  busA.emit(SerialEvent({ order: i, source: 'a' }))
+  busB.emit(SerialEvent({ order: i, source: 'b' }))
+}
+
+await busA.waitUntilIdle()
+await busB.waitUntilIdle()
+
+if (maxInFlight !== 1) throw new Error('expected global serialization')
+```
+
+</Tab>
+</Tabs>
+
+## Notes
+
+- This mode is strongest for determinism across distributed in-process bus topologies.
+- Queue-jump behavior (`await event` inside handlers) still applies, but it does so under the same global lock.

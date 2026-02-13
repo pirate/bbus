@@ -52,31 +52,49 @@
             ]
           },
           {
-            "group": "Advanced",
+            "group": "Concurrency Control",
             "pages": [
-              "advanced/concurrency-retry"
+              "concurrency/events-global-serial",
+              "concurrency/events-bus-serial",
+              "concurrency/events-parallel",
+              "concurrency/handlers-serial",
+              "concurrency/handlers-parallel",
+              "concurrency/timeouts",
+              "concurrency/retry-decorator"
             ]
           },
           {
             "group": "Integrations",
             "pages": [
-              "integrations/middlewares",
-              "integrations/middleware-base",
-              "integrations/middleware-otel-tracing",
-              "integrations/middleware-auto-error",
-              "integrations/middleware-auto-return",
-              "integrations/middleware-auto-handler-change",
-              "integrations/middleware-wal",
-              "integrations/middleware-logger",
-              "integrations/middleware-sqlite-history-mirror",
-              "integrations/bridges",
-              "integrations/bridge-http",
-              "integrations/bridge-socket",
-              "integrations/bridge-redis",
-              "integrations/bridge-nats",
-              "integrations/bridge-postgres",
-              "integrations/bridge-jsonl",
-              "integrations/bridge-sqlite"
+              {
+                "group": "Middlewares",
+                "expanded": true,
+                "pages": [
+                  "integrations/middlewares",
+                  "integrations/middleware-base",
+                  "integrations/middleware-otel-tracing",
+                  "integrations/middleware-auto-error",
+                  "integrations/middleware-auto-return",
+                  "integrations/middleware-auto-handler-change",
+                  "integrations/middleware-wal",
+                  "integrations/middleware-logger",
+                  "integrations/middleware-sqlite-history-mirror"
+                ]
+              },
+              {
+                "group": "Bridges",
+                "expanded": true,
+                "pages": [
+                  "integrations/bridges",
+                  "integrations/bridge-http",
+                  "integrations/bridge-socket",
+                  "integrations/bridge-redis",
+                  "integrations/bridge-nats",
+                  "integrations/bridge-postgres",
+                  "integrations/bridge-jsonl",
+                  "integrations/bridge-sqlite"
+                ]
+              }
             ]
           },
           {

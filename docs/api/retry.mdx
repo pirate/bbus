@@ -29,10 +29,18 @@ def retry(
 <Tab title="TypeScript">
 
 ```ts
-export function retry(options: RetryOptions = {}): <T extends (...args: any[]) => any>(
-  target: T,
-  context?: ClassMethodDecoratorContext
-) => T
+retry({
+  max_attempts?: number,                                                // default: 1
+  retry_after?: number,                                                 // default: 0 (seconds)
+  retry_backoff_factor?: number,                                        // default: 1.0
+  retry_on_errors?: Array<(new (...args) => Error) | RegExp | string>,  // default: retry any error
+  timeout?: number | null,                                              // default: no per-attempt timeout
+  semaphore_limit?: number | null,                                      // default: no semaphore limit
+  semaphore_name?: string | ((...args: any[]) => string) | null,        // default: function name
+  semaphore_lax?: boolean,                                              // default: true
+  semaphore_scope?: 'global' | 'class' | 'instance',                    // default: 'global'
+  semaphore_timeout?: number | null,                                    // default: derived when timeout + limit are set
+})
 ```
 
 </Tab>

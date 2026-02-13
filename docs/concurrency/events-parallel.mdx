@@ -1,0 +1,98 @@
+---
+title: Events: parallel
+description: Allow multiple events to execute concurrently on the same bus.
+---
+
+`parallel` removes event-level serialization for a bus, so multiple events can be in-flight simultaneously.
+
+## Lifecycle impact
+
+1. Events still enqueue and are tracked in history.
+2. The bus does not gate execution with an event semaphore.
+3. Handler-level concurrency rules still apply within each event.
+4. Ordering guarantees become weaker under load because events can overlap.
+
+## Execution order example
+
+<Tabs>
+<Tab title="Python">
+
+```python
+import asyncio
+from bubus import BaseEvent, EventBus
+
+class ParallelEvent(BaseEvent):
+    order: int
+
+bus = EventBus('ParallelEventBus', event_concurrency='parallel', event_handler_concurrency='parallel')
+
+in_flight = 0
+max_in_flight = 0
+release = asyncio.Event()
+
+async def handler(_: ParallelEvent) -> None:
+    global in_flight, max_in_flight
+    in_flight += 1
+    max_in_flight = max(max_in_flight, in_flight)
+    await release.wait()
+    await asyncio.sleep(0.01)
+    in_flight -= 1
+
+bus.on(ParallelEvent, handler)
+
+bus.emit(ParallelEvent(order=0))
+bus.emit(ParallelEvent(order=1))
+
+await asyncio.sleep(0)
+release.set()
+await bus.wait_until_idle()
+
+assert max_in_flight >= 2
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const ParallelEvent = BaseEvent.extend('ParallelEvent', { order: z.number() })
+
+const bus = new EventBus('ParallelEventBus', {
+  event_concurrency: 'parallel',
+  event_handler_concurrency: 'parallel',
+})
+
+let inFlight = 0
+let maxInFlight = 0
+let release!: () => void
+const gate = new Promise<void>((resolve) => {
+  release = resolve
+})
+
+bus.on(ParallelEvent, async () => {
+  inFlight += 1
+  maxInFlight = Math.max(maxInFlight, inFlight)
+  await gate
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  inFlight -= 1
+})
+
+bus.emit(ParallelEvent({ order: 0 }))
+bus.emit(ParallelEvent({ order: 1 }))
+
+await new Promise((resolve) => setTimeout(resolve, 0))
+release()
+await bus.waitUntilIdle()
+
+if (maxInFlight < 2) throw new Error('expected overlapping events')
+```
+
+</Tab>
+</Tabs>
+
+## Notes
+
+- Use when throughput matters more than deterministic event ordering.
+- Combine with idempotent handlers and explicit external coordination when needed.
