@@ -34,7 +34,7 @@ uv run tests/performance_runtime.py   # run the performance test suite in python
 ### Browser support notes
 
 - The package output is ESM (`./dist/esm`) which is supported by all browsers [released after 2018](https://caniuse.com/?search=ESM)
-- `AsyncLocalStorage` is preserved at dispatch and used during handling when availabe (Node/Bun), otel/tracing context will work normally in those environments
+- `AsyncLocalStorage` is preserved at emit time and used during handling when availabe (Node/Bun), otel/tracing context will work normally in those environments
 
 ### Performance comparison (local run, per-event)
 

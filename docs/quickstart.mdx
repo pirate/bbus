@@ -22,7 +22,7 @@ class UserLoginEvent(BaseEvent[str]):
     is_admin: bool
 
 async def handle_login(event: UserLoginEvent) -> str:
-    auth_request = await event.event_bus.dispatch(AuthRequestEvent(...))  # nested events supported
+    auth_request = await event.event_bus.emit(AuthRequestEvent(...))  # nested events supported
     auth_response = await event.event_bus.find(AuthResponseEvent, child_of=auth_request, future=30)
     return f"User {event.username} logged in admin={event.is_admin} with API response: {await auth_response.event_result()}"
 
@@ -30,7 +30,7 @@ bus = EventBus()
 bus.on(UserLoginEvent, handle_login)
 bus.on(AuthRequestEvent, AuthAPI.post)
 
-event = bus.dispatch(UserLoginEvent(username="alice", is_admin=True))
+event = bus.emit(UserLoginEvent(username="alice", is_admin=True))
 print(await event.event_result())
 # User alice logged in admin=True with API response: {...}
 ```
@@ -66,7 +66,7 @@ bus.on(CreateUserEvent, async (event) => {
 
 const event = bus.emit(CreateUserEvent({ email: 'someuser@example.com' }))
 await event.done()
-console.log(event.first_result) // { user_id: 'some-user-uuid' }
+console.log(event.event_result) // { user_id: 'some-user-uuid' }
 ```
 
 <br/>

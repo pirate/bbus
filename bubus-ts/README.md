@@ -10,7 +10,7 @@ Bubus is an in-memory event bus library for async Python and TS (node/bun/deno/b
 
 It's designed for quickly building resilient, predictable, complex event-driven apps.
 
-It "just works" with an intuitive, but powerful event JSON format + dispatch API that's consistent across both languages and scales consistently from one event up to millions:
+It "just works" with an intuitive, but powerful event JSON format + dispatch API that's consistent across both languages and scales consistently from one event to millions (~0.2ms/event):
 
 ```python
 bus.on(SomeEvent, some_function)
@@ -58,7 +58,7 @@ bus.on(CreateUserEvent, async (event) => {
 
 const event = bus.emit(CreateUserEvent({ email: 'someuser@example.com' }))
 await event.done()
-console.log(event.first_result) // { user_id: 'some-user-uuid' }
+console.log(event.event_result) // { user_id: 'some-user-uuid' }
 ```
 
 <br/>
@@ -198,7 +198,7 @@ Normal lifecycle:
 1. Create event instance (`const event = MyEvent({...})`).
 2. Dispatch (`const queued = bus.emit(event)`).
 3. Await with `await queued.done()` (immediate/queue-jump semantics) or `await queued.waitForCompletion()` (bus queue order).
-4. Inspect `queued.event_results`, `queued.first_result`, `queued.event_errors`, etc. if you need to access handler return values
+4. Inspect `queued.event_results`, `queued.event_result`, `queued.event_errors`, etc. if you need to access handler return values
 
 #### `find()`
 
@@ -387,7 +387,7 @@ Special configuration fields you can set on each event to control processing:
 - `event_descendants` -> `BaseEvent[]`
 - `event_errors` -> `Error[]`
 - `all_results` -> `EventResultType<this>[]`
-- `first_result` -> `EventResultType<this> | undefined`
+- `event_result` -> `EventResultType<this> | undefined`
 - `last_result` -> `EventResultType<this> | undefined`
 
 #### `done()`

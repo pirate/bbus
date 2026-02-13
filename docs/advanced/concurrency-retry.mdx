@@ -130,11 +130,11 @@ bus.on(DatabaseEvent, db_service.execute_query)
 #### Bus-level config options (`new EventBus(name, {...options...})`)
 
 - `max_history_size?: number | null` (default: `100`)
-  - Max events kept in history. `null` = unlimited. `bus.find(...)` uses this log to query recently dispatched events
+  - Max events kept in history. `null` = unlimited. `bus.find(...)` uses this log to query recently emitted events
   - `0` keeps only pending/in-flight events; each event is removed from history immediately after completion.
 - `max_history_drop?: boolean` (default: `false`)
   - If `true`, drop oldest history entries when history is full (including uncompleted entries if needed).
-  - If `false`, reject new dispatches when history is full.
+  - If `false`, reject new emits when history is full.
 - `event_concurrency?: 'global-serial' | 'bus-serial' | 'parallel' | null` (default: `'bus-serial'`)
   - Event-level scheduling policy (`global-serial`: FIFO across all buses, `bus-serial`: FIFO per bus, `parallel`: concurrent events per bus).
 - `event_handler_concurrency?: 'serial' | 'parallel' | null` (default: `'serial'`)
@@ -196,16 +196,16 @@ Timeout resolution for each handler run:
 
 Additional timeout nuance:
 
-- `BaseEvent.event_timeout` starts as `null` unless set; dispatch applies bus default timeout when still unset.
+- `BaseEvent.event_timeout` starts as `null` unless set; emit applies bus default timeout when still unset.
 - Bus/event timeouts are outer budgets for handler execution; use `@retry({ timeout })` for per-attempt timeouts.
 
 Use `@retry` for per-handler execution timeout/retry/backoff/semaphore control. Keep bus/event timeouts as outer execution budgets.
 
 ### Runtime lifecycle (bus -> event -> handler)
 
-Dispatch flow:
+Emit flow:
 
-1. `dispatch()` normalizes to original event and captures async context when available.
+1. `emit()` normalizes to original event and captures async context when available.
 2. Bus applies defaults and appends itself to `event_path`.
 3. Event enters `event_history`, `pending_event_queue`, and runloop starts.
 4. Runloop dequeues and calls `processEvent()`.
@@ -222,7 +222,7 @@ Locking model:
 
 ### Queue-jumping (`await event.done()` inside handlers)
 
-Want to dispatch and await an event like a function call? simply `await event.done()`.
+Want to emit and await an event like a function call? simply `await event.done()`.
 When called inside a handler, the awaited event is processed immediately (queue-jump behavior) before normal queued work continues.
 
 ### `@retry` Decorator
@@ -234,7 +234,7 @@ When called inside a handler, the awaited event is processed immediately (queue-
 Retry and timeout belong on handlers, not emit sites:
 
 - Handlers fail; events are messages.
-- Handler-level retries preserve replay semantics (one event dispatch, internal retry attempts).
+- Handler-level retries preserve replay semantics (one event emit, internal retry attempts).
 - Bus concurrency and retry concerns are orthogonal and compose cleanly.
 
 #### Recommended pattern: `@retry()` on class methods
@@ -314,7 +314,7 @@ Use bus/event timeouts for outer deadlines and `retry({ timeout })` for per-hand
 
 #### Discouraged: retrying emit sites
 
-Avoid wrapping `emit()/done()` in `retry()` unless you intentionally want multiple event dispatches (a new event for every retry).  
+Avoid wrapping `emit()/done()` in `retry()` unless you intentionally want multiple event emits (a new event for every retry).  
 Keep retries on handlers so that your logs represent the original high-level intent, with a single event per call even if handling it took multiple tries.  
 Emitting a new event for each retry is only recommended if you are using the logs for debugging more than for replayability / time-travel.
 

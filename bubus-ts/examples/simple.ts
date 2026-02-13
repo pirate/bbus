@@ -77,7 +77,7 @@ async function main(): Promise<void> {
   }
 
   // 7) Convenience getters for aggregate inspection.
-  console.log('\nFirst valid parsed result:', register_event.first_result)
+  console.log('\nFirst valid parsed result:', register_event.event_result)
   console.log(`Total event errors: ${register_event.event_errors.length}`)
   for (const [index, error] of register_event.event_errors.entries()) {
     const message = error instanceof Error ? error.message : String(error)

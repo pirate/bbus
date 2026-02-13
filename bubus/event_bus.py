@@ -417,7 +417,7 @@ class EventBus:
 
     @property
     def events_pending(self) -> list[BaseEvent[Any]]:
-        """Get events that haven't started processing yet (does not include events that have not even finished dispatching yet in self.event_queue)"""
+        """Get events that haven't started processing yet (does not include events still being enqueued in self.event_queue)."""
         return [
             event
             for event in self.event_history.values()
@@ -509,7 +509,7 @@ class EventBus:
                 eventbus.on('TaskStartedEvent', handler)  # Specific event type
                 eventbus.on(TaskStartedEvent, handler)  # Event model class
                 eventbus.on('*', handler)  # Subscribe to all events
-                eventbus.on('*', other_eventbus.dispatch)  # Forward all events to another EventBus
+                eventbus.on('*', other_eventbus.emit)  # Forward all events to another EventBus
 
         Note: When forwarding events between buses, all handler results are automatically
         flattened into the original event's results, so EventResults sees all handlers
@@ -619,20 +619,20 @@ class EventBus:
                 self._remove_indexed_handler(event_key, handler_id)
                 self._notify_handler_change(entry, registered=False)
 
-    def dispatch(self, event: T_ExpectedEvent) -> T_ExpectedEvent:
+    def emit(self, event: T_ExpectedEvent) -> T_ExpectedEvent:
         """
         Enqueue an event for processing and immediately return an Event(status='pending') version (synchronous).
         You can await the returned Event(status='pending') object to block until it is done being executed aka Event(status='completed'),
         or you can interact with the unawaited Event(status='pending') before its handlers have finished.
 
-        (The first EventBus.dispatch() call will auto-start a bus's async _run_loop() if it's not already running)
+        (The first EventBus.emit() call will auto-start a bus's async _run_loop() if it's not already running)
 
-        >>> completed_event = await eventbus.dispatch(SomeEvent())
+        >>> completed_event = await eventbus.emit(SomeEvent())
                 # 1. enqueues the event synchronously
                 # 2. returns an awaitable SomeEvent() with pending results in .event_results
                 # 3. awaits the SomeEvent() which waits until all pending results are complete and returns the completed SomeEvent()
 
-        >>> result_value = await eventbus.dispatch(SomeEvent()).event_result()
+        >>> result_value = await eventbus.emit(SomeEvent()).event_result()
                 # 1. enqueues the event synchronously
                 # 2. returns a pending SomeEvent() with pending results in .event_results
                 # 3. awaiting .event_result() waits until all pending results are complete, and returns the raw result value of the first one
@@ -641,7 +641,7 @@ class EventBus:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            raise RuntimeError(f'{self}.dispatch() called but no event loop is running! Event not queued: {event.event_type}')
+            raise RuntimeError(f'{self}.emit() called but no event loop is running! Event not queued: {event.event_type}')
 
         assert event.event_id, 'Missing event.event_id: UUIDStr = uuid7str()'
         assert event.event_created_at, 'Missing event.event_created_at: datetime = datetime.now(UTC)'
@@ -680,8 +680,8 @@ class EventBus:
             if current_event is not None:
                 event.event_parent_id = current_event.event_id
 
-        # Capture dispatch-time context for propagation to handlers (GitHub issue #20)
-        # This ensures ContextVars set before dispatch() are accessible in handlers
+        # Capture emit-time context for propagation to handlers (GitHub issue #20)
+        # This ensures ContextVars set before emit() are accessible in handlers
         if event._event_dispatch_context is None:  # pyright: ignore[reportPrivateUsage]
             event._event_dispatch_context = contextvars.copy_context()  # pyright: ignore[reportPrivateUsage]
 
@@ -703,7 +703,7 @@ class EventBus:
         else:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
-                    '⚠️ %s.dispatch(%s) - Bus already in path, not adding again. Path: %s',
+                    '⚠️ %s.emit(%s) - Bus already in path, not adding again. Path: %s',
                     self,
                     event.event_type,
                     event.event_path,
@@ -719,12 +719,12 @@ class EventBus:
         ), f'Event.event_path must be a list of EventBus labels BusName#abcd, got: {event.event_path}'
 
         # NOTE:
-        # dispatch() is intentionally synchronous and runs on the same event-loop
+        # emit() is intentionally synchronous and runs on the same event-loop
         # thread as the runloop task. Blocking here for "pressure" would deadlock
-        # naive flood loops because the runloop cannot progress until dispatch() returns.
+        # naive flood loops because the runloop cannot progress until emit() returns.
         # So pressure is handled by policy:
         #   - max_history_drop=True  -> absorb and trim oldest history entries
-        #   - max_history_drop=False -> reject new dispatches at max_history_size
+        #   - max_history_drop=False -> reject new emits at max_history_size
         if (
             self.max_history_size is not None
             and self.max_history_size > 0
@@ -739,7 +739,7 @@ class EventBus:
         # Auto-start if needed
         self._flush_pending_handler_changes()
         self._start()
-        # Ensure every dispatched event has a completion signal tied to this loop.
+        # Ensure every emitted event has a completion signal tied to this loop.
         # Completion logic always sets this signal; consumers like event_results_* await it.
         _ = event.event_completed_signal
 
@@ -751,7 +751,7 @@ class EventBus:
                 self.event_history[event.event_id] = event
                 self._active_event_ids.add(event.event_id)
                 if self._find_waiters:
-                    # Resolve future find waiters immediately on dispatch so callers
+                    # Resolve future find waiters immediately on emit so callers
                     # don't wait for queue position or handler execution.
                     for waiter in tuple(self._find_waiters):
                         if waiter.event_key != '*' and event.event_type != waiter.event_key:
@@ -768,7 +768,7 @@ class EventBus:
                     loop.create_task(self._on_event_change(event, EventStatus.PENDING))
                 if logger.isEnabledFor(logging.INFO):
                     logger.info(
-                        '🗣️ %s.dispatch(%s) ➡️ %s#%s (#%d %s)',
+                        '🗣️ %s.emit(%s) ➡️ %s#%s (#%d %s)',
                         self,
                         event.event_type,
                         event.event_type,
@@ -783,14 +783,14 @@ class EventBus:
                 )
                 raise  # could also block indefinitely until queue has space, but dont drop silently or delete events
         else:
-            logger.warning('⚠️ %s.dispatch() called but event_queue is None! Event not queued: %s', self, event.event_type)
+            logger.warning('⚠️ %s.emit() called but event_queue is None! Event not queued: %s', self, event.event_type)
 
         # Note: We do NOT pre-create EventResults here anymore.
         # EventResults are created only when handlers actually start executing.
         # This avoids "orphaned" pending results for handlers that get filtered out later.
 
         # Amortize cleanup work by trimming only after a soft overage; this keeps
-        # hot dispatch fast under large naive floods while still bounding memory.
+        # hot emit fast under large naive floods while still bounding memory.
         if self.max_history_size is not None and self.max_history_size > 0 and self.max_history_drop:
             soft_limit = max(self.max_history_size, int(self.max_history_size * 1.2))
             if len(self.event_history) > soft_limit:
@@ -798,9 +798,9 @@ class EventBus:
 
         return event
 
-    def emit(self, event: T_ExpectedEvent) -> T_ExpectedEvent:
-        """Alias for dispatch(), mirroring EventEmitter-style APIs."""
-        return self.dispatch(event)
+    def dispatch(self, event: T_ExpectedEvent) -> T_ExpectedEvent:
+        """Alias for emit(), kept for backwards compatibility."""
+        return self.emit(event)
 
     @staticmethod
     def _normalize_event_pattern(event_pattern: object) -> str:
@@ -882,7 +882,7 @@ class EventBus:
         Mirrors TS `EventBus.find` behavior:
         - Default behavior with no options: `past=True`, `future=False`
         - Search history and return the most recent match
-        - Optionally wait for future dispatches
+        - Optionally wait for future emits
         - Supports exact-match equality filters via keyword args for any event field
 
         Args:
@@ -1066,7 +1066,7 @@ class EventBus:
 
                 # Create async objects if needed
                 if self.pending_event_queue is None:
-                    # Keep queue unbounded so naive dispatch floods can enqueue without
+                    # Keep queue unbounded so naive emit floods can enqueue without
                     # artificial queue caps; queue stores event object references.
                     self.pending_event_queue = CleanShutdownQueue[BaseEvent[Any]](maxsize=0)
                     self._on_idle = asyncio.Event()
@@ -1075,7 +1075,7 @@ class EventBus:
                 # Create and start the run loop task.
                 # Use a weakref-based runner so an unreferenced EventBus can be GC'd
                 # without requiring explicit stop(clear=True) by callers.
-                # Run loops must start with a clean context. If dispatch() is called
+                # Run loops must start with a clean context. If emit() is called
                 # from inside a handler, lock-depth ContextVars would otherwise leak
                 # into the new task and bypass event lock acquisition.
                 self._runloop_task = loop.create_task(
@@ -1505,7 +1505,7 @@ class EventBus:
         5. Manages idle state signaling
 
         Use this method when manually driving the event loop (e.g., in tests).
-        For automatic processing, use dispatch() which queues events for the run loop.
+        For automatic processing, use emit() which queues events for the run loop.
 
         Args:
             event: Optional event to process directly (bypasses queue if provided)
@@ -1525,7 +1525,7 @@ class EventBus:
               in queue. The run loop will process it again later (double-processing).
 
         See Also:
-            dispatch: Queues an event for normal async processing by the bus's existing run loop (recommended)
+            emit: Queues an event for normal async processing by the bus's existing run loop (recommended)
             handle_event: Lower-level method that executes handlers (called by step)
         """
         assert self._on_idle and self.pending_event_queue, 'EventBus._start() must be called before step()'
@@ -1602,7 +1602,7 @@ class EventBus:
 
         See Also:
             step: High-level method that acquires lock and calls handle_event
-            dispatch: Queues an event for async processing (recommended)
+            emit: Queues an event for async processing (recommended)
         """
         # Get applicable handlers
         applicable_handlers = self._get_applicable_handlers(event)
@@ -1942,10 +1942,10 @@ class EventBus:
         if handler is None:
             return False
 
-        # First check: If handler is another EventBus.dispatch method, check if we're forwarding to another bus that it's already been processed by
+        # First check: If handler is another EventBus emit/dispatch method, check if we're forwarding to another bus that it's already been processed by
         bound_self = getattr(handler, '__self__', None)
         bound_name = getattr(handler, '__name__', None)
-        if isinstance(bound_self, EventBus) and bound_name == 'dispatch':
+        if isinstance(bound_self, EventBus) and bound_name in ('emit', 'dispatch'):
             target_bus = bound_self
             if target_bus.label in event.event_path:
                 logger.debug(
@@ -1971,9 +1971,11 @@ class EventBus:
                 return True
 
         # Third check: For non-forwarding handlers, check recursion depth
-        # Forwarding handlers (EventBus.dispatch) are allowed to forward at any depth
+        # Forwarding handlers (EventBus.emit / EventBus.dispatch) are allowed to forward at any depth
         is_forwarding_handler = (
-            inspect.ismethod(handler) and isinstance(handler.__self__, EventBus) and handler.__name__ == 'dispatch'
+            inspect.ismethod(handler)
+            and isinstance(handler.__self__, EventBus)
+            and handler.__name__ in ('emit', 'dispatch')
         )
 
         if not is_forwarding_handler:
@@ -2043,7 +2045,7 @@ class EventBus:
         if len(self.event_history) <= self.max_history_size:
             return 0
 
-        # event_history preserves insertion order, so oldest dispatched events are first.
+        # event_history preserves insertion order, so oldest emitted events are first.
         # Avoid per-cleanup O(n log n) sorting by timestamp in this hot-path helper.
         total_events = len(self.event_history)
         remove_count = total_events - self.max_history_size

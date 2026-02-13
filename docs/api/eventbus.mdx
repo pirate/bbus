@@ -3,9 +3,9 @@ title: EventBus
 description: EventBus constructors, configuration, and core methods.
 ---
 
-`EventBus` is the central runtime for handler registration, event dispatch, history lookup, and lifecycle control.
+`EventBus` is the central runtime for handler registration, event emit, history lookup, and lifecycle control.
 
-## Constructor
+## `EventBus(...)`
 
 <Tabs>
 <Tab title="Python">
@@ -60,7 +60,7 @@ new EventBus(name?: string, options?: {
 | `event_handler_slow_timeout` | Slow-handler warning threshold. |
 | `event_handler_detect_file_paths` | Whether to capture source path metadata for handlers. |
 | `max_history_size` | Maximum retained history (`null` = unbounded, `0` = keep only in-flight). |
-| `max_history_drop` | If `true`, drop oldest history entries when full; if `false`, reject new dispatches at limit. |
+| `max_history_drop` | If `true`, drop oldest history entries when full; if `false`, reject new emits at limit. |
 
 ## Runtime state
 
@@ -72,9 +72,7 @@ Both implementations expose equivalent runtime state:
 - In-flight tracking
 - Locking/concurrency runtime objects
 
-## Handler registration
-
-### `on(...)`
+## `on(...)`
 
 Registers a handler for an event key (`EventClass`, event type string, or `'*'`).
 
@@ -99,7 +97,7 @@ bus.on('*', wildcardHandler)
 </Tab>
 </Tabs>
 
-### `off(...)`
+## `off(...)`
 
 Unregisters handlers by event key, handler function/reference, or handler id.
 
@@ -124,15 +122,15 @@ bus.off('*')
 </Tab>
 </Tabs>
 
-## Dispatch and emission
+## `emit(...)`
 
-`dispatch(...)` enqueues synchronously and returns the pending event immediately. `emit(...)` is an alias.
+`emit(...)` enqueues synchronously and returns the pending event immediately. `dispatch(...)` is a backwards-compatible alias.
 
 <Tabs>
 <Tab title="Python">
 
 ```python
-event = bus.dispatch(MyEvent(data='x'))
+event = bus.emit(MyEvent(data='x'))
 result = await event.event_result()
 ```
 
@@ -140,14 +138,14 @@ result = await event.event_result()
 <Tab title="TypeScript">
 
 ```ts
-const event = bus.dispatch(MyEvent({ data: 'x' }))
+const event = bus.emit(MyEvent({ data: 'x' }))
 const result = await event.first()
 ```
 
 </Tab>
 </Tabs>
 
-## Event lookup
+## `find(...)`
 
 `find(...)` supports history lookup, optional future waiting, predicate filtering, and parent/child scoping.
 

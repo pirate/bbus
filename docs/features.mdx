@@ -111,12 +111,12 @@ auth_bus = EventBus(name='AuthBus')
 data_bus = EventBus(name='DataBus')
 
 # Share all or specific events between buses
-main_bus.on('*', auth_bus.dispatch)  # if main bus gets LoginEvent, will forward to AuthBus
-auth_bus.on('*', data_bus.dispatch)  # auth bus will forward everything to DataBus
-data_bus.on('*', main_bus.dispatch)  # don't worry! event will only be processed once by each, no infinite loop occurs
+main_bus.on('*', auth_bus.emit)  # if main bus gets LoginEvent, will forward to AuthBus
+auth_bus.on('*', data_bus.emit)  # auth bus will forward everything to DataBus
+data_bus.on('*', main_bus.emit)  # don't worry! event will only be processed once by each, no infinite loop occurs
 
 # Events flow through the hierarchy with tracking
-event = main_bus.dispatch(LoginEvent())
+event = main_bus.emit(LoginEvent())
 await event
 print(event.event_path)  # ['MainBus', 'AuthBus', 'DataBus']  # list of buses that have already procssed the event
 ```
@@ -134,7 +134,7 @@ Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
 bridge = RedisEventBridge('redis://redis@localhost:6379')
 
 bus.on('*', bridge.emit)  # listen for all events on bus and send them to redis channel
-bridge.on('*', bus.emit)  # listen for new events in redis channel and dispatch them to our bus
+bridge.on('*', bus.emit)  # listen for new events in redis channel and emit them to our bus
 ```
 
 - `SocketEventBridge('/tmp/bubus_events.sock')`
@@ -163,7 +163,7 @@ bus.on(GetConfigEvent, load_system_config)
 
 # Get a merger of all dict results
 # (conflicting keys raise ValueError unless raise_if_conflicts=False)
-event = await bus.dispatch(GetConfigEvent())
+event = await bus.emit(GetConfigEvent())
 config = await event.event_results_flat_dict(raise_if_conflicts=False)
 # {'debug': False, 'port': 8080, 'timeout': 30}
 
@@ -179,22 +179,22 @@ await event.event_results_list()
 Events are processed in strict FIFO order, maintaining consistency:
 
 ```python
-# Events are processed in the order they were dispatched
+# Events are processed in the order they were emitted
 for i in range(10):
-    bus.dispatch(ProcessTaskEvent(task_id=i))
+    bus.emit(ProcessTaskEvent(task_id=i))
 
 # Even with async handlers, order is preserved
 await bus.wait_until_idle(timeout=30.0)
 ```
 
-If a handler dispatches and awaits any child events during execution, those events will jump the FIFO queue and be processed immediately:
+If a handler emits and awaits any child events during execution, those events will jump the FIFO queue and be processed immediately:
 ```python
 def child_handler(event: SomeOtherEvent) -> str:
     return 'xzy123'
 
 def main_handler(event: MainEvent) -> str:
     # enqueue event for processing after main_handler exits
-    child_event = bus.dispatch(SomeOtherEvent())
+    child_event = bus.emit(SomeOtherEvent())
     
     # can also await child events to process immediately instead of adding to FIFO queue
     completed_child_event = await child_event
@@ -203,13 +203,13 @@ def main_handler(event: MainEvent) -> str:
 bus.on(SomeOtherEvent, child_handler)
 bus.on(MainEvent, main_handler)
 
-await bus.dispatch(MainEvent()).event_result()
+await bus.emit(MainEvent()).event_result()
 # result from awaiting child event: xyz123
 ```
 
 <br/>
 
-### 🪆 Dispatch Nested Child Events From Handlers
+### 🪆 Emit Nested Child Events From Handlers
 
 Automatically track event relationships and causality tree:
 
@@ -217,15 +217,15 @@ Automatically track event relationships and causality tree:
 async def parent_handler(event: BaseEvent):
     # handlers can emit more events to be processed asynchronously after this handler completes
     child = ChildEvent()
-    child_event_async = event.event_bus.dispatch(child)   # equivalent to bus.dispatch(...)
+    child_event_async = event.event_bus.emit(child)   # equivalent to bus.emit(...)
     assert child.event_status != 'completed'
     assert child_event_async.event_parent_id == event.event_id
     await child_event_async
 
-    # or you can dispatch an event and block until it finishes processing by awaiting the event
+    # or you can emit an event and block until it finishes processing by awaiting the event
     # this recursively waits for all handlers, including if event is forwarded to other buses
     # (note: awaiting an event from inside a handler jumps the FIFO queue and will process it immediately, before any other pending events)
-    child_event_sync = await bus.dispatch(ChildEvent())
+    child_event_sync = await bus.emit(ChildEvent())
     # ChildEvent handlers run immediately
     assert child_event_sync.event_status == 'completed'
 
@@ -236,7 +236,7 @@ async def run_main():
     bus.on(ChildEvent, child_handler)
     bus.on(ParentEvent, parent_handler)
 
-    parent_event = bus.dispatch(ParentEvent())
+    parent_event = bus.emit(ParentEvent())
     print(parent_event.event_children)           # show all the child events emitted during handling of an event
     await parent_event
     print(bus.log_tree())
@@ -282,11 +282,11 @@ any_completed = await bus.find(
 
 #### Finding Child Events
 
-When you dispatch an event that triggers child events, use `child_of` to find specific descendants:
+When you emit an event that triggers child events, use `child_of` to find specific descendants:
 
 ```python
-# Dispatch a parent event that triggers child events
-nav_event = await bus.dispatch(NavigateToUrlEvent(url="https://example.com"))
+# Emit a parent event that triggers child events
+nav_event = await bus.emit(NavigateToUrlEvent(url="https://example.com"))
 
 # Find a child event (already fired while NavigateToUrlEvent was being handled)
 new_tab = await bus.find(TabCreatedEvent, child_of=nav_event, past=5)
@@ -299,7 +299,7 @@ This solves race conditions where child events fire before you start waiting for
 See the `EventBus.find(...)` API section below for full parameter details.
 
 > [!IMPORTANT]
-> `find()` resolves when the event is first *dispatched* to the `EventBus`, not when it completes. Use `await event` to wait for handlers to finish.
+> `find()` resolves when the event is first *emitted* to the `EventBus`, not when it completes. Use `await event` to wait for handlers to finish.
 > If no match is found (or future timeout elapses), `find()` returns `None`.
 
 <br/>
@@ -309,17 +309,17 @@ See the `EventBus.find(...)` API section below for full parameter details.
 Avoid re-running expensive work by reusing recent events. The `find()` method makes debouncing simple:
 
 ```python
-# Simple debouncing: reuse event from last 10 seconds, or dispatch new
+# Simple debouncing: reuse event from last 10 seconds, or emit new
 event = await (
     await bus.find(ScreenshotEvent, past=10, future=False)  # Check last 10s of history (instant)
-    or bus.dispatch(ScreenshotEvent())
+    or bus.emit(ScreenshotEvent())
 )
 
-# Advanced: check history, wait briefly for new event to appear, fallback to dispatch new event
+# Advanced: check history, wait briefly for new event to appear, fallback to emit new event
 event = (
     await bus.find(SyncEvent, past=True, future=False)   # Check all history (instant)
     or await bus.find(SyncEvent, past=False, future=5)   # Wait up to 5s for in-flight
-    or bus.dispatch(SyncEvent())                         # Fallback: dispatch new
+    or bus.emit(SyncEvent())                         # Fallback: emit new
 )
 await event                                              # get completed event
 ```
@@ -344,7 +344,7 @@ def do_some_math(event: DoSomeMathEvent) -> int:
     return event.a + event.b
 
 event_bus.on(DoSomeMathEvent, do_some_math)
-print(await event_bus.dispatch(DoSomeMathEvent(a=100, b=120)).event_result())
+print(await event_bus.emit(DoSomeMathEvent(a=100, b=120)).event_result())
 # 220
 ```
 
@@ -355,15 +355,15 @@ You can use these helpers to interact with the results returned by handlers:
 - `BaseEvent.event_results_by_handler_id()`, `BaseEvent.event_results_by_handler_name()`
 - `BaseEvent.event_results_flat_list()`, `BaseEvent.event_results_flat_dict()`
 
-**2. Have the handler do the work, then dispatch another event containing the result value, which other code can find:**
+**2. Have the handler do the work, then emit another event containing the result value, which other code can find:**
 
 ```python
 def do_some_math(event: DoSomeMathEvent[int]) -> int:
     result = event.a + event.b
-    event.event_bus.dispatch(MathCompleteEvent(final_sum=result))
+    event.event_bus.emit(MathCompleteEvent(final_sum=result))
 
 event_bus.on(DoSomeMathEvent, do_some_math)
-await event_bus.dispatch(DoSomeMathEvent(a=100, b=120))
+await event_bus.emit(DoSomeMathEvent(a=100, b=120))
 result_event = await event_bus.find(MathCompleteEvent, past=False, future=30)
 print(result_event.final_sum)
 # 220
@@ -386,7 +386,7 @@ async def on_ScreenshotEvent(event: ScreenshotEvent) -> bytes:
 event_bus.on(ScreenshotEvent, on_ScreenshotEvent)
 
 # Handler return values are automatically validated against the bytes type
-returned_bytes = await event_bus.dispatch(ScreenshotEvent(...)).event_result()
+returned_bytes = await event_bus.emit(ScreenshotEvent(...)).event_result()
 assert isinstance(returned_bytes, bytes)
 ```
 
@@ -423,7 +423,7 @@ async def fetch_from_gmail(event: FetchInboxEvent) -> list[EmailMessage]:
 event_bus.on(FetchInboxEvent, fetch_from_gmail)
 
 # Return values are automatically validated as list[EmailMessage]
-email_list = await event_bus.dispatch(FetchInboxEvent(account_id='124', ...)).event_result()
+email_list = await event_bus.emit(FetchInboxEvent(account_id='124', ...)).event_result()
 ```
 
 For pure Python usage, `event_result_type` can be any Python/Pydantic type you want. For cross-language JSON roundtrips, object-like shapes (e.g. `TypedDict`, `dataclass`, model-like dict schemas) rehydrate on Python as Pydantic models, map keys are constrained to JSON object string keys, and fine-grained string constraints/custom field validator logic is not preserved.
@@ -432,7 +432,7 @@ For pure Python usage, `event_result_type` can be any Python/Pydantic type you w
 
 ### 🧵 ContextVar Propagation
 
-ContextVars set before `dispatch()` are automatically propagated to event handlers. This is essential for request-scoped context like request IDs, user sessions, or tracing spans:
+ContextVars set before `emit()` are automatically propagated to event handlers. This is essential for request-scoped context like request IDs, user sessions, or tracing spans:
 
 ```python
 from contextvars import ContextVar
@@ -442,54 +442,54 @@ request_id: ContextVar[str] = ContextVar('request_id', default='<unset>')
 user_id: ContextVar[str] = ContextVar('user_id', default='<unset>')
 
 async def handler(event: MyEvent) -> str:
-    # Handler sees the context values that were set before dispatch()
+    # Handler sees the context values that were set before emit()
     print(f"Request: {request_id.get()}, User: {user_id.get()}")
     return "done"
 
 bus.on(MyEvent, handler)
 
-# Set context before dispatch (e.g., in FastAPI middleware)
+# Set context before emit (e.g., in FastAPI middleware)
 request_id.set('req-12345')
 user_id.set('user-abc')
 
 # Handler will see request_id='req-12345' and user_id='user-abc'
-await bus.dispatch(MyEvent())
+await bus.emit(MyEvent())
 ```
 
 **Context propagates through nested handlers:**
 
 ```python
 async def parent_handler(event: ParentEvent) -> str:
-    # Context is captured at dispatch time
+    # Context is captured at emit time
     print(f"Parent sees: {request_id.get()}")  # 'req-12345'
 
     # Child events inherit the same context
-    await bus.dispatch(ChildEvent())
+    await bus.emit(ChildEvent())
     return "parent_done"
 
 async def child_handler(event: ChildEvent) -> str:
-    # Child also sees the original dispatch context
+    # Child also sees the original emit context
     print(f"Child sees: {request_id.get()}")  # 'req-12345'
     return "child_done"
 ```
 
-**Context isolation between dispatches:**
+**Context isolation between emits:**
 
-Each dispatch captures its own context snapshot. Concurrent dispatches with different context values are properly isolated:
+Each emit captures its own context snapshot. Concurrent emits with different context values are properly isolated:
 
 ```python
 request_id.set('req-A')
-event_a = bus.dispatch(MyEvent())  # Handler A sees 'req-A'
+event_a = bus.emit(MyEvent())  # Handler A sees 'req-A'
 
 request_id.set('req-B')
-event_b = bus.dispatch(MyEvent())  # Handler B sees 'req-B'
+event_b = bus.emit(MyEvent())  # Handler B sees 'req-B'
 
 await event_a  # Still sees 'req-A'
 await event_b  # Still sees 'req-B'
 ```
 
 > [!NOTE]
-> Context is captured at `dispatch()` time, not when the handler executes. This ensures handlers see the context from the call site, even if the event is processed later from a queue.
+> Context is captured at `emit()` time, not when the handler executes. This ensures handlers see the context from the call site, even if the event is processed later from a queue.
 
 <br/>
 
@@ -507,7 +507,7 @@ bus = EventBus(max_history_size=None)
 # Or keep only in-flight events in history (drop each event as soon as it completes)
 bus = EventBus(max_history_size=0)
 
-# Or reject new dispatches when history is full (instead of dropping old history)
+# Or reject new emits when history is full (instead of dropping old history)
 bus = EventBus(max_history_size=100, max_history_drop=False)
 ```
 
@@ -555,7 +555,7 @@ bus.on('DataEvent', slow_handler_1)  # Takes 1 second
 bus.on('DataEvent', slow_handler_2)  # Takes 1 second
 
 start = time.time()
-await bus.dispatch(DataEvent())
+await bus.emit(DataEvent())
 # Total time: ~1 second (not 2)
 ```
 
@@ -563,7 +563,7 @@ await bus.dispatch(DataEvent())
 
 ### 🧩 Middlwares
 
-Middlewares can observe or mutate the `EventResult` at each step, dispatch additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
+Middlewares can observe or mutate the `EventResult` at each step, emit additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
 
 ```python
 from bubus import EventBus
@@ -580,7 +580,7 @@ bus = EventBus(
     ],
 )
 
-await bus.dispatch(SecondEventAbc(some_key="banana"))
+await bus.emit(SecondEventAbc(some_key="banana"))
 # will persist all events to sqlite + events.jsonl + events.log
 ```
 
@@ -604,9 +604,9 @@ from bubus.middlewares import EventBusMiddleware
 class AnalyticsMiddleware(EventBusMiddleware):
     async def on_event_result_change(self, eventbus, event, event_result, status):
         if status == 'started':
-            await analytics_bus.dispatch(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
+            await analytics_bus.emit(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
         elif status == 'completed':
-            await analytics_bus.dispatch(
+            await analytics_bus.emit(
                 HandlerCompletedAnalyticsEvent(
                     event_id=event_result.event_id,
                     error=repr(event_result.error) if event_result.error else None,
@@ -614,7 +614,7 @@ class AnalyticsMiddleware(EventBusMiddleware):
             )
 
     async def on_handler_change(self, eventbus, handler, registered):
-        await analytics_bus.dispatch(
+        await analytics_bus.emit(
             HandlerRegistryChangedEvent(handler_id=handler.id, registered=registered, bus=eventbus.name)
         )
 ```

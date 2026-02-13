@@ -15,7 +15,7 @@ Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
 bridge = RedisEventBridge('redis://redis@localhost:6379')
 
 bus.on('*', bridge.emit)  # listen for all events on bus and send them to redis channel
-bridge.on('*', bus.emit)  # listen for new events in redis channel and dispatch them to our bus
+bridge.on('*', bus.emit)  # listen for new events in redis channel and emit them to our bus
 ```
 
 - `SocketEventBridge('/tmp/bubus_events.sock')`
@@ -41,7 +41,7 @@ Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
 const bridge = new RedisEventBridge('redis://redis@localhost:6379')
 
 bus.on('*', bridge.emit) // listen for all events on bus and send them to redis channel
-bridge.on('*', bus.emit) // listen for new events in redis channel and dispatch them to our bus
+bridge.on('*', bus.emit) // listen for new events in redis channel and emit them to our bus
 ```
 
 - `new SocketEventBridge('/tmp/bubus_events.sock')`

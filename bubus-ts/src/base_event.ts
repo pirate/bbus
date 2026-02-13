@@ -703,7 +703,7 @@ export class BaseEvent {
     original.event_handler_completion = 'first'
     return this.done().then((completed_event) => {
       const orig = completed_event._event_original ?? completed_event
-      return orig.first_result as EventResultType<this> | undefined
+      return orig.event_result as EventResultType<this> | undefined
     })
   }
 
@@ -830,7 +830,7 @@ export class BaseEvent {
 
   // Returns the first non-undefined completed handler result, sorted by completion time.
   // Useful after first() or done() to get the winning result value.
-  get first_result(): EventResultType<this> | undefined {
+  get event_result(): EventResultType<this> | undefined {
     return this.all_results.at(0)
   }
 

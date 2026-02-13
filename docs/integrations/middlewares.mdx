@@ -6,7 +6,7 @@ description: Middleware composition and custom middleware guidance.
 <Tabs>
 <Tab title="Python">
 
-Middlewares can observe or mutate the `EventResult` at each step, dispatch additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
+Middlewares can observe or mutate the `EventResult` at each step, emit additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
 
 ```python
 from bubus import EventBus
@@ -23,7 +23,7 @@ bus = EventBus(
     ],
 )
 
-await bus.dispatch(SecondEventAbc(some_key="banana"))
+await bus.emit(SecondEventAbc(some_key="banana"))
 # will persist all events to sqlite + events.jsonl + events.log
 ```
 
@@ -47,9 +47,9 @@ from bubus.middlewares import EventBusMiddleware
 class AnalyticsMiddleware(EventBusMiddleware):
     async def on_event_result_change(self, eventbus, event, event_result, status):
         if status == 'started':
-            await analytics_bus.dispatch(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
+            await analytics_bus.emit(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
         elif status == 'completed':
-            await analytics_bus.dispatch(
+            await analytics_bus.emit(
                 HandlerCompletedAnalyticsEvent(
                     event_id=event_result.event_id,
                     error=repr(event_result.error) if event_result.error else None,
@@ -57,7 +57,7 @@ class AnalyticsMiddleware(EventBusMiddleware):
             )
 
     async def on_handler_change(self, eventbus, handler, registered):
-        await analytics_bus.dispatch(
+        await analytics_bus.emit(
             HandlerRegistryChangedEvent(handler_id=handler.id, registered=registered, bus=eventbus.name)
         )
 ```

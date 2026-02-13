@@ -65,13 +65,13 @@ Common event metadata fields available in both runtimes:
 
 ## Completion model
 
-Events are returned in pending state from `dispatch()/emit()`, then complete asynchronously.
+Events are returned in pending state from `emit()/emit()`, then complete asynchronously.
 
 <Tabs>
 <Tab title="Python">
 
 ```python
-pending = bus.dispatch(MyEvent())
+pending = bus.emit(MyEvent())
 completed = await pending
 value = await completed.event_result()
 ```
@@ -82,7 +82,7 @@ value = await completed.event_result()
 ```ts
 const pending = bus.emit(MyEvent({}))
 const completed = await pending.done()
-const value = completed.first_result
+const value = completed.event_result
 ```
 
 </Tab>
@@ -90,7 +90,7 @@ const value = completed.first_result
 
 ## Result access helpers
 
-### First successful result
+### `first()`
 
 <Tabs>
 <Tab title="Python">
@@ -127,7 +127,7 @@ flat_list = await event.event_results_flat_list()
 
 ```ts
 const all = event.all_results
-const first = event.first_result
+const first = event.event_result
 const last = event.last_result
 const errors = event.event_errors
 ```
@@ -135,9 +135,9 @@ const errors = event.event_errors
 </Tab>
 </Tabs>
 
-## Reuse/reset
+## `reset()`
 
-You can create a fresh pending copy for re-dispatch.
+You can create a fresh pending copy for re-emit.
 
 <Tabs>
 <Tab title="Python">
