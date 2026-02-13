@@ -16,6 +16,7 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -164,7 +165,28 @@ class SQLiteEventBridge:
         self._inbound_bus.dispatch(event)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30.0)
+        # Under concurrent bridge startup/teardown across processes, sqlite can
+        # intermittently fail with "unable to open database file" while the
+        # parent path is being materialized. Recover by ensuring parent exists
+        # and retrying a bounded number of times.
+        connect_attempts = 20
+        conn: sqlite3.Connection | None = None
+        last_error: sqlite3.OperationalError | None = None
+        for _ in range(connect_attempts):
+            try:
+                conn = sqlite3.connect(str(self.path), timeout=30.0)
+                break
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if 'unable to open database file' not in message:
+                    raise
+                last_error = exc
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                time.sleep(0.05)
+        if conn is None:
+            assert last_error is not None
+            raise last_error
+
         conn.execute('PRAGMA busy_timeout=30000')
         for _ in range(20):
             try:
@@ -178,7 +200,7 @@ class SQLiteEventBridge:
         return conn
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(
                 f'''
                 CREATE TABLE IF NOT EXISTS "{self.table}" (
@@ -191,7 +213,7 @@ class SQLiteEventBridge:
             conn.commit()
 
     def _refresh_column_cache(self) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             rows = conn.execute(f'PRAGMA table_info("{self.table}")').fetchall()
             self._table_columns = {str(row['name']) for row in rows}
 
@@ -203,7 +225,7 @@ class SQLiteEventBridge:
         if not missing_columns:
             return
 
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             for key in missing_columns:
                 conn.execute(f'ALTER TABLE "{self.table}" ADD COLUMN "{key}" TEXT')
                 self._table_columns.add(key)
@@ -213,7 +235,7 @@ class SQLiteEventBridge:
         event_created_at_index = f'{self.table}_event_created_at_idx'
         event_type_index = f'{self.table}_event_type_idx'
 
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(f'CREATE INDEX IF NOT EXISTS "{event_created_at_index}" ON "{self.table}" ("event_created_at")')
             conn.execute(f'CREATE INDEX IF NOT EXISTS "{event_type_index}" ON "{self.table}" ("event_type")')
             conn.commit()
@@ -235,12 +257,12 @@ class SQLiteEventBridge:
                 f'INSERT INTO "{self.table}" ({columns_sql}) VALUES ({placeholders_sql}) ON CONFLICT("event_id") DO NOTHING'
             )
 
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(upsert_sql, values)
             conn.commit()
 
     def _set_cursor_to_latest_row(self) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             row = conn.execute(
                 f'''
                 SELECT
@@ -259,7 +281,7 @@ class SQLiteEventBridge:
             self._last_seen_event_id = str(row['event_id'] or '')
 
     def _fetch_new_rows(self, last_event_created_at: str, last_event_id: str) -> list[dict[str, Any]]:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             rows = conn.execute(
                 f'''
                 SELECT *
