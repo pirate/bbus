@@ -881,10 +881,10 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     # runtime state fields
     event_status: Literal['pending', 'started', 'completed']  # event processing status (auto-set)
     event_created_at: datetime   # When event was created, auto-generated (auto-set)
-    event_started_at: datetime   # When first handler started executing during event processing (auto-set)
-    event_completed_at: datetime # When all event handlers finished processing (property, derives from last event_result.completed_at)
+    event_started_at: datetime | None   # When first handler started executing during event processing (auto-set)
+    event_completed_at: datetime | None # When all event handlers finished processing (auto-set)
     event_parent_id: str | None  # Parent event ID that led to this event during handling (auto-set)
-    event_path: list[str]        # List of bus names traversed (auto-set)
+    event_path: list[str]        # List of bus labels traversed, e.g. BusName#ab12 (auto-set)
     event_results: dict[str, EventResult]   # Handler results {<handler uuid>: EventResult} (auto-set)
     event_children: list[BaseEvent] # getter property to list any child events emitted during handling
     event_bus: EventBus          # getter property to get the bus the event was emitted on
@@ -1093,9 +1093,9 @@ class EventResult(BaseModel):
     result: Any               # Handler return value
     error: BaseException | None  # Captured exception if the handler failed
     
-    started_at: datetime      # When handler started
-    completed_at: datetime    # When handler completed
-    timeout: float            # Handler timeout in seconds
+    started_at: datetime | None      # When handler started
+    completed_at: datetime | None    # When handler completed
+    timeout: float | None            # Handler timeout in seconds
     event_children: list[BaseEvent] # child events emitted during handler execution
 ```
 
@@ -1123,7 +1123,7 @@ You usually get an `EventHandler` back from `bus.on(...)`, can pass it to `bus.o
 
 ```python
 class EventHandler(BaseModel):
-    id: str | None                   # Stable handler identifier
+    id: str                          # Stable handler identifier
     handler_name: str                # Callable name
     handler_file_path: str | None    # Source file path (if known)
     handler_timeout: float | None    # Optional per-handler timeout override
