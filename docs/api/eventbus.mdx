@@ -216,10 +216,44 @@ bus.eventIsParentOf(parentEvent, childEvent)
 
 ### Serialization and teardown
 
+Both runtimes can serialize the entire bus state (config, handlers metadata, event history, pending queue), restore it, re-attach handler callables, and continue processing.
+
 <Tabs>
 <Tab title="Python">
 
 ```python
+from bubus import BaseEvent, EventBus
+
+class ResumeTickEvent(BaseEvent[None]):
+    pass
+
+# 1) Serialize full bus state
+print(bus.model_dump_json(indent=2))
+# {
+#   "id": "018f...",
+#   "name": "SerializableBus",
+#   "handlers": {
+#     "018f...": {"id": "018f...", "handler_name": "app.handlers.on_user_created", "event_pattern": "UserCreatedEvent"}
+#   },
+#   "event_history": {
+#     "0190...": {"event_id": "0190...", "event_type": "UserCreatedEvent", "...": "..."}
+#   },
+#   "pending_event_queue": ["0190..."]
+# }
+
+# 2) Rehydrate state
+bus = EventBus.validate(bus.model_dump_json())
+
+# 3) Re-link runtime callables by handler id
+bus.handlers.get("018f...").handler = on_user_created
+bus.handlers.get("018g...").handler = on_user_deleted
+bus.handlers.get("018h...").handler = on_user_updated
+
+# 4) Resume processing (emit starts the runloop and drains restored pending events)
+bus.emit(ResumeTickEvent())
+await bus.wait_until_idle()
+
+# 5) Teardown when done
 await bus.stop(timeout=1.0)
 await bus.stop(clear=True)
 ```
@@ -228,8 +262,37 @@ await bus.stop(clear=True)
 <Tab title="TypeScript">
 
 ```ts
-const snapshot = bus.toJSON()
-const restored = EventBus.fromJSON(snapshot)
+import { BaseEvent, EventBus } from 'bubus'
+
+const ResumeTickEvent = BaseEvent.extend('ResumeTickEvent', {})
+
+// 1) Serialize full bus state
+console.log(bus.toJSON())
+// {
+//   id: '018f...',
+//   name: 'SerializableBus',
+//   handlers: {
+//     '018f...': { id: '018f...', handler_name: 'onUserCreated', event_pattern: 'UserCreatedEvent' }
+//   },
+//   event_history: {
+//     '0190...': { event_id: '0190...', event_type: 'UserCreatedEvent', ... }
+//   },
+//   pending_event_queue: ['0190...']
+// }
+
+// 2) Rehydrate state
+bus = EventBus.fromJSON(bus.toJSON())
+
+// 3) Re-link runtime callables by handler id
+bus.handlers.get('018f...')!.handler = onUserCreated
+bus.handlers.get('018g...')!.handler = onUserDeleted
+bus.handlers.get('018h...')!.handler = onUserUpdated
+
+// 4) Resume processing (emit starts the runloop and drains restored pending events)
+bus.emit(ResumeTickEvent({}))
+await bus.waitUntilIdle()
+
+// 5) Teardown when done
 bus.destroy()
 ```
 

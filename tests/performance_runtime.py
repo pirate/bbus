@@ -79,10 +79,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 async def _run_scenario_in_subprocess(scenario_id: str) -> dict[str, Any]:
-    script_path = str(Path(__file__).resolve())
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
-        script_path,
+        '-m',
+        'tests.performance_runtime',
         '--scenario',
         scenario_id,
         '--child-json',
