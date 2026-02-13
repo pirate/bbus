@@ -1,0 +1,51 @@
+---
+title: Nested Child Events
+description: Emit events from handlers and keep parent/child lineage.
+---
+
+When handlers emit other events, parent/child relationships are tracked automatically.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, BaseEvent
+
+class ParentEvent(BaseEvent):
+    pass
+
+class ChildEvent(BaseEvent[str]):
+    pass
+
+bus = EventBus('AppBus')
+
+async def on_parent(event: ParentEvent) -> None:
+    child = await bus.emit(ChildEvent())
+    assert child.event_parent_id == event.event_id
+
+bus.on(ParentEvent, on_parent)
+await bus.emit(ParentEvent())
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+
+const ParentEvent = BaseEvent.extend('ParentEvent', {})
+const ChildEvent = BaseEvent.extend('ChildEvent', {})
+
+const bus = new EventBus('AppBus')
+
+bus.on(ParentEvent, async (event) => {
+  const child = bus.emit(ChildEvent({}))
+  await child.done()
+  console.log(child.event_parent_id === event.event_id)
+})
+
+await bus.emit(ParentEvent({})).done()
+```
+
+</Tab>
+</Tabs>

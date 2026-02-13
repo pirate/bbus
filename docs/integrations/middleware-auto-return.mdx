@@ -1,0 +1,32 @@
+---
+title: AutoReturnEventMiddleware
+description: Emit auto result events for non-None handler returns.
+---
+
+`AutoReturnEventMiddleware` emits `{OriginalEventType}ResultEvent` for successful non-`None` handler return values.
+
+## Constructor params
+
+None.
+
+## Setup with EventBus
+
+```python
+from bubus import EventBus
+from bubus.middlewares import AutoReturnEventMiddleware
+
+bus = EventBus(
+    name='AppBus',
+    middlewares=[AutoReturnEventMiddleware()],
+)
+```
+
+## Behavior
+
+- Runs on completed handler results.
+- Emits auto result events only when:
+  - handler returned a non-`None` value
+  - handler did not error
+  - return value is not itself a `BaseEvent`
+- Auto event payload uses `data=<handler_return_value>`.
+- Skips source events ending in `ErrorEvent` or `ResultEvent`.

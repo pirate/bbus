@@ -1,0 +1,71 @@
+---
+title: SocketEventBridge
+description: Forward events through unix domain sockets.
+---
+
+`SocketEventBridge` uses a unix socket path for both send and listen directions.
+
+## Constructor params
+
+- `path`: unix socket path (absolute path recommended)
+- `name`: optional bridge label
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import SocketEventBridge
+
+bridge = SocketEventBridge('/tmp/bubus_events.sock', name='SocketBridge')
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { SocketEventBridge } from 'bubus'
+
+const bridge = new SocketEventBridge('/tmp/bubus_events.sock', 'SocketBridge')
+```
+
+</Tab>
+</Tabs>
+
+## Setup with a bus
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, SocketEventBridge
+
+bus = EventBus('AppBus')
+bridge = SocketEventBridge('/tmp/bubus_events.sock')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus, SocketEventBridge } from 'bubus'
+
+const bus = new EventBus('AppBus')
+const bridge = new SocketEventBridge('/tmp/bubus_events.sock')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+</Tabs>
+
+## Behavior
+
+- `emit(...)` writes newline-delimited event JSON frames to the unix socket.
+- `on(...)` subscribes handlers on the inbound side and auto-starts the socket listener.
+- Incoming frames are decoded into events, reset, then emitted on the internal bus.
+- `close()` stops the socket server and tears down the internal bus.
+- TypeScript socket bridges require Node.js runtime support for unix sockets.

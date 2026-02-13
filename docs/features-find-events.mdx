@@ -1,0 +1,27 @@
+---
+title: Find Events
+description: Query history and optionally wait for matching future events.
+---
+
+`find(...)` supports history lookup, future waits, predicates, and parent/child scoping.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+existing = await bus.find(ResponseEvent)
+future = await bus.find(ResponseEvent, past=False, future=5)
+child = await bus.find(ChildEvent, child_of=parent_event, past=5)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const existing = await bus.find(ResponseEvent)
+const future = await bus.find(ResponseEvent, { past: false, future: 5 })
+const child = await bus.find(ChildEvent, { child_of: parentEvent, past: 5 })
+```
+
+</Tab>
+</Tabs>

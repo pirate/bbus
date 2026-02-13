@@ -17,8 +17,27 @@
             "group": "Getting Started",
             "pages": [
               "index",
-              "quickstart",
-              "features"
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features-event-pattern-matching",
+              "features-async-sync-handlers",
+              "features-typed-events",
+              "features-bus-forwarding",
+              "features-event-results",
+              "features-fifo-processing",
+              "features-nested-child-events",
+              "features-find-events",
+              "features-event-debouncing",
+              "features-handler-return-values",
+              "features-context-propagation",
+              "features-memory-management",
+              "features-parallel-handler-execution",
+              "features-bridges-overview",
+              "features-middlewares-overview"
             ]
           },
           {
@@ -28,7 +47,8 @@
               "api/eventbus",
               "api/baseevent",
               "api/eventresult",
-              "api/eventhandler"
+              "api/eventhandler",
+              "api/retry"
             ]
           },
           {
@@ -41,20 +61,31 @@
             "group": "Integrations",
             "pages": [
               "integrations/middlewares",
-              "integrations/bridges"
+              "integrations/middleware-base",
+              "integrations/middleware-otel-tracing",
+              "integrations/middleware-auto-error",
+              "integrations/middleware-auto-return",
+              "integrations/middleware-auto-handler-change",
+              "integrations/middleware-wal",
+              "integrations/middleware-logger",
+              "integrations/middleware-sqlite-history-mirror",
+              "integrations/bridges",
+              "integrations/bridge-http",
+              "integrations/bridge-socket",
+              "integrations/bridge-redis",
+              "integrations/bridge-nats",
+              "integrations/bridge-postgres",
+              "integrations/bridge-jsonl",
+              "integrations/bridge-sqlite"
             ]
           },
           {
-            "group": "Operations",
+            "group": "Further Reading",
             "pages": [
-              "operations/performance-runtimes",
-              "operations/development"
-            ]
-          },
-          {
-            "group": "Project",
-            "pages": [
-              "project/inspiration-license"
+              "operations/performance",
+              "operations/supported-runtimes",
+              "operations/development",
+              "project/similar-projects"
             ]
           }
         ]

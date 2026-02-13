@@ -1,0 +1,51 @@
+---
+title: Context Propagation
+description: Carry request-scoped context through emit and handler execution.
+---
+
+Context set before `emit(...)` is preserved for handler execution in supported runtimes.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from contextvars import ContextVar
+from bubus import EventBus, BaseEvent
+
+request_id: ContextVar[str] = ContextVar('request_id', default='<unset>')
+
+class RequestEvent(BaseEvent):
+    pass
+
+bus = EventBus('AppBus')
+
+async def handler(_: RequestEvent) -> None:
+    print(request_id.get())
+
+bus.on(RequestEvent, handler)
+request_id.set('req-123')
+await bus.emit(RequestEvent())
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { BaseEvent, EventBus } from 'bubus'
+
+const requestContext = new AsyncLocalStorage<{ requestId: string }>()
+const RequestEvent = BaseEvent.extend('RequestEvent', {})
+const bus = new EventBus('AppBus')
+
+bus.on(RequestEvent, () => {
+  console.log(requestContext.getStore()?.requestId)
+})
+
+await requestContext.run({ requestId: 'req-123' }, async () => {
+  await bus.emit(RequestEvent({})).done()
+})
+```
+
+</Tab>
+</Tabs>

@@ -1,0 +1,29 @@
+---
+title: AutoHandlerChangeEventMiddleware
+description: Emit auto events when handlers are registered/unregistered.
+---
+
+`AutoHandlerChangeEventMiddleware` emits metadata events whenever `EventBus.on(...)` or `EventBus.off(...)` changes handler registration.
+
+## Constructor params
+
+None.
+
+## Setup with EventBus
+
+```python
+from bubus import EventBus
+from bubus.middlewares import AutoHandlerChangeEventMiddleware
+
+bus = EventBus(
+    name='AppBus',
+    middlewares=[AutoHandlerChangeEventMiddleware()],
+)
+```
+
+## Behavior
+
+- On registration, emits `BusHandlerRegisteredEvent(handler=...)`.
+- On unregistration, emits `BusHandlerUnregisteredEvent(handler=...)`.
+- Emits a deep-copied handler metadata object.
+- Useful for auditing dynamic handler topology.

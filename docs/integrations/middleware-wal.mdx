@@ -1,0 +1,29 @@
+---
+title: WALEventBusMiddleware
+description: Persist completed events to a JSONL write-ahead log.
+---
+
+`WALEventBusMiddleware` appends completed event snapshots to a JSONL file.
+
+## Constructor params
+
+- `wal_path`: filesystem path for append-only JSONL output
+
+## Setup with EventBus
+
+```python
+from bubus import EventBus
+from bubus.middlewares import WALEventBusMiddleware
+
+bus = EventBus(
+    name='AppBus',
+    middlewares=[WALEventBusMiddleware('./events.jsonl')],
+)
+```
+
+## Behavior
+
+- Writes one JSON line per completed event.
+- Uses internal locking for thread-safe file appends.
+- Creates parent directories automatically.
+- Intended for replay/debug/audit workflows.

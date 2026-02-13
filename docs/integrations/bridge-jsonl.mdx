@@ -1,0 +1,76 @@
+---
+title: JSONLEventBridge
+description: Forward events through newline-delimited JSON files.
+---
+
+`JSONLEventBridge` appends one event JSON payload per line and tails the file for inbound events.
+
+## Constructor params
+
+- `path`: JSONL file path
+- `poll_interval`: tail polling interval in seconds (default `0.25`)
+- `name`: optional bridge label
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import JSONLEventBridge
+
+bridge = JSONLEventBridge(
+    '/tmp/bubus_events.jsonl',
+    poll_interval=0.25,
+    name='JsonlBridge',
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { JSONLEventBridge } from 'bubus'
+
+const bridge = new JSONLEventBridge('/tmp/bubus_events.jsonl', 0.25, 'JsonlBridge')
+```
+
+</Tab>
+</Tabs>
+
+## Setup with a bus
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, JSONLEventBridge
+
+bus = EventBus('AppBus')
+bridge = JSONLEventBridge('/tmp/bubus_events.jsonl')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus, JSONLEventBridge } from 'bubus'
+
+const bus = new EventBus('AppBus')
+const bridge = new JSONLEventBridge('/tmp/bubus_events.jsonl')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+</Tabs>
+
+## Behavior
+
+- `emit(...)` appends compact JSON payload + newline to the file.
+- `on(...)` auto-starts a tail loop and registers inbound handlers.
+- Start cursor is initialized at current EOF, so only newly appended lines are processed.
+- Malformed lines are ignored; valid lines are parsed into events, reset, and emitted on the internal bus.
+- Runtime note: TypeScript JSONL bridge is Node.js-only.

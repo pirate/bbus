@@ -1,0 +1,46 @@
+---
+title: FIFO Event Processing
+description: Process queued events in deterministic first-in-first-out order.
+---
+
+Queued events are processed in the order they are emitted, which helps keep behavior deterministic.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, BaseEvent
+
+class ProcessTaskEvent(BaseEvent):
+    task_id: int
+
+bus = EventBus('AppBus')
+
+for i in range(10):
+    bus.emit(ProcessTaskEvent(task_id=i))
+
+await bus.wait_until_idle(timeout=30)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const ProcessTaskEvent = BaseEvent.extend('ProcessTaskEvent', {
+  task_id: z.number(),
+})
+
+const bus = new EventBus('AppBus')
+
+for (let i = 0; i < 10; i++) {
+  bus.emit(ProcessTaskEvent({ task_id: i }))
+}
+
+await bus.waitUntilIdle(30)
+```
+
+</Tab>
+</Tabs>

@@ -1,0 +1,49 @@
+---
+title: Handler Return Values
+description: Validate and consume typed handler return values.
+---
+
+Handler return values are captured in `EventResult` entries and can be strongly typed.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import BaseEvent, EventBus
+
+class DoMathEvent(BaseEvent[int]):
+    a: int
+    b: int
+
+def add(event: DoMathEvent) -> int:
+    return event.a + event.b
+
+bus = EventBus('AppBus')
+bus.on(DoMathEvent, add)
+
+result = await bus.emit(DoMathEvent(a=2, b=3)).event_result()
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const DoMathEvent = BaseEvent.extend('DoMathEvent', {
+  a: z.number(),
+  b: z.number(),
+  event_result_type: z.number(),
+})
+
+const bus = new EventBus('AppBus')
+bus.on(DoMathEvent, (event) => event.a + event.b)
+
+const event = bus.emit(DoMathEvent({ a: 2, b: 3 }))
+await event.done()
+const result = event.event_result
+```
+
+</Tab>
+</Tabs>

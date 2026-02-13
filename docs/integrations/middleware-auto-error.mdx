@@ -1,0 +1,31 @@
+---
+title: AutoErrorEventMiddleware
+description: Emit auto error events when handlers fail.
+---
+
+`AutoErrorEventMiddleware` emits `{OriginalEventType}ErrorEvent` when a handler completes with an error.
+
+## Constructor params
+
+None.
+
+## Setup with EventBus
+
+```python
+from bubus import EventBus
+from bubus.middlewares import AutoErrorEventMiddleware
+
+bus = EventBus(
+    name='AppBus',
+    middlewares=[AutoErrorEventMiddleware()],
+)
+```
+
+## Behavior
+
+- Runs on completed handler results.
+- If a handler errored, emits a auto event with:
+  - `event_type`: `{OriginalEventType}ErrorEvent`
+  - `error`: original exception
+  - `error_type`: exception class name
+- Skips source events ending in `ErrorEvent` or `ResultEvent` to prevent auto recursion.

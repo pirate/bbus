@@ -1,0 +1,30 @@
+---
+title: Supported Runtimes
+description: Runtime support details for Python and TypeScript.
+---
+
+<Tabs>
+<Tab title="Python">
+
+`bubus` supports Python `3.11+`.
+
+- CPython 3.11 and newer
+- OS-independent package support
+
+</Tab>
+<Tab title="TypeScript">
+
+`bubus-ts` supports all major JS runtimes.
+
+- Node.js (default development and test runtime)
+- Browsers (ESM)
+- Bun
+- Deno
+
+### Browser support notes
+
+- The package output is ESM (`./dist/esm`) which is supported by all browsers [released after 2018](https://caniuse.com/?search=ESM)
+- `AsyncLocalStorage` is preserved at emit time and used during handling when available (Node/Bun), otel/tracing context will work normally in those environments
+
+</Tab>
+</Tabs>

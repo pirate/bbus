@@ -1,0 +1,43 @@
+---
+title: Event Pattern Matching
+description: Subscribe handlers using event classes, names, or wildcards.
+---
+
+Use event classes for strongest typing, event type strings for dynamic routing, or `'*'` for catch-all listeners.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, BaseEvent
+
+class UserActionEvent(BaseEvent):
+    action: str
+
+bus = EventBus('AppBus')
+
+bus.on(UserActionEvent, lambda e: print(e.action))
+bus.on('UserActionEvent', lambda e: print('by-name', e.event_type))
+bus.on('*', lambda e: print('wildcard', e.event_type))
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const UserActionEvent = BaseEvent.extend('UserActionEvent', {
+  action: z.string(),
+})
+
+const bus = new EventBus('AppBus')
+
+bus.on(UserActionEvent, (event) => console.log(event.action))
+bus.on('UserActionEvent', (event) => console.log('by-name', event.event_type))
+bus.on('*', (event) => console.log('wildcard', event.event_type))
+```
+
+</Tab>
+</Tabs>

@@ -1,0 +1,52 @@
+---
+title: Event Results Aggregation
+description: Collect and inspect handler return values for one emitted event.
+---
+
+A single event can have multiple handler results, accessible in structured helper APIs.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, BaseEvent
+
+class GetConfigEvent(BaseEvent[dict]):
+    pass
+
+async def user_config(_: GetConfigEvent) -> dict:
+    return {'debug': True, 'port': 8080}
+
+async def system_config(_: GetConfigEvent) -> dict:
+    return {'debug': False, 'timeout': 30}
+
+bus = EventBus('AppBus')
+bus.on(GetConfigEvent, user_config)
+bus.on(GetConfigEvent, system_config)
+
+event = await bus.emit(GetConfigEvent())
+flat = await event.event_results_flat_dict(raise_if_conflicts=False)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const GetConfigEvent = BaseEvent.extend('GetConfigEvent', {
+  event_result_type: z.record(z.string(), z.unknown()),
+})
+
+const bus = new EventBus('AppBus')
+bus.on(GetConfigEvent, async () => ({ debug: true, port: 8080 }))
+bus.on(GetConfigEvent, async () => ({ debug: false, timeout: 30 }))
+
+const event = bus.emit(GetConfigEvent({}))
+await event.done()
+const all = event.all_results
+```
+
+</Tab>
+</Tabs>

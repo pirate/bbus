@@ -26,9 +26,9 @@ __all__ = [
     'WALEventBusMiddleware',
     'LoggerEventBusMiddleware',
     'SQLiteHistoryMirrorMiddleware',
-    'SyntheticErrorEventMiddleware',
-    'SyntheticReturnEventMiddleware',
-    'SyntheticHandlerChangeEventMiddleware',
+    'AutoErrorEventMiddleware',
+    'AutoReturnEventMiddleware',
+    'AutoHandlerChangeEventMiddleware',
 ]
 
 logger = logging.getLogger('bubus.middleware')
@@ -206,31 +206,31 @@ class OtelTracingMiddleware(EventBusMiddleware):
 
 
 class BusHandlerRegisteredEvent(BaseEvent):
-    """Synthetic event emitted when a handler is added with EventBus.on()."""
+    """Auto event emitted when a handler is added with EventBus.on()."""
 
     handler: EventHandler
 
 
 class BusHandlerUnregisteredEvent(BaseEvent):
-    """Synthetic event emitted when a handler is removed with EventBus.off()."""
+    """Auto event emitted when a handler is removed with EventBus.off()."""
 
     handler: EventHandler
 
 
-class SyntheticErrorEvent(BaseEvent):
-    """Synthetic event payload used by SyntheticErrorEventMiddleware."""
+class AutoErrorEvent(BaseEvent):
+    """Auto event payload used by AutoErrorEventMiddleware."""
 
     error: Any
     error_type: str
 
 
-class SyntheticReturnEvent(BaseEvent):
-    """Synthetic event payload used by SyntheticReturnEventMiddleware."""
+class AutoReturnEvent(BaseEvent):
+    """Auto event payload used by AutoReturnEventMiddleware."""
 
     data: Any
 
 
-class SyntheticErrorEventMiddleware(EventBusMiddleware):
+class AutoErrorEventMiddleware(EventBusMiddleware):
     """Use in `EventBus(middlewares=[...])` to emit `{OriginalEventType}ErrorEvent` on handler failures."""
 
     async def on_event_result_change(
@@ -244,17 +244,17 @@ class SyntheticErrorEventMiddleware(EventBusMiddleware):
             return
         try:
             eventbus.dispatch(
-                SyntheticErrorEvent(
+                AutoErrorEvent(
                     event_type=f'{event.event_type}ErrorEvent',
                     error=event_result.error,
                     error_type=type(event_result.error).__name__,
                 )
             )
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to emit synthetic error event for %s: %s', eventbus, event.event_id, exc)
+            logger.error('❌ %s Failed to emit auto error event for %s: %s', eventbus, event.event_id, exc)
 
 
-class SyntheticReturnEventMiddleware(EventBusMiddleware):
+class AutoReturnEventMiddleware(EventBusMiddleware):
     """Use in `EventBus(middlewares=[...])` to emit `{OriginalEventType}ResultEvent` for non-None returns."""
 
     async def on_event_result_change(
@@ -274,12 +274,12 @@ class SyntheticReturnEventMiddleware(EventBusMiddleware):
         ):
             return
         try:
-            eventbus.dispatch(SyntheticReturnEvent(event_type=f'{event.event_type}ResultEvent', data=result_value))
+            eventbus.dispatch(AutoReturnEvent(event_type=f'{event.event_type}ResultEvent', data=result_value))
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to emit synthetic result event for %s: %s', eventbus, event.event_id, exc)
+            logger.error('❌ %s Failed to emit auto result event for %s: %s', eventbus, event.event_id, exc)
 
 
-class SyntheticHandlerChangeEventMiddleware(EventBusMiddleware):
+class AutoHandlerChangeEventMiddleware(EventBusMiddleware):
     """Use in `EventBus(middlewares=[...])` to emit handler metadata events on .on() and .off()."""
 
     async def on_handler_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
@@ -289,7 +289,7 @@ class SyntheticHandlerChangeEventMiddleware(EventBusMiddleware):
             else:
                 eventbus.dispatch(BusHandlerUnregisteredEvent(handler=handler.model_copy(deep=True)))
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to emit synthetic handler change event for handler %s: %s', eventbus, handler.id, exc)
+            logger.error('❌ %s Failed to emit auto handler change event for handler %s: %s', eventbus, handler.id, exc)
 
 
 class WALEventBusMiddleware(EventBusMiddleware):

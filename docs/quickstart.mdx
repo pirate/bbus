@@ -3,43 +3,16 @@ title: Quickstart
 description: Get started quickly with bubus in Python or TypeScript.
 ---
 
+Install bubus, define one typed event, register a handler, and emit the event.
+
+## Install
+
 <Tabs>
 <Tab title="Python">
 
-Install bubus and get started with a simple event-driven application:
-
 ```bash
-pip install bubus      # see ./bubus-ts/README.md for JS instructions
+pip install bubus
 ```
-
-```python
-import asyncio
-from bubus import EventBus, BaseEvent
-from your_auth_events import AuthRequestEvent, AuthResponseEvent
-
-class UserLoginEvent(BaseEvent[str]):
-    username: str
-    is_admin: bool
-
-async def handle_login(event: UserLoginEvent) -> str:
-    auth_request = await event.event_bus.emit(AuthRequestEvent(...))  # nested events supported
-    auth_response = await event.event_bus.find(AuthResponseEvent, child_of=auth_request, future=30)
-    return f"User {event.username} logged in admin={event.is_admin} with API response: {await auth_response.event_result()}"
-
-bus = EventBus()
-bus.on(UserLoginEvent, handle_login)
-bus.on(AuthRequestEvent, AuthAPI.post)
-
-event = bus.emit(UserLoginEvent(username="alice", is_admin=True))
-print(await event.event_result())
-# User alice logged in admin=True with API response: {...}
-```
-
-<br/>
-
----
-
-<br/>
 
 </Tab>
 <Tab title="TypeScript">
@@ -47,6 +20,38 @@ print(await event.event_result())
 ```bash
 npm install bubus
 ```
+
+</Tab>
+</Tabs>
+
+## First event
+
+<Tabs>
+<Tab title="Python">
+
+```python
+import asyncio
+from bubus import BaseEvent, EventBus
+
+class CreateUserEvent(BaseEvent[dict]):
+    email: str
+
+async def on_create_user(event: CreateUserEvent) -> dict:
+    user = await your_create_user_logic(event.email)
+    return {'user_id': user['id']}
+
+async def main() -> None:
+    bus = EventBus('MyAuthEventBus')
+    bus.on(CreateUserEvent, on_create_user)
+
+    result = await bus.emit(CreateUserEvent(email='someuser@example.com')).event_result()
+    print(result)  # {'user_id': 'some-user-uuid'}
+
+asyncio.run(main())
+```
+
+</Tab>
+<Tab title="TypeScript">
 
 ```ts
 import { BaseEvent, EventBus } from 'bubus'
@@ -69,11 +74,11 @@ await event.done()
 console.log(event.event_result) // { user_id: 'some-user-uuid' }
 ```
 
-<br/>
-
----
-
-<br/>
-
 </Tab>
 </Tabs>
+
+## Next steps
+
+- Browse the [Features](./features-event-pattern-matching) section for behavior patterns.
+- Use [API Reference](./api/index) for signatures and options.
+- See [Integrations](./integrations/bridges) for bridges and middleware.

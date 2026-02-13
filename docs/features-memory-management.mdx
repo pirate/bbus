@@ -1,0 +1,33 @@
+---
+title: Memory Management
+description: Control retained event history to bound memory usage.
+---
+
+Use history settings to balance observability and memory footprint.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus
+
+bounded = EventBus(max_history_size=100)
+unbounded = EventBus(max_history_size=None)
+in_flight_only = EventBus(max_history_size=0)
+reject_when_full = EventBus(max_history_size=100, max_history_drop=False)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus } from 'bubus'
+
+const bounded = new EventBus('BoundedBus', { max_history_size: 100 })
+const unbounded = new EventBus('UnboundedBus', { max_history_size: null })
+const inFlightOnly = new EventBus('InFlightBus', { max_history_size: 0 })
+const rejectWhenFull = new EventBus('RejectBus', { max_history_size: 100, max_history_drop: false })
+```
+
+</Tab>
+</Tabs>

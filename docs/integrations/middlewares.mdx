@@ -1,16 +1,20 @@
 ---
 title: Middlewares
-description: Middleware composition and custom middleware guidance.
+description: Python middleware integrations for EventBus lifecycle hooks.
 ---
 
-<Tabs>
-<Tab title="Python">
+Middlewares can observe event lifecycle transitions, emit auto events, and persist or trace runtime behavior.
 
-Middlewares can observe or mutate the `EventResult` at each step, emit additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
+## Quick setup
 
 ```python
 from bubus import EventBus
-from bubus.middlewares import LoggerEventBusMiddleware, WALEventBusMiddleware, SQLiteHistoryMirrorMiddleware, OtelTracingMiddleware
+from bubus.middlewares import (
+    WALEventBusMiddleware,
+    LoggerEventBusMiddleware,
+    SQLiteHistoryMirrorMiddleware,
+    OtelTracingMiddleware,
+)
 
 bus = EventBus(
     name='MyBus',
@@ -19,62 +23,17 @@ bus = EventBus(
         WALEventBusMiddleware('./events.jsonl'),
         LoggerEventBusMiddleware('./events.log'),
         OtelTracingMiddleware(),
-        # ...
     ],
 )
-
-await bus.emit(SecondEventAbc(some_key="banana"))
-# will persist all events to sqlite + events.jsonl + events.log
 ```
 
-Built-in middlwares you can import from `bubus.middlwares.*`:
+## Middleware pages
 
-- `SyntheticErrorEventMiddleware`: on handler error, fire-and-forget emits `OriginalEventTypeErrorEvent` with `{error, error_type}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful when downstream/remote consumers only see events and need explicit failure notifications.
-- `SyntheticReturnEventMiddleware`: on non-`None` handler return, fire-and-forget emits `OriginalEventTypeResultEvent` with `{data}` (skips `*ErrorEvent`/`*ResultEvent` sources). Useful for bridges/remote systems since handler return values do not cross bridge boundaries, but events do.
-- `SyntheticHandlerChangeEventMiddleware`: emits `BusHandlerRegisteredEvent({handler})` / `BusHandlerUnregisteredEvent({handler})` when handlers are added/removed via `.on()` / `.off()`.
-- `OtelTracingMiddleware`: emits OpenTelemetry spans for events and handlers with parent-child linking; can be exported to Sentry via Sentry's OpenTelemetry integration.
-- `WALEventBusMiddleware`: persists completed events to JSONL for replay/debugging.
-- `LoggerEventBusMiddleware`: writes event/handler transitions to stdout and optionally to file.
-- `SQLiteHistoryMirrorMiddleware`: mirrors event and handler snapshots into append-only SQLite `events_log` and `event_results_log` tables for auditing/debugging.
-
-#### Defining a custom middleware
-
-Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need (`on_event_change`, `on_event_result_change`, `on_handler_change`):
-
-```python
-from bubus.middlewares import EventBusMiddleware
-
-class AnalyticsMiddleware(EventBusMiddleware):
-    async def on_event_result_change(self, eventbus, event, event_result, status):
-        if status == 'started':
-            await analytics_bus.emit(HandlerStartedAnalyticsEvent(event_id=event_result.event_id))
-        elif status == 'completed':
-            await analytics_bus.emit(
-                HandlerCompletedAnalyticsEvent(
-                    event_id=event_result.event_id,
-                    error=repr(event_result.error) if event_result.error else None,
-                )
-            )
-
-    async def on_handler_change(self, eventbus, handler, registered):
-        await analytics_bus.emit(
-            HandlerRegistryChangedEvent(handler_id=handler.id, registered=registered, bus=eventbus.name)
-        )
-```
-
-<br/>
-
----
----
-
-<br/>
-
-</Tab>
-<Tab title="TypeScript">
-
-TypeScript middleware docs are currently covered through the core APIs and runtime patterns.
-
-Use inline handlers and bus-level composition for middleware-like behavior.
-
-</Tab>
-</Tabs>
+- [EventBusMiddleware](./middleware-base)
+- [OtelTracingMiddleware](./middleware-otel-tracing)
+- [AutoErrorEventMiddleware](./middleware-auto-error)
+- [AutoReturnEventMiddleware](./middleware-auto-return)
+- [AutoHandlerChangeEventMiddleware](./middleware-auto-handler-change)
+- [WALEventBusMiddleware](./middleware-wal)
+- [LoggerEventBusMiddleware](./middleware-logger)
+- [SQLiteHistoryMirrorMiddleware](./middleware-sqlite-history-mirror)

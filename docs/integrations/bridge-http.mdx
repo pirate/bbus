@@ -1,0 +1,86 @@
+---
+title: HTTPEventBridge
+description: Forward events over HTTP(S) endpoints.
+---
+
+`HTTPEventBridge` forwards event JSON over HTTP and can optionally expose an inbound HTTP listener.
+
+## Constructor params
+
+- `send_to`: optional outbound endpoint (`http://` or `https://`)
+- `listen_on`: optional inbound endpoint (`http://` only)
+- `name`: optional bridge label
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import HTTPEventBridge
+
+bridge = HTTPEventBridge(
+    send_to='https://peer.example.com/bubus_events',
+    listen_on='http://0.0.0.0:8002/bubus_events',
+    name='HttpBridge',
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { HTTPEventBridge } from 'bubus'
+
+const bridge = new HTTPEventBridge({
+  send_to: 'https://peer.example.com/bubus_events',
+  listen_on: 'http://0.0.0.0:8002/bubus_events',
+  name: 'HttpBridge',
+})
+```
+
+</Tab>
+</Tabs>
+
+## Setup with a bus
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, HTTPEventBridge
+
+bus = EventBus('AppBus')
+bridge = HTTPEventBridge(
+    send_to='https://peer.example.com/bubus_events',
+    listen_on='http://0.0.0.0:8002/bubus_events',
+)
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus, HTTPEventBridge } from 'bubus'
+
+const bus = new EventBus('AppBus')
+const bridge = new HTTPEventBridge({
+  send_to: 'https://peer.example.com/bubus_events',
+  listen_on: 'http://0.0.0.0:8002/bubus_events',
+})
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+</Tabs>
+
+## Behavior
+
+- `emit(...)` serializes an event and sends a `POST` request to `send_to`.
+- `on(...)` registers handlers on the bridge's internal inbound bus and auto-starts the listener when needed.
+- Inbound payloads are parsed back into `BaseEvent`, reset to pending state, then emitted on the internal bus.
+- `close()` shuts down listener/server resources and the internal bus.
+- In TypeScript, listener mode (`listen_on`) is supported in Node.js runtimes.

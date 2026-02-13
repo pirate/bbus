@@ -1,0 +1,29 @@
+---
+title: LoggerEventBusMiddleware
+description: Log completed events to stdout and optional file.
+---
+
+`LoggerEventBusMiddleware` prints completed event summaries and can also write them to disk.
+
+## Constructor params
+
+- `log_path`: optional filesystem path for log output
+
+## Setup with EventBus
+
+```python
+from bubus import EventBus
+from bubus.middlewares import LoggerEventBusMiddleware
+
+bus = EventBus(
+    name='AppBus',
+    middlewares=[LoggerEventBusMiddleware('./events.log')],
+)
+```
+
+## Behavior
+
+- Logs event summaries when events complete.
+- Always prints to stdout.
+- If `log_path` is provided, appends the same summary lines to the file.
+- Creates parent directories for the log file automatically.

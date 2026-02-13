@@ -1,0 +1,37 @@
+---
+title: Bridges Overview
+description: Forward events across services, processes, and machines.
+---
+
+Bridges expose bus-like `emit(...)` and `on(...)` methods for transport forwarding.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, RedisEventBridge
+
+bus = EventBus('AppBus')
+bridge = RedisEventBridge('redis://localhost:6379/0/bubus_events')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus, RedisEventBridge } from 'bubus'
+
+const bus = new EventBus('AppBus')
+const bridge = new RedisEventBridge('redis://localhost:6379/0/bubus_events')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+</Tabs>
+
+See detailed bridge docs in [Integrations > Bridges](./integrations/bridges).

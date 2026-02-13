@@ -1,0 +1,79 @@
+---
+title: RedisEventBridge
+description: Forward events via Redis pub/sub channels.
+---
+
+`RedisEventBridge` publishes event payloads to a Redis channel and subscribes for inbound events on the same channel.
+
+## Constructor params
+
+- `redis_url`: redis URL in the form `redis://user:pass@host:6379/<db>/<optional_channel>`
+- `channel`: optional channel override (defaults to URL channel segment or `bubus_events`)
+- `name`: optional bridge label
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import RedisEventBridge
+
+bridge = RedisEventBridge(
+    'redis://user:pass@localhost:6379/1/bubus_events',
+    name='RedisBridge',
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { RedisEventBridge } from 'bubus'
+
+const bridge = new RedisEventBridge(
+  'redis://user:pass@localhost:6379/1/bubus_events',
+  undefined,
+  'RedisBridge'
+)
+```
+
+</Tab>
+</Tabs>
+
+## Setup with a bus
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, RedisEventBridge
+
+bus = EventBus('AppBus')
+bridge = RedisEventBridge('redis://localhost:6379/0/bubus_events')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus, RedisEventBridge } from 'bubus'
+
+const bus = new EventBus('AppBus')
+const bridge = new RedisEventBridge('redis://localhost:6379/0/bubus_events')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+</Tabs>
+
+## Behavior
+
+- `emit(...)` publishes serialized event JSON to the configured Redis channel.
+- `on(...)` subscribes handlers for inbound messages and auto-starts the Redis subscriber.
+- Incoming messages are parsed into events, reset, then emitted on the bridge's internal bus.
+- `close()` unsubscribes and closes Redis clients.
+- Runtime requirements: Python needs `redis` (`redis.asyncio`), TypeScript needs `ioredis` and Node.js.

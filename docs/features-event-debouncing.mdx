@@ -1,0 +1,31 @@
+---
+title: Event Debouncing
+description: Reuse recent events to avoid duplicate expensive work.
+---
+
+Debouncing can be built by checking recent history before emitting new work.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+event = await (
+    await bus.find(ScreenshotEvent, past=10, future=False)
+    or bus.emit(ScreenshotEvent())
+)
+await event
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const event =
+  (await bus.find(ScreenshotEvent, { past: 10, future: false }))
+  ?? bus.emit(ScreenshotEvent({}))
+
+await event.done()
+```
+
+</Tab>
+</Tabs>

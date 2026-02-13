@@ -1,0 +1,78 @@
+---
+title: SQLiteEventBridge
+description: Forward events through a local SQLite table with polling.
+---
+
+`SQLiteEventBridge` writes events into a SQLite table and polls for newly inserted rows.
+
+## Constructor params
+
+- `path`: SQLite database file path
+- `table`: table name (default `bubus_events`)
+- `poll_interval`: polling interval in seconds (default `0.25`)
+- `name`: optional bridge label
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import SQLiteEventBridge
+
+bridge = SQLiteEventBridge(
+    '/tmp/bubus_events.sqlite3',
+    table='bubus_events',
+    poll_interval=0.25,
+    name='SqliteBridge',
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { SQLiteEventBridge } from 'bubus'
+
+const bridge = new SQLiteEventBridge('/tmp/bubus_events.sqlite3', 'bubus_events', 0.25, 'SqliteBridge')
+```
+
+</Tab>
+</Tabs>
+
+## Setup with a bus
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, SQLiteEventBridge
+
+bus = EventBus('AppBus')
+bridge = SQLiteEventBridge('/tmp/bubus_events.sqlite3')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus, SQLiteEventBridge } from 'bubus'
+
+const bus = new EventBus('AppBus')
+const bridge = new SQLiteEventBridge('/tmp/bubus_events.sqlite3')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+</Tabs>
+
+## Behavior
+
+- `emit(...)` upserts event payload fields into the configured table.
+- `on(...)` auto-starts polling and registers handlers on the internal bus.
+- New event fields are reflected as new table columns (schema expands automatically).
+- Rows are read in `(event_created_at, event_id)` order, converted back to events, reset, and emitted locally.
+- Runtime notes: Python uses stdlib `sqlite3`; TypeScript requires Node.js with built-in `node:sqlite` (Node 22+).

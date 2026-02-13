@@ -1,6 +1,6 @@
 ---
-title: Performance And Runtimes
-description: Runtime support, performance notes, and benchmark snapshots.
+title: Performance
+description: Performance notes and benchmark snapshots.
 ---
 
 <Tabs>
@@ -14,27 +14,8 @@ uv run tests/performance_runtime.py   # run the performance test suite in python
 | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
 | Python | `0.239ms/event`, `8.024kb/event` | `0.259ms/event`, `0.148kb/event` | `0.077ms/handler`, `7.785kb/handler` | `0.310ms/event`, `0.025kb/event` | `0.694ms/event`, `2.464kb/event` |
 
-<br/>
-
----
----
-
-<br/>
-
 </Tab>
 <Tab title="TypeScript">
-
-`bubus-ts` supports all major JS runtimes.
-
-- Node.js (default development and test runtime)
-- Browsers (ESM)
-- Bun
-- Deno
-
-### Browser support notes
-
-- The package output is ESM (`./dist/esm`) which is supported by all browsers [released after 2018](https://caniuse.com/?search=ESM)
-- `AsyncLocalStorage` is preserved at emit time and used during handling when availabe (Node/Bun), otel/tracing context will work normally in those environments
 
 ### Performance comparison (local run, per-event)
 
@@ -57,12 +38,6 @@ Notes:
 - `kb/event` is peak RSS delta per event during active processing (most representative of OS-visible RAM in Activity Monitor / Task Manager, with `EventBus.max_history_size=1`)
 - In `1 bus x 1 event x 50k parallel handlers` stats are shown per-handler for clarity, `0.02ms/handler * 50k handlers ~= 1000ms` for the entire event
 - Browser runtime does not expose memory usage directly, in practice memory performance in-browser is comparable to Node (they both use V8)
-
-<br/>
-
----
-
-<br/>
 
 </Tab>
 </Tabs>

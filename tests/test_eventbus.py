@@ -31,9 +31,9 @@ from bubus.middlewares import (
     EventBusMiddleware,
     LoggerEventBusMiddleware,
     OtelTracingMiddleware,
-    SyntheticErrorEventMiddleware,
-    SyntheticHandlerChangeEventMiddleware,
-    SyntheticReturnEventMiddleware,
+    AutoErrorEventMiddleware,
+    AutoHandlerChangeEventMiddleware,
+    AutoReturnEventMiddleware,
     WALEventBusMiddleware,
 )
 
@@ -1079,19 +1079,19 @@ class TestHandlerMiddleware:
         finally:
             await bus.stop()
 
-    async def test_synthetic_error_event_middleware_emits_and_guards_recursion(self):
+    async def test_auto_error_event_middleware_emits_and_guards_recursion(self):
         seen: list[tuple[str, str]] = []
-        bus = EventBus(middlewares=[SyntheticErrorEventMiddleware()])
+        bus = EventBus(middlewares=[AutoErrorEventMiddleware()])
 
         async def fail_handler(event: BaseEvent) -> None:
             raise ValueError('boom')
 
-        async def fail_synthetic(event: BaseEvent) -> None:
+        async def fail_auto(event: BaseEvent) -> None:
             raise RuntimeError('nested')
 
         bus.on(UserActionEvent, fail_handler)
         bus.on('UserActionEventErrorEvent', lambda event: seen.append((event.event_type, event.error_type)))
-        bus.on('UserActionEventErrorEvent', fail_synthetic)
+        bus.on('UserActionEventErrorEvent', fail_auto)
 
         try:
             await bus.dispatch(UserActionEvent(action='fail', user_id='u1'))
@@ -1101,19 +1101,19 @@ class TestHandlerMiddleware:
         finally:
             await bus.stop()
 
-    async def test_synthetic_return_event_middleware_emits_and_guards_recursion(self):
+    async def test_auto_return_event_middleware_emits_and_guards_recursion(self):
         seen: list[tuple[str, Any]] = []
-        bus = EventBus(middlewares=[SyntheticReturnEventMiddleware()])
+        bus = EventBus(middlewares=[AutoReturnEventMiddleware()])
 
         async def ok_handler(event: BaseEvent) -> int:
             return 123
 
-        async def non_none_synthetic(event: BaseEvent) -> str:
+        async def non_none_auto(event: BaseEvent) -> str:
             return 'nested'
 
         bus.on(UserActionEvent, ok_handler)
         bus.on('UserActionEventResultEvent', lambda event: seen.append((event.event_type, event.data)))
-        bus.on('UserActionEventResultEvent', non_none_synthetic)
+        bus.on('UserActionEventResultEvent', non_none_auto)
 
         try:
             await bus.dispatch(UserActionEvent(action='ok', user_id='u2'))
@@ -1123,9 +1123,9 @@ class TestHandlerMiddleware:
         finally:
             await bus.stop()
 
-    async def test_synthetic_return_event_middleware_skips_baseevent_returns(self):
+    async def test_auto_return_event_middleware_skips_baseevent_returns(self):
         seen: list[tuple[str, Any]] = []
-        bus = EventBus(middlewares=[SyntheticReturnEventMiddleware()])
+        bus = EventBus(middlewares=[AutoReturnEventMiddleware()])
 
         class ReturnedEvent(BaseEvent):
             value: int
@@ -1147,10 +1147,10 @@ class TestHandlerMiddleware:
         finally:
             await bus.stop()
 
-    async def test_synthetic_handler_change_event_middleware_emits_registered_and_unregistered(self):
+    async def test_auto_handler_change_event_middleware_emits_registered_and_unregistered(self):
         registered: list[BusHandlerRegisteredEvent] = []
         unregistered: list[BusHandlerUnregisteredEvent] = []
-        bus = EventBus(middlewares=[SyntheticHandlerChangeEventMiddleware()])
+        bus = EventBus(middlewares=[AutoHandlerChangeEventMiddleware()])
 
         bus.on(BusHandlerRegisteredEvent, lambda event: registered.append(event))
         bus.on(BusHandlerUnregisteredEvent, lambda event: unregistered.append(event))

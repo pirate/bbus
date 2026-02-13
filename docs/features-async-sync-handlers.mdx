@@ -1,0 +1,51 @@
+---
+title: Async and Sync Handlers
+description: Mix synchronous and asynchronous handlers on the same event type.
+---
+
+Both runtimes support registering sync and async handlers together.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+import asyncio
+from bubus import EventBus, BaseEvent
+
+class WorkEvent(BaseEvent[str]):
+    task_id: str
+
+def sync_handler(event: WorkEvent) -> str:
+    return f'sync:{event.task_id}'
+
+async def async_handler(event: WorkEvent) -> str:
+    await asyncio.sleep(0.01)
+    return f'async:{event.task_id}'
+
+bus = EventBus('AppBus')
+bus.on(WorkEvent, sync_handler)
+bus.on(WorkEvent, async_handler)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus } from 'bubus'
+import { z } from 'zod'
+
+const WorkEvent = BaseEvent.extend('WorkEvent', {
+  task_id: z.string(),
+})
+
+const bus = new EventBus('AppBus')
+
+bus.on(WorkEvent, (event) => `sync:${event.task_id}`)
+bus.on(WorkEvent, async (event) => {
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  return `async:${event.task_id}`
+})
+```
+
+</Tab>
+</Tabs>

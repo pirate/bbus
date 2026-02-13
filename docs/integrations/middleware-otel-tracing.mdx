@@ -1,0 +1,31 @@
+---
+title: OtelTracingMiddleware
+description: Emit OpenTelemetry spans for events and handlers.
+---
+
+`OtelTracingMiddleware` creates event and handler spans with parent-child linking.
+
+## Constructor params
+
+- `tracer`: optional explicit OpenTelemetry tracer instance
+- `trace_api`: optional explicit `opentelemetry.trace` module
+
+## Setup with EventBus
+
+```python
+from bubus import EventBus
+from bubus.middlewares import OtelTracingMiddleware
+
+bus = EventBus(
+    name='AppBus',
+    middlewares=[OtelTracingMiddleware()],
+)
+```
+
+## Behavior
+
+- Starts an event span when an event starts and ends it on completion.
+- Starts one child span per handler execution.
+- Records handler exceptions on handler spans.
+- Links child events to parent handler spans where available.
+- Requires `opentelemetry-api` (install via `pip install opentelemetry-api`).

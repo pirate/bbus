@@ -1,4 +1,4 @@
-"""Utility script to generate synthetic events for the monitor app."""
+"""Utility script to generate auto events for the monitor app."""
 
 from __future__ import annotations
 

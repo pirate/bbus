@@ -1,0 +1,40 @@
+---
+title: Type-Safe Events
+description: Define validated event payloads and event result types.
+---
+
+Events are strongly typed and validated in both runtimes.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from typing import Any
+from bubus import BaseEvent
+
+class OrderCreatedEvent(BaseEvent[dict[str, Any]]):
+    order_id: str
+    customer_id: str
+    total_amount: float
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent } from 'bubus'
+import { z } from 'zod'
+
+const OrderCreatedEvent = BaseEvent.extend('OrderCreatedEvent', {
+  order_id: z.string(),
+  customer_id: z.string(),
+  total_amount: z.number(),
+  event_result_type: z.object({ ok: z.boolean() }),
+})
+```
+
+</Tab>
+</Tabs>
+
+- Python payload validation is powered by Pydantic models.
+- TypeScript payload and result validation is powered by Zod schemas.

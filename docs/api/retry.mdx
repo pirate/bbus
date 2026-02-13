@@ -1,0 +1,148 @@
+---
+title: retry
+description: Retry decorator/higher-order wrapper for async functions and handlers.
+---
+
+`retry` adds per-attempt timeout, retry/backoff, and optional semaphore-based concurrency control around async functions (including bus handlers).
+
+## Signature
+
+<Tabs>
+<Tab title="Python">
+
+```python
+def retry(
+    retry_after: float = 0,
+    max_attempts: int = 1,
+    timeout: float | None = None,
+    retry_on_errors: list[type[Exception] | re.Pattern[str]] | tuple[type[Exception] | re.Pattern[str], ...] | None = None,
+    retry_backoff_factor: float = 1.0,
+    semaphore_limit: int | None = None,
+    semaphore_name: str | Callable[..., str] | None = None,
+    semaphore_lax: bool = True,
+    semaphore_scope: Literal['multiprocess', 'global', 'class', 'instance'] = 'global',
+    semaphore_timeout: float | None = None,
+) -> Callable[[Callable[P, Coroutine[Any, Any, T]]], Callable[P, Coroutine[Any, Any, T]]]
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+export function retry(options: RetryOptions = {}): <T extends (...args: any[]) => any>(
+  target: T,
+  context?: ClassMethodDecoratorContext
+) => T
+```
+
+</Tab>
+</Tabs>
+
+## Options
+
+| Option | Description |
+| --- | --- |
+| `max_attempts` | Total attempts including the first call (`1` disables retries). |
+| `retry_after` | Base delay between retries, in seconds. |
+| `retry_backoff_factor` | Delay multiplier applied after each failed attempt. |
+| `retry_on_errors` | Optional matcher list to restrict which errors are retried. |
+| `timeout` | Per-attempt timeout in seconds (`None`/`undefined` means no per-attempt timeout). |
+| `semaphore_limit` | Max concurrent executions sharing the same semaphore. |
+| `semaphore_name` | Semaphore key (string or function deriving a key from call args). |
+| `semaphore_scope` | Semaphore sharing scope (`global`, `class`, `instance`; Python also supports `multiprocess`). |
+| `semaphore_timeout` | Max wait time for semaphore acquisition before timeout/lax fallback. |
+| `semaphore_lax` | If true, continue execution without semaphore limit when acquisition times out. |
+
+## Example: Inline wrapper
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, BaseEvent
+from bubus.retry import retry
+
+class FetchEvent(BaseEvent[dict]):
+    url: str
+
+bus = EventBus('AppBus')
+
+async def fetch_with_retry(event: FetchEvent) -> dict:
+    return await fetch_json(event.url)
+
+bus.on(
+    FetchEvent,
+    retry(max_attempts=3, retry_after=1, timeout=5)(fetch_with_retry),
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent, EventBus, retry } from 'bubus'
+import { z } from 'zod'
+
+const FetchEvent = BaseEvent.extend('FetchEvent', {
+  url: z.string(),
+  event_result_type: z.record(z.string(), z.unknown()),
+})
+
+const bus = new EventBus('AppBus')
+
+bus.on(
+  FetchEvent,
+  retry({ max_attempts: 3, retry_after: 1, timeout: 5 })(async (event) => {
+    return await fetchJson(event.url)
+  })
+)
+```
+
+</Tab>
+</Tabs>
+
+## Example: Decorated class method
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus.retry import retry
+
+class ApiService:
+    @retry(max_attempts=4, retry_after=1, timeout=10, semaphore_limit=2, semaphore_scope='class')
+    async def get_user(self, user_id: str) -> dict:
+        return await call_remote_api(user_id)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { retry } from 'bubus'
+
+class ApiService {
+  @retry({ max_attempts: 4, retry_after: 1, timeout: 10, semaphore_limit: 2, semaphore_scope: 'class' })
+  async getUser(userId: string): Promise<Record<string, unknown>> {
+    return await callRemoteApi(userId)
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+## Behavior
+
+- Semaphore acquisition happens once per call, then all retry attempts run within that acquired slot.
+- Backoff delay per retry is: `retry_after * retry_backoff_factor^(attempt - 1)`.
+- Retries stop immediately when the thrown error does not match `retry_on_errors`.
+- Bus/event timeouts act as outer execution budgets; `retry.timeout` is per-attempt.
+
+## Runtime differences
+
+- Python supports semaphore scope `multiprocess` in addition to `global`, `class`, and `instance`.
+- TypeScript supports `global`, `class`, and `instance`, and uses async-context re-entrancy tracking in Node/Bun to avoid same-semaphore nested deadlocks.
+- `retry_on_errors` matching differs slightly:
+  - Python: exception classes or compiled regex patterns (matched against `"ErrorClass: message"`).
+  - TypeScript: error constructors, error-name strings, or regex patterns.

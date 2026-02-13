@@ -1,0 +1,80 @@
+---
+title: PostgresEventBridge
+description: Forward events using PostgreSQL LISTEN/NOTIFY plus table storage.
+---
+
+`PostgresEventBridge` stores event payloads in a Postgres table and uses `LISTEN/NOTIFY` for low-latency fanout.
+
+## Constructor params
+
+- `table_url`: `postgresql://user:pass@host:5432/dbname[/tablename]?...`
+- `channel`: optional notify/listen channel (defaults to `bubus_events`)
+- `name`: optional bridge label
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import PostgresEventBridge
+
+bridge = PostgresEventBridge(
+    'postgresql://user:pass@localhost:5432/mydb/bubus_events',
+    channel='bubus_events',
+    name='PgBridge',
+)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { PostgresEventBridge } from 'bubus'
+
+const bridge = new PostgresEventBridge(
+  'postgresql://user:pass@localhost:5432/mydb/bubus_events',
+  'bubus_events',
+  'PgBridge'
+)
+```
+
+</Tab>
+</Tabs>
+
+## Setup with a bus
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, PostgresEventBridge
+
+bus = EventBus('AppBus')
+bridge = PostgresEventBridge('postgresql://user:pass@localhost:5432/mydb/bubus_events')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventBus, PostgresEventBridge } from 'bubus'
+
+const bus = new EventBus('AppBus')
+const bridge = new PostgresEventBridge('postgresql://user:pass@localhost:5432/mydb/bubus_events')
+
+bus.on('*', bridge.emit)
+bridge.on('*', bus.emit)
+```
+
+</Tab>
+</Tabs>
+
+## Behavior
+
+- `emit(...)` upserts event payload data into the bridge table, then sends `NOTIFY` with the event id.
+- `on(...)` registers inbound handlers and auto-starts listener startup.
+- On notifications, the bridge fetches the full row payload, reconstructs an event, resets it, and emits locally.
+- Event field columns are created on demand to track evolving payload schemas.
+- Runtime requirements: Python needs `asyncpg`, TypeScript needs `pg` and Node.js.
