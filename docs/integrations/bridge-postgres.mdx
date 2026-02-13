@@ -5,6 +5,37 @@ description: Forward events using PostgreSQL LISTEN/NOTIFY plus table storage.
 
 `PostgresEventBridge` stores event payloads in a Postgres table and uses `LISTEN/NOTIFY` for low-latency fanout.
 
+## Optional dependencies
+
+<Tabs>
+<Tab title="Python">
+
+Install the Postgres extra (recommended):
+
+```bash
+pip install "bubus[postgres]"
+```
+
+Equivalent direct dependency install:
+
+```bash
+pip install asyncpg
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+Install the Postgres client package:
+
+```bash
+npm install bubus pg
+```
+
+This bridge is Node.js-only.
+
+</Tab>
+</Tabs>
+
 ## Constructor params
 
 - `table_url`: `postgresql://user:pass@host:5432/dbname[/tablename]?...`

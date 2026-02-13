@@ -298,7 +298,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         *,
         eventbus: 'EventBus',
         timeout: float | None,
-        slow_timeout: float | None = None,
+        handler_slow_timeout: float | None = None,
         enter_handler_context: Callable[['BaseEvent[Any]', str], tuple[Any, Any]] | None = None,
         exit_handler_context: Callable[[tuple[Any, Any]], None] | None = None,
         format_exception_for_log: Callable[[BaseException], str] | None = None,
@@ -320,12 +320,14 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         handler_task: asyncio.Task[Any] | None = None
         dispatch_context = getattr(event, '_event_dispatch_context', None)
 
-        should_warn_for_slow_handler = slow_timeout is not None and (self.timeout is None or self.timeout > slow_timeout)
+        should_warn_for_slow_handler = handler_slow_timeout is not None and (
+            self.timeout is None or self.timeout > handler_slow_timeout
+        )
         if should_warn_for_slow_handler:
 
             async def slow_handler_monitor() -> None:
-                assert slow_timeout is not None
-                await asyncio.sleep(slow_timeout)
+                assert handler_slow_timeout is not None
+                await asyncio.sleep(handler_slow_timeout)
                 if self.status != 'started':
                     return
                 started_at = self.started_at or event.event_started_at or event.event_created_at

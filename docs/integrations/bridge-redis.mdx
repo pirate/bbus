@@ -5,6 +5,37 @@ description: Forward events via Redis pub/sub channels.
 
 `RedisEventBridge` publishes event payloads to a Redis channel and subscribes for inbound events on the same channel.
 
+## Optional dependencies
+
+<Tabs>
+<Tab title="Python">
+
+Install the Redis extra (recommended):
+
+```bash
+pip install "bubus[redis]"
+```
+
+Equivalent direct dependency install:
+
+```bash
+pip install redis
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+Install the Redis client package:
+
+```bash
+npm install bubus ioredis
+```
+
+This bridge is Node.js-only.
+
+</Tab>
+</Tabs>
+
 ## Constructor params
 
 - `redis_url`: redis URL in the form `redis://user:pass@host:6379/<db>/<optional_channel>`

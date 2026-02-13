@@ -5,6 +5,37 @@ description: Forward events over NATS subjects.
 
 `NATSEventBridge` publishes events to a NATS subject and subscribes to the same subject for inbound forwarding.
 
+## Optional dependencies
+
+<Tabs>
+<Tab title="Python">
+
+Install the NATS extra (recommended):
+
+```bash
+pip install "bubus[nats]"
+```
+
+Equivalent direct dependency install:
+
+```bash
+pip install nats-py
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+Install the NATS client package:
+
+```bash
+npm install bubus nats
+```
+
+This bridge is Node.js-only.
+
+</Tab>
+</Tabs>
+
 ## Constructor params
 
 - `server`: NATS server URL (for example `nats://localhost:4222`)

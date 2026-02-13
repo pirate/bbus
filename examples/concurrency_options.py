@@ -285,9 +285,9 @@ async def handler_timeout_demo() -> None:
         if slow_entry.id is None:
             raise RuntimeError('Expected slow handler to have an id')
         slow_result = event.event_results.get(slow_entry.id)
-        slow_timeout = slow_result is not None and isinstance(slow_result.error, TimeoutError)
+        handler_timed_out = slow_result is not None and isinstance(slow_result.error, TimeoutError)
         log(
-            f'slow handler status={slow_result.status if slow_result else "missing"}, timeout_error={"yes" if slow_timeout else "no"}'
+            f'slow handler status={slow_result.status if slow_result else "missing"}, timeout_error={"yes" if handler_timed_out else "no"}'
         )
 
         await bus.wait_until_idle()

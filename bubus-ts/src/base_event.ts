@@ -363,7 +363,6 @@ export class BaseEvent {
   createSlowEventWarningTimer(): ReturnType<typeof setTimeout> | null {
     const event_slow_timeout =
       (this as { event_slow_timeout?: number | null }).event_slow_timeout ??
-      (this as { slow_timeout?: number | null }).slow_timeout ??
       this.bus?.event_slow_timeout ??
       null
     const event_warn_ms = event_slow_timeout === null ? null : event_slow_timeout * 1000

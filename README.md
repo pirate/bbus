@@ -737,7 +737,7 @@ EventBus(
 
 Timeout precedence matches TS:
 - Effective handler timeout = `min(resolved_handler_timeout, event_timeout)` where `resolved_handler_timeout` resolves in order: `handler.handler_timeout` -> `event.event_handler_timeout` -> `bus.event_timeout`.
-- Slow handler warning threshold resolves in order: `handler.handler_slow_timeout` -> `event.event_handler_slow_timeout` -> `event.event_slow_timeout`/`event.slow_timeout` -> `bus.event_handler_slow_timeout` -> `bus.event_slow_timeout`.
+- Slow handler warning threshold resolves in order: `handler.handler_slow_timeout` -> `event.event_handler_slow_timeout` -> `event.event_slow_timeout` -> `bus.event_handler_slow_timeout` -> `bus.event_slow_timeout`.
 
 #### `EventBus` Properties
 
@@ -1287,7 +1287,7 @@ uv run tests/performance_runtime.py   # run the performance test suite in python
 Set up the python development environment using `uv`:
 
 ```bash
-git clone https://github.com/browser-use/bubus && cd bubus
+git clone https://github.com/pirate/bbus && cd bbus
 
 # Create virtual environment with Python 3.12
 uv venv --python 3.12
@@ -1346,11 +1346,11 @@ uv run tests/performance_runtime.py
 ---
 
 
-> [🧠 DeepWiki Docs](https://deepwiki.com/browser-use/bubus)  
+> [🧠 DeepWiki Docs](https://deepwiki.com/pirate/bbus)  
 > <img width="400" alt="image" src="https://github.com/user-attachments/assets/cedb5a2e-0643-4240-9a3d-5f27cb8b5741" /><img width="400" alt="image" src="https://github.com/user-attachments/assets/3ee0ee8c-8322-449f-979b-5c99ba6bd960" />
 
 
 
 ## 🏛️ License
 
-This project is licensed under the MIT License. For more information, see the main browser-use repository: https://github.com/browser-use/browser-use
+This project is licensed under the MIT License.

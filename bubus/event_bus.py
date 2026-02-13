@@ -319,9 +319,6 @@ class EventBus:
         event_slow_timeout = getattr(event, 'event_slow_timeout', None)
         if event_slow_timeout is not None:
             return cast(float, event_slow_timeout)
-        slow_timeout = getattr(event, 'slow_timeout', None)
-        if slow_timeout is not None:
-            return cast(float, slow_timeout)
         return eventbus.event_slow_timeout
 
     @staticmethod
@@ -332,8 +329,6 @@ class EventBus:
             return event.event_handler_slow_timeout
         if EventBus._event_field_is_defined(event, 'event_slow_timeout'):
             return cast(float | None, getattr(event, 'event_slow_timeout', None))
-        if EventBus._event_field_is_defined(event, 'slow_timeout'):
-            return cast(float | None, getattr(event, 'slow_timeout', None))
         if hasattr(eventbus, 'event_handler_slow_timeout'):
             return eventbus.event_handler_slow_timeout
         return eventbus.event_slow_timeout
@@ -369,8 +364,8 @@ class EventBus:
             return timeout_override
         return min(resolved_timeout, timeout_override)
 
-    async def _slow_event_warning_monitor(self, event: BaseEvent[Any], slow_timeout: float) -> None:
-        await asyncio.sleep(slow_timeout)
+    async def _slow_event_warning_monitor(self, event: BaseEvent[Any], event_slow_timeout: float) -> None:
+        await asyncio.sleep(event_slow_timeout)
         if self._is_event_complete_fast(event):
             return
         running_handler_count = sum(1 for result in event.event_results.values() if result.status == 'started')
@@ -652,9 +647,7 @@ class EventBus:
             event.event_timeout = self.event_timeout
 
         # Copy bus-level slow timeout defaults only when the event has no own overrides.
-        has_event_slow_override = self._event_field_is_defined(event, 'event_slow_timeout') or self._event_field_is_defined(
-            event, 'slow_timeout'
-        )
+        has_event_slow_override = self._event_field_is_defined(event, 'event_slow_timeout')
         if not has_event_slow_override:
             setattr(event, 'event_slow_timeout', self.event_slow_timeout)
 
@@ -1913,7 +1906,7 @@ class EventBus:
                     event,
                     eventbus=self,
                     timeout=resolved_timeout,
-                    slow_timeout=resolved_slow_timeout,
+                    handler_slow_timeout=resolved_slow_timeout,
                     enter_handler_context=self._enter_handler_execution_context,
                     exit_handler_context=self._exit_handler_execution_context,
                     format_exception_for_log=log_filtered_traceback,

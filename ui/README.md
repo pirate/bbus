@@ -5,8 +5,8 @@ Minimal FastAPI Web UI application that reads the `events_log` and `event_result
 ## Quick start
 
 ```bash
-git clone https://github.com/browser-use/bubus.git
-cd bubus
+git clone https://github.com/pirate/bbus.git
+cd bbus
 uv venv
 uv pip install fastapi 'uvicorn[standard]'
 ```

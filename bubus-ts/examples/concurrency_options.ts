@@ -206,8 +206,8 @@ async function handlerTimeoutDemo(): Promise<void> {
   const event = bus.emit(TimeoutEvent({ ms: 60, event_handler_timeout: 0.5 }))
   await event.done()
   const slow_result = event.event_results.get(slow_entry.id)
-  const slow_timeout = slow_result?.error instanceof EventHandlerTimeoutError
-  log(`slow handler status=${slow_result?.status}, timeout_error=${slow_timeout ? 'yes' : 'no'}`)
+  const handler_timed_out = slow_result?.error instanceof EventHandlerTimeoutError
+  log(`slow handler status=${slow_result?.status}, timeout_error=${handler_timed_out ? 'yes' : 'no'}`)
   await bus.waitUntilIdle()
   console.log('\n=== TimeoutBus.logTree() ===')
   console.log(bus.logTree())

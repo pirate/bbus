@@ -1,4 +1,4 @@
-"""Event bus for the browser-use agent."""
+"""Event bus library."""
 
 from . import events_suck
 from .base_event import (

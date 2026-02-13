@@ -185,10 +185,6 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     if (event_slow_timeout !== undefined) {
       return event_slow_timeout
     }
-    const slow_timeout = (original as { slow_timeout?: number | null }).slow_timeout
-    if (slow_timeout !== undefined) {
-      return slow_timeout
-    }
     if (bus?.event_handler_slow_timeout !== undefined) {
       return bus.event_handler_slow_timeout
     }

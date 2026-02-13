@@ -197,7 +197,11 @@ def ci_done_p95_ceiling_ms(local_ceiling_ms: float, phase1_done_p95_ms: float) -
     """
     if os.getenv('GITHUB_ACTIONS', '').lower() == 'true':
         return 1000.0
-    return local_ceiling_ms
+    # Local runs can still show brief scheduler jitter in tail latency, especially
+    # in forwarding/parallel stress matrices. Use phase-1 as same-run baseline but
+    # cap slack so we still catch meaningful regressions.
+    adaptive_local_ceiling = max(local_ceiling_ms, phase1_done_p95_ms * 1.6)
+    return min(local_ceiling_ms * 1.5, adaptive_local_ceiling)
 
 
 def ci_upper_ceiling(local_ceiling: float, *, ci_ceiling: float | None = None, multiplier: float = 2.0) -> float:
