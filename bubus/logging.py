@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from bubus.event_bus import EventBus
     from bubus.models import BaseEvent, EventResult
-    from bubus.service import EventBus
 
 
 def format_timestamp(dt: datetime | None) -> str:

@@ -24,8 +24,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from uuid_extensions import uuid7str
 
+from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 from bubus.models import BaseEvent
-from bubus.service import EventBus, EventPatternType, inside_handler_context
 
 _IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 _DEFAULT_POSTGRES_TABLE = 'bubus_events'
@@ -110,7 +110,7 @@ class PostgresEventBridge:
         event_id_payload = json.dumps(payload['event_id'], separators=(',', ':'))
         await self._write_conn.execute('SELECT pg_notify($1, $2)', self.channel, event_id_payload)
 
-        if inside_handler_context.get():
+        if in_handler_context():
             return None
         return event
 

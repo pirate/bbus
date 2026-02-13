@@ -1,6 +1,6 @@
 import asyncio
 
-from bubus import BaseEvent, EventBus
+from bubus import BaseEvent, EventBus, EventHandlerCompletionMode, EventHandlerConcurrencyMode
 
 
 class CompletionEvent(BaseEvent[str]):
@@ -12,7 +12,11 @@ class IntCompletionEvent(BaseEvent[int]):
 
 
 async def test_event_handler_completion_bus_default_first_serial() -> None:
-    bus = EventBus(name='CompletionDefaultFirstBus', event_handler_concurrency='serial', event_handler_completion='first')
+    bus = EventBus(
+        name='CompletionDefaultFirstBus',
+        event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
+        event_handler_completion=EventHandlerCompletionMode.FIRST,
+    )
     second_handler_called = False
 
     async def first_handler(_event: CompletionEvent) -> str:
@@ -28,7 +32,7 @@ async def test_event_handler_completion_bus_default_first_serial() -> None:
 
     try:
         event = bus.dispatch(CompletionEvent())
-        assert event.event_handler_completion == 'first'
+        assert event.event_handler_completion == EventHandlerCompletionMode.FIRST
 
         await event
         assert second_handler_called is False
@@ -46,7 +50,11 @@ async def test_event_handler_completion_bus_default_first_serial() -> None:
 
 
 async def test_event_handler_completion_explicit_override_beats_bus_default() -> None:
-    bus = EventBus(name='CompletionOverrideBus', event_handler_concurrency='serial', event_handler_completion='first')
+    bus = EventBus(
+        name='CompletionOverrideBus',
+        event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
+        event_handler_completion=EventHandlerCompletionMode.FIRST,
+    )
     second_handler_called = False
 
     async def first_handler(_event: CompletionEvent) -> str:
@@ -61,8 +69,8 @@ async def test_event_handler_completion_explicit_override_beats_bus_default() ->
     bus.on(CompletionEvent, second_handler)
 
     try:
-        event = bus.dispatch(CompletionEvent(event_handler_completion='all'))
-        assert event.event_handler_completion == 'all'
+        event = bus.dispatch(CompletionEvent(event_handler_completion=EventHandlerCompletionMode.ALL))
+        assert event.event_handler_completion == EventHandlerCompletionMode.ALL
         await event
         assert second_handler_called is True
     finally:
@@ -70,7 +78,11 @@ async def test_event_handler_completion_explicit_override_beats_bus_default() ->
 
 
 async def test_event_parallel_first_races_and_cancels_non_winners() -> None:
-    bus = EventBus(name='CompletionParallelFirstBus', event_handler_concurrency='serial', event_handler_completion='all')
+    bus = EventBus(
+        name='CompletionParallelFirstBus',
+        event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
+        event_handler_completion=EventHandlerCompletionMode.ALL,
+    )
     slow_started = False
 
     async def slow_handler_started(_event: CompletionEvent) -> str:
@@ -92,9 +104,14 @@ async def test_event_parallel_first_races_and_cancels_non_winners() -> None:
     bus.on(CompletionEvent, slow_handler_pending_or_started)
 
     try:
-        event = bus.dispatch(CompletionEvent(event_handler_concurrency='parallel', event_handler_completion='first'))
-        assert event.event_handler_concurrency == 'parallel'
-        assert event.event_handler_completion == 'first'
+        event = bus.dispatch(
+            CompletionEvent(
+                event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL,
+                event_handler_completion=EventHandlerCompletionMode.FIRST,
+            )
+        )
+        assert event.event_handler_concurrency == EventHandlerConcurrencyMode.PARALLEL
+        assert event.event_handler_completion == EventHandlerCompletionMode.FIRST
 
         started = asyncio.get_running_loop().time()
         await event
@@ -119,7 +136,11 @@ async def test_event_parallel_first_races_and_cancels_non_winners() -> None:
 
 
 async def test_event_first_shortcut_sets_mode_and_cancels_parallel_losers() -> None:
-    bus = EventBus(name='CompletionFirstShortcutBus', event_handler_concurrency='parallel', event_handler_completion='all')
+    bus = EventBus(
+        name='CompletionFirstShortcutBus',
+        event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL,
+        event_handler_completion=EventHandlerCompletionMode.ALL,
+    )
     slow_handler_completed = False
 
     async def fast_handler(_event: CompletionEvent) -> str:
@@ -137,12 +158,12 @@ async def test_event_first_shortcut_sets_mode_and_cancels_parallel_losers() -> N
 
     try:
         event = bus.dispatch(CompletionEvent())
-        assert event.event_handler_completion == 'all'
+        assert event.event_handler_completion == EventHandlerCompletionMode.ALL
 
         first_value = await event.first()
 
         assert first_value == 'fast'
-        assert event.event_handler_completion == 'first'
+        assert event.event_handler_completion == EventHandlerCompletionMode.FIRST
         assert slow_handler_completed is False
 
         error_results = [result for result in event.event_results.values() if result.status == 'error']
@@ -153,7 +174,11 @@ async def test_event_first_shortcut_sets_mode_and_cancels_parallel_losers() -> N
 
 
 async def test_event_first_preserves_falsy_results() -> None:
-    bus = EventBus(name='CompletionFalsyBus', event_handler_concurrency='serial', event_handler_completion='all')
+    bus = EventBus(
+        name='CompletionFalsyBus',
+        event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
+        event_handler_completion=EventHandlerCompletionMode.ALL,
+    )
     second_handler_called = False
 
     async def zero_handler(_event: IntCompletionEvent) -> int:

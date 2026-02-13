@@ -21,8 +21,8 @@ from typing import Any
 
 from uuid_extensions import uuid7str
 
+from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 from bubus.models import BaseEvent
-from bubus.service import EventBus, EventPatternType, inside_handler_context
 
 _IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
@@ -70,7 +70,7 @@ class SQLiteEventBridge:
         await asyncio.to_thread(self._ensure_columns, payload_keys)
         await asyncio.to_thread(self._upsert_payload, payload, payload_keys)
 
-        if inside_handler_context.get():
+        if in_handler_context():
             return None
         return event
 

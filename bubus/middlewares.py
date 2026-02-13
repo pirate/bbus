@@ -8,12 +8,13 @@ import logging
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from bubus.logging import log_eventbus_tree
 from bubus.models import BaseEvent, EventHandler, EventResult, EventStatus
-from bubus.service import EventBus
-from bubus.service import EventBusMiddleware as _EventBusMiddleware
+
+if TYPE_CHECKING:
+    from bubus.event_bus import EventBus
 
 __all__ = [
     'EventBusMiddleware',
@@ -31,7 +32,32 @@ __all__ = [
 logger = logging.getLogger('bubus.middleware')
 _SYNTHETIC_EVENT_SUFFIXES = ('ErrorEvent', 'ResultEvent')
 
-EventBusMiddleware = _EventBusMiddleware
+
+class EventBusMiddleware:
+    """Hookable lifecycle interface for observing or extending EventBus execution.
+
+    Hooks:
+        on_event_change(eventbus, event, status): Called on event state transitions
+        on_event_result_change(eventbus, event, event_result, status): Called on EventResult state transitions
+        on_handler_change(eventbus, handler, registered): Called when handlers are added/removed via on()/off()
+
+    Status values: EventStatus.PENDING, STARTED, COMPLETED, ERROR
+    """
+
+    async def on_event_change(self, eventbus: 'EventBus', event: BaseEvent[Any], status: EventStatus) -> None:
+        """Called on event state transitions (pending, started, completed, error)."""
+
+    async def on_event_result_change(
+        self,
+        eventbus: 'EventBus',
+        event: BaseEvent[Any],
+        event_result: EventResult[Any],
+        status: EventStatus,
+    ) -> None:
+        """Called on EventResult state transitions (pending, started, completed, error)."""
+
+    async def on_handler_change(self, eventbus: 'EventBus', handler: EventHandler, registered: bool) -> None:
+        """Called when handlers are added (registered=True) or removed (registered=False)."""
 
 
 class OtelTracingMiddleware(EventBusMiddleware):
@@ -100,6 +126,8 @@ class OtelTracingMiddleware(EventBusMiddleware):
     def _find_parent_span(self, event: BaseEvent[Any]) -> Any | None:
         if not event.event_parent_id:
             return None
+        from bubus.event_bus import EventBus
+
         for bus in list(EventBus.all_instances):
             if not bus or event.event_parent_id not in bus.event_history:
                 continue

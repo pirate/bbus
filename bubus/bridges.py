@@ -15,8 +15,8 @@ from urllib.request import Request, urlopen
 from anyio import Path as AnyPath
 from uuid_extensions import uuid7str
 
+from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 from bubus.models import BaseEvent
-from bubus.service import EventBus, EventPatternType, inside_handler_context
 
 logger = logging.getLogger('bubus.bridges')
 UNIX_SOCKET_MAX_PATH_CHARS = 90
@@ -134,7 +134,7 @@ class EventBridge:
         else:
             await self._send_http(self.send_to, payload)
 
-        if inside_handler_context.get():
+        if in_handler_context():
             return None
         return event
 

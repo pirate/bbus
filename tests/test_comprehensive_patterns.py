@@ -587,7 +587,7 @@ async def test_multi_bus_forwarding_with_queued_events():
     - Bus2 has [E3, E4] queued
     - E1's handler dispatches Child to Bus1 and awaits it
     - Child should jump Bus1's queue (ahead of E2)
-    - E3, E4 on Bus2 should NOT be affected
+    - Bus2 should continue processing independently (bus-serial is per-bus)
     """
     print('\n=== Test Multi-Bus Forwarding With Queued Events ===')
 
@@ -677,9 +677,9 @@ async def test_multi_bus_forwarding_with_queued_events():
         # E2 on Bus1 should NOT have executed yet
         assert 'Bus1_Event2_start' not in execution_order, f'E2 on Bus1 should NOT have started. Order: {execution_order}'
 
-        # E3 and E4 on Bus2 should NOT have executed yet
-        assert 'Bus2_Event3_start' not in execution_order, f'E3 on Bus2 should NOT have started. Order: {execution_order}'
-        assert 'Bus2_Event4_start' not in execution_order, f'E4 on Bus2 should NOT have started. Order: {execution_order}'
+        # Bus2 runs independently under bus-serial event concurrency.
+        # Its queued events may already be running while Bus1 awaits the child.
+        assert 'Bus2_Event3_start' in execution_order, f'E3 on Bus2 should have started. Order: {execution_order}'
 
         # Now process remaining events on both buses
         await bus1.wait_until_idle()

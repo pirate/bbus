@@ -4,8 +4,8 @@ from uuid import NAMESPACE_DNS, uuid4, uuid5
 
 import pytest
 
+from bubus.event_bus import EventBus
 from bubus.models import BaseEvent, EventHandler, EventHandlerCallable, EventResult
-from bubus.service import EventBus
 
 
 class _StubEvent:

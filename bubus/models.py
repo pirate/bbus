@@ -36,7 +36,8 @@ from bubus.jsonschema import (
 )
 
 if TYPE_CHECKING:
-    from bubus.service import EventBus
+    from bubus.event_bus import EventBus
+    from bubus.lock_manager import ReentrantLock
 
 
 logger = logging.getLogger('bubus')
@@ -45,6 +46,20 @@ BUBUS_LOGGING_LEVEL = os.getenv('BUBUS_LOGGING_LEVEL', 'WARNING').upper()  # WAR
 LIBRARY_VERSION = os.getenv('LIBRARY_VERSION', '0.0.1')
 
 logger.setLevel(BUBUS_LOGGING_LEVEL)
+
+
+def _default_enter_handler_context(_event: 'BaseEvent[Any]', _handler_id: str) -> tuple[Any, Any]:
+    return (None, None)
+
+
+def _default_exit_handler_context(_tokens: tuple[Any, Any]) -> None:
+    return None
+
+
+def _default_format_exception_for_log(exc: BaseException) -> str:
+    from traceback import TracebackException
+
+    return ''.join(TracebackException.from_exception(exc, capture_locals=False).format())
 
 
 class EventStatus(StrEnum):
@@ -98,6 +113,12 @@ class EventHandlerConcurrencyMode(StrEnum):
 class EventHandlerCompletionMode(StrEnum):
     ALL = 'all'
     FIRST = 'first'
+
+
+class EventConcurrencyMode(StrEnum):
+    GLOBAL_SERIAL = 'global-serial'
+    BUS_SERIAL = 'bus-serial'
+    PARALLEL = 'parallel'
 
 
 T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
@@ -415,20 +436,31 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     event_slow_timeout: float | None = Field(
         default=None, description='Optional per-event slow processing warning threshold in seconds'
     )
-    event_concurrency: ClassVar[Literal['global-serial']] = (
-        'global-serial'  # only mode supported in python for now, ts supports 'global-serial' | 'bus-serial' | 'parallel'
+    event_concurrency: EventConcurrencyMode | None = Field(
+        default=None,
+        description=(
+            'Event scheduling strategy relative to other events: '
+            "'global-serial' | 'bus-serial' | 'parallel'. "
+            'None defers to the bus default.'
+        ),
     )
     event_handler_timeout: float | None = Field(default=None, description='Optional per-event handler timeout cap in seconds')
     event_handler_slow_timeout: float | None = Field(
         default=None, description='Optional per-event slow handler warning threshold in seconds'
     )
-    event_handler_concurrency: EventHandlerConcurrencyMode = Field(
-        default=EventHandlerConcurrencyMode.SERIAL,
-        description="Handler scheduling strategy: 'serial' runs one handler at a time, 'parallel' runs handlers concurrently",
+    event_handler_concurrency: EventHandlerConcurrencyMode | None = Field(
+        default=None,
+        description=(
+            "Handler scheduling strategy: 'serial' runs one handler at a time, 'parallel' runs handlers concurrently. "
+            'None defers to the bus default.'
+        ),
     )
-    event_handler_completion: EventHandlerCompletionMode = Field(
-        default=EventHandlerCompletionMode.ALL,
-        description="Handler completion strategy: 'all' waits for all handlers, 'first' resolves on first successful result",
+    event_handler_completion: EventHandlerCompletionMode | None = Field(
+        default=None,
+        description=(
+            "Handler completion strategy: 'all' waits for all handlers, 'first' resolves on first successful result. "
+            'None defers to the bus default.'
+        ),
     )
     event_result_type: Any = Field(
         default=None, description='Schema/type for handler result validation (serialized as JSON Schema)'
@@ -468,6 +500,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     # Completion signal
     _event_completed_signal: asyncio.Event | None = PrivateAttr(default=None)
     _event_is_complete_flag: bool = PrivateAttr(default=False)
+    _lock_for_event_handler: Any = PrivateAttr(default=None)
 
     # Dispatch-time context for ContextVar propagation to handlers
     # Captured when dispatch() is called, used when executing handlers via ctx.run()
@@ -508,7 +541,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         This prevents premature completion when an event has been forwarded to
         another bus but that bus hasn't processed it yet.
         """
-        from bubus.service import EventBus
+        from bubus.event_bus import EventBus
 
         empty_event_ids: set[str] = set()
         for bus in list(EventBus.all_instances):
@@ -543,7 +576,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         The loop continues until the event's completion signal is set, which
         happens after all handlers on all buses have completed.
         """
-        from bubus.service import EventBus
+        from bubus.event_bus import EventBus
 
         max_iterations = 1000  # Prevent infinite loops
         iterations = 0
@@ -577,11 +610,13 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                         processed_on_bus = True
                     else:
                         # Slow path: another task already claimed queue.get() and set
-                        # processing state, but may be blocked on the global lock held
+                        # processing state, but may be blocked on an event-level lock held
                         # by the awaiting parent handler. Process once here to make progress.
                         bus_key = id(bus)
+                        event_lock = bus.locks.get_lock_for_event(bus, self)
                         if (
-                            self.event_id in cast(set[str], getattr(bus, '_processing_event_ids', empty_event_ids))
+                            event_lock is not None
+                            and self.event_id in cast(set[str], getattr(bus, '_processing_event_ids', empty_event_ids))
                             and bus_key not in claimed_processed_bus_ids
                         ):
                             await bus.step(event=self)
@@ -633,9 +668,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             if self._event_is_complete_flag:
                 return self
             assert self.event_completed_signal is not None
-            from bubus.service import holds_global_lock, inside_handler_context
+            from bubus.event_bus import in_handler_context
 
-            is_inside_handler = inside_handler_context.get() and holds_global_lock.get()
+            is_inside_handler = in_handler_context()
             is_not_yet_complete = not self._event_is_complete_flag and not self.event_completed_signal.is_set()
 
             if is_not_yet_complete and is_inside_handler:
@@ -1022,7 +1057,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     ) -> 'EventResult[T_EventResultType]':
         """Create or update an EventResult for a handler"""
 
-        from bubus.service import EventBus
+        from bubus.event_bus import EventBus
 
         assert eventbus is None or isinstance(eventbus, EventBus)
         if (
@@ -1147,6 +1182,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         self._event_is_complete_flag = False
         self.event_completed_at = None
         self.event_results.clear()
+        self._lock_for_event_handler = None
         self._event_dispatch_context = None
         try:
             asyncio.get_running_loop()
@@ -1160,6 +1196,12 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         fresh_event = self.__class__.model_validate(self.model_dump(mode='python'))
         fresh_event.event_id = uuid7str()
         return fresh_event.event_mark_pending()
+
+    def event_get_handler_lock(self) -> 'ReentrantLock | None':
+        return cast('ReentrantLock | None', self._lock_for_event_handler)
+
+    def event_set_handler_lock(self, lock: 'ReentrantLock | None') -> None:
+        self._lock_for_event_handler = lock
 
     def event_are_all_children_complete(self, _visited: set[str] | None = None) -> bool:
         """Recursively check if all child events and their descendants are complete"""
@@ -1212,9 +1254,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     @property
     def event_bus(self) -> 'EventBus':
         """Get the EventBus that is currently processing this event"""
-        from bubus.service import EventBus, inside_handler_context
+        from bubus.event_bus import EventBus, in_handler_context
 
-        if not inside_handler_context.get():
+        if not in_handler_context():
             raise AttributeError('event_bus property can only be accessed from within an event handler')
 
         # The event_path contains all buses this event has passed through
@@ -1434,26 +1476,15 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         eventbus: 'EventBus',
         timeout: float | None,
         slow_timeout: float | None = None,
-        enter_handler_context: Callable[[BaseEvent[Any], str], tuple[Any, Any, Any]] | None = None,
-        exit_handler_context: Callable[[tuple[Any, Any, Any]], None] | None = None,
+        enter_handler_context: Callable[[BaseEvent[Any], str], tuple[Any, Any]] | None = None,
+        exit_handler_context: Callable[[tuple[Any, Any]], None] | None = None,
         format_exception_for_log: Callable[[BaseException], str] | None = None,
     ) -> T_EventResultType | BaseEvent[Any] | None:
         """Execute self.handler and update internal state automatically."""
-
-        def _default_enter_handler_context(_: BaseEvent[Any], __: str) -> tuple[None, None, None]:
-            return (None, None, None)
-
-        def _default_exit_handler_context(_: tuple[Any, Any, Any]) -> None:
-            return None
-
-        def _default_format_exception_for_log(exc: BaseException) -> str:
-            from traceback import TracebackException
-
-            return ''.join(TracebackException.from_exception(exc, capture_locals=False).format())
-
         _enter_handler_context_callable = enter_handler_context or _default_enter_handler_context
         _exit_handler_context_callable = exit_handler_context or _default_exit_handler_context
         _format_exception_for_log_callable = format_exception_for_log or _default_format_exception_for_log
+
         handler = self.handler.handler
         if handler is None:
             raise RuntimeError(f'EventResult {self.id} has no callable attached to handler {self.handler.id}')
@@ -1494,70 +1525,45 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                 name=f'{eventbus}.slow_handler_monitor({event}, {self.handler.label})',
             )
 
-        # For handlers running in dispatch context, we need to set up internal context vars
-        # INSIDE that context. Create a wrapper that does setup -> handler -> cleanup.
-        # This includes holds_global_lock which is set by ReentrantLock in the parent context.
+        # Keep all handler-invocation context setup centralized in two wrappers.
+        # For dispatch-context executions, wrappers run inside that copied context.
+        # For local executions, wrappers run directly in the current context.
         async def async_handler_with_context() -> Any:
-            """Wrapper that sets up internal context before calling async handler."""
-            from bubus.service import holds_global_lock
-
-            # Set holds_global_lock since we're running inside a handler that holds the lock
-            # (ReentrantLock set this in the parent context, but dispatch_context is from before that)
-            holds_global_lock.set(True)
             tokens = _enter_handler_context_callable(event, self.handler_id)
             try:
-                return await handler(event)  # type: ignore
+                with eventbus.locks.lock_context_for_current_handler(eventbus, event):
+                    return await handler(event)  # type: ignore
             finally:
                 _exit_handler_context_callable(tokens)
 
         def sync_handler_with_context() -> Any:
-            """Wrapper that sets up internal context before calling sync handler."""
-            from bubus.service import holds_global_lock
-
-            holds_global_lock.set(True)
             tokens = _enter_handler_context_callable(event, self.handler_id)
             try:
-                return handler(event)  # type: ignore[call-arg]  # protocol allows _self param but we dont need it because it's already bound
+                with eventbus.locks.lock_context_for_current_handler(eventbus, event):
+                    return handler(event)  # type: ignore[call-arg]  # protocol allows _self param but we dont need it because it's already bound
             finally:
                 _exit_handler_context_callable(tokens)
 
-        # If no dispatch context, set up context vars the normal way (outside handler)
-        if dispatch_context is None:
-            handler_context_tokens = _enter_handler_context_callable(event, self.handler_id)
-        else:
-            handler_context_tokens = None  # Will be set inside the wrapper
-
         try:
             if inspect.iscoroutinefunction(handler):
-                if dispatch_context is not None:
-                    # Run wrapper (which sets internal context) inside dispatch context
-                    handler_task = asyncio.create_task(
-                        async_handler_with_context(),
-                        context=dispatch_context,
-                    )
-                else:
-                    handler_task = asyncio.create_task(handler(event))  # type: ignore
+                create_task_kwargs = {'context': dispatch_context} if dispatch_context is not None else {}
+                handler_task = asyncio.create_task(async_handler_with_context(), **create_task_kwargs)
                 handler_return_value: Any = await asyncio.wait_for(handler_task, timeout=self.timeout)
             elif inspect.isfunction(handler) or inspect.ismethod(handler):
                 if dispatch_context is not None:
-                    # Run sync wrapper inside dispatch context
                     handler_return_value = dispatch_context.run(sync_handler_with_context)
                 else:
-                    handler_return_value = handler(event)
+                    handler_return_value = sync_handler_with_context()
                 if isinstance(handler_return_value, BaseEvent):
                     logger.debug(f'Handler {self.handler.label} returned BaseEvent, not awaiting to avoid circular dependency')
             else:
                 handler_name = EventHandler.get_callable_handler_name(handler)
                 raise ValueError(f'Handler {handler_name} must be a sync or async function, got: {type(handler)}')
 
-            if monitor_task:
-                monitor_task.cancel()
             self.update(result=handler_return_value)
             return self.result
 
         except asyncio.CancelledError as exc:
-            if monitor_task:
-                monitor_task.cancel()
             handler_interrupted_error = asyncio.CancelledError(
                 f'Event handler {self.handler.label}({event}) was interrupted because of a parent timeout'
             )
@@ -1565,8 +1571,6 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             raise handler_interrupted_error from exc
 
         except TimeoutError as exc:
-            if monitor_task:
-                monitor_task.cancel()
             children = (
                 f' and interrupted any processing of {len(event.event_children)} child events' if event.event_children else ''
             )
@@ -1580,8 +1584,6 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             raise timeout_error from exc
 
         except Exception as exc:
-            if monitor_task:
-                monitor_task.cancel()
             self.update(error=exc)
 
             red = '\033[91m'
@@ -1608,10 +1610,6 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                     pass
                 except Exception:
                     pass
-
-            # Only exit context if it was set outside the wrapper (i.e., no dispatch context)
-            if handler_context_tokens is not None:
-                _exit_handler_context_callable(handler_context_tokens)
 
     def log_tree(
         self,

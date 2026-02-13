@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, TypeAdapter, create_model
 
 _SCHEMA_TYPE_REGISTRY: tuple[tuple[str, type[Any], str], ...] = (
     ('string', str, 'string'),
-    ('integer', int, 'number'),   # note both integer and number are mapped to the same JSON Schema type
+    ('integer', int, 'number'),  # note both integer and number are mapped to the same JSON Schema type
     ('number', float, 'number'),
     ('boolean', bool, 'boolean'),
     ('object', dict, 'object'),

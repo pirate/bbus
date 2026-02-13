@@ -2,8 +2,8 @@ from typing import Any
 
 import pytest
 
+from bubus.event_bus import EventBus
 from bubus.models import BaseEvent, EventHandler
-from bubus.service import EventBus
 
 
 @pytest.mark.asyncio

@@ -65,6 +65,14 @@ def _normalize_roundtrip_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = _canonical(payload)
     normalized.pop('event_id', None)
     normalized.pop('event_path', None)
+    # Dispatch now materializes event_concurrency defaults on the receiving bus.
+    if normalized.get('event_concurrency') is None:
+        normalized['event_concurrency'] = 'bus-serial'
+    # Dispatch also materializes handler-level defaults on the receiving bus.
+    if normalized.get('event_handler_concurrency') is None:
+        normalized['event_handler_concurrency'] = 'serial'
+    if normalized.get('event_handler_completion') is None:
+        normalized['event_handler_completion'] = 'all'
     return normalized
 
 

@@ -13,8 +13,9 @@ from typing import Any
 
 from uuid_extensions import uuid7str
 
+from bubus.event_bus import EventBus, EventPatternType, in_handler_context
+from bubus.helpers import QueueShutDown
 from bubus.models import BaseEvent
-from bubus.service import EventBus, EventPatternType, QueueShutDown, inside_handler_context
 
 
 class NATSEventBridge:
@@ -41,7 +42,7 @@ class NATSEventBridge:
         assert self._nc is not None
         await self._nc.publish(self.subject, json.dumps(payload, separators=(',', ':')).encode('utf-8'))
 
-        if inside_handler_context.get():
+        if in_handler_context():
             return None
         return event
 

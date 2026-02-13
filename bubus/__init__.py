@@ -1,6 +1,7 @@
 """Event bus for the browser-use agent."""
 
 from .bridges import HTTPEventBridge, SocketEventBridge
+from .event_bus import EventBus
 from .event_history import EventHistory, InMemoryEventHistory
 from .middlewares import (
     BusHandlerRegisteredEvent,
@@ -16,6 +17,7 @@ from .middlewares import (
 )
 from .models import (
     BaseEvent,
+    EventConcurrencyMode,
     EventHandler,
     EventHandlerCompletionMode,
     EventHandlerConcurrencyMode,
@@ -25,7 +27,6 @@ from .models import (
     PythonIdStr,
     UUIDStr,
 )
-from .service import EventBus
 
 __all__ = [
     'EventBus',
@@ -49,6 +50,7 @@ __all__ = [
     'EventHandler',
     'EventHandlerConcurrencyMode',
     'EventHandlerCompletionMode',
+    'EventConcurrencyMode',
     'UUIDStr',
     'PythonIdStr',
     'PythonIdentifierStr',

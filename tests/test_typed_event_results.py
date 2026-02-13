@@ -174,9 +174,9 @@ async def test_result_type_stored_in_event_result():
     await bus.stop(clear=True)
 
 
-async def test_expect_type_inference():
-    """Test that EventBus.expect() returns the correct typed event."""
-    print('\n=== Test Expect Type Inference ===')
+async def test_find_type_inference():
+    """Test that EventBus.find() returns the correct typed event."""
+    print('\n=== Test Find Type Inference ===')
 
     bus = EventBus(name='expect_type_test_bus')
 
@@ -186,22 +186,22 @@ async def test_expect_type_inference():
     class SpecificEvent(BaseEvent[CustomResult]):
         request_id: str = 'test123'
 
-    # Validate inline isinstance usage works with await expect()
+    # Validate inline isinstance usage works with await find()
     async def dispatch_inline_isinstance():
         await asyncio.sleep(0.01)
         bus.dispatch(SpecificEvent(request_id='inline-isinstance'))
 
     inline_isinstance_task = asyncio.create_task(dispatch_inline_isinstance())
-    assert isinstance(await bus.expect(SpecificEvent, timeout=1.0), SpecificEvent)
+    assert isinstance(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent)
     await inline_isinstance_task
 
-    # Validate inline assert_type usage works with await expect()
+    # Validate inline assert_type usage works with await find()
     async def dispatch_inline_assert_type():
         await asyncio.sleep(0.01)
         bus.dispatch(SpecificEvent(request_id='inline-assert-type'))
 
     inline_type_task = asyncio.create_task(dispatch_inline_assert_type())
-    assert_type(await bus.expect(SpecificEvent, timeout=1.0), SpecificEvent | None)
+    assert_type(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent | None)
     await inline_type_task
 
     # Validate assert_type with isinstance expression
@@ -210,7 +210,7 @@ async def test_expect_type_inference():
         bus.dispatch(SpecificEvent(request_id='inline-isinstance-type'))
 
     inline_isinstance_type_task = asyncio.create_task(dispatch_inline_isinstance_type())
-    assert_type(isinstance(await bus.expect(SpecificEvent, timeout=1.0), SpecificEvent), bool)
+    assert_type(isinstance(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent), bool)
     await inline_isinstance_type_task
 
     # Start a task that will dispatch the event
@@ -220,8 +220,8 @@ async def test_expect_type_inference():
 
     dispatch_task = asyncio.create_task(dispatch_later())
 
-    # Use expect with the event class - should return SpecificEvent type
-    expected_event = await bus.expect(SpecificEvent, timeout=1.0)
+    # Use find with the event class - should return SpecificEvent type
+    expected_event = await bus.find(SpecificEvent, past=False, future=1.0)
     assert expected_event is not None
     assert isinstance(expected_event, SpecificEvent)
 
@@ -240,11 +240,15 @@ async def test_expect_type_inference():
 
     dispatch_task2 = asyncio.create_task(dispatch_multiple())
 
-    # Expect with include filter
-    filtered_event = await bus.expect(
+    # find with where filter
+    def is_correct(event: SpecificEvent) -> bool:
+        return event.request_id == 'correct'
+
+    filtered_event = await bus.find(
         SpecificEvent,
-        include=lambda e: e.request_id == 'correct',
-        timeout=1.0,
+        where=is_correct,
+        past=False,
+        future=1.0,
     )
     assert filtered_event is not None
 
@@ -259,7 +263,7 @@ async def test_expect_type_inference():
         bus.dispatch(BaseEvent(event_type='StringEvent'))
 
     dispatch_task3 = asyncio.create_task(dispatch_string_event())
-    string_event = await bus.expect('StringEvent', timeout=1.0)
+    string_event = await bus.find('StringEvent', past=False, future=1.0)
     assert string_event is not None
 
     assert_type(string_event, BaseEvent[Any])  # Should be BaseEvent[Any]
@@ -269,15 +273,15 @@ async def test_expect_type_inference():
     await dispatch_task2
     await dispatch_task3
 
-    print(f'✅ Expect correctly preserved type: {type(expected_event).__name__}')
-    print(f'✅ Expect with filter preserved type: {type(filtered_event).__name__}')
-    print('✅ No cast() needed for expect() - type inference works!')
+    print(f'✅ Find correctly preserved type: {type(expected_event).__name__}')
+    print(f'✅ Find with filter preserved type: {type(filtered_event).__name__}')
+    print('✅ No cast() needed for find() - type inference works!')
     await bus.stop(clear=True)
 
 
-async def test_query_type_inference():
-    """Test that EventBus.query() returns the correct typed event."""
-    print('\n=== Test Query Type Inference ===')
+async def test_find_past_type_inference():
+    """Test that EventBus.find() with past-window returns the correct typed event."""
+    print('\n=== Test Find (Past) Type Inference ===')
 
     bus = EventBus(name='query_type_test_bus')
 
@@ -288,17 +292,17 @@ async def test_query_type_inference():
     event = bus.dispatch(QueryEvent())
     await bus.wait_until_idle()
 
-    assert isinstance(await bus.query(QueryEvent, since=10), QueryEvent)
-    assert_type(await bus.query(QueryEvent, since=10), QueryEvent | None)
-    assert_type(isinstance(await bus.query(QueryEvent, since=10), QueryEvent), bool)
-    queried = await bus.query(QueryEvent, since=10)
+    assert isinstance(await bus.find(QueryEvent, past=10, future=False), QueryEvent)
+    assert_type(await bus.find(QueryEvent, past=10, future=False), QueryEvent | None)
+    assert_type(isinstance(await bus.find(QueryEvent, past=10, future=False), QueryEvent), bool)
+    queried = await bus.find(QueryEvent, past=10, future=False)
 
     assert queried is not None
     assert isinstance(queried, QueryEvent)
     assert_type(queried, QueryEvent)
     assert queried.event_id == event.event_id
 
-    print(f'✅ Query correctly preserved type: {type(queried).__name__}')
+    print(f'✅ Find correctly preserved type: {type(queried).__name__}')
     await bus.stop(clear=True)
 
 
@@ -377,8 +381,8 @@ async def test_typed_event_results():
     await test_casting_failure_handling()
     await test_no_casting_when_no_result_type()
     await test_result_type_stored_in_event_result()
-    await test_expect_type_inference()
-    await test_query_type_inference()
+    await test_find_type_inference()
+    await test_find_past_type_inference()
     await test_dispatch_type_inference()
     print('\n🎉 All typed event result tests passed!')
 

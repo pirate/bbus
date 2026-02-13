@@ -1,7 +1,7 @@
 """
 Tests for the unified find() method and tree traversal helpers.
 
-Addresses GitHub Issues #10 (debouncing) and #15 (expect past + child_of).
+Addresses GitHub Issues #10 (debouncing) and #15 (past + child_of lookup).
 """
 
 # pyright: reportUnknownMemberType=false
@@ -52,6 +52,19 @@ class TabCreatedEvent(BaseEvent[str]):
     """Example event that fires as result of navigation."""
 
     tab_id: str = ''
+
+
+class SystemEvent(BaseEvent[str]):
+    pass
+
+
+class UserActionEvent(BaseEvent[str]):
+    action: str = ''
+    user_id: str = ''
+
+
+class NumberedEvent(BaseEvent[str]):
+    value: int = 0
 
 
 # =============================================================================
@@ -244,7 +257,7 @@ class TestEventIsParentOf:
 
 
 class TestFindPastOnly:
-    """Tests for find(past=True, future=False) - equivalent to query()."""
+    """Tests for find(past=True, future=False) history lookup behavior."""
 
     async def test_max_history_zero_disables_past_but_future_still_works(self):
         """With max_history_size=0, future find resolves on dispatch but completed events are not searchable in past."""
@@ -285,6 +298,40 @@ class TestFindPastOnly:
             assert found is not None
             assert found.event_id == dispatched.event_id
 
+        finally:
+            await bus.stop(clear=True)
+
+    async def test_history_lookup_is_bus_scoped(self):
+        """find(past=True, future=False) only searches this bus history."""
+        bus_a = EventBus(name='FindScopeA')
+        bus_b = EventBus(name='FindScopeB')
+
+        try:
+            bus_b.on(NumberedEvent, lambda e: 'done')
+            await bus_b.dispatch(NumberedEvent(value=10))
+
+            found_on_a = await bus_a.find(NumberedEvent, past=True, future=False)
+            found_on_b = await bus_b.find(NumberedEvent, past=True, future=False)
+
+            assert found_on_a is None
+            assert found_on_b is not None
+            assert found_on_b.value == 10
+        finally:
+            await bus_a.stop(clear=True)
+            await bus_b.stop(clear=True)
+
+    async def test_found_event_retains_origin_bus_label(self):
+        """Events returned by find() keep the bus label in event_path."""
+        bus = EventBus(name='FindBusRef')
+
+        try:
+            bus.on(NumberedEvent, lambda e: 'done')
+            await bus.dispatch(NumberedEvent(value=7))
+
+            found = await bus.find(NumberedEvent, past=True, future=False)
+            assert found is not None
+            assert found.event_path
+            assert found.event_path[-1] == bus.label
         finally:
             await bus.stop(clear=True)
 
@@ -396,8 +443,8 @@ class TestFindPastOnly:
         finally:
             await bus.stop(clear=True)
 
-    async def test_past_ignores_in_progress_until_event_completes(self):
-        """History search should only return completed events, never in-progress ones."""
+    async def test_past_includes_in_progress_events(self):
+        """History search should include pending/started events, matching TS semantics."""
         bus = EventBus()
 
         try:
@@ -412,9 +459,10 @@ class TestFindPastOnly:
             dispatched = bus.dispatch(ParentEvent())
             await asyncio.sleep(0.02)  # Let handler start.
 
-            # In-progress event should not be returned by history search.
             found_while_running = await bus.find(ParentEvent, past=True, future=False)
-            assert found_while_running is None
+            assert found_while_running is not None
+            assert found_while_running.event_id == dispatched.event_id
+            assert found_while_running.event_status in ('pending', 'started')
 
             release_handler.set()
             await dispatched
@@ -426,9 +474,110 @@ class TestFindPastOnly:
         finally:
             await bus.stop(clear=True)
 
+    async def test_find_default_is_past_only_no_future_wait(self):
+        """find() with no windows defaults to past=True, future=False."""
+        bus = EventBus()
+
+        try:
+            bus.on(ParentEvent, lambda e: 'done')
+            start = datetime.now(UTC)
+            found = await bus.find(ParentEvent)
+            elapsed = (datetime.now(UTC) - start).total_seconds()
+
+            assert found is None
+            assert elapsed < 0.05
+        finally:
+            await bus.stop(clear=True)
+
+    async def test_find_supports_event_field_keyword_filters(self):
+        """find(..., event_*=...) applies metadata equality filters."""
+        bus = EventBus()
+
+        try:
+            release = asyncio.Event()
+
+            async def slow_handler(event: ParentEvent) -> str:
+                await release.wait()
+                return 'done'
+
+            bus.on(ParentEvent, slow_handler)
+
+            in_flight = bus.dispatch(ParentEvent())
+            await asyncio.sleep(0.02)
+
+            pending_or_started = await bus.find(ParentEvent, past=True, future=False, event_status='started')
+            if pending_or_started is None:
+                pending_or_started = await bus.find(ParentEvent, past=True, future=False, event_status='pending')
+
+            assert pending_or_started is not None
+            assert pending_or_started.event_id == in_flight.event_id
+
+            release.set()
+            await in_flight
+            completed = await bus.find(ParentEvent, past=True, future=False, event_status='completed')
+            assert completed is not None
+            assert completed.event_id == in_flight.event_id
+        finally:
+            await bus.stop(clear=True)
+
+    async def test_find_supports_event_id_and_event_timeout_filters(self):
+        """find(..., event_*=...) supports exact-match metadata equality filters."""
+        bus = EventBus()
+
+        try:
+            bus.on(ParentEvent, lambda e: 'done')
+
+            event_a = await bus.dispatch(ParentEvent(event_timeout=11))
+            await bus.dispatch(ParentEvent(event_timeout=22))
+
+            found = await bus.find(
+                ParentEvent,
+                past=True,
+                future=False,
+                event_id=event_a.event_id,
+                event_timeout=11,
+            )
+            assert found is not None
+            assert found.event_id == event_a.event_id
+
+            mismatch = await bus.find(
+                ParentEvent,
+                past=True,
+                future=False,
+                event_id=event_a.event_id,
+                event_timeout=22,
+            )
+            assert mismatch is None
+        finally:
+            await bus.stop(clear=True)
+
+    async def test_find_wildcard_with_where_filter_matches_history(self):
+        """find('*', where=..., past=True) matches across event types in history."""
+        bus = EventBus()
+
+        try:
+            bus.on(UserActionEvent, lambda e: 'done')
+            bus.on(SystemEvent, lambda e: 'done')
+
+            expected = await bus.dispatch(UserActionEvent(action='login', user_id='u-1'))
+            await bus.dispatch(SystemEvent())
+
+            found = await bus.find(
+                '*',
+                where=lambda event: event.event_type == 'UserActionEvent' and getattr(event, 'user_id', None) == 'u-1',
+                past=True,
+                future=False,
+            )
+
+            assert found is not None
+            assert found.event_id == expected.event_id
+            assert found.event_type == 'UserActionEvent'
+        finally:
+            await bus.stop(clear=True)
+
 
 class TestFindFutureOnly:
-    """Tests for find(past=False, future=...) - equivalent to expect()."""
+    """Tests for find(past=False, future=...) future wait behavior."""
 
     async def test_waits_for_future_event(self):
         """find(past=False, future=1) waits for event to be dispatched."""
@@ -486,6 +635,30 @@ class TestFindFutureOnly:
         finally:
             await bus.stop(clear=True)
 
+    async def test_ignores_inflight_events_dispatched_before_find(self):
+        """find(past=False, future=...) ignores already-dispatched in-flight events."""
+        bus = EventBus()
+
+        try:
+            release = asyncio.Event()
+
+            async def slow_handler(event: ParentEvent) -> str:
+                await release.wait()
+                return 'done'
+
+            bus.on(ParentEvent, slow_handler)
+
+            in_flight = bus.dispatch(ParentEvent())
+            await asyncio.sleep(0.01)
+
+            found = await bus.find(ParentEvent, past=False, future=0.05)
+            assert found is None
+
+            release.set()
+            await in_flight
+        finally:
+            await bus.stop(clear=True)
+
     async def test_future_works_with_string_event_type(self):
         """find('EventName', ...) resolves using string keys, not just model classes."""
         bus = EventBus()
@@ -505,6 +678,35 @@ class TestFindFutureOnly:
             assert found is not None
             assert found.event_id == dispatched.event_id
             assert found.event_type == 'ParentEvent'
+        finally:
+            await bus.stop(clear=True)
+
+    async def test_find_wildcard_with_where_filter_waits_for_future_match(self):
+        """find('*', where=..., past=False) waits for matching future event only."""
+        bus = EventBus()
+
+        try:
+            bus.on(SystemEvent, lambda e: 'done')
+            bus.on(UserActionEvent, lambda e: 'done')
+
+            find_task = asyncio.create_task(
+                bus.find(
+                    '*',
+                    where=lambda event: event.event_type == 'UserActionEvent' and getattr(event, 'action', None) == 'special',
+                    past=False,
+                    future=0.3,
+                )
+            )
+
+            await asyncio.sleep(0.02)
+            await bus.dispatch(SystemEvent())
+            await bus.dispatch(UserActionEvent(action='normal', user_id='u-x'))
+            expected = await bus.dispatch(UserActionEvent(action='special', user_id='u-y'))
+
+            found = await find_task
+            assert found is not None
+            assert found.event_id == expected.event_id
+            assert found.event_type == 'UserActionEvent'
         finally:
             await bus.stop(clear=True)
 
@@ -757,6 +959,34 @@ class TestFindPastAndFuture:
         finally:
             await bus.stop(clear=True)
 
+    async def test_most_recent_wins_across_completed_and_inflight(self):
+        """find(past=True, future=True) returns newest event even when it is in-flight."""
+        bus = EventBus()
+
+        try:
+            release = asyncio.Event()
+
+            async def numbered_handler(event: NumberedEvent) -> str:
+                if event.value == 2:
+                    await release.wait()
+                return f'handled-{event.value}'
+
+            bus.on(NumberedEvent, numbered_handler)
+
+            await bus.dispatch(NumberedEvent(value=1))
+            in_flight = bus.dispatch(NumberedEvent(value=2))
+            await asyncio.sleep(0.01)
+
+            found = await bus.find(NumberedEvent, past=True, future=True)
+            assert found is not None
+            assert found.event_id == in_flight.event_id
+            assert found.event_status in ('pending', 'started')
+
+            release.set()
+            await in_flight
+        finally:
+            await bus.stop(clear=True)
+
 
 # =============================================================================
 # find() with child_of Tests
@@ -879,17 +1109,46 @@ class TestFindWithChildOf:
             await main_bus.stop(clear=True)
             await auth_bus.stop(clear=True)
 
+    async def test_future_wait_with_child_of(self):
+        """find(child_of=..., past=False, future=...) waits for future matching child."""
+        bus = EventBus()
+
+        try:
+
+            async def parent_handler(event: ParentEvent) -> str:
+                await asyncio.sleep(0.03)
+                await bus.dispatch(ChildEvent())
+                return 'parent_done'
+
+            bus.on(ParentEvent, parent_handler)
+            bus.on(ChildEvent, lambda e: 'child_done')
+
+            parent = bus.dispatch(ParentEvent())
+
+            found = await bus.find(
+                ChildEvent,
+                child_of=parent,
+                past=False,
+                future=0.3,
+            )
+            assert found is not None
+            assert found.event_parent_id == parent.event_id
+
+            await parent
+        finally:
+            await bus.stop(clear=True)
+
 
 # =============================================================================
-# expect() Backwards Compatibility Tests
+# find() coverage for historical lookup/wait patterns
 # =============================================================================
 
 
-class TestExpectBackwardsCompatibility:
-    """Tests to ensure expect() still works with old API."""
+class TestFindLegacyPatternCoverage:
+    """Tests that find() covers all historical lookup/wait patterns."""
 
-    async def test_expect_waits_for_future_event(self):
-        """expect() still waits for future events (existing behavior)."""
+    async def test_find_waits_for_future_event(self):
+        """find(past=False, future=...) waits for future events."""
         bus = EventBus()
 
         try:
@@ -899,10 +1158,10 @@ class TestExpectBackwardsCompatibility:
                 await asyncio.sleep(0.05)
                 return await bus.dispatch(ParentEvent())
 
-            expect_task = asyncio.create_task(bus.expect(ParentEvent, timeout=1))
+            find_task = asyncio.create_task(bus.find(ParentEvent, past=False, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
 
-            found, dispatched = await asyncio.gather(expect_task, dispatch_task)
+            found, dispatched = await asyncio.gather(find_task, dispatch_task)
 
             assert found is not None
             assert found.event_id == dispatched.event_id
@@ -910,8 +1169,8 @@ class TestExpectBackwardsCompatibility:
         finally:
             await bus.stop(clear=True)
 
-    async def test_expect_with_include_filter(self):
-        """expect() with include parameter still works."""
+    async def test_find_with_include_style_filter(self):
+        """find(where=...) supports include-style filters."""
         bus = EventBus()
 
         try:
@@ -923,16 +1182,17 @@ class TestExpectBackwardsCompatibility:
                 await asyncio.sleep(0.02)
                 return await bus.dispatch(ScreenshotEvent(target_id='correct'))
 
-            expect_task = asyncio.create_task(
-                bus.expect(
+            find_task = asyncio.create_task(
+                bus.find(
                     ScreenshotEvent,
-                    include=lambda e: e.target_id == 'correct',
-                    timeout=1,
+                    where=lambda e: e.target_id == 'correct',
+                    past=False,
+                    future=1,
                 )
             )
             dispatch_task = asyncio.create_task(dispatch_events())
 
-            found, dispatched = await asyncio.gather(expect_task, dispatch_task)
+            found, dispatched = await asyncio.gather(find_task, dispatch_task)
 
             assert found is not None
             assert found.target_id == 'correct'
@@ -940,8 +1200,8 @@ class TestExpectBackwardsCompatibility:
         finally:
             await bus.stop(clear=True)
 
-    async def test_expect_with_exclude_filter(self):
-        """expect() with exclude parameter still works."""
+    async def test_find_with_exclude_style_filter(self):
+        """find(where=...) supports exclude-style filters."""
         bus = EventBus()
 
         try:
@@ -953,16 +1213,17 @@ class TestExpectBackwardsCompatibility:
                 await asyncio.sleep(0.02)
                 return await bus.dispatch(ScreenshotEvent(target_id='included'))
 
-            expect_task = asyncio.create_task(
-                bus.expect(
+            find_task = asyncio.create_task(
+                bus.find(
                     ScreenshotEvent,
-                    exclude=lambda e: e.target_id == 'excluded',
-                    timeout=1,
+                    where=lambda e: e.target_id != 'excluded',
+                    past=False,
+                    future=1,
                 )
             )
             dispatch_task = asyncio.create_task(dispatch_events())
 
-            found, dispatched = await asyncio.gather(expect_task, dispatch_task)
+            found, dispatched = await asyncio.gather(find_task, dispatch_task)
 
             assert found is not None
             assert found.target_id == 'included'
@@ -970,8 +1231,8 @@ class TestExpectBackwardsCompatibility:
         finally:
             await bus.stop(clear=True)
 
-    async def test_expect_with_past_true(self):
-        """expect(past=True) finds already-dispatched events."""
+    async def test_find_with_past_true_and_future_timeout(self):
+        """find(past=True, future=...) finds already-dispatched events."""
         bus = EventBus()
 
         try:
@@ -980,8 +1241,7 @@ class TestExpectBackwardsCompatibility:
             # Dispatch event first
             dispatched = await bus.dispatch(ParentEvent())
 
-            # expect with past=True should find it
-            found = await bus.expect(ParentEvent, past=True, timeout=5)
+            found = await bus.find(ParentEvent, past=True, future=5)
 
             assert found is not None
             assert found.event_id == dispatched.event_id
@@ -989,8 +1249,8 @@ class TestExpectBackwardsCompatibility:
         finally:
             await bus.stop(clear=True)
 
-    async def test_expect_with_past_float(self):
-        """expect(past=5.0) searches last 5 seconds of history."""
+    async def test_find_with_past_float_and_future_timeout(self):
+        """find(past=5.0, future=...) searches recent history first."""
         bus = EventBus()
 
         try:
@@ -999,8 +1259,7 @@ class TestExpectBackwardsCompatibility:
             # Dispatch event first
             dispatched = await bus.dispatch(ParentEvent())
 
-            # expect with past=5.0 should find recent event
-            found = await bus.expect(ParentEvent, past=5.0, timeout=1)
+            found = await bus.find(ParentEvent, past=5.0, future=1)
 
             assert found is not None
             assert found.event_id == dispatched.event_id
@@ -1008,8 +1267,8 @@ class TestExpectBackwardsCompatibility:
         finally:
             await bus.stop(clear=True)
 
-    async def test_expect_with_child_of(self):
-        """expect(child_of=parent) filters by parent relationship."""
+    async def test_find_with_child_of_and_future_timeout(self):
+        """find(child_of=parent) filters by parent relationship."""
         bus = EventBus()
 
         try:
@@ -1026,8 +1285,7 @@ class TestExpectBackwardsCompatibility:
             parent = await bus.dispatch(ParentEvent())
             await bus.wait_until_idle()
 
-            # expect with child_of and past=True
-            found = await bus.expect(ChildEvent, child_of=parent, past=True, timeout=5)
+            found = await bus.find(ChildEvent, child_of=parent, past=True, future=5)
 
             assert found is not None
             assert found.event_id == child_ref[0].event_id
@@ -1043,6 +1301,36 @@ class TestExpectBackwardsCompatibility:
 
 class TestDebouncingPattern:
     """Tests for the debouncing pattern: find() or dispatch()."""
+
+    async def test_simple_debounce_with_child_of_reuses_recent_event(self):
+        """Debounce pattern can reuse a recent child event scoped to a parent."""
+        bus = EventBus()
+
+        try:
+            child_ref: list[BaseEvent] = []
+
+            async def parent_handler(event: ParentEvent) -> str:
+                child = await bus.dispatch(ScreenshotEvent(target_id='tab-1'))
+                child_ref.append(child)
+                return 'parent_done'
+
+            bus.on(ParentEvent, parent_handler)
+            bus.on(ScreenshotEvent, lambda e: 'screenshot_done')
+
+            parent = await bus.dispatch(ParentEvent())
+            await bus.wait_until_idle()
+
+            reused = await bus.find(
+                ScreenshotEvent,
+                child_of=parent,
+                past=10,
+                future=False,
+            ) or await bus.dispatch(ScreenshotEvent(target_id='fallback'))
+
+            assert reused.event_id == child_ref[0].event_id
+            assert reused.event_parent_id == parent.event_id
+        finally:
+            await bus.stop(clear=True)
 
     async def test_returns_existing_fresh_event(self):
         """Pattern returns existing event when fresh."""
@@ -1256,29 +1544,6 @@ class TestDebouncingPattern:
         finally:
             await bus.stop(clear=True)
 
-    async def test_find_without_await_is_a_coroutine(self):
-        """find() without await returns a coroutine that can be awaited."""
-        bus = EventBus()
-
-        try:
-            bus.on(ParentEvent, lambda e: 'done')
-
-            # Call find without await - should return a coroutine
-            coro = bus.find(ParentEvent, past=True, future=False)
-
-            # Verify it's a coroutine
-            import inspect
-
-            assert inspect.iscoroutine(coro)
-
-            # Now await it
-            result = await coro
-
-            assert result is None
-
-        finally:
-            await bus.stop(clear=True)
-
 
 # =============================================================================
 # Race Condition Fix Tests (Issue #15)
@@ -1286,7 +1551,7 @@ class TestDebouncingPattern:
 
 
 class TestRaceConditionFix:
-    """Tests for the race condition fix where event fires before expect()."""
+    """Tests for race conditions where events fire before lookup starts."""
 
     async def test_find_catches_already_fired_event(self):
         """find(past=True) catches event that fired before the call."""

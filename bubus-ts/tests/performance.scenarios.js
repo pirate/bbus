@@ -70,6 +70,7 @@ const measureHeapDeltaAfterGc = async (hooks, baselineHeapUsed) => {
 
 const trimBusHistoryToOneEvent = async (hooks, bus, TrimEvent) => {
   bus.max_history_size = TRIM_TARGET
+  bus.max_history_drop = true
   let trimEvent = bus.dispatch(TrimEvent({}))
   await trimEvent.done()
   trimEvent = null
@@ -89,7 +90,10 @@ const waitForRegistrySize = async (hooks, EventBus, expectedSize, attempts = 150
 
 const runCleanupBurst = async ({ hooks, EventBus, CleanupEvent, TrimEvent, busesPerMode, eventsPerBus, destroyMode }) => {
   for (let i = 0; i < busesPerMode; i += 1) {
-    let bus = new EventBus(`CleanupEq-${destroyMode ? 'destroy' : 'scope'}-${i}`, { max_history_size: HISTORY_LIMIT_EPHEMERAL_BUS })
+    let bus = new EventBus(`CleanupEq-${destroyMode ? 'destroy' : 'scope'}-${i}`, {
+      max_history_size: HISTORY_LIMIT_EPHEMERAL_BUS,
+      max_history_drop: true,
+    })
     bus.on(CleanupEvent, () => {})
 
     const pending = []
@@ -119,7 +123,7 @@ const runWarmup = async (input) => {
   const { BaseEvent, EventBus } = hooks.api
   const { PerfWarmupEvent: WarmEvent, PerfWarmupTrimEvent: WarmTrimEvent } = getEventClasses(BaseEvent)
 
-  const bus = new EventBus('PerfWarmupBus', { max_history_size: 512 })
+  const bus = new EventBus('PerfWarmupBus', { max_history_size: 512, max_history_drop: true })
   bus.on(WarmEvent, () => {})
 
   for (let i = 0; i < 2048; i += 256) {
@@ -255,7 +259,7 @@ export const runPerf50kEvents = async (input) => {
   const totalEvents = 50_000
   const batchSize = 512
   const { PerfSimpleEvent: SimpleEvent, PerfTrimEvent: TrimEvent } = getEventClasses(BaseEvent)
-  const bus = new EventBus('PerfBus', { max_history_size: HISTORY_LIMIT_STREAM })
+  const bus = new EventBus('PerfBus', { max_history_size: HISTORY_LIMIT_STREAM, max_history_drop: true })
 
   let processedCount = 0
   const sampledEarlyEvents = []
@@ -365,7 +369,7 @@ export const runPerfEphemeralBuses = async (input) => {
   const t0 = hooks.now()
 
   for (let b = 0; b < totalBuses; b += 1) {
-    const bus = new EventBus(`ReqBus-${b}`, { max_history_size: HISTORY_LIMIT_EPHEMERAL_BUS })
+    const bus = new EventBus(`ReqBus-${b}`, { max_history_size: HISTORY_LIMIT_EPHEMERAL_BUS, max_history_drop: true })
     bus.on(SimpleEvent, () => {
       processedCount += 1
     })
@@ -420,6 +424,7 @@ export const runPerfSingleEventManyFixedHandlers = async (input) => {
   const { PerfFixedHandlersEvent: FixedHandlersEvent, PerfTrimEventFixedHandlers: TrimEvent } = getEventClasses(BaseEvent)
   const bus = new EventBus('FixedHandlersBus', {
     max_history_size: HISTORY_LIMIT_FIXED_HANDLERS,
+    max_history_drop: true,
     event_handler_concurrency: 'parallel',
   })
 
@@ -486,7 +491,7 @@ export const runPerfOnOffChurn = async (input) => {
   const { PerfRequestEvent: RequestEvent, PerfTrimEventOnOff: TrimEvent } = getEventClasses(BaseEvent)
 
   const totalEvents = 50_000
-  const bus = new EventBus('OneOffHandlerBus', { max_history_size: HISTORY_LIMIT_ON_OFF })
+  const bus = new EventBus('OneOffHandlerBus', { max_history_size: HISTORY_LIMIT_ON_OFF, max_history_drop: true })
 
   let processedCount = 0
 
@@ -554,9 +559,9 @@ export const runPerfWorstCase = async (input) => {
 
   const totalIterations = 500
   const historyLimit = HISTORY_LIMIT_WORST_CASE
-  const busA = new EventBus('WCA', { max_history_size: historyLimit })
-  const busB = new EventBus('WCB', { max_history_size: historyLimit })
-  const busC = new EventBus('WCC', { max_history_size: historyLimit })
+  const busA = new EventBus('WCA', { max_history_size: historyLimit, max_history_drop: true })
+  const busB = new EventBus('WCB', { max_history_size: historyLimit, max_history_drop: true })
+  const busC = new EventBus('WCC', { max_history_size: historyLimit, max_history_drop: true })
 
   let parentHandledA = 0
   let parentHandledB = 0

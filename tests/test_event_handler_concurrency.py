@@ -1,6 +1,6 @@
 import asyncio
 
-from bubus import BaseEvent, EventBus
+from bubus import BaseEvent, EventBus, EventHandlerConcurrencyMode
 
 
 class ConcurrencyEvent(BaseEvent[str]):
@@ -8,7 +8,7 @@ class ConcurrencyEvent(BaseEvent[str]):
 
 
 async def test_event_handler_concurrency_bus_default_applied_on_dispatch() -> None:
-    bus = EventBus(name='ConcurrencyDefaultBus', event_handler_concurrency='parallel')
+    bus = EventBus(name='ConcurrencyDefaultBus', event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL)
 
     async def one_handler(_event: ConcurrencyEvent) -> str:
         return 'ok'
@@ -17,14 +17,14 @@ async def test_event_handler_concurrency_bus_default_applied_on_dispatch() -> No
 
     try:
         event = bus.dispatch(ConcurrencyEvent())
-        assert event.event_handler_concurrency == 'parallel'
+        assert event.event_handler_concurrency == EventHandlerConcurrencyMode.PARALLEL
         await event
     finally:
         await bus.stop()
 
 
 async def test_event_handler_concurrency_per_event_override_controls_execution_mode() -> None:
-    bus = EventBus(name='ConcurrencyPerEventBus', event_handler_concurrency='parallel')
+    bus = EventBus(name='ConcurrencyPerEventBus', event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL)
     inflight_by_event_id: dict[str, int] = {}
     max_inflight_by_event_id: dict[str, int] = {}
     counter_lock = asyncio.Lock()
@@ -51,10 +51,10 @@ async def test_event_handler_concurrency_per_event_override_controls_execution_m
     bus.on(ConcurrencyEvent, handler_b)
 
     try:
-        serial_event = bus.dispatch(ConcurrencyEvent(event_handler_concurrency='serial'))
-        parallel_event = bus.dispatch(ConcurrencyEvent(event_handler_concurrency='parallel'))
-        assert serial_event.event_handler_concurrency == 'serial'
-        assert parallel_event.event_handler_concurrency == 'parallel'
+        serial_event = bus.dispatch(ConcurrencyEvent(event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL))
+        parallel_event = bus.dispatch(ConcurrencyEvent(event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL))
+        assert serial_event.event_handler_concurrency == EventHandlerConcurrencyMode.SERIAL
+        assert parallel_event.event_handler_concurrency == EventHandlerConcurrencyMode.PARALLEL
 
         await serial_event
         await parallel_event

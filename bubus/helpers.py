@@ -1,5 +1,8 @@
+import asyncio
 import logging
+import traceback
 import time
+from collections import deque
 from collections.abc import Callable, Coroutine
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar, cast
@@ -7,6 +10,95 @@ from typing import Any, ParamSpec, TypeVar, cast
 # Define generic type variables for return type and parameters
 R = TypeVar('R')
 P = ParamSpec('P')
+QueueEntryType = TypeVar('QueueEntryType')
+
+
+class QueueShutDown(Exception):
+    """Raised when putting on to or getting from a shut-down Queue."""
+
+    pass
+
+
+class CleanShutdownQueue(asyncio.Queue[QueueEntryType]):
+    """asyncio.Queue subclass that handles shutdown cleanly without warnings."""
+
+    _is_shutdown: bool = False
+    _getters: deque[asyncio.Future[QueueEntryType]]
+    _putters: deque[asyncio.Future[QueueEntryType]]
+
+    def shutdown(self, immediate: bool = True):
+        """Shutdown the queue and clean up all pending futures."""
+        del immediate
+        self._is_shutdown = True
+
+        # Cancel all waiting getters without triggering warnings
+        while self._getters:
+            getter = self._getters.popleft()
+            if not getter.done():
+                # Set exception instead of cancelling to avoid "Event loop is closed" errors
+                getter.set_exception(QueueShutDown())
+
+        # Cancel all waiting putters
+        while self._putters:
+            putter = self._putters.popleft()
+            if not putter.done():
+                putter.set_exception(QueueShutDown())
+
+    async def get(self) -> QueueEntryType:
+        """Remove and return an item from the queue, with shutdown support."""
+        while self.empty():
+            if self._is_shutdown:
+                raise QueueShutDown
+
+            getter = cast(asyncio.Future[QueueEntryType], asyncio.get_running_loop().create_future())
+            assert isinstance(getter, asyncio.Future)
+            self._getters.append(getter)
+            try:
+                await getter
+            except:
+                # Clean up the getter if we're cancelled
+                getter.cancel()  # Just in case getter is not done yet.
+                try:
+                    self._getters.remove(getter)
+                except ValueError:
+                    pass
+                # Re-raise the exception
+                raise
+
+        return self.get_nowait()
+
+    async def put(self, item: QueueEntryType) -> None:
+        """Put an item into the queue, with shutdown support."""
+        while self.full():
+            if self._is_shutdown:
+                raise QueueShutDown
+
+            putter = cast(asyncio.Future[QueueEntryType], asyncio.get_running_loop().create_future())
+            assert isinstance(putter, asyncio.Future)
+            self._putters.append(putter)
+            try:
+                await putter
+            except:
+                putter.cancel()  # Just in case putter is not done yet.
+                try:
+                    self._putters.remove(putter)
+                except ValueError:
+                    pass
+                raise
+
+        return self.put_nowait(item)
+
+    def put_nowait(self, item: QueueEntryType) -> None:
+        """Put an item into the queue without blocking, with shutdown support."""
+        if self._is_shutdown:
+            raise QueueShutDown
+        return super().put_nowait(item)
+
+    def get_nowait(self) -> QueueEntryType:
+        """Remove and return an item if one is immediately available, with shutdown support."""
+        if self._is_shutdown and self.empty():
+            raise QueueShutDown
+        return super().get_nowait()
 
 
 def extract_basemodel_generic_arg(cls: type) -> Any:
@@ -74,7 +166,27 @@ def time_execution(
     return decorator
 
 
+def _log_filtered_traceback(exc: BaseException) -> str:
+    """Format traceback while filtering noisy asyncio/stdlib frames."""
+    trace_exc = traceback.TracebackException.from_exception(exc, capture_locals=False)
+
+    def _filter(_: traceback.TracebackException):
+        trace_exc.stack = traceback.StackSummary.from_list(
+            [f for f in trace_exc.stack if 'asyncio/tasks.py' not in f.filename and 'lib/python' not in f.filename]
+        )
+        if trace_exc.__cause__:
+            _filter(trace_exc.__cause__)
+        if trace_exc.__context__:
+            _filter(trace_exc.__context__)
+
+    _filter(trace_exc)
+    return ''.join(trace_exc.format())
+
+
 __all__ = [
+    '_log_filtered_traceback',
+    'CleanShutdownQueue',
+    'QueueShutDown',
     'extract_basemodel_generic_arg',
     'time_execution',
 ]

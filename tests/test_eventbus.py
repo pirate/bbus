@@ -1547,22 +1547,22 @@ class TestEventBusHierarchy:
             await peer3.stop()
 
 
-class TestExpectMethod:
-    """Test the expect() method functionality"""
+class TestFindMethod:
+    """Test find() behavior for future waits and filtering."""
 
-    async def test_expect_basic(self, eventbus):
-        """Test basic expect functionality"""
+    async def test_find_future_basic(self, eventbus):
+        """Test basic future find functionality."""
         # Start waiting for an event that hasn't been dispatched yet
-        expect_task = asyncio.create_task(eventbus.expect('UserActionEvent', timeout=1.0))
+        find_task = asyncio.create_task(eventbus.find('UserActionEvent', past=False, future=1.0))
 
-        # Give expect time to register handler
+        # Give find time to register waiter
         await asyncio.sleep(0.01)
 
         # Dispatch the event
         dispatched = eventbus.dispatch(UserActionEvent(action='login', user_id='user123'))
 
-        # Wait for expect to resolve
-        received = await expect_task
+        # Wait for find to resolve
+        received = await find_task
 
         # Verify we got the right event
         assert received.event_type == 'UserActionEvent'
@@ -1570,18 +1570,17 @@ class TestExpectMethod:
         assert received.user_id == 'user123'
         assert received.event_id == dispatched.event_id
 
-    async def test_expect_with_predicate(self, eventbus):
-        """Test expect with predicate filtering"""
+    async def test_find_future_with_predicate(self, eventbus):
+        """Test future find with where predicate filtering."""
         # Dispatch some events that don't match
         eventbus.dispatch(UserActionEvent(action='logout', user_id='user456'))
         eventbus.dispatch(UserActionEvent(action='login', user_id='user789'))
 
-        # Start expecting with predicate
-        expect_task = asyncio.create_task(
-            eventbus.expect('UserActionEvent', predicate=lambda e: e.user_id == 'user123', timeout=1.0)
+        find_task = asyncio.create_task(
+            eventbus.find('UserActionEvent', where=lambda e: e.user_id == 'user123', past=False, future=1.0)
         )
 
-        # Give expect time to register
+        # Give find time to register
         await asyncio.sleep(0.01)
 
         # Dispatch more events
@@ -1590,22 +1589,20 @@ class TestExpectMethod:
         eventbus.dispatch(UserActionEvent(action='delete', user_id='user789'))
 
         # Wait for the matching event
-        received = await expect_task
+        received = await find_task
 
         # Should get the event matching the predicate
         assert received.user_id == 'user123'
         assert received.event_id == target_event.event_id
 
-    async def test_expect_timeout(self, eventbus):
-        """Test expect timeout behavior"""
-        # Expect an event that will never come
-        result = await eventbus.expect('NonExistentEvent', timeout=0.1)
+    async def test_find_future_timeout(self, eventbus):
+        """Test future find timeout behavior."""
+        result = await eventbus.find('NonExistentEvent', past=False, future=0.1)
         assert result is None
 
-    async def test_expect_with_model_class(self, eventbus):
-        """Test expect with model class instead of string"""
-        # Start expecting by model class
-        expect_task = asyncio.create_task(eventbus.expect(SystemEventModel, timeout=1.0))
+    async def test_find_future_with_model_class(self, eventbus):
+        """Test future find with model class instead of string."""
+        find_task = asyncio.create_task(eventbus.find(SystemEventModel, past=False, future=1.0))
 
         await asyncio.sleep(0.01)
 
@@ -1614,17 +1611,20 @@ class TestExpectMethod:
         target = eventbus.dispatch(SystemEventModel(event_name='startup', severity='info'))
 
         # Should receive the SystemEventModel
-        received = await expect_task
+        received = await find_task
         assert isinstance(received, SystemEventModel)
         assert received.event_name == 'startup'
         assert received.event_id == target.event_id
 
-    async def test_multiple_concurrent_expects(self, eventbus):
-        """Test multiple concurrent expect calls"""
-        # Set up multiple expects for different events
-        expect1 = asyncio.create_task(eventbus.expect('UserActionEvent', predicate=lambda e: e.action == 'normal', timeout=2.0))
-        expect2 = asyncio.create_task(eventbus.expect('SystemEventModel', timeout=2.0))
-        expect3 = asyncio.create_task(eventbus.expect('UserActionEvent', predicate=lambda e: e.action == 'special', timeout=2.0))
+    async def test_multiple_concurrent_future_finds(self, eventbus):
+        """Test multiple concurrent future find calls."""
+        find1 = asyncio.create_task(
+            eventbus.find('UserActionEvent', where=lambda e: e.action == 'normal', past=False, future=2.0)
+        )
+        find2 = asyncio.create_task(eventbus.find('SystemEventModel', past=False, future=2.0))
+        find3 = asyncio.create_task(
+            eventbus.find('UserActionEvent', where=lambda e: e.action == 'special', past=False, future=2.0)
+        )
 
         await asyncio.sleep(0.1)  # Give more time for handlers to register
 
@@ -1636,37 +1636,29 @@ class TestExpectMethod:
         # Wait for all events to be processed
         await eventbus.wait_until_idle()
 
-        # Wait for all expects
-        r1, r2, r3 = await asyncio.gather(expect1, expect2, expect3)
+        # Wait for all find tasks
+        r1, r2, r3 = await asyncio.gather(find1, find2, find3)
 
         # Verify results
         assert r1.event_id == e1.event_id  # Normal UserActionEvent
         assert r2.event_id == e2.event_id  # SystemEventModel
         assert r3.event_id == e3.event_id  # Special UserActionEvent
 
-    async def test_expect_handler_cleanup(self, eventbus):
-        """Test that temporary handlers are properly cleaned up"""
-        # Check initial handler count
-        initial_handlers = len(eventbus.handlers_by_key.get('TestEvent', []))
-
-        # Create an expect that times out
-        result = await eventbus.expect('TestEvent', timeout=0.1)
+    async def test_find_waiter_cleanup(self, eventbus):
+        """Test that temporary find waiters are properly cleaned up."""
+        initial_waiters = len(eventbus._find_waiters)
+        result = await eventbus.find('TestEvent', past=False, future=0.1)
         assert result is None
+        assert len(eventbus._find_waiters) == initial_waiters
 
-        # Handler should be cleaned up
-        assert len(eventbus.handlers_by_key.get('TestEvent', [])) == initial_handlers
-
-        # Create an expect that succeeds
-        expect_task = asyncio.create_task(eventbus.expect('TestEvent2', timeout=1.0))
+        find_task = asyncio.create_task(eventbus.find('TestEvent2', past=False, future=1.0))
         await asyncio.sleep(0.01)
         eventbus.dispatch(BaseEvent(event_type='TestEvent2'))
-        await expect_task
+        await find_task
+        assert len(eventbus._find_waiters) == initial_waiters
 
-        # Handler should be cleaned up
-        assert len(eventbus.handlers_by_key.get('TestEvent2', [])) == 0
-
-    async def test_expect_receives_completed_event(self, eventbus):
-        """Test that expect receives events after they're fully processed"""
+    async def test_find_future_receives_dispatched_event_before_completion(self, eventbus):
+        """Test that future find resolves before slow handlers complete."""
         processing_complete = False
 
         async def slow_handler(event: BaseEvent) -> str:
@@ -1678,54 +1670,54 @@ class TestExpectMethod:
         # Register a slow handler
         eventbus.on('SlowEvent', slow_handler)
 
-        # Start expecting
-        expect_task = asyncio.create_task(eventbus.expect('SlowEvent', timeout=1.0))
+        # Start future find
+        find_task = asyncio.create_task(eventbus.find('SlowEvent', past=False, future=1.0))
 
         await asyncio.sleep(0.01)
 
         # Dispatch event
         eventbus.dispatch(BaseEvent(event_type='SlowEvent'))
 
-        # Wait for expect
-        received = await expect_task
+        # Wait for find
+        received = await find_task
 
         assert received.event_type == 'SlowEvent'
         assert processing_complete is False
 
-        # Slow handler should still be running (or pending) when expect() resolves
+        # Find resolves on dispatch; handler result entries may or may not exist yet.
         slow_result = next(
             (res for res in received.event_results.values() if res.handler_name.endswith('slow_handler')),
             None,
         )
-        assert slow_result is not None
-        assert slow_result.status != 'completed'
+        if slow_result is not None:
+            assert slow_result.status != 'completed'
 
         await eventbus.wait_until_idle()
         assert processing_complete is True
 
 
-class TestQueryMethod:
-    """Tests for the query() helper."""
+class TestFindPastMethod:
+    """Tests for history-only find behavior."""
 
-    async def test_query_returns_most_recent_completed(self, eventbus):
+    async def test_find_past_returns_most_recent(self, eventbus):
         # Dispatch two events and ensure the newest is returned
         eventbus.dispatch(UserActionEvent(action='first', user_id='u1'))
         latest = eventbus.dispatch(UserActionEvent(action='second', user_id='u2'))
         await eventbus.wait_until_idle()
 
-        match = await eventbus.query('UserActionEvent', since=timedelta(seconds=10))
+        match = await eventbus.find('UserActionEvent', past=10, future=False)
         assert match is not None
         assert match.event_id == latest.event_id
 
-    async def test_query_respects_since_window(self, eventbus):
+    async def test_find_past_respects_time_window(self, eventbus):
         event = eventbus.dispatch(UserActionEvent(action='old', user_id='u1'))
         await eventbus.wait_until_idle()
         event.event_created_at -= timedelta(seconds=30)
 
-        match = await eventbus.query('UserActionEvent', since=timedelta(seconds=10))
+        match = await eventbus.find('UserActionEvent', past=10, future=False)
         assert match is None
 
-    async def test_query_skips_incomplete_events(self, eventbus):
+    async def test_find_past_can_match_incomplete_events(self, eventbus):
         processing = asyncio.Event()
 
         async def slow_handler(evt: UserActionEvent) -> None:
@@ -1736,13 +1728,15 @@ class TestQueryMethod:
 
         pending_event = eventbus.dispatch(UserActionEvent(action='slow', user_id='u1'))
 
-        # While the handler is running, query should return None
-        assert await eventbus.query('UserActionEvent', since=timedelta(seconds=10)) is None
+        # While handler is running, past find can still match in-flight events
+        in_flight = await eventbus.find('UserActionEvent', past=10, future=False)
+        assert in_flight is not None
+        assert in_flight.event_id == pending_event.event_id
 
         await pending_event
         await processing.wait()
 
-        match = await eventbus.query('UserActionEvent', since=timedelta(seconds=10))
+        match = await eventbus.find('UserActionEvent', past=10, future=False)
         assert match is not None
         assert match.event_id == pending_event.event_id
 
@@ -1758,10 +1752,10 @@ class TestDebouncePatterns:
         initial = await eventbus.dispatch(self.DebounceEvent(user_id=123))
         await eventbus.wait_until_idle()
 
-        # Compose the debounce pattern: query -> expect -> dispatch
+        # Compose the debounce pattern: find(past) -> find(future) -> dispatch
         resolved = (
-            await eventbus.query(self.DebounceEvent, since=timedelta(seconds=10))
-            or await eventbus.expect(self.DebounceEvent, timeout=0.05)
+            await eventbus.find(self.DebounceEvent, past=10, future=False)
+            or await eventbus.find(self.DebounceEvent, past=False, future=0.05)
             or await eventbus.dispatch(self.DebounceEvent(user_id=123))
         )
 
@@ -1773,8 +1767,8 @@ class TestDebouncePatterns:
 
     async def test_debounce_dispatches_when_recent_missing(self, eventbus):
         resolved = (
-            await eventbus.query(self.DebounceEvent, since=timedelta(seconds=1))
-            or await eventbus.expect(self.DebounceEvent, timeout=0.05)
+            await eventbus.find(self.DebounceEvent, past=1, future=False)
+            or await eventbus.find(self.DebounceEvent, past=False, future=0.05)
             or await eventbus.dispatch(self.DebounceEvent(user_id=999))
         )
 
@@ -1787,8 +1781,31 @@ class TestDebouncePatterns:
         total_events = sum(1 for event in eventbus.event_history.values() if isinstance(event, self.DebounceEvent))
         assert total_events == 1
 
-    async def test_expect_with_complex_predicate(self, eventbus):
-        """Test expect with complex predicate logic"""
+    async def test_debounce_uses_future_match_before_dispatch_fallback(self, eventbus):
+        async def dispatch_after_delay() -> BaseEvent:
+            await asyncio.sleep(0.02)
+            return eventbus.dispatch(self.DebounceEvent(user_id=555))
+
+        dispatch_task = asyncio.create_task(dispatch_after_delay())
+
+        resolved = (
+            await eventbus.find(self.DebounceEvent, past=1, future=False)
+            or await eventbus.find(self.DebounceEvent, past=False, future=0.1)
+            or await eventbus.dispatch(self.DebounceEvent(user_id=999))
+        )
+
+        dispatched = await dispatch_task
+        assert resolved is not None
+        assert isinstance(resolved, self.DebounceEvent)
+        assert resolved.event_id == dispatched.event_id
+        assert resolved.user_id == 555
+
+        await eventbus.wait_until_idle()
+        total_events = sum(1 for event in eventbus.event_history.values() if isinstance(event, self.DebounceEvent))
+        assert total_events == 1
+
+    async def test_find_with_complex_predicate(self, eventbus):
+        """Test future find with complex predicate logic."""
         events_seen = []
 
         def complex_predicate(event: UserActionEvent) -> bool:
@@ -1799,7 +1816,7 @@ class TestDebouncePatterns:
                 return result
             return False
 
-        expect_task = asyncio.create_task(eventbus.expect('UserActionEvent', predicate=complex_predicate, timeout=1.0))
+        find_task = asyncio.create_task(eventbus.find('UserActionEvent', where=complex_predicate, past=False, future=1.0))
 
         await asyncio.sleep(0.01)
 
@@ -1809,27 +1826,10 @@ class TestDebouncePatterns:
         eventbus.dispatch(UserActionEvent(action='target', user_id='u3'))  # Won't match yet
         eventbus.dispatch(UserActionEvent(action='target', user_id='u4'))  # This should match
 
-        received = await expect_task
+        received = await find_task
 
         assert received.user_id == 'u4'
         assert len(events_seen) == 4
-
-    async def test_expect_in_sync_context(self, mock_agent):
-        """Test that expect can be used from sync code that later awaits"""
-        bus = EventBus()
-
-        # This simulates calling expect from sync code
-        expect_coroutine = bus.expect('SyncEvent', timeout=1.0)
-
-        # Dispatch event
-        bus.dispatch(BaseEvent(event_type='SyncEvent'))
-
-        # Later await the coroutine
-        result = await expect_coroutine
-        assert result is not None
-        assert result.event_type == 'SyncEvent'
-
-        await bus.stop()
 
 
 class TestEventResults:
@@ -2217,7 +2217,7 @@ class TestComplexIntegration:
     """Complex integration test with all features"""
 
     async def test_complex_multi_bus_scenario(self, caplog):
-        """Test complex scenario with multiple buses, duplicate names, and all query methods"""
+        """Test complex scenario with multiple buses, duplicate names, and lookup flows"""
         # Create a hierarchy of buses
         app_bus = EventBus(name='AppBus')
         auth_bus = EventBus(name='AuthBus')

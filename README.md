@@ -329,34 +329,30 @@ if __name__ == '__main__':
 
 ### 🔎 Find Events in History or Wait for Future Events
 
-The `find()` method provides a unified way to search past event history and/or wait for future events. It's the recommended approach for most event lookup scenarios.
-
-The `past` and `future` parameters accept either `bool` or `float` values:
-
-| Value | `past` meaning | `future` meaning |
-|-------|----------------|------------------|
-| `True` | Search all history | Wait forever |
-| `False` | Skip history search | Don't wait |
-| `5.0` | Search last 5 seconds | Wait up to 5 seconds |
+`find()` is the single lookup API: search history, wait for future events, or combine both.
 
 ```python
-# Search all history, wait up to 5s for future
-event = await bus.find(ResponseEvent, past=True, future=5)
+# Default: non-blocking history lookup (past=True, future=False)
+existing = await bus.find(ResponseEvent)
 
-# Search last 5s of history, wait forever
-event = await bus.find(ResponseEvent, past=5, future=True)
+# Wait only for future matches
+future = await bus.find(ResponseEvent, past=False, future=5)
 
-# Search last 5s of history, wait up to 5s
-event = await bus.find(ResponseEvent, past=5, future=5)
+# Combine event predicate + event metadata filters
+match = await bus.find(
+    ResponseEvent,
+    where=lambda e: e.request_id == my_id,
+    event_status='completed',
+    future=5,
+)
 
-# Search all history only, don't wait (instant)
-event = await bus.find(ResponseEvent, past=True, future=False)
-
-# Wait up to 5s for future only (like expect())
-event = await bus.find(ResponseEvent, past=False, future=5)
-
-# With custom filter
-event = await bus.find(ResponseEvent, where=lambda e: e.request_id == my_id, future=5)
+# Wildcard: match any event type, filtered by metadata/predicate
+any_completed = await bus.find(
+    '*',
+    where=lambda e: e.event_type.endswith('ResultEvent'),
+    event_status='completed',
+    future=5,
+)
 ```
 
 #### Finding Child Events
@@ -375,6 +371,8 @@ if new_tab:
 
 This solves race conditions where child events fire before you start waiting for them.
 
+See the `EventBus.find(...)` API section below for full parameter details.
+
 > [!IMPORTANT]
 > `find()` resolves when the event is first *dispatched* to the `EventBus`, not when it completes. Use `await event` to wait for handlers to finish.
 > If no match is found (or future timeout elapses), `find()` returns `None`.
@@ -388,7 +386,7 @@ Avoid re-running expensive work by reusing recent events. The `find()` method ma
 ```python
 # Simple debouncing: reuse event from last 10 seconds, or dispatch new
 event = (
-    bus.find(ScreenshotEvent, past=10, future=False)  # Check last 10s of history (instant)
+    await bus.find(ScreenshotEvent, past=10, future=False)  # Check last 10s of history (instant)
     or await bus.dispatch(ScreenshotEvent())
 )
 
@@ -409,7 +407,7 @@ There are two ways to get return values from event handlers:
 **1. Have handlers return their values directly, which puts them in `event.event_results`:**
 
 ```python
-class DoSomeMathEvent(BaseEvent[int]):  # BaseEvent[int] = expect int returned from all event handlers
+class DoSomeMathEvent(BaseEvent[int]):  # BaseEvent[int] = handlers are validated as returning int
     a: int
     b: int
 
@@ -431,7 +429,7 @@ You can use these helpers to interact with the results returned by handlers:
 - `BaseEvent.event_results_by_handler_id()`, `BaseEvent.event_results_by_handler_name()`
 - `BaseEvent.event_results_flat_list()`, `BaseEvent.event_results_flat_dict()`
 
-**2. Have the handler do the work, then dispatch another event containing the result value, which other code can expect:**
+**2. Have the handler do the work, then dispatch another event containing the result value, which other code can find:**
 
 ```python
 def do_some_math(event: DoSomeMathEvent[int]) -> int:
@@ -440,7 +438,7 @@ def do_some_math(event: DoSomeMathEvent[int]) -> int:
 
 event_bus.on(DoSomeMathEvent, do_some_math)
 await event_bus.dispatch(DoSomeMathEvent(a=100, b=120))
-result_event = await event_bus.expect(MathCompleteEvent)
+result_event = await event_bus.find(MathCompleteEvent, past=False, future=30)
 print(result_event.final_sum)
 # 220
 ```
@@ -777,100 +775,43 @@ result = await event  # await the pending Event to get the completed Event
 - `max_history_drop=False`: raise `RuntimeError` when history is full.
 - `max_history_size=0`: keep pending/in-flight events only; completed events are immediately removed from history.
 
-##### `query(event_type: str | Type[BaseEvent], *, include: Callable[[BaseEvent], bool] | None=None, exclude: Callable[[BaseEvent], bool] | None=None, since: timedelta | float | int | None=None) -> BaseEvent | None`
-
-Return the most recently completed event in history that matches the type and optional predicates. Returns `None` if nothing qualifies.
-
-```python
-recent_sync = await bus.query(
-    SyncEvent,
-    since=timedelta(seconds=30),
-    include=lambda e: e.account_id == account_id,
-)
-
-if recent_sync is not None:
-    print('We already synced recently, skipping')
-```
-
-##### `find(event_type: str | Type[BaseEvent], *, where: Callable[[BaseEvent], bool]=None, child_of: BaseEvent | None=None, past: bool | float=True, future: bool | float=True) -> BaseEvent | None`
+##### `find(event_type: str | Literal['*'] | Type[BaseEvent], *, where: Callable[[BaseEvent], bool]=None, child_of: BaseEvent | None=None, past: bool | float | timedelta=True, future: bool | float=False, **event_fields) -> BaseEvent | None`
 
 Find an event matching criteria in history and/or future. This is the recommended unified method for event lookup.
 
 **Parameters:**
 
-- `event_type`: The event type string or model class to find
+- `event_type`: The event type string, `'*'` wildcard, or model class to find
 - `where`: Predicate function for filtering (default: matches all)
 - `child_of`: Only match events that are descendants of this parent event
 - `past`: Controls history search behavior (default: `True`)
   - `True`: search all history
   - `False`: skip history search
-  - `float`: search events from last N seconds only
-- `future`: Controls future wait behavior (default: `True`)
+  - `float`/`timedelta`: search events from last N seconds only
+- `future`: Controls future wait behavior (default: `False`)
   - `True`: wait forever for matching event
   - `False`: don't wait for future events
   - `float`: wait up to N seconds for matching event
+- `**event_fields`: Optional equality filters for event metadata fields prefixed with `event_` (for example `event_status='completed'`)
 
 ```python
-# Search all history, wait up to 5s for future
-event = await bus.find(ResponseEvent, past=True, future=5)
-
-# Search last 5s of history, wait forever
-event = await bus.find(ResponseEvent, past=5, future=True)
-
-# Search last 5s of history, wait up to 5s
-event = await bus.find(ResponseEvent, past=5, future=5)
-
-# Search all history only, don't wait (instant)
-event = await bus.find(ResponseEvent, past=True, future=False)
-
-# Wait up to 5s for future only (ignore history)
-event = await bus.find(ResponseEvent, past=False, future=5)
+# Default call is non-blocking history lookup (past=True, future=False)
+event = await bus.find(ResponseEvent)
 
 # Find child of a specific parent event
 child = await bus.find(ChildEvent, child_of=parent_event, future=5)
 
-# With custom filter
-event = await bus.find(ResponseEvent, where=lambda e: e.status == 'success', future=5)
-```
+# Wait only for future events (ignore history)
+event = await bus.find(ResponseEvent, past=False, future=5)
 
-##### `expect(event_type: str | Type[BaseEvent], *, include: Callable=None, exclude: Callable=None, timeout: float | None=None, past: bool | float=False, child_of: BaseEvent | None=None) -> BaseEvent | None`
+# Search recent history + optionally wait
+event = await bus.find(ResponseEvent, past=5, future=5)
 
-Wait for a specific event to occur. This is a backwards-compatible wrapper around `find()`.
+# Filter by event metadata
+completed = await bus.find(ResponseEvent, event_status='completed')
 
-**Parameters:**
-
-- `event_type`: The event type string or model class to wait for
-- `include`: Filter function that must return `True` for the event to match
-- `exclude`: Filter function that must return `False` for the event to match
-- `timeout`: Maximum time to wait in seconds (None = wait forever). Maps to `future` parameter of `find()`.
-- `past`: Controls history search behavior (default: `False`)
-  - `True`: search all history first
-  - `False`: skip history search
-  - `float`: search events from last N seconds
-- `child_of`: Only match events that are descendants of this parent event
-
-```python
-# Wait for any UserEvent
-event = await bus.expect('UserEvent', timeout=30)
-
-# Wait with custom filter
-event = await bus.expect(
-    'UserEvent',
-    include=lambda e: e.user_id == 'specific_user',
-    timeout=30,
-)
-
-# Search history first, then wait
-event = await bus.expect('UserEvent', past=True, timeout=30)
-
-# Search last 10 seconds of history, then wait
-event = await bus.expect('UserEvent', past=10, timeout=30)
-
-# Find child event
-child = await bus.expect(ChildEvent, child_of=parent_event, timeout=5)
-
-if event is None:
-    print('No matching event arrived within 30 seconds')
+# Wildcard match across all event types
+any_completed = await bus.find('*', event_status='completed', past=True, future=False)
 ```
 
 ##### `event_is_child_of(event: BaseEvent, ancestor: BaseEvent) -> bool`
@@ -1212,7 +1153,7 @@ The raw callable is stored on `handler`, but is excluded from JSON serialization
 These options can be set as bus-level defaults, event-level options, or as handler-specific options.
 They control the concurrency of how events are processed within a bus, across all busses, and how handlers execute within a single event.
 
-- `event_concurrency`: Only `global-serial` is supported at the moment in python
+- `event_concurrency`: `'global-serial' | 'bus-serial' | 'parallel'` controls event-level scheduling (`None` on events defers to bus default)
 - `event_handler_concurrency`: `'serial' | 'parallel'` should handlers on a single event run in parallel or in sequential order
 - `event_handler_completion`: `'all' | 'first'` should all handlers run, or should we stop handler execution once any handler returns a non-`None` value
 

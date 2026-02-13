@@ -15,8 +15,8 @@ from typing import Any
 
 from uuid_extensions import uuid7str
 
+from bubus.event_bus import EventBus, EventPatternType, in_handler_context
 from bubus.models import BaseEvent
-from bubus.service import EventBus, EventPatternType, inside_handler_context
 
 
 class JSONLEventBridge:
@@ -44,7 +44,7 @@ class JSONLEventBridge:
 
         await asyncio.to_thread(self._append_line, json.dumps(payload, separators=(',', ':')))
 
-        if inside_handler_context.get():
+        if in_handler_context():
             return None
         return event
 

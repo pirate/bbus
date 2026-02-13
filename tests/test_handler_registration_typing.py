@@ -7,8 +7,8 @@ This file is for static type checking only (pyright/ty), not runtime pytest exec
 
 from typing import TYPE_CHECKING, Any, assert_type
 
+from bubus.event_bus import EventBus
 from bubus.models import BaseEvent, EventHandler
-from bubus.service import EventBus
 
 
 class _SomeEventClass(BaseEvent[str]):

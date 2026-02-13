@@ -39,7 +39,7 @@ export const BaseEventSchema = z
     event_results: z.array(z.unknown()).optional(),
     event_concurrency: z.enum(EVENT_CONCURRENCY_MODES).nullable().optional(),
     event_handler_concurrency: z.enum(EVENT_HANDLER_CONCURRENCY_MODES).nullable().optional(),
-    event_handler_completion: z.enum(EVENT_HANDLER_COMPLETION_MODES).optional(),
+    event_handler_completion: z.enum(EVENT_HANDLER_COMPLETION_MODES).nullable().optional(),
   })
   .loose()
 
@@ -139,7 +139,7 @@ export class BaseEvent {
   event_completed_ts?: number // nanosecond monotonic version of event_completed_at
   event_concurrency?: EventConcurrencyMode | null // concurrency mode for the event as a whole in relation to other events
   event_handler_concurrency?: EventHandlerConcurrencyMode | null // concurrency mode for the handlers within the event
-  event_handler_completion?: EventHandlerCompletionMode // completion strategy: 'all' (default) waits for every handler, 'first' returns earliest non-undefined result and cancels the rest
+  event_handler_completion?: EventHandlerCompletionMode | null // completion strategy: 'all' (default) waits for every handler, 'first' returns earliest non-undefined result and cancels the rest
 
   static event_type?: string // class name of the event, e.g. BaseEvent.extend("MyEvent").event_type === "MyEvent"
   static event_version = '0.0.1'

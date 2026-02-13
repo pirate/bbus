@@ -11,8 +11,8 @@ from typing import Any, Literal
 import psutil
 import pytest
 
+import bubus.event_bus as event_bus_module
 import bubus.models as models_module
-import bubus.service as service_module
 from bubus import BaseEvent, EventBus
 
 
@@ -1320,13 +1320,13 @@ async def test_perf_debug_hot_path_breakdown() -> None:
     """
     profiler = MethodProfiler()
     instrumented = [
-        (service_module.ReentrantLock, '__aenter__'),
-        (service_module.ReentrantLock, '__aexit__'),
-        (service_module.EventBus, '_get_applicable_handlers'),
-        (service_module.EventBus, '_would_create_loop'),
-        (service_module.EventBus, '_execute_handlers'),
-        (service_module.EventBus, 'execute_handler'),
-        (service_module.EventBus, 'cleanup_event_history'),
+        (event_bus_module.ReentrantLock, '__aenter__'),
+        (event_bus_module.ReentrantLock, '__aexit__'),
+        (event_bus_module.EventBus, '_get_applicable_handlers'),
+        (event_bus_module.EventBus, '_would_create_loop'),
+        (event_bus_module.EventBus, '_execute_handlers'),
+        (event_bus_module.EventBus, 'execute_handler'),
+        (event_bus_module.EventBus, 'cleanup_event_history'),
         (models_module.BaseEvent, 'event_create_pending_results'),
         (models_module.BaseEvent, '_is_queued_on_any_bus'),
         (models_module.BaseEvent, '_remove_self_from_queue'),
