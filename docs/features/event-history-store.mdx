@@ -28,7 +28,7 @@ The key difference: queue is "what still needs to start", history is "what this 
 
 ## Event lifecycle: queue -> history -> trim
 
-1. Emit/dispatch:
+1. Emit:
    - Event is accepted.
    - Event is added to `event_history`.
    - Event is enqueued into `pending_event_queue`.

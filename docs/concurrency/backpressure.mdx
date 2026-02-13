@@ -1,57 +1,32 @@
 ---
 title: Backpressure
-description: How emit/dispatch, queueing, and history limits interact under high event volume.
+description: How emit, queueing, and history limits interact under high event volume.
 ---
 
-Backpressure in `bubus` is intentionally not modeled as a bounded pending queue.
+Backpressure in `bubus` is history-policy based, not queue-capacity based.
 
-Instead:
+- `emit()` enqueues synchronously and returns immediately.
+- Pending queues are unbounded in both runtimes.
+- Overload behavior is controlled by `max_history_size` + `max_history_drop`.
 
-- `dispatch()` / `emit()` is synchronous in both runtimes (it enqueues immediately and returns a pending event object).
-- the pending queue is unbounded in both runtimes.
-- pressure controls come from history retention settings (`max_history_size`, `max_history_drop`), not from queue capacity.
+## 1) If I emit 1,000,000 events, will errors be raised?
 
-## What "synchronous dispatch" means
+### Error conditions
 
-In both Python and TypeScript:
+| Runtime | Condition | What is raised |
+| --- | --- | --- |
+| Python | `emit()` called with no running event loop | `RuntimeError` (`emit() called but no event loop is running`) |
+| Python | `max_history_size > 0`, `max_history_drop=False`, and history already at limit | `RuntimeError` (`history limit reached`) |
+| TypeScript | `emit()` with `max_history_size > 0`, `max_history_drop=false`, and history already at limit | `Error` (message contains `history limit reached`) |
+| Both | Process runs out of memory under extreme load | Runtime/VM OOM failure (not a bus-specific exception type) |
 
-- `dispatch()` / `emit()` returns immediately after enqueueing.
-- handlers run asynchronously in the bus runloop.
-- callers can `await` the returned event later (`await event` / `await event.done()`), but enqueue itself is not blocked by handler execution.
+In normal operation, queue-capacity errors are not the backpressure mechanism.
 
-## Queue implementation under the hood
+`max_history_size=0` is a special case in both runtimes: it does not trigger history-limit rejection, and instead keeps only in-flight visibility.
 
-- Python: `pending_event_queue` is a custom `CleanShutdownQueue` built on `asyncio.Queue(maxsize=0)` (unbounded).
-- TypeScript: `pending_event_queue` is an in-memory `BaseEvent[]` array drained by the runloop (`shift()` from the front).
+With `max_history_drop=true`, `emit()` does not reject on history size. Under sustained overload, old uncompleted entries can be dropped and a warning is logged.
 
-Because both are unbounded, volume spikes are absorbed into queue depth unless history policy rejects or trims.
-
-## Where backpressure is expressed
-
-Backpressure is expressed by `event_history` policy:
-
-- `max_history_size = null/None`: no history limit; no history-based rejection.
-- `max_history_size > 0` + `max_history_drop = false`: new dispatches are rejected when history is full.
-- `max_history_size > 0` + `max_history_drop = true`: history is trimmed as load grows (oldest entries removed).
-- `max_history_size = 0`: keep only in-flight visibility; completed events are dropped from history immediately.
-
-For deeper retention semantics and lifecycle details, see [Event History Store](../features/event-history-store).
-
-## Errors and warnings you should expect under load
-
-- Reject mode (`max_history_drop = false` with finite `max_history_size`):
-  - Python raises `RuntimeError` on emit when history is at limit.
-  - TypeScript throws `Error` on dispatch when history is at limit.
-- Drop mode (`max_history_drop = true`):
-  - both runtimes trim oldest history first.
-  - when pressure is extreme, both runtimes may eventually drop uncompleted/pending entries and log warnings.
-
-This gives you a clear operational choice:
-
-- fail fast when overloaded (reject mode), or
-- stay available and shed oldest history visibility (drop mode).
-
-## Typical configurations
+### Reject vs drop behavior
 
 <Tabs>
 <Tab title="Python">
@@ -59,14 +34,11 @@ This gives you a clear operational choice:
 ```python
 from bubus import EventBus
 
-# Fail fast when event_history reaches 5k
-reject_bus = EventBus(max_history_size=5000, max_history_drop=False)
+# Reject new emits once history reaches N
+reject_bus = EventBus(max_history_size=10_000, max_history_drop=False)
 
-# Keep accepting new events, trim oldest history entries
-drop_bus = EventBus(max_history_size=5000, max_history_drop=True)
-
-# No history cap (queue and history can both grow)
-unbounded_bus = EventBus(max_history_size=None)
+# Never reject on history size; trim oldest history entries instead
+drop_bus = EventBus(max_history_size=10_000, max_history_drop=True)
 ```
 
 </Tab>
@@ -75,24 +47,89 @@ unbounded_bus = EventBus(max_history_size=None)
 ```ts
 import { EventBus } from 'bubus'
 
-const rejectBus = new EventBus('RejectBus', { max_history_size: 5000, max_history_drop: false })
-const dropBus = new EventBus('DropBus', { max_history_size: 5000, max_history_drop: true })
-const unboundedBus = new EventBus('UnboundedBus', { max_history_size: null })
+const rejectBus = new EventBus('RejectBus', { max_history_size: 10_000, max_history_drop: false })
+const dropBus = new EventBus('DropBus', { max_history_size: 10_000, max_history_drop: true })
 ```
 
 </Tab>
 </Tabs>
 
-## Observing pressure at runtime
+## 2) If 1,000,000 events complete, how many are kept?
+
+Let `N = max_history_size`.
+
+| Setting | Events retained after bus becomes idle | Notes |
+| --- | --- | --- |
+| `N = None` / `null` | All completed events (so up to 1,000,000) | History is unbounded. |
+| `N > 0`, `max_history_drop = false` | Up to `N` | New emits are rejected once history reaches `N`. |
+| `N > 0`, `max_history_drop = true` | Bounded to `N` at steady state | Oldest history entries are removed first. |
+| `N = 0` | `0` completed events retained | Only pending/in-flight visibility is kept; completed entries are dropped. |
+
+Python nuance: in heavy bursts with `max_history_drop=True`, cleanup is amortized, so history can temporarily exceed `N` before converging back to `<= N`.
+
+For the broader retention model, see [Event History Store](../features/event-history-store).
+
+## 3) How RAM usage scales
+
+At a high level, memory grows with:
+
+- pending queue depth,
+- retained history size,
+- per-event handler/result payload size.
+
+A practical model is:
+
+`RAM ~= O(pending_event_queue) + O(event_history) + O(event_results and payloads)`
+
+### Measured slopes from perf suites
+
+- Python README matrix reports scenario-dependent peak RSS slopes between about `0.025kb/event` and `8.024kb/event`.
+- TypeScript README matrix reports scenario/runtime-dependent peak RSS slopes between about `0.1kb/event` and `7.9kb/event`.
+- TypeScript README notes those `kb/event` values are measured during active processing with history aggressively bounded (`max_history_size=1` in perf harnesses).
+
+Use those numbers as throughput-era slope indicators, not exact long-term retention multipliers for your payloads.
+
+Operationally:
+
+- bounded history (`N` finite) keeps steady-state memory bounded by queue depth + `N`,
+- unbounded history (`N=None/null`) makes retained RAM grow roughly linearly with total completed events.
+
+## 4) Queue vs history lifecycle (exact behavior)
+
+Events do not "move from queue to history." They are added to history at `emit()` time, and can exist in both structures while pending.
+
+### Python timeline (`emit`)
+
+1. Validate pressure policy.
+2. Enqueue into `pending_event_queue`.
+3. Add same event object to `event_history`.
+4. Runloop dequeues event (`queue.get()`), then executes handlers.
+5. Event remains in `event_history` as `pending` -> `started` -> `completed` unless trimmed/removed by history policy.
+
+### TypeScript timeline (`emit`)
+
+1. Validate pressure policy.
+2. Add event to `event_history`.
+3. Apply `trimHistory()`.
+4. Push event into `pending_event_queue`.
+5. Runloop shifts from queue and executes handlers.
+6. Event remains in `event_history` unless trimmed/removed by policy.
+
+So yes:
+
+- an event can be in both `pending_event_queue` and `event_history` at the same time,
+- `event_history` can contain pending events (not only started/completed events).
+
+## Observe both structures directly
 
 <Tabs>
 <Tab title="Python">
 
 ```python
 event = bus.emit(MyEvent())
-pending = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
-history = len(bus.event_history)
-print('pending_event_queue=', pending, 'event_history=', history)
+pending_count = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
+history_count = len(bus.event_history)
+print('pending_event_queue=', pending_count, 'event_history=', history_count)
 ```
 
 </Tab>

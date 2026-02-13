@@ -1,31 +1,59 @@
 ---
 title: Events Suck
-description: A gentle, mildly sarcastic bridge from imperative code to event-driven systems.
+description: Practical patterns for teams who like events in theory but dislike event-driven DX in practice.
 ---
 
-If you have ever seen "event-driven architecture" and immediately remembered a production incident from 2019, this page is for you.
+If you like events in theory but hate the day-to-day developer experience, this page is for you.
 
-The `events_suck` helpers exist to make event adoption less painful:
+Common pain points:
 
-- Keep your existing imperative mental model.
-- Keep method-shaped APIs that look like normal SDK/client code.
-- Introduce events behind the curtain so you can migrate incrementally.
+- calling boilerplate (`emit` + await completion + unwrap result) for every request
+- eventual consistency anxiety ("will my response event arrive?")
+- duplicating signatures across schemas, handlers, and implementation functions
 
-No ideology required. No ceremony tax. No "rewrite everything first."
+The goal here is to keep event architecture benefits without forcing painful calling patterns.
 
-## What `events_suck` gives you
+## 1) Pain: painful calling interface boilerplate
 
-| Helper | Python | TypeScript | What it does |
-| --- | --- | --- | --- |
-| `wrap(class_name, methods)` | Yes | Yes | Builds a client class with imperative methods that emit events and return the first result. |
-| `make_events(mapping)` | Yes | Yes | Creates event classes from a mapping of event names to functions/methods. |
-| `make_handler(func)` | Yes | No | Adapts a normal function/method into a handler that reads payload fields as function args. |
+You usually end up writing verbose call sites repeatedly.
 
-TypeScript intentionally does not have `make_handler`; the recommended pattern is explicit inline handlers.
+`events_suck.wrap(...)` gives you a method-shaped client API (`client.create(...)`) while still routing through events.
 
-## Pattern 1: Keep an imperative SDK surface with `wrap(...)`
+<Tabs>
+<Tab title="Python">
 
-Use this when you want `client.create(...)` and `client.update(...)` style calls while moving execution to events.
+```python
+# Without wrap: valid, but noisy at every call site
+event = bus.emit(CreateUserEvent(name='bob', age=45))
+user_id = await event.event_result()
+
+# With wrap: looks like normal async function calls
+SDKClient = events_suck.wrap('SDKClient', {'create': CreateUserEvent, 'update': UpdateUserEvent})
+client = SDKClient(bus=bus)
+user_id = await client.create(name='bob', age=45, nickname='bobby')
+updated = await client.update(id=user_id, age=46, source='sync')
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+// Without wrap: valid, but noisy at every call site
+const event = bus.emit(CreateUserEvent({ name: 'bob', age: 45 }))
+await event.done()
+const user_id = event.event_result
+
+// With wrap: looks like normal async function calls
+const SDKClient = events_suck.wrap('SDKClient', { create: CreateUserEvent, update: UpdateUserEvent })
+const client = new SDKClient(bus)
+const id = await client.create({ name: 'bob', age: 45 }, { nickname: 'bobby' })
+const updated = await client.update({ id: id ?? 'fallback-id', age: 46 }, { source: 'sync' })
+```
+
+</Tab>
+</Tabs>
+
+### Minimal end-to-end `wrap(...)` wiring
 
 <Tabs>
 <Tab title="Python">
@@ -41,9 +69,27 @@ class UpdateUserEvent(BaseEvent[bool]):
     id: str
     age: int | None = None
 
+class UserService:
+    def __init__(self) -> None:
+        self.users: dict[str, dict[str, int | str]] = {}
+
+    async def on_create(self, event: CreateUserEvent) -> str:
+        user_id = f'user-{event.age}'
+        self.users[user_id] = {'id': user_id, 'name': event.name, 'age': event.age}
+        return user_id
+
+    async def on_update(self, event: UpdateUserEvent) -> bool:
+        if event.id not in self.users:
+            return False
+        if event.age is not None:
+            self.users[event.id]['age'] = event.age
+        return True
+
 bus = EventBus('SDKBus')
-bus.on(CreateUserEvent, lambda e: f'user-{e.age}')
-bus.on(UpdateUserEvent, lambda e: e.age == 46)
+service = UserService()
+
+bus.on(CreateUserEvent, service.on_create)
+bus.on(UpdateUserEvent, service.on_update)
 
 SDKClient = events_suck.wrap('SDKClient', {
     'create': CreateUserEvent,
@@ -73,9 +119,26 @@ const UpdateUserEvent = BaseEvent.extend('UpdateUserEvent', {
   event_result_type: z.boolean(),
 })
 
+type UserRecord = { id: string; name: string; age: number }
+const users = new Map<string, UserRecord>()
+
+const onCreate = async (event: InstanceType<typeof CreateUserEvent>) => {
+  const user_id = `user-${event.age}`
+  users.set(user_id, { id: user_id, name: event.name, age: event.age })
+  return user_id
+}
+
+const onUpdate = async (event: InstanceType<typeof UpdateUserEvent>) => {
+  const existing = users.get(event.id)
+  if (!existing) return false
+  if (event.age !== undefined && event.age !== null) existing.age = event.age
+  users.set(event.id, existing)
+  return true
+}
+
 const bus = new EventBus('SDKBus')
-bus.on(CreateUserEvent, async (event) => `user-${event.age}`)
-bus.on(UpdateUserEvent, async (event) => event.age === 46)
+bus.on(CreateUserEvent, onCreate)
+bus.on(UpdateUserEvent, onUpdate)
 
 const SDKClient = events_suck.wrap('SDKClient', {
   create: CreateUserEvent,
@@ -90,62 +153,153 @@ const updated = await client.update({ id: user_id ?? 'fallback-id', age: 46 }, {
 </Tab>
 </Tabs>
 
-## Pattern 2: Generate events from existing function signatures
+Related docs:
 
-Use this when you have legacy service methods and want event classes without manually writing each one.
+- [Return Value Handling](../features/return-value-handling)
+- [BaseEvent API](../api/baseevent)
+
+## 2) Pain: eventual consistency headaches
+
+If your mental model is "I called something, I need a result now," pure fire-and-forget event flows can feel stressful.
+
+Two patterns reduce that stress:
+
+- request/response on one bus with direct return values (`event_result` / `first()`)
+- immediate execution for nested calls inside handlers (RPC-style queue-jump)
+
+These patterns feel function-like for in-process flows. If you later move a step across process/network boundaries (bridges), treat that edge as eventually consistent again.
+
+Immediate execution docs: [Immediate Execution (RPC-style)](../concurrency/immediate-execution)
+
+### Nested request/response with immediate execution
 
 <Tabs>
 <Tab title="Python">
 
 ```python
-from bubus import EventBus, events_suck
+class CheckoutEvent(BaseEvent[str]):
+    order_id: str
 
-class LegacyUserService:
-    def create(self, id: str | None, name: str, age: int) -> str:
-        return f'{name}-{age}'
+class ChargeCardEvent(BaseEvent[str]):
+    order_id: str
 
-    def update(self, id: str, age: int | None = None, **extra) -> bool:
-        return True
+async def on_checkout(event: CheckoutEvent) -> str:
+    child = event.bus.emit(ChargeCardEvent(order_id=event.order_id))
+    await child                       # immediate path while inside handler
+    receipt_id = await child.event_result()
+    return receipt_id
 
-events = events_suck.make_events({
-    'UserCreateEvent': LegacyUserService.create,
-    'UserUpdateEvent': LegacyUserService.update,
-})
-
-service = LegacyUserService()
-bus = EventBus('LegacyBus')
-bus.on(events.UserCreateEvent, events_suck.make_handler(service.create))
-bus.on(events.UserUpdateEvent, events_suck.make_handler(service.update))
+async def on_charge(event: ChargeCardEvent) -> str:
+    return f'receipt-{event.order_id}'
 ```
 
 </Tab>
 <Tab title="TypeScript">
 
 ```ts
-import { EventBus, events_suck } from 'bubus'
-
-const events = events_suck.make_events({
-  UserCreateEvent: (payload: { id: string | null; name: string; age: number }) => `${payload.name}-${payload.age}`,
-  UserUpdateEvent: (payload: { id: string; age?: number | null }) => true,
+const CheckoutEvent = BaseEvent.extend('CheckoutEvent', {
+  order_id: z.string(),
+  event_result_type: z.string(),
+})
+const ChargeCardEvent = BaseEvent.extend('ChargeCardEvent', {
+  order_id: z.string(),
+  event_result_type: z.string(),
 })
 
-const bus = new EventBus('LegacyBus')
-bus.on(events.UserCreateEvent, ({ id, name, age }) => `${name}-${age}`)
-bus.on(events.UserUpdateEvent, ({ id, age, ...extra }) => true)
+bus.on(CheckoutEvent, async (event) => {
+  const child = event.bus!.emit(ChargeCardEvent({ order_id: event.order_id }))
+  await child.done()                  // immediate path while inside handler
+  return child.event_result ?? 'missing-receipt'
+})
+
+bus.on(ChargeCardEvent, async (event) => `receipt-${event.order_id}`)
 ```
 
 </Tab>
 </Tabs>
 
-## Suggested migration flow
+Related docs:
 
-1. Wrap one painful integration surface with `events_suck.wrap(...)`.
-2. Keep old method signatures and behavior stable for callers.
-3. Move internal logic behind bus handlers one endpoint at a time.
-4. Add richer event-native features later (forwarding, history, retries, middleware) only where they help.
+- [Immediate Execution (RPC-style)](../concurrency/immediate-execution)
+- [Timeout Enforcement](../concurrency/timeouts)
+- [retry](../api/retry)
 
-## Reality check
+## 3) Pain: defining signatures multiple times
 
-You are not wrong if event systems have burned you before.
+You can keep one source of truth for payload shapes and reuse it in implementation code.
 
-`events_suck` is designed for teams that want practical migration mechanics, not architecture cosplay. Keep the API shape people already trust, then adopt events at your own pace.
+### Python: `@validate_call` + `make_events(...)` + `make_handler(...)`
+
+Use implementation function signatures as the source of truth, then generate event classes from them.
+
+```python
+from bubus import EventBus, events_suck
+from pydantic import validate_call
+
+@validate_call
+def create_user(id: str | None, name: str, age: int) -> str:
+    return f'{name}-{age}'
+
+@validate_call
+def update_user(id: str, age: int | None = None, **extra) -> bool:
+    return True
+
+events = events_suck.make_events({
+    'UserCreateEvent': create_user,
+    'UserUpdateEvent': update_user,
+})
+
+bus = EventBus('LegacyBus')
+bus.on(events.UserCreateEvent, events_suck.make_handler(create_user))
+bus.on(events.UserUpdateEvent, events_suck.make_handler(update_user))
+
+UserClient = events_suck.wrap('UserClient', {'create': events.UserCreateEvent, 'update': events.UserUpdateEvent})
+client = UserClient(bus=bus)
+```
+
+### TypeScript: `zod` schema + `z.infer` shared with implementation
+
+Keep the schema as the source of truth, infer implementation input types from it, and reuse the same shape in `BaseEvent.extend(...)`.
+
+```ts
+import { BaseEvent, EventBus, events_suck } from 'bubus'
+import { z } from 'zod'
+
+const CreateUserInputSchema = z.object({
+  id: z.string().nullable().optional(),
+  name: z.string(),
+  age: z.number(),
+})
+type CreateUserInput = z.infer<typeof CreateUserInputSchema>
+
+const UserCreateEvent = BaseEvent.extend('UserCreateEvent', {
+  ...CreateUserInputSchema.shape,
+  event_result_type: z.string(),
+})
+
+const bus = new EventBus('LegacyBus')
+const create_user = async (input: CreateUserInput): Promise<string> => `${input.name}-${input.age}`
+
+bus.on(UserCreateEvent, ({ id, name, age }) => create_user({ id, name, age }))
+
+const UserClient = events_suck.wrap('UserClient', {
+  create: UserCreateEvent,
+})
+
+const client = new UserClient(bus)
+const id = await client.create({ id: null, name: 'bob', age: 45 })
+```
+
+Related docs:
+
+- [Typed Events](../features/typed-events)
+- [BaseEvent API](../api/baseevent)
+
+## Migration playbook
+
+1. Start with `wrap(...)` to clean up call-site boilerplate first.
+2. Use immediate execution patterns where you need function-call-like request/response behavior.
+3. Consolidate types with `@validate_call` (Python) or `z.infer` (TypeScript) to avoid signature drift.
+4. Add timeouts/retry policies where needed, instead of forcing eventual-consistency semantics everywhere.
+
+You do not need to choose between clean DX and events. You can keep method-shaped APIs and adopt event internals incrementally.

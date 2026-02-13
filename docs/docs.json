@@ -23,18 +23,17 @@
           {
             "group": "Features",
             "pages": [
-              "features/event-pattern-matching",
-              "features/async-sync-handlers",
               "features/typed-events",
-              "features/bus-forwarding",
               "features/return-value-handling",
               "features/fifo-processing",
-              "features/nested-child-events",
+              "features/parent-child-tracking",
+              "features/forwarding-between-buses",
+              "features/event-pattern-matching",
+              "features/async-sync-handlers",
+              "features/event-history-store",
               "features/find-events",
               "features/event-debouncing",
-              "features/context-propagation",
-              "features/event-history-store",
-              "features/parallel-handler-execution"
+              "features/context-propagation"
             ]
           },
           {
@@ -51,12 +50,12 @@
           {
             "group": "Concurrency Control",
             "pages": [
+              "concurrency/immediate-execution",
               "concurrency/events-global-serial",
               "concurrency/events-bus-serial",
               "concurrency/events-parallel",
               "concurrency/handlers-serial",
               "concurrency/handlers-parallel",
-              "concurrency/immediate-execution",
               "concurrency/handler-completion-all",
               "concurrency/handler-completion-first",
               "concurrency/timeouts",

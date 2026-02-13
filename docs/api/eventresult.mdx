@@ -33,7 +33,7 @@ value = await entry
 <Tab title="TypeScript">
 
 ```ts
-const entry = Array.from(event.event_results.values())[0]
+const [, entry] = Array.from(event.event_results.entries())[0]
 const value = entry.result
 ```
 

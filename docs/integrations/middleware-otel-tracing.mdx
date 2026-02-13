@@ -22,10 +22,42 @@ bus = EventBus(
 )
 ```
 
+## Setup with Sentry
+
+```python
+import sentry_sdk
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from sentry_sdk.integrations.opentelemetry import SentrySpanProcessor
+
+from bubus import EventBus
+from bubus.middlewares import OtelTracingMiddleware
+
+sentry_sdk.init(
+    dsn='https://<public>@<host>/<project>',
+    traces_sample_rate=1.0,
+)
+
+provider = TracerProvider()
+provider.add_span_processor(SentrySpanProcessor())
+trace.set_tracer_provider(provider)
+
+bus = EventBus(
+    name='AppBus',
+    middlewares=[OtelTracingMiddleware()],
+)
+```
+
+Install requirements:
+
+```bash
+pip install sentry-sdk opentelemetry-api opentelemetry-sdk
+```
+
 ## Behavior
 
 - Starts an event span when an event starts and ends it on completion.
 - Starts one child span per handler execution.
 - Records handler exceptions on handler spans.
 - Links child events to parent handler spans where available.
-- Requires `opentelemetry-api` (install via `pip install opentelemetry-api`).
+- With Sentry OpenTelemetry integration enabled, these spans are exported to Sentry performance traces.
