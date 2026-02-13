@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import shutil
@@ -13,6 +14,9 @@ from typing_extensions import TypedDict
 
 from bubus import BaseEvent, EventBus
 from bubus.helpers import CleanShutdownQueue
+
+SUBPROCESS_TIMEOUT_SECONDS = 30
+EVENT_WAIT_TIMEOUT_SECONDS = 15
 
 
 class ScreenshotRegion(BaseModel):
@@ -332,13 +336,17 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
     env = os.environ.copy()
     env['BUBUS_PY_TS_INPUT_PATH'] = str(in_path)
     env['BUBUS_PY_TS_OUTPUT_PATH'] = str(out_path)
-    proc = subprocess.run(
-        [node_bin, '--import', 'tsx', '-e', ts_script],
-        cwd=ts_root,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [node_bin, '--import', 'tsx', '-e', ts_script],
+            cwd=ts_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(f'node/tsx event roundtrip timed out after {SUBPROCESS_TIMEOUT_SECONDS}s: {exc}')
 
     if proc.returncode != 0 and 'Cannot find package' in proc.stderr and "'tsx'" in proc.stderr:
         pytest.skip('tsx is not installed in bubus-ts; skipping cross-language roundtrip test')
@@ -384,13 +392,17 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
     env = os.environ.copy()
     env['BUBUS_PY_TS_BUS_INPUT_PATH'] = str(in_path)
     env['BUBUS_PY_TS_BUS_OUTPUT_PATH'] = str(out_path)
-    proc = subprocess.run(
-        [node_bin, '--import', 'tsx', '-e', ts_script],
-        cwd=ts_root,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [node_bin, '--import', 'tsx', '-e', ts_script],
+            cwd=ts_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(f'node/tsx bus roundtrip timed out after {SUBPROCESS_TIMEOUT_SECONDS}s: {exc}')
 
     if proc.returncode != 0 and 'Cannot find package' in proc.stderr and "'tsx'" in proc.stderr:
         pytest.skip('tsx is not installed in bubus-ts; skipping cross-language roundtrip test')
@@ -479,7 +491,7 @@ async def test_python_to_ts_roundtrip_schema_enforcement_after_reload(tmp_path: 
     wrong_event = BaseEvent[Any].model_validate(screenshot_payload)
     assert isinstance(wrong_event.event_result_type, type)
     assert issubclass(wrong_event.event_result_type, BaseModel)
-    await wrong_bus.dispatch(wrong_event)
+    await asyncio.wait_for(wrong_bus.dispatch(wrong_event), timeout=EVENT_WAIT_TIMEOUT_SECONDS)
     wrong_result = next(iter(wrong_event.event_results.values()))
     assert wrong_result.status == 'error'
     assert wrong_result.error is not None
@@ -506,7 +518,7 @@ async def test_python_to_ts_roundtrip_schema_enforcement_after_reload(tmp_path: 
     right_event = BaseEvent[Any].model_validate(screenshot_payload)
     assert isinstance(right_event.event_result_type, type)
     assert issubclass(right_event.event_result_type, BaseModel)
-    await right_bus.dispatch(right_event)
+    await asyncio.wait_for(right_bus.dispatch(right_event), timeout=EVENT_WAIT_TIMEOUT_SECONDS)
     right_result = next(iter(right_event.event_results.values()))
     assert right_result.status == 'completed'
     assert right_result.error is None
@@ -589,7 +601,7 @@ async def test_python_to_ts_to_python_bus_roundtrip_rehydrates_and_resumes(tmp_p
     restored.handlers[handler_two_id].handler = restored_handler_two
 
     trigger = restored.dispatch(PyTsBusResumeEvent(label='e3'))
-    await trigger
+    await asyncio.wait_for(trigger, timeout=EVENT_WAIT_TIMEOUT_SECONDS)
 
     assert run_order == ['h2:e1', 'h1:e2', 'h2:e2', 'h1:e3', 'h2:e3']
 

@@ -14,6 +14,8 @@ import { fromJsonSchema } from '../src/types.js'
 const tests_dir = dirname(fileURLToPath(import.meta.url))
 const ts_root = resolve(tests_dir, '..')
 const repo_root = resolve(ts_root, '..')
+const PROCESS_TIMEOUT_MS = 30_000
+const EVENT_WAIT_TIMEOUT_MS = 15_000
 
 const jsonSafe = (value: unknown): Record<string, unknown> => JSON.parse(JSON.stringify(value)) as Record<string, unknown>
 
@@ -306,6 +308,35 @@ const runCommand = (cmd: string, args: string[], cwd = repo_root): ReturnType<ty
     cwd,
     env: process.env,
     encoding: 'utf8',
+    timeout: PROCESS_TIMEOUT_MS,
+    maxBuffer: 10 * 1024 * 1024,
+  })
+
+const assertProcessSucceeded = (proc: ReturnType<typeof spawnSync>, label: string): void => {
+  if (proc.error) {
+    throw new Error(`${label} failed: ${proc.error.message}\nstdout:\n${proc.stdout ?? ''}\nstderr:\n${proc.stderr ?? ''}`)
+  }
+  if (proc.signal) {
+    throw new Error(`${label} terminated by signal ${proc.signal}\nstdout:\n${proc.stdout ?? ''}\nstderr:\n${proc.stderr ?? ''}`)
+  }
+  assert.equal(proc.status, 0, `${label} failed:\nstdout:\n${proc.stdout ?? ''}\nstderr:\n${proc.stderr ?? ''}`)
+}
+
+const withTimeout = async <T>(promise: Promise<T>, timeout_ms: number, label: string): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const timeout_id = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeout_ms}ms`))
+    }, timeout_ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timeout_id)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timeout_id)
+        reject(error)
+      }
+    )
   })
 
 const resolvePython = (): string | null => {
@@ -377,9 +408,12 @@ with open(output_path, 'w', encoding='utf-8') as f:
         BUBUS_TS_PY_OUTPUT_PATH: output_path,
       },
       encoding: 'utf8',
+      timeout: PROCESS_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
     })
 
-    assert.equal(proc.status, 0, `python roundtrip failed:\nstdout:\n${proc.stdout ?? ''}\nstderr:\n${proc.stderr ?? ''}`)
+    assertProcessSucceeded(proc, 'python roundtrip')
+    assert.ok(existsSync(output_path), 'python roundtrip did not produce output payload')
 
     return JSON.parse(readFileSync(output_path, 'utf8')) as Array<Record<string, unknown>>
   } finally {
@@ -425,9 +459,12 @@ with open(output_path, 'w', encoding='utf-8') as f:
         BUBUS_TS_PY_BUS_OUTPUT_PATH: output_path,
       },
       encoding: 'utf8',
+      timeout: PROCESS_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
     })
 
-    assert.equal(proc.status, 0, `python bus roundtrip failed:\nstdout:\n${proc.stdout ?? ''}\nstderr:\n${proc.stderr ?? ''}`)
+    assertProcessSucceeded(proc, 'python bus roundtrip')
+    assert.ok(existsSync(output_path), 'python bus roundtrip did not produce output payload')
     return JSON.parse(readFileSync(output_path, 'utf8')) as Record<string, unknown>
   } finally {
     rmSync(temp_dir, { recursive: true, force: true })
@@ -523,7 +560,7 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
   const wrong_event = BaseEvent.fromJSON(screenshot_payload)
   assert.equal(typeof (wrong_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
   const wrong_dispatched = wrong_bus.dispatch(wrong_event)
-  await wrong_dispatched.done()
+  await withTimeout(wrong_dispatched.done(), EVENT_WAIT_TIMEOUT_MS, 'wrong-shape event completion')
   const wrong_result = Array.from(wrong_dispatched.event_results.values())[0]
   assert.equal(wrong_result.status, 'error')
   wrong_bus.destroy()
@@ -545,7 +582,7 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
   const right_event = BaseEvent.fromJSON(screenshot_payload)
   assert.equal(typeof (right_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
   const right_dispatched = right_bus.dispatch(right_event)
-  await right_dispatched.done()
+  await withTimeout(right_dispatched.done(), EVENT_WAIT_TIMEOUT_MS, 'right-shape event completion')
   const right_result = Array.from(right_dispatched.event_results.values())[0]
   assert.equal(right_result.status, 'completed')
   assert.deepEqual(right_result.result, {
@@ -651,7 +688,7 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   }) as any
 
   const trigger = restored.dispatch(ResumeEvent({ label: 'e3' }))
-  await trigger.done()
+  await withTimeout(trigger.done(), EVENT_WAIT_TIMEOUT_MS, 'bus resume completion')
 
   assert.deepEqual(run_order, ['h2:e1', 'h1:e2', 'h2:e2', 'h1:e3', 'h2:e3'])
 
