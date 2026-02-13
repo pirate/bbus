@@ -33,6 +33,7 @@ export class SQLiteEventBridge {
   private last_seen_event_created_at: string
   private last_seen_event_id: string
   private listener_task: Promise<void> | null
+  private start_task: Promise<void> | null
   private db: any | null
   private table_columns: Set<string>
 
@@ -46,6 +47,7 @@ export class SQLiteEventBridge {
     this.last_seen_event_created_at = ''
     this.last_seen_event_id = ''
     this.listener_task = null
+    this.start_task = null
     this.db = null
     this.table_columns = new Set(['event_id', 'event_created_at', 'event_type', 'event_payload_json'])
 
@@ -103,33 +105,47 @@ export class SQLiteEventBridge {
 
   async start(): Promise<void> {
     if (this.running) return
-    if (!isNodeRuntime()) {
-      throw new Error('SQLiteEventBridge is only supported in Node.js runtimes')
+    if (this.start_task) {
+      await this.start_task
+      return
     }
 
-    const mod = await loadNodeSqlite()
-    const Database = mod.DatabaseSync ?? mod.default?.DatabaseSync
-    if (typeof Database !== 'function') {
-      throw new Error('SQLiteEventBridge could not load DatabaseSync from node:sqlite. Please use Node.js 22+.')
+    this.start_task = (async (): Promise<void> => {
+      if (!isNodeRuntime()) {
+        throw new Error('SQLiteEventBridge is only supported in Node.js runtimes')
+      }
+
+      const mod = await loadNodeSqlite()
+      const Database = mod.DatabaseSync ?? mod.default?.DatabaseSync
+      if (typeof Database !== 'function') {
+        throw new Error('SQLiteEventBridge could not load DatabaseSync from node:sqlite. Please use Node.js 22+.')
+      }
+      this.db = new Database(this.path)
+      this.db.exec('PRAGMA journal_mode = WAL')
+      this.db
+        .prepare(
+          `CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT, "event_payload_json" TEXT)`
+        )
+        .run()
+
+      this.refreshColumnCache()
+      this.ensureColumns(['event_id', 'event_created_at', 'event_type', 'event_payload_json'])
+      this.ensureBaseIndexes()
+      this.setCursorToLatestRow()
+
+      this.running = true
+      this.listener_task = this.listenLoop()
+    })()
+
+    try {
+      await this.start_task
+    } finally {
+      this.start_task = null
     }
-    this.db = new Database(this.path)
-    this.db.exec('PRAGMA journal_mode = WAL')
-    this.db
-      .prepare(
-        `CREATE TABLE IF NOT EXISTS "${this.table}" ("event_id" TEXT PRIMARY KEY, "event_created_at" TEXT, "event_type" TEXT, "event_payload_json" TEXT)`
-      )
-      .run()
-
-    this.refreshColumnCache()
-    this.ensureColumns(['event_id', 'event_created_at', 'event_type', 'event_payload_json'])
-    this.ensureBaseIndexes()
-    this.setCursorToLatestRow()
-
-    this.running = true
-    this.listener_task = this.listenLoop()
   }
 
   async close(): Promise<void> {
+    await Promise.allSettled(this.start_task ? [this.start_task] : [])
     this.running = false
     await Promise.allSettled(this.listener_task ? [this.listener_task] : [])
     this.listener_task = null
@@ -143,7 +159,7 @@ export class SQLiteEventBridge {
   }
 
   private ensureStarted(): void {
-    if (this.running || this.listener_task) return
+    if (this.running || this.listener_task || this.start_task) return
     void this.start().catch((error: unknown) => {
       console.error('[bubus] SQLiteEventBridge failed to start', error)
     })
