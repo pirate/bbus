@@ -674,10 +674,12 @@ class EventBus:
         if event.event_handler_completion is None:
             event.event_handler_completion = self.event_handler_completion
 
-        # Automatically set event_parent_id from context if not already set
+        # Automatically set event_parent_id from context when emitting a NEW child event.
+        # If we are forwarding the same event object from inside its own handler, keep the
+        # existing parent linkage untouched to avoid self-parent cycles.
         if event.event_parent_id is None:
             current_event: BaseEvent[Any] | None = _current_event_context.get()
-            if current_event is not None:
+            if current_event is not None and event.event_id != current_event.event_id:
                 event.event_parent_id = current_event.event_id
 
         # Capture emit-time context for propagation to handlers (GitHub issue #20)

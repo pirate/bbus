@@ -218,7 +218,9 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
     # Find the root event by walking up the parent chain
     root_event = event
     eventbus = event.event_bus
-    while root_event.event_parent_id:
+    visited_parent_ids: set[str] = set()
+    while root_event.event_parent_id and root_event.event_parent_id not in visited_parent_ids:
+        visited_parent_ids.add(root_event.event_parent_id)
         parent_found = False
         # Search for parent in all EventBus instances
         for bus in list(eventbus.all_instances):

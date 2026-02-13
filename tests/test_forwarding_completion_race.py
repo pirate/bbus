@@ -9,6 +9,10 @@ class RelayEvent(BaseEvent[str]):
     """Minimal event used for forwarding completion race regression coverage."""
 
 
+class SelfParentForwardEvent(BaseEvent[str]):
+    """Event used to guard against self-parent cycles during forwarding."""
+
+
 def _dump_bus_state(buses: list[EventBus]) -> str:
     lines: list[str] = []
     for bus in buses:
@@ -74,3 +78,30 @@ async def test_forwarded_event_does_not_leave_stale_active_ids():
         await peer1.stop(clear=True)
         await peer2.stop(clear=True)
         await peer3.stop(clear=True)
+
+
+@pytest.mark.asyncio
+async def test_forwarding_same_event_does_not_set_self_parent_id():
+    origin = EventBus(name='SelfParentOrigin')
+    target = EventBus(name='SelfParentTarget')
+
+    async def on_origin(_event: SelfParentForwardEvent) -> str:
+        return 'origin-ok'
+
+    async def on_target(_event: SelfParentForwardEvent) -> str:
+        return 'target-ok'
+
+    origin.on(SelfParentForwardEvent, on_origin)
+    target.on(SelfParentForwardEvent, on_target)
+    origin.on('*', target.dispatch)
+
+    try:
+        event = origin.dispatch(SelfParentForwardEvent())
+        await event
+        await asyncio.gather(origin.wait_until_idle(), target.wait_until_idle())
+
+        assert event.event_parent_id is None
+        assert event.event_path == [origin.label, target.label]
+    finally:
+        await origin.stop(clear=True)
+        await target.stop(clear=True)

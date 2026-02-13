@@ -62,3 +62,26 @@ await bus.emit(SomeEvent({ some_data: 132 })).done()
 </Tabs>
 
 See [Quickstart](./quickstart) for installation and first full example.
+
+## Repository examples
+
+Runnable end-to-end examples (Python + TypeScript) live in the repo:
+
+- Quickstart basics:
+  - [`examples/simple.py`](https://github.com/pirate/bbus/blob/main/examples/simple.py)
+  - [`bubus-ts/examples/simple.ts`](https://github.com/pirate/bbus/blob/main/bubus-ts/examples/simple.ts)
+- Concurrency modes, overrides, and timeout behavior:
+  - [`examples/concurrency_options.py`](https://github.com/pirate/bbus/blob/main/examples/concurrency_options.py)
+  - [`bubus-ts/examples/concurrency_options.ts`](https://github.com/pirate/bbus/blob/main/bubus-ts/examples/concurrency_options.ts)
+- Immediate execution (queue-jump) behavior:
+  - [`examples/immediate_event_processing.py`](https://github.com/pirate/bbus/blob/main/examples/immediate_event_processing.py)
+  - [`bubus-ts/examples/immediate_event_processing.ts`](https://github.com/pirate/bbus/blob/main/bubus-ts/examples/immediate_event_processing.ts)
+- Forwarding between buses:
+  - [`examples/forwarding_between_busses.py`](https://github.com/pirate/bbus/blob/main/examples/forwarding_between_busses.py)
+  - [`bubus-ts/examples/forwarding_between_busses.ts`](https://github.com/pirate/bbus/blob/main/bubus-ts/examples/forwarding_between_busses.ts)
+- Parent-child lineage tracking:
+  - [`examples/parent_child_tracking.py`](https://github.com/pirate/bbus/blob/main/examples/parent_child_tracking.py)
+  - [`bubus-ts/examples/parent_child_tracking.ts`](https://github.com/pirate/bbus/blob/main/bubus-ts/examples/parent_child_tracking.ts)
+- Tree logs with nested timeout outcomes:
+  - [`examples/log_tree_demo.py`](https://github.com/pirate/bbus/blob/main/examples/log_tree_demo.py)
+  - [`bubus-ts/examples/log_tree_demo.ts`](https://github.com/pirate/bbus/blob/main/bubus-ts/examples/log_tree_demo.ts)

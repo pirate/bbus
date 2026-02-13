@@ -1,9 +1,27 @@
 ---
 title: Context Propagation
-description: Carry request-scoped context through emit and handler execution.
+description: Carry request-scoped context through emit and handler execution (ContextVars / AsyncLocalStorage).
 ---
 
-Context set before `emit(...)` is preserved for handler execution in supported runtimes.
+Context propagation means values you set at request entry (like `request_id`, `user_id`, trace/span context) are still available inside event handlers later in the async call chain.
+
+This is commonly used in:
+
+- web servers (FastAPI, Fastify, Express/Nest adapters)
+- observability and distributed tracing (OpenTelemetry)
+- structured logging/correlation IDs
+
+## What this maps to per runtime
+
+- Python uses `ContextVars` (`contextvars.ContextVar`).
+- TypeScript (Node/Bun) uses `AsyncLocalStorage`.
+
+Bubus captures ambient context at `emit(...)` time and restores it when handlers execute, so handler code sees the same request-local values.
+
+## Why this matters
+
+Without propagation, handler code often loses request-local state after async boundaries and queue scheduling.  
+With propagation, event handlers can log/trace as if they were still running in the original request scope.
 
 <Tabs>
 <Tab title="Python">
@@ -50,3 +68,43 @@ await requestContext.run({ requestId: 'req-123' }, async () => {
 
 </Tab>
 </Tabs>
+
+## Web server style examples
+
+These patterns are typical in frameworks where each incoming request gets a request-local context object.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+# FastAPI-style shape (conceptual)
+request_id.set(incoming_request.headers.get('x-request-id', 'generated-id'))
+await bus.emit(RequestEvent())
+# handlers can still read request_id.get()
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+// Fastify-style shape (conceptual)
+await requestContext.run({ requestId: req.id }, async () => {
+  await bus.emit(RequestEvent({})).done()
+})
+// handlers can still read requestContext.getStore()
+```
+
+</Tab>
+</Tabs>
+
+## Browser runtime note
+
+`AsyncLocalStorage` is a Node/Bun API and is not available in browser runtimes.
+
+In browsers:
+
+- Bubus still works normally for events.
+- ambient async context propagation via `AsyncLocalStorage` is not available.
+- pass correlation/tracing fields explicitly in event payloads when you need that metadata.
+
+See [Supported Runtimes](../operations/supported-runtimes) for runtime compatibility details.

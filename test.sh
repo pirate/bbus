@@ -9,7 +9,7 @@ set -euo pipefail
   uv run pytest
   shopt -s nullglob
   for example_file in examples/*.py; do
-    uv run python "$example_file"
+    timeout 120 uv run python "$example_file"
   done
 ) &
 python_pid=$!
@@ -20,7 +20,7 @@ python_pid=$!
   pnpm run test
   shopt -s nullglob
   for example_file in examples/*.ts; do
-    node --import tsx "$example_file"
+    timeout 120 node --import tsx "$example_file"
   done
 ) &
 ts_pid=$!

@@ -5,6 +5,12 @@ description: Trace nested event flows with automatic parent-child lineage and tr
 
 When a handler emits another event, Bubus automatically records lineage so you can understand call chains instead of guessing what triggered what.
 
+Repository example files:
+- [`examples/parent_child_tracking.py`](https://github.com/pirate/bbus/blob/main/examples/parent_child_tracking.py)
+- [`bubus-ts/examples/parent_child_tracking.ts`](https://github.com/pirate/bbus/blob/main/bubus-ts/examples/parent_child_tracking.ts)
+- [`examples/log_tree_demo.py`](https://github.com/pirate/bbus/blob/main/examples/log_tree_demo.py)
+- [`bubus-ts/examples/log_tree_demo.ts`](https://github.com/pirate/bbus/blob/main/bubus-ts/examples/log_tree_demo.ts)
+
 ## What gets tracked
 
 - `event_parent_id`: points from child -> parent event
@@ -211,5 +217,6 @@ Captured from running the Python example above with `uv run` (IDs/timestamps var
 
 - [Immediate Execution (RPC-style)](../concurrency/immediate-execution)
 - [Forwarding Between Buses](./forwarding-between-buses)
+- [OtelTracingMiddleware](../integrations/middleware-otel-tracing)
 - [Find Events](./find-events)
 - [BaseEvent](../api/baseevent)

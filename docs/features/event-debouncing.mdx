@@ -1,19 +1,129 @@
 ---
 title: Event Debouncing
-description: Reuse recent events to avoid duplicate expensive work.
+description: Deduplicate expensive event work using find(..., past/future) patterns.
 ---
 
-Debouncing can be built by checking recent history before emitting new work.
+Debouncing is most useful when events trigger expensive work:
+
+- screenshots or browser automation
+- external API calls
+- LLM/tool runs
+- heavyweight DB/file operations
+
+Instead of starting duplicate work every time, reuse:
+
+- a recent matching event (`past` window), or
+- a matching event that is about to be emitted by another caller (`future` wait), or
+- both (history-first, then short future wait, then emit).
+
+Debouncing in Bubus is built from `find(...)` + conditional `emit(...)`.
+
+## Debounce building blocks
+
+- `past`: search recent history (`true`/`false`/seconds)
+- `future`: optionally wait for a matching future emit (`true`/`false`/seconds)
+- `where` / event-field filters: scope matching to the same "work key" (url, account_id, document_id, etc.)
+
+See [Find Events](./find-events) for full option semantics.
+
+## Pattern 1: Reuse recent completed work (history-only)
+
+Use when "fresh enough" cached results are acceptable.
 
 <Tabs>
 <Tab title="Python">
 
 ```python
-event = await (
-    await bus.find(ScreenshotEvent, past=10, future=False)
-    or bus.emit(ScreenshotEvent())
+existing = await bus.find(
+    ScreenshotEvent,
+    where=lambda e: e.url == url,
+    past=10,        # look back 10s
+    future=False,   # do not wait
 )
+
+event = existing or bus.emit(ScreenshotEvent(url=url))
 await event
+result = await event.event_result()
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const existing = await bus.find(
+  ScreenshotEvent,
+  (event) => event.url === url,
+  { past: 10, future: false }
+)
+
+const event = existing ?? bus.emit(ScreenshotEvent({ url }))
+await event.done()
+const result = event.event_result
+```
+
+</Tab>
+</Tabs>
+
+## Pattern 2: Coalesce concurrent callers (future-only)
+
+Use when many callers may request the same expensive action at the same time.
+
+Caller A emits first. Caller B waits briefly for that same event instead of emitting a duplicate.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+in_flight = await bus.find(
+    ScreenshotEvent,
+    where=lambda e: e.url == url,
+    past=False,    # skip history
+    future=2,      # wait up to 2s for another caller to emit
+)
+
+event = in_flight or bus.emit(ScreenshotEvent(url=url))
+await event
+result = await event.event_result()
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const inFlight = await bus.find(
+  ScreenshotEvent,
+  (event) => event.url === url,
+  { past: false, future: 2 }
+)
+
+const event = inFlight ?? bus.emit(ScreenshotEvent({ url }))
+await event.done()
+const result = event.event_result
+```
+
+</Tab>
+</Tabs>
+
+## Pattern 3: Hybrid debounce (past + short future + emit)
+
+This is the most practical default for expensive endpoints.
+
+1. Reuse recent match.
+2. If none, wait briefly for someone else to emit.
+3. If still none, emit new work.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+event = (
+    await bus.find(ScreenshotEvent, where=lambda e: e.url == url, past=10, future=False)
+    or await bus.find(ScreenshotEvent, where=lambda e: e.url == url, past=False, future=2)
+    or bus.emit(ScreenshotEvent(url=url))
+)
+
+await event
+result = await event.event_result()
 ```
 
 </Tab>
@@ -21,11 +131,64 @@ await event
 
 ```ts
 const event =
-  (await bus.find(ScreenshotEvent, { past: 10, future: false }))
-  ?? bus.emit(ScreenshotEvent({}))
+  (await bus.find(ScreenshotEvent, (e) => e.url === url, { past: 10, future: false })) ??
+  (await bus.find(ScreenshotEvent, (e) => e.url === url, { past: false, future: 2 })) ??
+  bus.emit(ScreenshotEvent({ url }))
 
 await event.done()
+const result = event.event_result
 ```
 
 </Tab>
 </Tabs>
+
+## Pattern 4: Keyed helper for repeated use
+
+Wrap the debounce logic once and reuse it for all expensive keyed actions.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+async def emit_debounced_screenshot(url: str):
+    event = (
+        await bus.find(ScreenshotEvent, where=lambda e: e.url == url, past=15, future=False)
+        or await bus.find(ScreenshotEvent, where=lambda e: e.url == url, past=False, future=3)
+        or bus.emit(ScreenshotEvent(url=url))
+    )
+    await event
+    return await event.event_result()
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const emitDebouncedScreenshot = async (url: string) => {
+  const event =
+    (await bus.find(ScreenshotEvent, (e) => e.url === url, { past: 15, future: false })) ??
+    (await bus.find(ScreenshotEvent, (e) => e.url === url, { past: false, future: 3 })) ??
+    bus.emit(ScreenshotEvent({ url }))
+
+  await event.done()
+  return event.event_result
+}
+```
+
+</Tab>
+</Tabs>
+
+## Important behavior notes
+
+- `find(...)` resolves when an event is emitted, not when handlers finish.
+- Always await completion after selecting a debounced event:
+  - Python: `await event`, then `await event.event_result()`
+  - TypeScript: `await event.done()`, then `event.event_result`
+- Debouncing scope depends on your match key (`where` / event-field filters).  
+  Use the narrowest key that represents "same work."
+- Debouncing depends on retained history. If history is aggressively trimmed, your `past` window can become less effective.
+
+See also:
+
+- [Find Events](./find-events)
+- [Event History Store](./event-history-store)
