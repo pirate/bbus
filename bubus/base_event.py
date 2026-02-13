@@ -782,6 +782,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     def _hydrate_event_result_types_from_event(self) -> Self:
         """Rehydrate per-handler result_type from the event-level event_result_type."""
         if self.event_results:
+            first_result = next(iter(self.event_results.values()))
+            if first_result.result_type == self.event_result_type:
+                return self
             for event_result in self.event_results.values():
                 event_result.result_type = self.event_result_type
         return self

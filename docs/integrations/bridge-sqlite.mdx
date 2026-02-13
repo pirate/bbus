@@ -73,6 +73,9 @@ bridge.on('*', bus.emit)
 
 - `emit(...)` upserts event payload fields into the configured table.
 - `on(...)` auto-starts polling and registers handlers on the internal bus.
-- New event fields are reflected as new table columns (schema expands automatically).
+- Columns are created on demand only for `event_*` fields.
+- Non-`event_*` fields are stored together in a single `event_payload` JSON column.
+- Writes use SQLite JSON functions for `event_payload` (for example `json(?)`).
+- Rehydration merges `event_payload` with `event_*` column values back into a flat event object.
 - Rows are read in `(event_created_at, event_id)` order, converted back to events, reset, and emitted locally.
 - Runtime notes: Python uses stdlib `sqlite3`; TypeScript requires Node.js with built-in `node:sqlite` (Node 22+).

@@ -47,6 +47,11 @@ const getFreePort = async (): Promise<number> =>
 
 const sleep = async (ms: number): Promise<void> => await new Promise((resolve) => setTimeout(resolve, ms))
 
+const importDynamicModule = async (module_name: string): Promise<any> => {
+  const dynamic_import = Function('module_name', 'return import(module_name)') as (module_name: string) => Promise<unknown>
+  return dynamic_import(module_name) as Promise<any>
+}
+
 const canonical = (payload: Record<string, unknown>): Record<string, unknown> => {
   const normalized: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(payload)) {
@@ -340,6 +345,31 @@ test('SQLiteEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACT
     const sqlite_path = join(temp_dir, 'events.sqlite3')
     const config = { path: sqlite_path, table: 'bubus_events' }
     await assertRoundtrip('sqlite', config)
+
+    const sqlite_mod = await importDynamicModule('node:sqlite')
+    const Database = sqlite_mod.DatabaseSync ?? sqlite_mod.default?.DatabaseSync
+    assert.equal(typeof Database, 'function', 'expected DatabaseSync from node:sqlite')
+    const db = new Database(sqlite_path)
+    try {
+      const columns = new Set<string>(
+        (db.prepare('PRAGMA table_info("bubus_events")').all() as Array<{ name: string }>).map((row) => String(row.name))
+      )
+      assert.ok(columns.has('event_payload'))
+      assert.ok(!columns.has('label'))
+      for (const column of columns) {
+        assert.ok(column === 'event_payload' || column.startsWith('event_'))
+      }
+
+      const row = db
+        .prepare('SELECT event_payload FROM "bubus_events" ORDER BY COALESCE("event_created_at", \'\') DESC LIMIT 1')
+        .get() as { event_payload?: string } | undefined
+      assert.ok(row?.event_payload, 'expected event_payload row')
+      const payload = JSON.parse(String(row.event_payload)) as Record<string, unknown>
+      assert.equal(payload.label, 'sqlite_ok')
+    } finally {
+      db.close()
+    }
+
     const latency_ms = await measureWarmLatencyMs('sqlite', config)
     console.log(`LATENCY ts sqlite ${latency_ms.toFixed(3)}ms`)
   } finally {
@@ -393,6 +423,35 @@ test('PostgresEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_A
     await waitForPort(port)
     const config = { url: `postgresql://postgres@127.0.0.1:${port}/postgres/bubus_events` }
     await assertRoundtrip('postgres', config)
+
+    const pg_mod = await importDynamicModule('pg')
+    const Client = pg_mod.Client ?? pg_mod.default?.Client
+    assert.equal(typeof Client, 'function', 'expected pg Client')
+    const client = new Client({ connectionString: `postgresql://postgres@127.0.0.1:${port}/postgres` })
+    await client.connect()
+    try {
+      const columns_result = await client.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1`,
+        ['bubus_events']
+      )
+      const columns = new Set<string>((columns_result.rows as Array<{ column_name: string }>).map((row) => String(row.column_name)))
+      assert.ok(columns.has('event_payload'))
+      assert.ok(!columns.has('label'))
+      for (const column of columns) {
+        assert.ok(column === 'event_payload' || column.startsWith('event_'))
+      }
+
+      const payload_result = await client.query(
+        `SELECT event_payload FROM "bubus_events" ORDER BY COALESCE("event_created_at", '') DESC LIMIT 1`
+      )
+      const payload_raw = payload_result.rows?.[0]?.event_payload
+      assert.equal(typeof payload_raw, 'string')
+      const payload = JSON.parse(payload_raw) as Record<string, unknown>
+      assert.equal(payload.label, 'postgres_ok')
+    } finally {
+      await client.end()
+    }
+
     const latency_ms = await measureWarmLatencyMs('postgres', config)
     console.log(`LATENCY ts postgres ${latency_ms.toFixed(3)}ms`)
   } finally {

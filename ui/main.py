@@ -49,6 +49,16 @@ async def _fetch_results(limit: int) -> list[dict[str, Any]]:
     return rows
 
 
+def _parse_nonnegative_int(value: str | None, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
 @app.get('/', response_class=HTMLResponse)
 async def index() -> str:
     return """
@@ -134,7 +144,7 @@ async def index() -> str:
             </div>
         </header>
         <main>
-            <div id="db-warning" class="empty" style="display:none;">No SQLite history file found yet. Dispatch events to see activity here.</div>
+            <div id="db-warning" class="empty" style="display:none;"></div>
             <div class="toolbar">
                 <label>
                     🔍
@@ -165,6 +175,8 @@ async def index() -> str:
                 results: new Map(),
                 busNames: new Set(),
                 filters: { search: '', status: 'all', bus: 'all' },
+                lastEventRowId: 0,
+                lastResultRowId: 0,
             };
 
             const dbPathEl = document.getElementById('db-path');
@@ -204,6 +216,9 @@ async def index() -> str:
 
             function ingestEvents(rows) {
                 rows.forEach((row) => {
+                    if (typeof row.id === 'number' && row.id > state.lastEventRowId) {
+                        state.lastEventRowId = row.id;
+                    }
                     const current = state.events.get(row.event_id);
                     const currentRowId = current && typeof current._row_id === 'number' ? current._row_id : -Infinity;
                     if (row.id <= currentRowId) {
@@ -219,6 +234,9 @@ async def index() -> str:
 
             function ingestResults(rows) {
                 rows.forEach((row) => {
+                    if (typeof row.id === 'number' && row.id > state.lastResultRowId) {
+                        state.lastResultRowId = row.id;
+                    }
                     const list = state.results.get(row.event_id) || [];
                     const idx = list.findIndex((item) => item.id === row.id);
                     if (idx >= 0) {
@@ -262,9 +280,9 @@ async def index() -> str:
                 });
                 function sortNodes(list) {
                     list.sort((a, b) => {
-                        const timeA = Date.parse(a.inserted_at || '') || 0;
-                        const timeB = Date.parse(b.inserted_at || '') || 0;
-                        return timeB - timeA;
+                        const rowA = Number(a._row_id) || 0;
+                        const rowB = Number(b._row_id) || 0;
+                        return rowB - rowA;
                     });
                     list.forEach((child) => sortNodes(child.children));
                 }
@@ -484,7 +502,16 @@ async def index() -> str:
                     fetch('/meta').then((r) => r.json()),
                 ]);
                 dbPathEl.textContent = meta.db_path;
-                warningEl.style.display = meta.db_exists ? 'none' : 'block';
+                if (!meta.db_exists) {
+                    warningEl.textContent = 'No SQLite history file found yet. Dispatch events to see activity here.';
+                    warningEl.style.display = 'block';
+                } else if (!meta.events_table_exists || !meta.results_table_exists) {
+                    warningEl.textContent =
+                        'Database found, but mirror tables are missing. Enable SQLiteHistoryMirrorMiddleware on your EventBus to populate events_log and event_results_log.';
+                    warningEl.style.display = 'block';
+                } else {
+                    warningEl.style.display = 'none';
+                }
                 ingestEvents(events);
                 ingestResults(results);
                 render();
@@ -492,11 +519,24 @@ async def index() -> str:
 
             function connectWebSocket() {
                 const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-                const ws = new WebSocket(`${protocol}://${location.host}/ws/events`);
-                wsStatus.textContent = 'connected';
+                const params = new URLSearchParams({
+                    since_event_id: String(state.lastEventRowId),
+                    since_result_id: String(state.lastResultRowId),
+                });
+                const ws = new WebSocket(`${protocol}://${location.host}/ws/events?${params.toString()}`);
+                wsStatus.textContent = 'connecting…';
+
+                ws.onopen = () => {
+                    wsStatus.textContent = 'connected';
+                };
 
                 ws.onmessage = (event) => {
-                    const payload = JSON.parse(event.data);
+                    let payload;
+                    try {
+                        payload = JSON.parse(event.data);
+                    } catch {
+                        return;
+                    }
                     if (payload.events && payload.events.length) {
                         ingestEvents(payload.events);
                     }
@@ -538,25 +578,23 @@ async def list_results(limit: Annotated[int, Query(ge=1, le=200)] = 20) -> JSONR
 async def meta() -> dict[str, Any]:
     db_path = resolve_db_path()
     exists = db_path.exists()
+    schema = await db.fetch_schema_status()
     return {
         'db_path': str(db_path),
         'db_exists': exists,
+        'events_table_exists': schema.events_table_exists,
+        'results_table_exists': schema.results_table_exists,
     }
 
 
 @app.websocket('/ws/events')
 async def websocket_events(socket: WebSocket) -> None:
     await socket.accept()
-    state = db.HistoryStreamState()
+    state = db.HistoryStreamState(
+        last_event_id=_parse_nonnegative_int(socket.query_params.get('since_event_id')),
+        last_result_id=_parse_nonnegative_int(socket.query_params.get('since_result_id')),
+    )
     try:
-        # Prime with latest IDs so we only broadcast new rows
-        latest_events = await _fetch_events(1)
-        latest_results = await _fetch_results(1)
-        if latest_events:
-            state.last_event_id = latest_events[0]['id']
-        if latest_results:
-            state.last_result_id = latest_results[0]['id']
-
         while True:
             updates = await db.stream_new_rows(state)
             if updates['events'] or updates['results']:
