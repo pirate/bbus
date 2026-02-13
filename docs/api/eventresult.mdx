@@ -4,7 +4,7 @@ description: EventResult fields, getters, and lifecycle methods.
 ---
 
 <Tabs>
-  <Tab title="Python">
+<Tab title="Python">
 
 The placeholder object that represents the pending result from a single handler executing an event.  
 `Event.event_results` contains a `dict[PythonIdStr, EventResult]` in the shape of `{handler_id: EventResult()}`.
@@ -42,11 +42,10 @@ handler_result = event.event_results['handler_id']
 value = await handler_result  # Returns result or raises an exception if handler hits an error
 ```
 
-- `execute(event, handler, *, eventbus, timeout, enter_handler_context, exit_handler_context, format_exception_for_log)`  
-  Low-level helper that runs the handler, updates timing/status fields, captures errors, and notifies its completion signal. `EventBus.execute_handler()` delegates to this; you generally only need it when building a custom bus or integrating the event system into another dispatcher.
+`execute(event, handler, *, eventbus, timeout, enter_handler_context, exit_handler_context, format_exception_for_log)` is a low-level helper that runs the handler, updates timing/status fields, captures errors, and notifies its completion signal. `EventBus.execute_handler()` delegates to this; you generally only need it when building a custom bus or integrating the event system into another dispatcher.
 
-  </Tab>
-  <Tab title="TypeScript">
+</Tab>
+<Tab title="TypeScript">
 
 Each handler execution creates one `EventResult` stored in `event.event_results`.
 
@@ -97,5 +96,5 @@ toJSON(): EventResultJSON
 EventResult.fromJSON(event, data): EventResult
 ```
 
-  </Tab>
+</Tab>
 </Tabs>

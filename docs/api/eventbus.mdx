@@ -4,7 +4,7 @@ description: EventBus constructors, methods, and runtime behavior.
 ---
 
 <Tabs>
-  <Tab title="Python">
+<Tab title="Python">
 
 The main event bus class that manages event processing and handler execution.
 
@@ -156,8 +156,8 @@ await bus.stop(clear=True)   # Stop and clear all event history and handlers to 
 
 ---
 
-  </Tab>
-  <Tab title="TypeScript">
+</Tab>
+<Tab title="TypeScript">
 
 The main bus class that registers handlers, schedules events, and tracks results.
 
@@ -388,8 +388,9 @@ logTree(): string
 destroy(): void
 ```
 
-- `destroy()` clears handlers/history/locks and removes this bus from global weak registry.
-- `destroy()`/GC behavior is exercised in `bubus-ts/tests/eventbus_basics.test.ts` and `bubus-ts/tests/performance.test.ts`.
+`destroy()` clears handlers/history/locks and removes this bus from global weak registry.
 
-  </Tab>
+`destroy()` and GC behavior are exercised in `bubus-ts/tests/eventbus_basics.test.ts` and `bubus-ts/tests/performance.test.ts`.
+
+</Tab>
 </Tabs>

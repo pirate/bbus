@@ -4,7 +4,7 @@ description: Middleware composition and custom middleware guidance.
 ---
 
 <Tabs>
-  <Tab title="Python">
+<Tab title="Python">
 
 Middlewares can observe or mutate the `EventResult` at each step, dispatch additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
 
@@ -69,12 +69,12 @@ class AnalyticsMiddleware(EventBusMiddleware):
 
 <br/>
 
-  </Tab>
-  <Tab title="TypeScript">
+</Tab>
+<Tab title="TypeScript">
 
 TypeScript middleware docs are currently covered through the core APIs and runtime patterns.
 
 Use inline handlers and bus-level composition for middleware-like behavior.
 
-  </Tab>
+</Tab>
 </Tabs>

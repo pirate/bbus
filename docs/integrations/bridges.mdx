@@ -4,7 +4,7 @@ description: Bridge integrations for connecting buses across transports.
 ---
 
 <Tabs>
-  <Tab title="Python">
+<Tab title="Python">
 
 Bridges are optional extra connectors provided that allow you to send/receive events from an external service, and you do not need to use a bridge to use bubus since it's normally purely in-memory. These are just simple helpers to forward bubus events JSON to storage engines / other processes / other machines; they prevent loops automatically, but beyond that it's only basic forwarding with no handler pickling or anything fancy.
 
@@ -28,8 +28,8 @@ bridge.on('*', bus.emit)  # listen for new events in redis channel and dispatch 
 
 <br/>
 
-  </Tab>
-  <Tab title="TypeScript">
+</Tab>
+<Tab title="TypeScript">
 
 Bridges are optional extra connectors provided that allow you to send/receive events from an external service, and you do not need to use a bridge to use bubus since it's normally purely in-memory. These are just simple helpers to forward bubus events JSON to storage engines / other processes / other machines; they prevent loops automatically, but beyond that it's only basic forwarding with no handler pickling or anything fancy.
 
@@ -58,5 +58,5 @@ bridge.on('*', bus.emit) // listen for new events in redis channel and dispatch 
 
 <br/>
 
-  </Tab>
+</Tab>
 </Tabs>

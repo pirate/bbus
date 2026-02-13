@@ -4,7 +4,7 @@ description: EventHandler structure and serialization helpers.
 ---
 
 <Tabs>
-  <Tab title="Python">
+<Tab title="Python">
 
 Serializable metadata wrapper around a registered handler callable.
 
@@ -30,16 +30,18 @@ The raw callable is stored on `handler`, but is excluded from JSON serialization
 
 #### `EventHandler` Properties and Methods
 
-- `label` (property): Short display label like `my_handler#abcd`.
-- `__call__(event)`: Invokes the wrapped callable directly.
-- `to_json_dict() -> dict[str, Any]`: JSON-safe metadata dump (excludes callable).
-- `from_json_dict(data, handler=None) -> EventHandler`: Rebuilds metadata; optional callable reattachment.
-- `from_callable(...) -> EventHandler`: Build a new handler entry from a callable plus bus/pattern metadata.
+`label` (property): Short display label like `my_handler#abcd`.
 
----
+`__call__(event)`: Invokes the wrapped callable directly.
 
-  </Tab>
-  <Tab title="TypeScript">
+`to_json_dict() -> dict[str, Any]`: JSON-safe metadata dump (excludes callable).
+
+`from_json_dict(data, handler=None) -> EventHandler`: Rebuilds metadata with optional callable reattachment.
+
+`from_callable(...) -> EventHandler`: Build a new handler entry from a callable plus bus/pattern metadata.
+
+</Tab>
+<Tab title="TypeScript">
 
 Represents one registered handler entry on a bus. You usually get these from `bus.on(...)`, then pass them to `bus.off(...)` to remove.
 
@@ -65,15 +67,11 @@ toJSON(): EventHandlerJSON
 EventHandler.fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandler
 ```
 
-- `toString()` returns `handlerName() (path:line)` when path/name are available, otherwise `function#abcd()`.
-- `toJSON()` emits only serializable handler metadata (never function bodies).
-- `fromJSON()` reconstructs the handler entry and accepts an optional real function to re-bind execution behavior.
+`toString()` returns `handlerName() (path:line)` when path/name are available, otherwise `function#abcd()`.
 
-<br/>
+`toJSON()` emits only serializable handler metadata (never function bodies).
 
----
+`fromJSON()` reconstructs the handler entry and accepts an optional real function to re-bind execution behavior.
 
-<br/>
-
-  </Tab>
+</Tab>
 </Tabs>
