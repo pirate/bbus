@@ -7,15 +7,22 @@ import {
   type EventHandlerConcurrencyMode,
   type EventHandlerCompletionMode,
   LockManager,
-  runWithSemaphore,
 } from './lock_manager.js'
-import { EventHandler, type EphemeralFindEventHandler, type EventHandlerJSON } from './event_handler.js'
+import {
+  EventHandler,
+  EventHandlerAbortedError,
+  EventHandlerCancelledError,
+  EventHandlerTimeoutError,
+  type EphemeralFindEventHandler,
+  type EventHandlerJSON,
+} from './event_handler.js'
+import type { EventBusMiddleware, EventBusMiddlewareCtor, EventBusMiddlewareInput } from './middlewares.js'
 import { logTree } from './logging.js'
 import { v7 as uuidv7 } from 'uuid'
 
 import type { EventClass, EventHandlerFunction, EventPattern, FindOptions, UntypedEventHandlerFunction } from './types.js'
 
-type EventBusOptions = {
+export type EventBusOptions = {
   id?: string
   max_history_size?: number | null
   max_history_drop?: boolean
@@ -30,6 +37,7 @@ type EventBusOptions = {
   event_handler_completion?: EventHandlerCompletionMode
   event_handler_slow_timeout?: number | null // threshold before a warning is logged about slow handler execution
   event_handler_detect_file_paths?: boolean // autodetect source code file and lineno where handlers are defined for better logs (slightly slower because Error().stack introspection to fine files is expensive)
+  middlewares?: EventBusMiddlewareInput[]
 }
 
 export type EventBusJSON = {
@@ -141,6 +149,22 @@ export class EventBus {
   runloop_running: boolean
   locks: LockManager
   find_waiters: Set<EphemeralFindEventHandler> // set of EphemeralFindEventHandler objects that are waiting for a matching future event
+  middlewares: EventBusMiddleware[]
+
+  private static normalizeMiddlewares(middlewares?: EventBusMiddlewareInput[]): EventBusMiddleware[] {
+    const normalized: EventBusMiddleware[] = []
+    for (const middleware of middlewares ?? []) {
+      if (!middleware) {
+        continue
+      }
+      if (typeof middleware === 'function') {
+        normalized.push(new (middleware as EventBusMiddlewareCtor)())
+      } else {
+        normalized.push(middleware as EventBusMiddleware)
+      }
+    }
+    return normalized
+  }
 
   constructor(name: string = 'EventBus', options: EventBusOptions = {}) {
     this.id = options.id ?? uuidv7()
@@ -166,6 +190,7 @@ export class EventBus {
     this.pending_event_queue = []
     this.in_flight_event_ids = new Set()
     this.locks = new LockManager(this)
+    this.middlewares = EventBus.normalizeMiddlewares(options.middlewares)
 
     EventBus._all_instances.add(this)
 
@@ -175,6 +200,136 @@ export class EventBus {
 
   toString(): string {
     return `${this.name}#${this.id.slice(-4)}`
+  }
+
+  scheduleMicrotask(fn: () => void): void {
+    if (typeof queueMicrotask === 'function') {
+      queueMicrotask(fn)
+      return
+    }
+    void Promise.resolve().then(fn)
+  }
+
+  private async runMiddlewareHook(hook: keyof EventBusMiddleware, args: unknown[]): Promise<void> {
+    if (this.middlewares.length === 0) {
+      return
+    }
+    for (const middleware of this.middlewares) {
+      const callback = middleware[hook]
+      if (!callback) {
+        continue
+      }
+      await (callback as (...hook_args: unknown[]) => void | Promise<void>).apply(middleware, args)
+    }
+  }
+
+  async _on_event_change(event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
+    await this.runMiddlewareHook('on_event_change', [this, event, status])
+  }
+
+  async _on_event_result_change(event: BaseEvent, result: EventResult, status: 'pending' | 'started' | 'completed'): Promise<void> {
+    await this.runMiddlewareHook('on_event_result_change', [this, event, result, status])
+  }
+
+  async _on_handler_change(handler: EventHandler, registered: boolean): Promise<void> {
+    await this.runMiddlewareHook('on_handler_change', [this, handler, registered])
+  }
+
+  private async withTimeout<T>(timeout_seconds: number | null, on_timeout: () => Error, fn: () => Promise<T>): Promise<T> {
+    const task = Promise.resolve().then(fn)
+    if (timeout_seconds === null) {
+      return await task
+    }
+    const timeout_ms = timeout_seconds * 1000
+    return await new Promise<T>((resolve, reject) => {
+      let settled = false
+      const finishResolve = (value: T) => {
+        if (settled) {
+          return
+        }
+        settled = true
+        clearTimeout(timer)
+        resolve(value)
+      }
+      const finishReject = (error: unknown) => {
+        if (settled) {
+          return
+        }
+        settled = true
+        clearTimeout(timer)
+        reject(error)
+      }
+      const timer = setTimeout(() => {
+        if (settled) {
+          return
+        }
+        settled = true
+        reject(on_timeout())
+        void task.catch(() => undefined)
+      }, timeout_ms)
+      task.then(finishResolve).catch(finishReject)
+    })
+  }
+
+  private async withSlowMonitor<T>(slow_timer: ReturnType<typeof setTimeout> | null, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn()
+    } finally {
+      if (slow_timer) {
+        clearTimeout(slow_timer)
+      }
+    }
+  }
+
+  private finalizeTimedOutEvent(
+    event: BaseEvent,
+    pending_entries: Array<{
+      handler: EventHandler
+      result: EventResult
+    }>,
+    timeout_error: EventHandlerTimeoutError
+  ): void {
+    const timeout_seconds = timeout_error.timeout_seconds ?? event.event_timeout ?? null
+    const timeout_result_id = timeout_error.event_result?.id
+    event.cancelPendingDescendants(timeout_error)
+
+    for (const entry of pending_entries) {
+      const result = entry.result
+      if (result.status === 'completed' || result.status === 'error') {
+        continue
+      }
+      const is_primary_timeout_result = timeout_result_id !== undefined && result.id === timeout_result_id
+      if (result.status === 'started') {
+        result._lock?.exitHandlerRun()
+        result.releaseQueueJumpPauses()
+        if (is_primary_timeout_result) {
+          result.markError(timeout_error)
+          result.signalAbort(timeout_error)
+          continue
+        }
+        const aborted_error = new EventHandlerAbortedError(`Aborted running handler due to event timeout`, {
+          event_result: result,
+          timeout_seconds,
+          cause: timeout_error,
+        })
+        result.markError(aborted_error)
+        result.signalAbort(aborted_error)
+        continue
+      }
+      if (is_primary_timeout_result) {
+        result.markError(timeout_error)
+        continue
+      }
+      const cancelled_error = new EventHandlerCancelledError(`Cancelled pending handler due to event timeout`, {
+        event_result: result,
+        timeout_seconds,
+        cause: timeout_error,
+      })
+      result.markError(cancelled_error)
+    }
+
+    event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
+    event.markCompleted()
   }
 
   toJSON(): EventBusJSON {
@@ -426,6 +581,9 @@ export class EventBus {
     const ids = this.handlers_by_key.get(handler_entry.event_pattern)
     if (ids) ids.push(handler_entry.id)
     else this.handlers_by_key.set(handler_entry.event_pattern, [handler_entry.id])
+    this.scheduleMicrotask(() => {
+      void this._on_handler_change(handler_entry, true)
+    })
     return handler_entry
   }
 
@@ -443,6 +601,9 @@ export class EventBus {
       if (handler === undefined || (match_by_id ? handler_id === handler : entry.handler === (handler as EventHandlerFunction))) {
         this.handlers.delete(handler_id)
         this.removeIndexedHandler(entry.event_pattern, handler_id)
+        this.scheduleMicrotask(() => {
+          void this._on_handler_change(entry, false)
+        })
       }
     }
   }
@@ -501,6 +662,9 @@ export class EventBus {
 
     original_event.event_pending_bus_count += 1
     this.pending_event_queue.push(original_event)
+    this.scheduleMicrotask(() => {
+      void this._on_event_change(this.getEventProxyScopedToThisBus(original_event), 'pending')
+    })
     this.startRunloop()
 
     return this.getEventProxyScopedToThisBus(original_event) as T
@@ -677,7 +841,7 @@ export class EventBus {
       return
     }
     this.runloop_running = true
-    queueMicrotask(() => {
+    this.scheduleMicrotask(() => {
       void this.runloop()
     })
   }
@@ -691,33 +855,65 @@ export class EventBus {
       pre_acquired_semaphore?: AsyncSemaphore | null
     } = {}
   ): Promise<void> {
+    let pending_entries: Array<{
+      handler: EventHandler
+      result: EventResult
+    }> = []
     try {
       if (this.hasProcessedEvent(event)) {
         return
       }
       event.markStarted()
-      const slow_event_warning_timer = event.createSlowEventWarningTimer()
-      const semaphore = options.bypass_event_semaphores ? null : this.locks.getSemaphoreForEvent(event)
-      const pre_acquired_semaphore = options.pre_acquired_semaphore ?? null
-      try {
-        if (pre_acquired_semaphore) {
-          const pending_entries = event.createPendingHandlerResults(this)
-          await this.getEventProxyScopedToThisBus(event).processEvent(pending_entries)
-        } else {
-          await runWithSemaphore(semaphore, async () => {
-            const pending_entries = event.createPendingHandlerResults(this)
-            await this.getEventProxyScopedToThisBus(event).processEvent(pending_entries)
-          })
+      pending_entries = event.createPendingHandlerResults(this)
+      const scoped_event = this.getEventProxyScopedToThisBus(event)
+      if (this.middlewares.length > 0) {
+        for (const entry of pending_entries) {
+          await this._on_event_result_change(scoped_event, entry.result, 'pending')
         }
-        event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
-        event.markCompleted(false)
-        if (this.max_history_size !== null && this.max_history_size > 0 && this.event_history.size > this.max_history_size) {
-          this.trimHistory()
-        }
-      } finally {
-        if (slow_event_warning_timer) {
-          clearTimeout(slow_event_warning_timer)
-        }
+      }
+      await this.locks.withEventLock(
+        event,
+        async () => {
+          const run_handler_scope = async () => {
+            await this.withSlowMonitor(event.createSlowEventWarningTimer(), async () => {
+              await scoped_event.processEvent(pending_entries)
+            })
+          }
+          const event_timeout = event.event_timeout ?? null
+          if (event_timeout !== null && pending_entries.length > 0) {
+            await this.withTimeout(
+              event_timeout,
+              () => {
+                const timeout_anchor =
+                  pending_entries.find((entry) => entry.result.status === 'started') ??
+                  pending_entries.find((entry) => entry.result.status === 'pending') ??
+                  pending_entries[0]!
+                return new EventHandlerTimeoutError(
+                  `${this.toString()}.on(${event.toString()}, ${timeout_anchor.result.handler.toString()}) timed out after ${event_timeout}s`,
+                  {
+                    event_result: timeout_anchor.result,
+                    timeout_seconds: event_timeout,
+                  }
+                )
+              },
+              run_handler_scope
+            )
+          } else {
+            await run_handler_scope()
+          }
+        },
+        options
+      )
+      event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
+      event.markCompleted(false)
+      if (this.max_history_size !== null && this.max_history_size > 0 && this.event_history.size > this.max_history_size) {
+        this.trimHistory()
+      }
+    } catch (error) {
+      if (error instanceof EventHandlerTimeoutError) {
+        this.finalizeTimedOutEvent(event, pending_entries, error)
+      } else {
+        throw error
       }
     } finally {
       if (options.pre_acquired_semaphore) {

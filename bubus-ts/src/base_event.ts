@@ -405,19 +405,31 @@ export class BaseEvent {
     if (pending_results.length === 0) {
       return
     }
-    const handler_promises = pending_results.map((entry) => entry.runHandler())
     if (original.event_handler_completion === 'first') {
-      let first_found = false
-      const monitored = pending_results.map((entry, i) =>
-        handler_promises[i].then(() => {
-          if (!first_found && entry.status === 'completed' && entry.result !== undefined) {
-            first_found = true
+      const is_serial_handler_mode = original.getHandlerSemaphore() !== null
+      if (is_serial_handler_mode) {
+        for (const entry of pending_results) {
+          await entry.runHandler()
+          if (entry.status === 'completed' && entry.result !== undefined && !(entry.result instanceof BaseEvent)) {
             original.cancelEventHandlersForFirstMode(entry)
+            break
           }
-        })
-      )
-      await Promise.all(monitored)
+        }
+      } else {
+        const handler_promises = pending_results.map((entry) => entry.runHandler())
+        let first_found = false
+        const monitored = pending_results.map((entry, i) =>
+          handler_promises[i].then(() => {
+            if (!first_found && entry.status === 'completed' && entry.result !== undefined && !(entry.result instanceof BaseEvent)) {
+              first_found = true
+              original.cancelEventHandlersForFirstMode(entry)
+            }
+          })
+        )
+        await Promise.all(monitored)
+      }
     } else {
+      const handler_promises = pending_results.map((entry) => entry.runHandler())
       await Promise.all(handler_promises)
     }
   }
@@ -688,7 +700,11 @@ export class BaseEvent {
     original.event_handler_completion = 'first'
     return this.done().then((completed_event) => {
       const orig = completed_event._event_original ?? completed_event
-      return orig.event_result as EventResultType<this> | undefined
+      return Array.from(orig.event_results.values())
+        .filter((result) => result.status === 'completed' && result.result !== undefined && !(result.result instanceof BaseEvent))
+        .sort((a, b) => (a.completed_ts ?? 0) - (b.completed_ts ?? 0))
+        .map((result) => result.result as EventResultType<this>)
+        .at(0)
     })
   }
 
@@ -731,38 +747,52 @@ export class BaseEvent {
   }
 
   markStarted(): void {
-    if (this.event_status !== 'pending') {
+    const original = this._event_original ?? this
+    if (original.event_status !== 'pending') {
       return
     }
-    this.event_status = 'started'
+    original.event_status = 'started'
     const { isostring: event_started_at, ts: event_started_ts } = BaseEvent.nextTimestamp()
-    this.event_started_at = event_started_at
-    this.event_started_ts = event_started_ts
+    original.event_started_at = event_started_at
+    original.event_started_ts = event_started_ts
+    if (original.bus) {
+      const event_for_bus = original.bus.getEventProxyScopedToThisBus(original)
+      original.bus.scheduleMicrotask(() => {
+        void original.bus!._on_event_change(event_for_bus, 'started')
+      })
+    }
   }
 
   markCompleted(force: boolean = true, notify_parents: boolean = true): void {
-    if (this.event_status === 'completed') {
+    const original = this._event_original ?? this
+    if (original.event_status === 'completed') {
       return
     }
     if (!force) {
-      if (this.event_pending_bus_count > 0) {
+      if (original.event_pending_bus_count > 0) {
         return
       }
-      if (!this.eventAreAllChildrenComplete()) {
+      if (!original.eventAreAllChildrenComplete()) {
         return
       }
     }
-    this.event_status = 'completed'
+    original.event_status = 'completed'
     const { isostring: event_completed_at, ts: event_completed_ts } = BaseEvent.nextTimestamp()
-    this.event_completed_at = event_completed_at
-    this.event_completed_ts = event_completed_ts
-    this._event_dispatch_context = null
-    this._notifyDoneListeners()
-    this._event_done_signal!.resolve(this)
-    this._event_done_signal = null
-    this.dropFromZeroHistoryBuses()
-    if (notify_parents && this.bus) {
-      this.notifyEventParentsOfCompletion()
+    original.event_completed_at = event_completed_at
+    original.event_completed_ts = event_completed_ts
+    if (original.bus) {
+      const event_for_bus = original.bus.getEventProxyScopedToThisBus(original)
+      original.bus.scheduleMicrotask(() => {
+        void original.bus!._on_event_change(event_for_bus, 'completed')
+      })
+    }
+    original._event_dispatch_context = null
+    original._notifyDoneListeners()
+    original._event_done_signal!.resolve(original)
+    original._event_done_signal = null
+    original.dropFromZeroHistoryBuses()
+    if (notify_parents && original.bus) {
+      original.notifyEventParentsOfCompletion()
     }
   }
 

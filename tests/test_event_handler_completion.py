@@ -201,6 +201,45 @@ async def test_event_first_preserves_falsy_results() -> None:
         await bus.stop()
 
 
+async def test_event_first_skips_none_result_and_uses_next_winner() -> None:
+    bus = EventBus(
+        name='CompletionNoneSkipBus',
+        event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
+        event_handler_completion=EventHandlerCompletionMode.ALL,
+    )
+    third_handler_called = False
+
+    async def none_handler(_event: CompletionEvent) -> None:
+        return None
+
+    async def winner_handler(_event: CompletionEvent) -> str:
+        return 'winner'
+
+    async def third_handler(_event: CompletionEvent) -> str:
+        nonlocal third_handler_called
+        third_handler_called = True
+        return 'third'
+
+    bus.on(CompletionEvent, none_handler)
+    bus.on(CompletionEvent, winner_handler)
+    bus.on(CompletionEvent, third_handler)
+
+    try:
+        event = bus.dispatch(CompletionEvent())
+        result = await event.first()
+        assert result == 'winner'
+        assert third_handler_called is False
+
+        none_result = next(result for result in event.event_results.values() if result.handler_name.endswith('none_handler'))
+        winner_result = next(result for result in event.event_results.values() if result.handler_name.endswith('winner_handler'))
+        assert none_result.status == 'completed'
+        assert none_result.result is None
+        assert winner_result.status == 'completed'
+        assert winner_result.result == 'winner'
+    finally:
+        await bus.stop()
+
+
 async def test_event_first_returns_none_when_all_handlers_fail() -> None:
     bus = EventBus(name='CompletionAllFailBus', event_handler_concurrency='parallel')
 

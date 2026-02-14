@@ -1,0 +1,326 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+
+import {
+  BaseEvent,
+  EventBus,
+  EventHandlerAbortedError,
+  EventHandlerCancelledError,
+  EventHandlerResultSchemaError,
+  EventHandlerTimeoutError,
+  type EventBusMiddleware,
+} from '../src/index.js'
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+
+const flushHooks = async (ticks: number = 4): Promise<void> => {
+  for (let i = 0; i < ticks; i += 1) {
+    await Promise.resolve()
+  }
+}
+
+type HookRecord = {
+  middleware: string
+  hook: 'event' | 'result' | 'handler'
+  bus_id: string
+  status?: 'pending' | 'started' | 'completed'
+  handler_id?: string
+  registered?: boolean
+}
+
+class RecordingMiddleware implements EventBusMiddleware {
+  name: string
+  records: HookRecord[]
+  sequence: string[] | null
+
+  constructor(name: string, sequence: string[] | null = null) {
+    this.name = name
+    this.records = []
+    this.sequence = sequence
+  }
+
+  async on_event_change(eventbus: EventBus, _event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
+    this.records.push({ middleware: this.name, hook: 'event', status, bus_id: eventbus.id })
+    this.sequence?.push(`${this.name}:event:${status}`)
+  }
+
+  async on_event_result_change(
+    eventbus: EventBus,
+    _event: BaseEvent,
+    event_result: { handler_id: string },
+    status: 'pending' | 'started' | 'completed'
+  ): Promise<void> {
+    this.records.push({ middleware: this.name, hook: 'result', status, handler_id: event_result.handler_id, bus_id: eventbus.id })
+    this.sequence?.push(`${this.name}:result:${status}`)
+  }
+
+  async on_handler_change(eventbus: EventBus, handler: { id: string }, registered: boolean): Promise<void> {
+    this.records.push({ middleware: this.name, hook: 'handler', registered, handler_id: handler.id, bus_id: eventbus.id })
+    this.sequence?.push(`${this.name}:handler:${registered ? 'registered' : 'unregistered'}`)
+  }
+}
+
+test('middleware ctor+instance normalization and handler registration hooks', async () => {
+  class CtorMiddleware extends RecordingMiddleware {
+    static created = 0
+
+    constructor() {
+      super('ctor')
+      CtorMiddleware.created += 1
+    }
+  }
+
+  const instance = new RecordingMiddleware('instance')
+  const bus = new EventBus('MiddlewareCtorBus', {
+    middlewares: [CtorMiddleware, instance],
+  })
+  const Event = BaseEvent.extend('MiddlewareCtorEvent', {})
+  const handler = bus.on(Event, () => 'ok')
+  bus.off(Event, handler)
+
+  await flushHooks()
+
+  assert.equal(CtorMiddleware.created, 1)
+  assert.equal(
+    instance.records.some((record) => record.hook === 'handler' && record.registered === true),
+    true
+  )
+  assert.equal(
+    instance.records.some((record) => record.hook === 'handler' && record.registered === false),
+    true
+  )
+
+  bus.destroy()
+})
+
+test('middleware hooks execute sequentially in registration order', async () => {
+  const sequence: string[] = []
+  class FirstMiddleware extends RecordingMiddleware {
+    constructor() {
+      super('first', sequence)
+    }
+  }
+  class SecondMiddleware extends RecordingMiddleware {
+    constructor() {
+      super('second', sequence)
+    }
+  }
+
+  const bus = new EventBus('MiddlewareOrderBus', { middlewares: [FirstMiddleware, SecondMiddleware] })
+  const Event = BaseEvent.extend('MiddlewareOrderEvent', {})
+
+  bus.on(Event, () => 'ok')
+  await bus.dispatch(Event({ event_timeout: 0.2 })).done()
+  await flushHooks()
+
+  const pairs: Array<[string, string]> = [
+    ['first:event:pending', 'second:event:pending'],
+    ['first:event:started', 'second:event:started'],
+    ['first:result:pending', 'second:result:pending'],
+    ['first:result:started', 'second:result:started'],
+    ['first:result:completed', 'second:result:completed'],
+    ['first:event:completed', 'second:event:completed'],
+  ]
+  for (const [first, second] of pairs) {
+    assert.ok(sequence.indexOf(first) >= 0, `missing sequence marker: ${first}`)
+    assert.ok(sequence.indexOf(second) >= 0, `missing sequence marker: ${second}`)
+    assert.ok(sequence.indexOf(first) < sequence.indexOf(second), `expected ${first} before ${second}`)
+  }
+
+  bus.destroy()
+})
+
+test('middleware hooks are per-bus on forwarded events', async () => {
+  const middleware_a = new RecordingMiddleware('a')
+  const middleware_b = new RecordingMiddleware('b')
+  const bus_a = new EventBus('MiddlewareForwardA', { middlewares: [middleware_a] })
+  const bus_b = new EventBus('MiddlewareForwardB', { middlewares: [middleware_b] })
+  const Event = BaseEvent.extend('MiddlewareForwardEvent', {})
+
+  const handler_a = bus_a.on(Event, async (event) => {
+    bus_b.dispatch(event)
+  })
+  const handler_b = bus_b.on(Event, async () => 'ok')
+
+  await bus_a.dispatch(Event({ event_timeout: 0.2 })).done()
+  await flushHooks()
+
+  assert.equal(
+    middleware_a.records.some((record) => record.hook === 'result' && record.handler_id === handler_a.id),
+    true
+  )
+  assert.equal(
+    middleware_a.records.some((record) => record.hook === 'result' && record.handler_id === handler_b.id),
+    false
+  )
+  assert.equal(
+    middleware_b.records.some((record) => record.hook === 'result' && record.handler_id === handler_b.id),
+    true
+  )
+
+  bus_a.destroy()
+  bus_b.destroy()
+})
+
+test('middleware emits event lifecycle hooks for no-handler events', async () => {
+  const middleware = new RecordingMiddleware('single')
+  const bus = new EventBus('MiddlewareNoHandlerBus', { middlewares: [middleware] })
+  const Event = BaseEvent.extend('MiddlewareNoHandlerEvent', {})
+
+  await bus.dispatch(Event({ event_timeout: 0.2 })).done()
+  await flushHooks()
+
+  const event_statuses = middleware.records
+    .filter((record) => record.hook === 'event')
+    .map((record) => record.status)
+    .filter((status): status is 'pending' | 'started' | 'completed' => status !== undefined)
+  assert.deepEqual(event_statuses, ['pending', 'started', 'completed'])
+  assert.equal(
+    middleware.records.some((record) => record.hook === 'result'),
+    false
+  )
+
+  bus.destroy()
+})
+
+test('middleware result hooks never reverse from completed to started', async () => {
+  const middleware = new RecordingMiddleware('ordering')
+  const bus = new EventBus('MiddlewareOrderingBus', { middlewares: [middleware], event_handler_concurrency: 'parallel' })
+  const Event = BaseEvent.extend('MiddlewareOrderingEvent', {})
+
+  bus.on(Event, async () => {
+    await delay(50)
+    return 'slow'
+  })
+  bus.on(Event, async () => {
+    await delay(50)
+    return 'slow-2'
+  })
+
+  await bus.dispatch(Event({ event_timeout: 0.01 })).done()
+  await flushHooks()
+
+  const statuses_by_handler = new Map<string, string[]>()
+  for (const record of middleware.records.filter((record) => record.hook === 'result' && record.handler_id && record.status)) {
+    const statuses = statuses_by_handler.get(record.handler_id!) ?? []
+    statuses.push(record.status!)
+    statuses_by_handler.set(record.handler_id!, statuses)
+  }
+  for (const statuses of statuses_by_handler.values()) {
+    const completed_index = statuses.indexOf('completed')
+    if (completed_index >= 0) {
+      assert.equal(statuses.slice(completed_index + 1).includes('started'), false)
+    }
+  }
+
+  bus.destroy()
+})
+
+test('hard event timeout finalizes immediately without waiting for in-flight handlers', async () => {
+  const bus = new EventBus('MiddlewareHardTimeoutBus', {
+    event_handler_concurrency: 'parallel',
+  })
+  const Event = BaseEvent.extend('MiddlewareHardTimeoutEvent', {})
+
+  bus.on(Event, async () => {
+    await delay(200)
+    return 'late-1'
+  })
+  bus.on(Event, async () => {
+    await delay(200)
+    return 'late-2'
+  })
+
+  const started_at = Date.now()
+  const event = bus.dispatch(Event({ event_timeout: 0.01 }))
+  await event.done()
+  const elapsed_ms = Date.now() - started_at
+
+  const initial_snapshot = Array.from(event.event_results.values()).map((result) => ({
+    id: result.id,
+    status: result.status,
+    error_name: (result.error as { constructor?: { name?: string } } | undefined)?.constructor?.name ?? null,
+  }))
+
+  assert.ok(elapsed_ms < 100, `event.done() took too long after timeout: ${elapsed_ms}ms`)
+  assert.equal(
+    initial_snapshot.every((result) => result.status === 'error'),
+    true
+  )
+
+  await delay(250)
+  const final_snapshot = Array.from(event.event_results.values()).map((result) => ({
+    id: result.id,
+    status: result.status,
+    error_name: (result.error as { constructor?: { name?: string } } | undefined)?.constructor?.name ?? null,
+  }))
+
+  assert.deepEqual(final_snapshot, initial_snapshot)
+  bus.destroy()
+})
+
+test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () => {
+  const SchemaEvent = BaseEvent.extend('MiddlewareSchemaEvent', {
+    event_result_type: Number,
+  })
+  const serial_bus = new EventBus('MiddlewareTaxonomySerialBus', {
+    event_handler_concurrency: 'serial',
+  })
+  const parallel_bus = new EventBus('MiddlewareTaxonomyParallelBus', {
+    event_handler_concurrency: 'parallel',
+  })
+
+  serial_bus.on(SchemaEvent, async () => 'not-a-number')
+  const schema_event = serial_bus.dispatch(SchemaEvent({ event_timeout: 0.2 }))
+  await schema_event.done()
+  const schema_result = Array.from(schema_event.event_results.values())[0]
+  assert.ok(schema_result.error instanceof EventHandlerResultSchemaError)
+
+  const SerialTimeoutEvent = BaseEvent.extend('MiddlewareSerialTimeoutEvent', {})
+  serial_bus.on(SerialTimeoutEvent, async () => {
+    await delay(100)
+    return 'slow'
+  })
+  serial_bus.on(SerialTimeoutEvent, async () => {
+    await delay(100)
+    return 'slow-2'
+  })
+  const serial_timeout_event = serial_bus.dispatch(SerialTimeoutEvent({ event_timeout: 0.01 }))
+  await serial_timeout_event.done()
+  const serial_results = Array.from(serial_timeout_event.event_results.values())
+  assert.equal(
+    serial_results.some((result) => result.error instanceof EventHandlerTimeoutError),
+    true
+  )
+  assert.equal(
+    serial_results.some((result) => result.error instanceof EventHandlerCancelledError),
+    true
+  )
+
+  const ParallelTimeoutEvent = BaseEvent.extend('MiddlewareParallelTimeoutEvent', {})
+  parallel_bus.on(ParallelTimeoutEvent, async () => {
+    await delay(100)
+    return 'slow'
+  })
+  parallel_bus.on(ParallelTimeoutEvent, async () => {
+    await delay(100)
+    return 'slow-2'
+  })
+  const parallel_timeout_event = parallel_bus.dispatch(ParallelTimeoutEvent({ event_timeout: 0.01 }))
+  await parallel_timeout_event.done()
+  const parallel_results = Array.from(parallel_timeout_event.event_results.values())
+  assert.equal(
+    parallel_results.some((result) => result.error instanceof EventHandlerTimeoutError),
+    true
+  )
+  assert.equal(
+    parallel_results.some((result) => result.error instanceof EventHandlerAbortedError),
+    true
+  )
+
+  serial_bus.destroy()
+  parallel_bus.destroy()
+})

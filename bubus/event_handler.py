@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import os
 import time
@@ -23,6 +24,22 @@ T_Event = TypeVar('T_Event', bound='BaseEvent[Any]', contravariant=True, default
 
 # For protocols with __func__ attributes, we need an invariant TypeVar
 T_EventInvariant = TypeVar('T_EventInvariant', bound='BaseEvent[Any]', default='BaseEvent[Any]')
+
+
+class EventHandlerCancelledError(asyncio.CancelledError):
+    """Handler was cancelled before starting or before producing a result."""
+
+
+class EventHandlerTimeoutError(TimeoutError):
+    """Handler exceeded its configured handler timeout."""
+
+
+class EventHandlerAbortedError(asyncio.CancelledError):
+    """Handler was interrupted while running (for example by event hard-timeout)."""
+
+
+class EventHandlerResultSchemaError(ValueError):
+    """Handler returned a value incompatible with the event_result_type schema."""
 
 
 @runtime_checkable
@@ -81,27 +98,12 @@ class AsyncEventHandlerClassMethod(Protocol[T_EventInvariant]):
     __func__: Callable[[type[Any], T_EventInvariant], Awaitable[Any]]
 
 
-# Event handlers can be sync/async functions, methods, class methods, or coroutines.
-# This alias represents the raw callable used by EventBus execution internals.
-EventHandlerCallable: TypeAlias = (
-    EventHandlerFunc['BaseEvent[Any]']
-    | AsyncEventHandlerFunc['BaseEvent[Any]']
-    | EventHandlerMethod['BaseEvent[Any]']
-    | AsyncEventHandlerMethod['BaseEvent[Any]']
-    | EventHandlerClassMethod['BaseEvent[Any]']
-    | AsyncEventHandlerClassMethod['BaseEvent[Any]']
-)
+# Event handlers can be plain functions, bound methods, class methods, or
+# async variants. Runtime validation in EventBus enforces callable shape.
+EventHandlerCallable: TypeAlias = Callable[..., Any]
 
-# ContravariantEventHandlerCallable is needed to allow handlers to accept any
-# BaseEvent subclass in some signatures.
-ContravariantEventHandlerCallable: TypeAlias = (
-    EventHandlerFunc[T_Event]  # cannot be BaseEvent or type checker will complain
-    | AsyncEventHandlerFunc['BaseEvent[Any]']
-    | EventHandlerMethod['BaseEvent[Any]']
-    | AsyncEventHandlerMethod[T_Event]  # cannot be 'BaseEvent' or type checker will complain
-    | EventHandlerClassMethod['BaseEvent[Any]']
-    | AsyncEventHandlerClassMethod['BaseEvent[Any]']
-)
+# Single-argument callable that accepts one BaseEvent subtype.
+ContravariantEventHandlerCallable: TypeAlias = Callable[[T_Event], Any]
 
 HANDLER_ID_NAMESPACE: UUID = uuid5(NAMESPACE_DNS, 'bubus-handler')
 

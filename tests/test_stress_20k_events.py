@@ -15,7 +15,7 @@ import pytest
 
 import bubus.base_event as base_event_module
 import bubus.event_bus as event_bus_module
-from bubus import BaseEvent, EventBus
+from bubus import BaseEvent, EventBus, EventHandlerAbortedError, EventHandlerCancelledError, EventHandlerTimeoutError
 
 pytestmark = pytest.mark.timeout(120, method='thread')
 
@@ -703,7 +703,15 @@ async def test_forwarding_queue_jump_timeout_mix_stays_stable():
     assert parent_handled == total_iterations
     assert child_handled == total_iterations
     timeout_count = sum(
-        1 for child in child_events if any(isinstance(result.error, TimeoutError) for result in child.event_results.values())
+        1
+        for child in child_events
+        if any(
+            isinstance(
+                result.error,
+                (TimeoutError, EventHandlerTimeoutError, EventHandlerAbortedError, EventHandlerCancelledError),
+            )
+            for result in child.event_results.values()
+        )
     )
     assert timeout_count > 0
     assert len(bus_a.event_history) <= history_limit
@@ -1133,7 +1141,14 @@ async def test_timeout_churn_perf_matrix_by_mode(event_handler_concurrency: Lite
     timeout_count = sum(
         1
         for event in timeout_phase_events
-        if event.mode == 'slow' and any(isinstance(result.error, TimeoutError) for result in event.event_results.values())
+        if event.mode == 'slow'
+        and any(
+            isinstance(
+                result.error,
+                (TimeoutError, EventHandlerTimeoutError, EventHandlerAbortedError, EventHandlerCancelledError),
+            )
+            for result in event.event_results.values()
+        )
     )
     recovery_errors = sum(
         1 for event in recovery_phase_events if any(result.error is not None for result in event.event_results.values())

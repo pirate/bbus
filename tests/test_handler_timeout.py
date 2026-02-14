@@ -4,7 +4,13 @@ import asyncio
 
 import pytest
 
-from bubus import BaseEvent, EventBus
+from bubus import (
+    BaseEvent,
+    EventBus,
+    EventHandlerAbortedError,
+    EventHandlerCancelledError,
+    EventHandlerTimeoutError,
+)
 
 
 # Event definitions
@@ -184,7 +190,8 @@ async def test_handler_timeout_marks_error_and_other_handlers_still_complete():
     bus = EventBus(name='TimeoutFocusedBus')
 
     class TimeoutFocusedEvent(BaseEvent[str]):
-        event_timeout: float | None = 0.01
+        event_timeout: float | None = 0.2
+        event_handler_timeout: float | None = 0.01
 
     execution_order: list[str] = []
 
@@ -221,6 +228,84 @@ async def test_handler_timeout_marks_error_and_other_handlers_still_complete():
 
 
 @pytest.mark.asyncio
+async def test_event_timeout_is_hard_cap_across_serial_handlers():
+    bus = EventBus(name='EventHardCapBus')
+
+    class HardCapEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.05
+
+    async def first_handler(_event: HardCapEvent) -> str:
+        await asyncio.sleep(0.03)
+        return 'first'
+
+    async def second_handler(_event: HardCapEvent) -> str:
+        await asyncio.sleep(0.03)
+        return 'second'
+
+    async def pending_handler(_event: HardCapEvent) -> str:
+        return 'pending'
+
+    bus.on(HardCapEvent, first_handler)
+    bus.on(HardCapEvent, second_handler)
+    bus.on(HardCapEvent, pending_handler)
+
+    try:
+        event = await bus.dispatch(HardCapEvent())
+        await bus.wait_until_idle()
+
+        first_result = next(result for result in event.event_results.values() if result.handler_name.endswith('first_handler'))
+        second_result = next(result for result in event.event_results.values() if result.handler_name.endswith('second_handler'))
+        pending_result = next(
+            result for result in event.event_results.values() if result.handler_name.endswith('pending_handler')
+        )
+
+        assert first_result.status == 'completed'
+        assert first_result.result == 'first'
+        assert second_result.status == 'error'
+        assert isinstance(second_result.error, EventHandlerAbortedError)
+        assert pending_result.status == 'error'
+        assert isinstance(pending_result.error, EventHandlerCancelledError)
+    finally:
+        await bus.stop(clear=True, timeout=0)
+
+
+@pytest.mark.asyncio
+async def test_event_timeout_is_hard_cap_in_parallel_mode() -> None:
+    bus = EventBus(name='EventHardCapParallelBus', event_handler_concurrency='parallel')
+
+    class HardCapParallelEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.03
+
+    async def slow_a(_event: HardCapParallelEvent) -> str:
+        await asyncio.sleep(0.1)
+        return 'a'
+
+    async def slow_b(_event: HardCapParallelEvent) -> str:
+        await asyncio.sleep(0.1)
+        return 'b'
+
+    bus.on(HardCapParallelEvent, slow_a)
+    bus.on(HardCapParallelEvent, slow_b)
+
+    try:
+        event = await bus.dispatch(HardCapParallelEvent())
+        await bus.wait_until_idle()
+
+        assert len(event.event_results) == 2
+        assert all(result.status == 'error' for result in event.event_results.values())
+        assert all(
+            isinstance(result.error, (EventHandlerAbortedError, EventHandlerCancelledError, EventHandlerTimeoutError))
+            for result in event.event_results.values()
+        )
+        assert any(
+            isinstance(result.error, (EventHandlerAbortedError, EventHandlerTimeoutError))
+            for result in event.event_results.values()
+        )
+    finally:
+        await bus.stop(clear=True, timeout=0)
+
+
+@pytest.mark.asyncio
 async def test_multi_bus_timeout_is_recorded_on_target_bus():
     """Closest Python equivalent: same event dispatched to two buses, timeout on target bus is captured."""
     bus_a = EventBus(name='MultiTimeoutA')
@@ -244,7 +329,7 @@ async def test_multi_bus_timeout_is_recorded_on_target_bus():
         bus_b_result = next((r for r in event.event_results.values() if r.eventbus_name == bus_b.name), None)
         assert bus_b_result is not None
         assert bus_b_result.status == 'error'
-        assert isinstance(bus_b_result.error, TimeoutError)
+        assert isinstance(bus_b_result.error, EventHandlerAbortedError)
         assert event.event_path == [bus_a.label, bus_b.label]
     finally:
         await bus_a.stop(clear=True, timeout=0)
@@ -295,7 +380,7 @@ async def test_followup_event_runs_after_parent_timeout_in_queue_jump_path():
 
         parent_result = next(iter(parent.event_results.values()))
         assert parent_result.status == 'error'
-        assert isinstance(parent_result.error, TimeoutError)
+        assert isinstance(parent_result.error, EventHandlerAbortedError)
 
         tail = bus.dispatch(TailEvent())
         completed_tail = await asyncio.wait_for(tail, timeout=1.0)
@@ -365,7 +450,10 @@ async def test_forwarded_timeout_path_does_not_stall_followup_events():
         assert parent_result.status == 'completed'
 
         assert child_ref is not None
-        assert any(isinstance(result.error, TimeoutError) for result in child_ref.event_results.values()), child_ref.event_results
+        assert any(
+            isinstance(result.error, (EventHandlerTimeoutError, EventHandlerAbortedError))
+            for result in child_ref.event_results.values()
+        ), child_ref.event_results
 
         # Lock/queue state should remain healthy after timeout.
         tail = bus_a.dispatch(TailEvent())

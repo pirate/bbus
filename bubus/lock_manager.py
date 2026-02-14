@@ -2,13 +2,33 @@ import asyncio
 import contextvars
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from bubus.base_event import BaseEvent, EventConcurrencyMode, EventHandlerConcurrencyMode
 from bubus.event_result import EventResult
 
 if TYPE_CHECKING:
     from bubus.event_bus import EventBus
+
+
+class LockManagerProtocol(Protocol):
+    """Minimal lock API required by EventBus runtime execution paths."""
+
+    def get_lock_for_event(self, bus: 'EventBus', event: BaseEvent[Any]) -> 'ReentrantLock | None':
+        """Return the concrete event-level lock object or ``None`` for parallel mode."""
+        ...
+
+    def event_lock(self, bus: 'EventBus', event: BaseEvent[Any]) -> Any:
+        """Context manager for event-level lock scope."""
+        ...
+
+    def handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], eventresult: EventResult[Any]) -> Any:
+        """Context manager for per-handler lock scope."""
+        ...
+
+    def handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[Any]) -> Any:
+        """Context manager that mirrors held event-lock state into dispatch context."""
+        ...
 
 
 # Context variable storing lock-id -> re-entrant depth for the current async context.
@@ -152,7 +172,7 @@ class LockManager:
         return current_lock
 
     @asynccontextmanager
-    async def lock_for_event(self, bus: 'EventBus', event: BaseEvent[Any]):
+    async def event_lock(self, bus: 'EventBus', event: BaseEvent[Any]):
         """Acquire/release the resolved event lock around event processing.
 
         Lifecycle:
@@ -167,7 +187,7 @@ class LockManager:
             yield
 
     @asynccontextmanager
-    async def lock_for_event_handler(self, bus: 'EventBus', event: BaseEvent[Any], eventresult: EventResult[Any]):
+    async def handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], eventresult: EventResult[Any]):
         """Acquire/release the resolved per-event handler lock around one handler run.
 
         Lifecycle:
@@ -182,7 +202,7 @@ class LockManager:
             yield
 
     @contextmanager
-    def lock_context_for_current_handler(self, bus: 'EventBus', event: BaseEvent[Any]):
+    def handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[Any]):
         """Mirror parent event-lock ownership into the current copied context.
 
         Lifecycle:

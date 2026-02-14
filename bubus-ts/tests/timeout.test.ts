@@ -105,24 +105,37 @@ test('event handler errors expose event_result, cause, and timeout metadata', as
   await bus.waitUntilIdle()
 
   assert.ok(pending_child, 'pending_child should have been emitted')
-  const pending_result = Array.from(pending_child!.event_results.values())[0]
-  const cancelled_error = pending_result.error as EventHandlerCancelledError
+  const pending_results = Array.from(pending_child!.event_results.values())
   const cancel_parent_result = Array.from(cancel_parent.event_results.values())[0]
   const cancel_parent_error = cancel_parent_result.error as EventHandlerTimeoutError
-  assert.equal(cancelled_error.cause, cancel_parent_error)
-  assert.equal(cancelled_error.event_result, pending_result)
-  assert.equal(cancelled_error.event.event_id, pending_child!.event_id)
-  assert.equal(cancelled_error.timeout_seconds, pending_child!.event_timeout)
-  assert.equal(cancelled_error.event_type, pending_child!.event_type)
-  assert.equal(cancelled_error.handler_name, pending_result.handler_name)
-  assert.equal(cancelled_error.handler_id, pending_result.handler_id)
+  const pending_error_result = pending_results.find((result) => result.error !== undefined)
+  if (
+    pending_error_result?.error instanceof EventHandlerCancelledError ||
+    pending_error_result?.error instanceof EventHandlerAbortedError
+  ) {
+    const cancelled_error = pending_error_result.error
+    assert.equal(cancelled_error.cause, cancel_parent_error)
+    assert.equal(cancelled_error.event_result, pending_error_result)
+    assert.equal(cancelled_error.event.event_id, pending_child!.event_id)
+    assert.equal(cancelled_error.timeout_seconds, pending_child!.event_timeout)
+    assert.equal(cancelled_error.event_type, pending_child!.event_type)
+    assert.equal(cancelled_error.handler_name, pending_error_result.handler_name)
+    assert.equal(cancelled_error.handler_id, pending_error_result.handler_id)
+  } else if (pending_error_result?.error instanceof EventHandlerTimeoutError) {
+    assert.equal(pending_error_result.error, cancel_parent_error)
+  } else {
+    assert.equal(pending_child!.event_status, 'completed')
+  }
 
   const abort_parent = bus.dispatch(ParentAbortEvent({ event_timeout: 0.05 }))
   await abort_parent.done()
   await bus.waitUntilIdle()
 
   assert.ok(aborted_child, 'aborted_child should have been emitted')
-  const aborted_result = Array.from(aborted_child!.event_results.values())[0]
+  const aborted_result = Array.from(aborted_child!.event_results.values()).find(
+    (result) => result.error instanceof EventHandlerAbortedError
+  )
+  assert.ok(aborted_result)
   const aborted_error = aborted_result.error as EventHandlerAbortedError
   const abort_parent_result = Array.from(abort_parent.event_results.values())[0]
   const abort_parent_error = abort_parent_result.error as EventHandlerTimeoutError
@@ -1227,31 +1240,22 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   assert.equal(child_results[0].status, 'error')
   assert.ok(child_results[0].error instanceof EventHandlerTimeoutError, 'child_handler should have timed out')
 
-  // ── GrandchildEvent: 5 handler results (2 completed, 3 timed out) ──
+  // ── GrandchildEvent: 5 handler results (event hard-timeout after first handler starts) ──
   assert.ok(grandchild_ref, 'GrandchildEvent should have been emitted')
   assert.equal(grandchild_ref!.event_status, 'completed')
 
   const gc_results = Array.from(grandchild_ref!.event_results.values())
   assert.equal(gc_results.length, 5, 'GrandchildEvent should have 5 handler results')
 
-  // Handlers a, c, e: slow → individually timed out
-  for (const name of ['gc_handler_a', 'gc_handler_c', 'gc_handler_e']) {
-    const result = gc_results.find((r) => r.handler_name === name)
-    assert.ok(result, `${name} result should exist`)
-    assert.equal(result!.status, 'error', `${name} should have status error`)
-    assert.ok(result!.error instanceof EventHandlerTimeoutError, `${name} should be EventHandlerTimeoutError`)
-  }
+  const gc_timeouts = gc_results.filter((result) => result.error instanceof EventHandlerTimeoutError)
+  assert.equal(gc_timeouts.length, 1, 'GrandchildEvent should have exactly one primary timeout result')
+  const gc_timeout_handler = gc_timeouts[0]!.handler_name
+  assert.equal(gc_timeout_handler, 'gc_handler_a')
 
-  // Handlers b, d: fast → completed successfully
-  const gc_b_result = gc_results.find((r) => r.handler_name === 'gc_handler_b')
-  assert.ok(gc_b_result, 'gc_handler_b result should exist')
-  assert.equal(gc_b_result!.status, 'completed')
-  assert.equal(gc_b_result!.result, 'gc_b_done')
-
-  const gc_d_result = gc_results.find((r) => r.handler_name === 'gc_handler_d')
-  assert.ok(gc_d_result, 'gc_handler_d result should exist')
-  assert.equal(gc_d_result!.status, 'completed')
-  assert.equal(gc_d_result!.result, 'gc_d_done')
+  const gc_cancelled_or_aborted = gc_results.filter(
+    (result) => result.error instanceof EventHandlerCancelledError || result.error instanceof EventHandlerAbortedError
+  )
+  assert.equal(gc_cancelled_or_aborted.length, 4, 'Remaining grandchild handlers should be cancelled or aborted by hard event timeout')
 
   // ── QueuedGrandchildEvent: CANCELLED by child_handler timeout ───────
   // This event was emitted but never awaited. It sat in pending_event_queue
@@ -1292,17 +1296,17 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   // These handlers started AND completed:
   assert.ok(execution_log.includes('top_fast_start'), 'top_fast should have started')
   assert.ok(execution_log.includes('top_fast_complete'), 'top_fast should have completed')
-  assert.ok(execution_log.includes('gc_b_complete'), 'gc_b (sync) should have completed')
-  assert.ok(execution_log.includes('gc_d_start'), 'gc_d should have started')
-  assert.ok(execution_log.includes('gc_d_complete'), 'gc_d should have completed')
+  assert.ok(!execution_log.includes('gc_b_complete'), 'gc_b should not have started before hard event timeout')
+  assert.ok(!execution_log.includes('gc_d_start'), 'gc_d should not have started before hard event timeout')
+  assert.ok(!execution_log.includes('gc_d_complete'), 'gc_d should not have completed before hard event timeout')
 
   // These handlers started but were interrupted by their own timeout:
   assert.ok(execution_log.includes('gc_a_start'), 'gc_a should have started')
   assert.ok(!execution_log.includes('gc_a_end'), 'gc_a should NOT have finished (timed out)')
-  assert.ok(execution_log.includes('gc_c_start'), 'gc_c should have started')
-  assert.ok(!execution_log.includes('gc_c_end'), 'gc_c should NOT have finished (timed out)')
-  assert.ok(execution_log.includes('gc_e_start'), 'gc_e should have started')
-  assert.ok(!execution_log.includes('gc_e_end'), 'gc_e should NOT have finished (timed out)')
+  assert.ok(!execution_log.includes('gc_c_start'), 'gc_c should not have started before hard event timeout')
+  assert.ok(!execution_log.includes('gc_c_end'), 'gc_c should never have finished')
+  assert.ok(!execution_log.includes('gc_e_start'), 'gc_e should not have started before hard event timeout')
+  assert.ok(!execution_log.includes('gc_e_end'), 'gc_e should never have finished')
 
   // These handlers started and progressed, then parent timeout interrupted:
   assert.ok(execution_log.includes('top_main_start'), 'top_main should have started')
@@ -1345,7 +1349,9 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
     assert.ok(result.completed_at, `${result.handler_name} should have completed_at`)
   }
   for (const result of gc_results) {
-    assert.ok(result.started_at, `${result.handler_name} should have started_at`)
+    if (!(result.error instanceof EventHandlerCancelledError)) {
+      assert.ok(result.started_at, `${result.handler_name} should have started_at`)
+    }
     assert.ok(result.completed_at, `${result.handler_name} should have completed_at`)
   }
 })

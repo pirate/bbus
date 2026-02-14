@@ -13,7 +13,13 @@ from .base_event import (
 )
 from .bridges import HTTPEventBridge, SocketEventBridge
 from .event_bus import EventBus
-from .event_handler import EventHandler
+from .event_handler import (
+    EventHandler,
+    EventHandlerAbortedError,
+    EventHandlerCancelledError,
+    EventHandlerResultSchemaError,
+    EventHandlerTimeoutError,
+)
 from .event_history import EventHistory, InMemoryEventHistory
 from .event_result import EventResult
 from .middlewares import (
@@ -49,6 +55,10 @@ __all__ = [
     'EventStatus',
     'EventResult',
     'EventHandler',
+    'EventHandlerCancelledError',
+    'EventHandlerResultSchemaError',
+    'EventHandlerTimeoutError',
+    'EventHandlerAbortedError',
     'EventHandlerConcurrencyMode',
     'EventHandlerCompletionMode',
     'EventConcurrencyMode',

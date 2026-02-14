@@ -1021,6 +1021,51 @@ class TestWALPersistence:
 class TestHandlerMiddleware:
     """Tests for the handler middleware pipeline."""
 
+    def test_middleware_constructor_rejects_invalid_entries(self):
+        with pytest.raises(TypeError):
+            EventBus(middlewares=[object()])
+
+    async def test_middleware_constructor_auto_inits_classes_and_keeps_hook_order(self):
+        calls: list[str] = []
+
+        class ClassMiddleware(EventBusMiddleware):
+            def __init__(self):
+                calls.append('class:init')
+
+            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
+                if status == 'started':
+                    calls.append('class:started')
+                elif status == 'completed':
+                    calls.append('class:completed')
+
+        class InstanceMiddleware(EventBusMiddleware):
+            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
+                if status == 'started':
+                    calls.append('instance:started')
+                elif status == 'completed':
+                    calls.append('instance:completed')
+
+        instance_middleware = InstanceMiddleware()
+        bus = EventBus(middlewares=[ClassMiddleware, instance_middleware])
+        bus.on('UserActionEvent', lambda event: 'ok')
+
+        try:
+            completed = await bus.dispatch(UserActionEvent(action='test', user_id='user1'))
+            await bus.wait_until_idle()
+
+            assert isinstance(bus.middlewares[0], ClassMiddleware)
+            assert bus.middlewares[1] is instance_middleware
+            assert completed.event_results
+            assert calls == [
+                'class:init',
+                'class:started',
+                'instance:started',
+                'class:completed',
+                'instance:completed',
+            ]
+        finally:
+            await bus.stop()
+
     async def test_middleware_wraps_successful_handler(self):
         calls: list[tuple[str, str]] = []
 
@@ -1076,6 +1121,48 @@ class TestHandlerMiddleware:
             assert result.status == 'error'
             assert isinstance(result.error, ValueError)
             assert observations == [('before', 'started'), ('error', 'ValueError')]
+        finally:
+            await bus.stop()
+
+    async def test_middleware_event_and_result_lifecycle_remains_monotonic_on_timeout(self):
+        observed_event_statuses: list[str] = []
+        observed_result_transitions: list[tuple[str, str, str]] = []
+
+        class LifecycleMiddleware(EventBusMiddleware):
+            async def on_event_change(self, eventbus: EventBus, event: BaseEvent, status):
+                observed_event_statuses.append(str(status))
+
+            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
+                observed_result_transitions.append((event_result.handler_name, str(status), event_result.status))
+
+        class TimeoutLifecycleEvent(BaseEvent[str]):
+            event_timeout: float | None = 0.02
+
+        async def slow_handler(_event: TimeoutLifecycleEvent) -> str:
+            await asyncio.sleep(0.05)
+            return 'slow'
+
+        async def pending_handler(_event: TimeoutLifecycleEvent) -> str:
+            return 'pending'
+
+        bus = EventBus(middlewares=[LifecycleMiddleware()])
+        bus.on(TimeoutLifecycleEvent, slow_handler)
+        bus.on(TimeoutLifecycleEvent, pending_handler)
+
+        try:
+            await bus.dispatch(TimeoutLifecycleEvent())
+            await bus.wait_until_idle()
+
+            assert observed_event_statuses == ['pending', 'started', 'completed']
+
+            slow_transitions = [entry for entry in observed_result_transitions if entry[0].endswith('slow_handler')]
+            pending_transitions = [entry for entry in observed_result_transitions if entry[0].endswith('pending_handler')]
+
+            assert [status for _, status, _ in slow_transitions] == ['pending', 'started', 'completed']
+            assert [result_status for _, _, result_status in slow_transitions] == ['pending', 'started', 'error']
+
+            assert [status for _, status, _ in pending_transitions] == ['pending', 'completed']
+            assert [result_status for _, _, result_status in pending_transitions] == ['pending', 'error']
         finally:
             await bus.stop()
 

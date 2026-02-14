@@ -296,6 +296,35 @@ export class LockManager {
     return this.bus_event_semaphore
   }
 
+  async withEventLock<T>(
+    event: BaseEvent,
+    fn: () => Promise<T>,
+    options: { bypass_event_semaphores?: boolean; pre_acquired_semaphore?: AsyncSemaphore | null } = {}
+  ): Promise<T> {
+    const pre_acquired = options.pre_acquired_semaphore ?? null
+    if (options.bypass_event_semaphores || pre_acquired) {
+      return await fn()
+    }
+    return await runWithSemaphore(this.getSemaphoreForEvent(event), fn)
+  }
+
+  async withHandlerLock<T>(
+    event: BaseEvent,
+    default_handler_concurrency: EventHandlerConcurrencyMode | undefined,
+    fn: (lock: HandlerLock | null) => Promise<T>
+  ): Promise<T> {
+    const semaphore = event.getHandlerSemaphore(default_handler_concurrency)
+    if (semaphore) {
+      await semaphore.acquire()
+    }
+    const lock = semaphore ? new HandlerLock(semaphore) : null
+    try {
+      return await fn(lock)
+    } finally {
+      lock?.exitHandlerRun()
+    }
+  }
+
   // Schedules a debounced idle check to run after a short delay. Used to gate
   // waitUntilIdle() calls during handler execution and after event completion.
   private scheduleIdleCheck(): void {

@@ -1,7 +1,8 @@
 export { BaseEvent, BaseEventSchema } from './base_event.js'
 export { EventResult } from './event_result.js'
 export { EventBus } from './event_bus.js'
-export type { EventBusJSON } from './event_bus.js'
+export type { EventBusJSON, EventBusOptions } from './event_bus.js'
+export type { EventBusMiddleware, EventBusMiddlewareCtor, EventBusMiddlewareInput } from './middlewares.js'
 export {
   EventHandlerTimeoutError,
   EventHandlerCancelledError,
