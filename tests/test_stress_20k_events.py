@@ -2,10 +2,12 @@ import asyncio
 import functools
 import gc
 import inspect
+import logging
 import math
 import os
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Any, Literal
 
 import psutil
@@ -14,6 +16,21 @@ import pytest
 import bubus.base_event as base_event_module
 import bubus.event_bus as event_bus_module
 from bubus import BaseEvent, EventBus
+
+pytestmark = pytest.mark.timeout(120, method='thread')
+
+
+@contextmanager
+def suppress_bubus_warning_logs() -> Any:
+    """Reduce intentional timeout warning spam during stress scenarios."""
+
+    bubus_logger = logging.getLogger('bubus')
+    previous_level = bubus_logger.level
+    bubus_logger.setLevel(logging.ERROR)
+    try:
+        yield
+    finally:
+        bubus_logger.setLevel(previous_level)
 
 
 def get_memory_usage_mb():
@@ -672,11 +689,11 @@ async def test_forwarding_queue_jump_timeout_mix_stays_stable():
 
     start = time.time()
     try:
-        for i in range(total_iterations):
-            await bus_a.dispatch(MixedParentEvent(iteration=i))
-
-        await bus_a.wait_until_idle()
-        await bus_b.wait_until_idle()
+        with suppress_bubus_warning_logs():
+            for i in range(total_iterations):
+                await bus_a.dispatch(MixedParentEvent(iteration=i))
+            await bus_a.wait_until_idle()
+            await bus_b.wait_until_idle()
     finally:
         await bus_a.stop(timeout=0, clear=True)
         await bus_b.stop(timeout=0, clear=True)
@@ -1107,8 +1124,9 @@ async def test_timeout_churn_perf_matrix_by_mode(event_handler_concurrency: Lite
         return event
 
     try:
-        timeout_phase = await dispatch_and_measure(bus, timeout_factory, total_events=180, batch_size=20)
-        recovery_phase = await dispatch_and_measure(bus, recovery_factory, total_events=500, batch_size=25)
+        with suppress_bubus_warning_logs():
+            timeout_phase = await dispatch_and_measure(bus, timeout_factory, total_events=180, batch_size=20)
+            recovery_phase = await dispatch_and_measure(bus, recovery_factory, total_events=500, batch_size=25)
     finally:
         await bus.stop(timeout=0, clear=True)
 

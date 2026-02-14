@@ -1844,7 +1844,12 @@ class EventBus:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('🏃 %s.step(%s) STARTING', self, event)
 
-        # Clear idle state when we get an event
+        # Lifecycle note:
+        # - Every `step()` transition starts in "not idle" state.
+        # - The caller may be the runloop (`from_queue=True`) or a direct queue-jump
+        #   call (`from_queue=False`) from `BaseEvent._process_self_on_all_buses()`.
+        # - Idle can be restored only after queue bookkeeping and in-flight markers
+        #   are both fully reconciled in `finally`.
         self._on_idle.clear()
 
         # Acquire the event lock selected by event/bus concurrency policy.
@@ -1855,11 +1860,25 @@ class EventBus:
                 if not self._is_event_complete_fast(event):
                     await self.handle_event(event, timeout=timeout)
 
-                # Mark task as done only if we got it from the queue
+                # Queue lifecycle:
+                # - `queue.get()` increments `_unfinished_tasks`.
+                # - We must call `task_done()` exactly once for that consume path.
+                # - Direct `step(event=...)` calls bypass `queue.get()` and therefore
+                #   must not call `task_done()`.
                 if from_queue:
                     self.pending_event_queue.task_done()
         finally:
             await self._finalize_local_event_processing(event)
+            # Idle lifecycle reconciliation:
+            # - The runloop normally restores `_on_idle` after each queue turn.
+            # - Direct `step(event=...)` calls have no subsequent runloop turn, so if
+            #   this step drained the last in-flight work, `_on_idle` could remain
+            #   permanently cleared and `wait_until_idle()` would block forever.
+            # - Setting `_on_idle` here when queue+inflight are both empty keeps idle
+            #   semantics identical for runloop and direct-step execution paths.
+            if self._on_idle and self.pending_event_queue:
+                if not self._has_inflight_events_fast() and self.pending_event_queue.qsize() == 0:
+                    self._on_idle.set()
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('✅ %s.step(%s) COMPLETE', self, event)

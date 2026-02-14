@@ -1,12 +1,13 @@
 # TODO: TypeScript middleware support (parity with Python)
 
-Goal: add full EventBus middleware support in `bubus-ts`, matching Python semantics, with these requirements:
+Goal: add full EventBus middleware support in `bubus-ts`, matching Python lifecycle semantics where practical, with these requirements:
 - `middlewares` accepts instances or constructors and auto-initializes constructors.
 - Hooks run sequentially (per middleware order) for a given hook call.
-- Middleware errors do not fail events or handlers; they are logged and suppressed.
-- Hooks are async (`Promise<void>`) and are `await`ed sequentially where invoked.
-- Keep user-facing API and behavior aligned with Python, with minimal LoC.
+- Hooks are async (`Promise<void>`) and are `await`ed sequentially where invoked on async code paths.
 - For sync code paths (e.g., `markCancelled`), use microtask scheduling to fire hooks without changing sync signatures. Use `queueMicrotask` with a `Promise.resolve().then(...)` fallback for browser/node/deno/bun.
+- Per-bus lifecycle hook emission is acceptable (different buses can have different middleware stacks).
+- Middleware exceptions are out-of-contract for now (undefined behavior if a middleware throws).
+- Keep changes minimal and focused on runtime behavior; docs updates are out of scope for this pass.
 
 Notes on Python behavior to match:
 - Event status only uses `pending | started | completed` (errors are represented on EventResult, not Event).
@@ -21,7 +22,11 @@ Add a TS interface and constructor type:
 
 ```ts
 // bubus-ts/src/middlewares.ts (new)
-export type EventStatus = 'pending' | 'started' | 'completed'
+import type { BaseEvent } from './base_event.js'
+import type { EventBus } from './event_bus.js'
+import type { EventHandler } from './event_handler.js'
+import type { EventResult } from './event_result.js'
+import type { EventStatus } from './types.js'
 
 export interface EventBusMiddleware {
   on_event_change?(eventbus: EventBus, event: BaseEvent, status: EventStatus): Promise<void>
@@ -35,6 +40,7 @@ export interface EventBusMiddleware {
 }
 
 export type EventBusMiddlewareCtor = new () => EventBusMiddleware
+export type { EventStatus }
 ```
 
 Example async middleware (hooks are `async` and may await work):
@@ -77,7 +83,7 @@ export type { EventBusMiddleware, EventBusMiddlewareCtor, EventStatus } from './
 
 ## Hooking plan (minimal LoC changes)
 
-Add a small internal helper in `EventBus` to execute hooks sequentially and log failures:
+Add a small internal helper in `EventBus` to execute hooks sequentially:
 
 ```ts
 // bubus-ts/src/event_bus.ts
@@ -91,12 +97,7 @@ private async runMiddlewareHook(
   for (const middleware of this.middlewares) {
     const fn = (middleware as any)[hook]
     if (!fn) continue
-    try {
-      await fn.apply(middleware, args as any)
-    } catch (error) {
-      const name = middleware?.constructor?.name ?? 'AnonymousMiddleware'
-      console.error(`[bubus] middleware ${name} ${hook} failed`, error)
-    }
+    await fn.apply(middleware, args as any)
   }
 }
 ```
@@ -128,11 +129,11 @@ const scheduleMicrotask = (fn: () => void | Promise<void>): void => {
 
 ### Notification pipeline (reduce layering violations)
 
-Route all middleware execution through `EventBus`, while lower layers only notify their parent:
+Route all middleware execution through `EventBus`, while lower layers only notify upward:
 
-- `EventResult` notifies its `Event` of status changes (no middleware knowledge).
-- `Event` notifies its bus of changes (no middleware knowledge).
-- `EventBus` owns the middleware list and always executes hooks sequentially with error suppression.
+- `EventResult` notifies its parent `Event` of status changes (no middleware knowledge).
+- `Event` notifies a target bus of changes (no middleware knowledge).
+- `EventBus` owns the middleware list and always executes hooks sequentially.
 - Use the same method names at each level: `._on_event_change` and `._on_event_result_change`.
 
 This keeps middleware logic centralized in `EventBus`, while `EventResult` and `BaseEvent` only trigger parent notifications.
@@ -146,22 +147,21 @@ This keeps middleware logic centralized in `EventBus`, while `EventResult` and `
 ```ts
 // bubus-ts/src/event_bus.ts
 const original_event = event._event_original ?? event
-// after enqueue, before runloop kick
+// after enqueue, before runloop kick (same bus context)
 scheduleMicrotask(async () => {
-  await original_event._on_event_change('pending')
+  await original_event._on_event_change(this, 'pending')
 })
 
 // in processEvent(...)
-event.markStarted() // triggers event._on_event_change('started') internally
+event.markStarted(this) // triggers event._on_event_change(this, 'started') internally
 ...
-event.markCompleted(false) // triggers event._on_event_change('completed') internally
+event.markCompleted(false, true, this) // triggers event._on_event_change(this, 'completed') internally
 ```
 
 ```ts
 // bubus-ts/src/base_event.ts (new helper)
-async _on_event_change(status: EventStatus): Promise<void> {
+async _on_event_change(bus: EventBus | null | undefined, status: EventStatus): Promise<void> {
   const original = this._event_original ?? this
-  const bus = original.bus
   if (!bus) return
   await bus._on_event_change(original, status)
 }
@@ -185,6 +185,7 @@ async _on_event_change(event: BaseEvent, status: EventStatus): Promise<void> {
 // bubus-ts/src/event_bus.ts
 const pending_entries = event.createPendingHandlerResults(this)
 for (const entry of pending_entries) {
+  // pending hook re-fires for pre-existing pending entries is acceptable
   if (entry.result.status === 'pending') {
     await event._on_event_result_change(entry.result, 'pending')
   }
@@ -201,7 +202,8 @@ this.markCompleted(...) // triggers event._on_event_result_change('completed') i
 // bubus-ts/src/base_event.ts (new helper)
 async _on_event_result_change(result: EventResult, status: EventStatus): Promise<void> {
   const original = this._event_original ?? this
-  const bus = EventBus._all_instances.findBusById(result.eventbus_id) ?? original.bus
+  const scoped_event = result.event?._event_original ?? result.event
+  const bus = scoped_event?.bus ?? original.bus
   if (!bus) return
   await bus._on_event_result_change(original, result, status)
 }
@@ -251,8 +253,8 @@ For the UI, `SQLiteHistoryMirrorMiddleware` must match the table schemas read by
 2. Hook order:
 - Register two middlewares, verify hook calls are sequential in order.
 
-3. Error suppression:
-- Throw inside middleware hook; event and handler still complete.
+3. Middleware errors:
+- Throw inside middleware hook; behavior is intentionally undefined (do not assert suppression).
 
 4. Lifecycle coverage:
 - Verify pending/started/completed hooks for event and event_result.
@@ -260,19 +262,20 @@ For the UI, `SQLiteHistoryMirrorMiddleware` must match the table schemas read by
 ## Flow audit (edge cases to cover)
 
 - No handlers registered:
-  - `EventBus.processEvent` still calls `event.markStarted()` and `event.markCompleted(false)` so `started` + `completed` are emitted.
+  - `EventBus.processEvent` still calls `event.markStarted(...)` and `event.markCompleted(false, ...)` so `started` + `completed` are emitted.
 - First-mode cancellation:
   - `BaseEvent.cancelEventHandlersForFirstMode` calls `EventResult.markError(...)`; since `markError` triggers `_on_event_result_change('completed')`, hooks fire.
 - Parent/child completion propagation:
-  - `BaseEvent.notifyEventParentsOfCompletion` calls `parent.markCompleted(false, false)`; `markCompleted` emits `completed` change to the parent bus.
+  - `BaseEvent.notifyEventParentsOfCompletion` calls `parent.markCompleted(false, false, parent.bus)`; `markCompleted` emits `completed` change to the parent bus.
 - Cancellation paths:
   - `BaseEvent.cancelPendingDescendants` and `BaseEvent.markCancelled` call `markCompleted`; `markCompleted` emits `completed`.
-  - `BaseEvent.markCancelled` calls `createPendingHandlerResults` in a sync context; if pending hooks are required there, schedule a microtask (via `scheduleMicrotask`) to call `event._on_event_result_change(..., 'pending')` for any newly created results.
+  - `BaseEvent.markCancelled` is sync; it must never emit `completed -> started` ordering. Emitting only `completed` is acceptable, and `started -> completed` is also acceptable.
 
 ## Files to touch
 
 - `bubus-ts/src/middlewares.ts` (new)
 - `bubus-ts/src/event_bus.ts`
+- `bubus-ts/src/base_event.ts`
 - `bubus-ts/src/event_result.ts`
 - `bubus-ts/src/index.ts`
 - `bubus-ts/tests/*` (new tests)
