@@ -1,8 +1,9 @@
 {
   "name": "bubus",
-  "version": "2.1.0",
+  "version": "2.2.1",
   "description": "Event bus library for browsers and ESM Node.js",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/esm/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/types/index.d.ts",
@@ -11,6 +12,11 @@
       "types": "./dist/types/index.d.ts",
       "import": "./dist/esm/index.js",
       "default": "./dist/esm/index.js"
+    },
+    "./*": {
+      "types": "./dist/types/*.d.ts",
+      "import": "./dist/esm/*.js",
+      "default": "./dist/esm/*.js"
     }
   },
   "files": [
@@ -19,7 +25,7 @@
   ],
   "scripts": {
     "build": "pnpm run build:esm && pnpm run build:types",
-    "build:esm": "esbuild src/index.ts --bundle --format=esm --platform=neutral --target=es2022 --sourcemap --outdir=dist/esm",
+    "build:esm": "node ./scripts/build_esm.mjs",
     "build:types": "tsc -p tsconfig.json --emitDeclarationOnly",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "prettier": "prettier --write .",

@@ -29,9 +29,7 @@ function assertNoReservedUserEventFields(data: Record<string, unknown>, context:
 function assertNoUnknownEventPrefixedFields(data: Record<string, unknown>, context: string): void {
   for (const field_name of Object.keys(data)) {
     if (field_name.startsWith('event_') && !KNOWN_BASE_EVENT_FIELDS.has(field_name)) {
-      throw new Error(
-        `${context} field "${field_name}" starts with "event_" but is not a recognized BaseEvent field`
-      )
+      throw new Error(`${context} field "${field_name}" starts with "event_" but is not a recognized BaseEvent field`)
     }
   }
 }

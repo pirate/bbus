@@ -2,7 +2,7 @@
 name = "bubus"
 description = "Advanced Pydantic-powered event bus with async support"
 authors = [{ name = "Nick Sweeting" }]
-version = "2.1.0"
+version = "2.2.1"
 readme = "README.md"
 requires-python = ">=3.11"
 urls = {Repository = "https://github.com/pirate/bbus"}
@@ -30,7 +30,9 @@ redis = [
     "redis>=7.1.1",
 ]
 bridges = [
-    "bubus[postgres,nats,redis]",
+    "asyncpg>=0.31.0",
+    "nats-py>=2.13.1",
+    "redis>=7.1.1",
 ]
 
 [dependency-groups]
