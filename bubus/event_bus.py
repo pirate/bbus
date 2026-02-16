@@ -288,13 +288,7 @@ class EventBus:
             if isinstance(middleware, EventBusMiddleware):
                 normalized.append(middleware)
                 continue
-            if isinstance(middleware, type) and issubclass(middleware, EventBusMiddleware):
-                normalized.append(middleware())
-                continue
-            raise TypeError(
-                'EventBus middlewares entries must be EventBusMiddleware instances or EventBusMiddleware classes, '
-                f'got {middleware!r}'
-            )
+            normalized.append(middleware())
         return normalized
 
     def __del__(self):
@@ -936,7 +930,7 @@ class EventBus:
     def on(
         self,
         event_pattern: EventPatternType,
-        handler: EventHandlerCallable,
+        handler: ContravariantEventHandlerCallable[T_OnEvent],
     ) -> EventHandler:
         """
         Subscribe to events matching a pattern, event type name, or event model class.

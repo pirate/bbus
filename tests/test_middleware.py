@@ -144,7 +144,8 @@ class TestHandlerMiddleware:
 
     def test_middleware_constructor_rejects_invalid_entries(self):
         with pytest.raises(TypeError):
-            EventBus(middlewares=[object()])
+            invalid_middlewares: Any = [object()]
+            EventBus(middlewares=invalid_middlewares)
 
     async def test_middleware_constructor_auto_inits_classes_and_keeps_hook_order(self):
         calls: list[str] = []
@@ -450,8 +451,14 @@ class TestHandlerMiddleware:
         unregistered: list[BusHandlerUnregisteredEvent] = []
         bus = EventBus(middlewares=[AutoHandlerChangeEventMiddleware()])
 
-        bus.on(BusHandlerRegisteredEvent, lambda event: registered.append(event))
-        bus.on(BusHandlerUnregisteredEvent, lambda event: unregistered.append(event))
+        def on_registered(event: BusHandlerRegisteredEvent) -> None:
+            registered.append(event)
+
+        def on_unregistered(event: BusHandlerUnregisteredEvent) -> None:
+            unregistered.append(event)
+
+        bus.on(BusHandlerRegisteredEvent, on_registered)
+        bus.on(BusHandlerUnregisteredEvent, on_unregistered)
 
         async def target_handler(event: UserActionEvent) -> None:
             return None

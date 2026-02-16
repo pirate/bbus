@@ -2,7 +2,7 @@ import asyncio
 import inspect
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +24,7 @@ T_Event = TypeVar('T_Event', bound='BaseEvent[Any]', contravariant=True, default
 
 # For protocols with __func__ attributes, we need an invariant TypeVar
 T_EventInvariant = TypeVar('T_EventInvariant', bound='BaseEvent[Any]', default='BaseEvent[Any]')
+T_EventResult = TypeVar('T_EventResult', default=Any)
 
 
 class EventHandlerCancelledError(asyncio.CancelledError):
@@ -98,13 +99,20 @@ class AsyncEventHandlerClassMethod(Protocol[T_EventInvariant]):
     __func__: Callable[[type[Any], T_EventInvariant], Awaitable[Any]]
 
 
-# Event handlers can be plain functions, bound methods, class methods, or
-# async variants. Runtime validation in EventBus enforces callable shape.
-EventHandlerCallable: TypeAlias = Callable[..., Any]
-NormalizedEventHandlerCallable: TypeAlias = Callable[[Any], Awaitable[Any]]
+# Event handlers are normalized to bound single-argument callables at registration time.
+EventHandlerCallable: TypeAlias = EventHandlerFunc['BaseEvent[Any]'] | AsyncEventHandlerFunc['BaseEvent[Any]']
 
-# Single-argument callable that accepts one BaseEvent subtype.
-ContravariantEventHandlerCallable: TypeAlias = Callable[[T_Event], Any]
+# Normalized async callable shape used at call sites that require a Coroutine.
+NormalizedEventHandlerCallable: TypeAlias = Callable[
+    ['BaseEvent[T_EventResult]'],
+    Coroutine[Any, Any, T_EventResult | 'BaseEvent[Any]' | None],
+]
+
+# Internal normalized one-argument callable used for invocation at runtime.
+_InvokableEventHandlerCallable: TypeAlias = Callable[['BaseEvent[Any]'], Any | Awaitable[Any]]
+
+# ContravariantEventHandlerCallable allows subtype-specific handlers.
+ContravariantEventHandlerCallable: TypeAlias = EventHandlerFunc[T_Event] | AsyncEventHandlerFunc[T_Event]
 
 HANDLER_ID_NAMESPACE: UUID = uuid5(NAMESPACE_DNS, 'bubus-handler')
 
@@ -124,7 +132,7 @@ def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
 class _HandlerCacheKey:
     __slots__ = ('handler_ref', 'handler_id', '_hash')
 
-    def __init__(self, handler: EventHandlerCallable) -> None:
+    def __init__(self, handler: Callable[..., Any]) -> None:
         # Some callables override __eq__ without __hash__ and become unhashable.
         # Use identity-based hashing for a stable cache key without retaining handlers.
         self.handler_ref = weakref(handler)
@@ -193,7 +201,7 @@ class EventHandler(BaseModel):
 
     id: str = ''
     handler: EventHandlerCallable | None = Field(default=None, exclude=True, repr=False)
-    handler_async: NormalizedEventHandlerCallable | None = Field(default=None, exclude=True, repr=False)
+    handler_async: NormalizedEventHandlerCallable[Any] | None = Field(default=None, exclude=True, repr=False)
     handler_name: str = 'anonymous'
     handler_file_path: str | None = None
     handler_timeout: float | None = None
@@ -235,7 +243,7 @@ class EventHandler(BaseModel):
         return f'{self.eventbus_name}#{self.eventbus_id[-4:]}'
 
     @staticmethod
-    def get_callable_handler_name(handler: EventHandlerCallable) -> str:
+    def get_callable_handler_name(handler: Callable[..., Any]) -> str:
         assert hasattr(handler, '__name__'), f'Handler {handler} has no __name__ attribute!'
         if inspect.ismethod(handler):
             return f'{type(handler.__self__).__name__}.{handler.__name__}'
@@ -301,15 +309,23 @@ class EventHandler(BaseModel):
         return handler_callable(event)
 
     @staticmethod
-    def resolve_async_handler(handler: EventHandlerCallable) -> NormalizedEventHandlerCallable:
+    def resolve_async_handler(handler: ContravariantEventHandlerCallable[Any]) -> NormalizedEventHandlerCallable[Any]:
         """Normalize one handler callable to a single async call signature."""
         if not callable(handler):
             raise ValueError(f'Handler {handler!r} must be callable, got: {type(handler)}')
 
-        async def normalized_handler(event: Any) -> Any:
-            handler_result = handler(event)
+        if inspect.iscoroutinefunction(handler):
+            return cast(NormalizedEventHandlerCallable[Any], handler)
+
+        async def normalized_handler(event: 'BaseEvent[Any]') -> Any:
+            handler_callable = cast(_InvokableEventHandlerCallable, handler)
+            handler_result = handler_callable(event)
+            from bubus.base_event import BaseEvent
+
+            if isinstance(handler_result, BaseEvent):
+                return cast(Any, handler_result)
             if inspect.isawaitable(handler_result):
-                return await cast(Awaitable[Any], handler_result)
+                return await handler_result
             return handler_result
 
         return normalized_handler
@@ -340,7 +356,7 @@ class EventHandler(BaseModel):
     def from_callable(
         cls,
         *,
-        handler: EventHandlerCallable,
+        handler: ContravariantEventHandlerCallable[Any],
         event_pattern: str,
         eventbus_name: str,
         eventbus_id: str,

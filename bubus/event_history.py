@@ -178,8 +178,7 @@ class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
             if child_of is not None and not child_check(event, child_of):
                 return False
             field_mismatch = any(
-                getattr(event, field_name, missing) != expected_value
-                for field_name, expected_value in event_fields.items()
+                getattr(event, field_name, missing) != expected_value for field_name, expected_value in event_fields.items()
             )
             if field_mismatch:
                 return False

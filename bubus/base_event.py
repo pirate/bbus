@@ -27,9 +27,9 @@ from typing_extensions import TypeVar  # needed to get TypeVar(default=...) abov
 from uuid_extensions import uuid7str
 
 from bubus.event_handler import (
+    ContravariantEventHandlerCallable,
     EventHandler,
     EventHandlerAbortedError,
-    EventHandlerCallable,
     EventHandlerCancelledError,
     EventHandlerResultSchemaError,
     EventHandlerTimeoutError,
@@ -501,7 +501,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
     async def call_handler(
         self,
         event: 'BaseEvent[T_EventResultType]',
-        handler: NormalizedEventHandlerCallable,
+        handler: NormalizedEventHandlerCallable[T_EventResultType],
         dispatch_context: contextvars.Context | None,
     ) -> T_EventResultType | 'BaseEvent[Any]' | None:
         handler_task: asyncio.Task[Any] | None = None
@@ -592,7 +592,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         """
         _format_exception_for_log_callable = format_exception_for_log or _default_format_exception_for_log
 
-        handler = self.handler.handler_async
+        handler: NormalizedEventHandlerCallable[T_EventResultType] | None = self.handler.handler_async
         if handler is None:
             raise RuntimeError(f'EventResult {self.id} has no callable attached to handler {self.handler.id}')
 
@@ -1025,7 +1025,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     def event_create_pending_handler_results(
         self,
-        handlers: dict[PythonIdStr, EventHandler | EventHandlerCallable],
+        handlers: dict[PythonIdStr, EventHandler | ContravariantEventHandlerCallable[Any]],
         *,
         eventbus: 'EventBus | None' = None,
         timeout: float | None = None,
@@ -1092,7 +1092,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         if not applicable_handlers:
             return
 
-        pending_handler_map: dict[PythonIdStr, EventHandler | EventHandlerCallable] = dict(applicable_handlers)
+        pending_handler_map: dict[PythonIdStr, EventHandler | ContravariantEventHandlerCallable[Any]] = dict(applicable_handlers)
         pending_results = self.event_create_pending_handler_results(
             pending_handler_map,
             eventbus=eventbus,
@@ -1433,7 +1433,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     def event_result_update(
         self,
-        handler: EventHandler | EventHandlerCallable,
+        handler: EventHandler | ContravariantEventHandlerCallable[Any],
         eventbus: 'EventBus | None' = None,
         **kwargs: Any,
     ) -> 'EventResult[T_EventResultType]':
