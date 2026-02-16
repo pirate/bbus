@@ -272,7 +272,10 @@ test('slow handler warning is based on handler runtime after lock wait', async (
     release_lock()
     await event.done()
 
-    assert.equal(warnings.some((message) => message.toLowerCase().includes('slow event handler')), true)
+    assert.equal(
+      warnings.some((message) => message.toLowerCase().includes('slow event handler')),
+      true
+    )
   } finally {
     console.warn = original_warn
     bus.destroy()

@@ -400,10 +400,7 @@ const assertPythonCanImportBubus = (python_runner: PythonRunner): void => {
   }
 }
 
-const runPythonRoundtrip = (
-  python_runner: PythonRunner,
-  payload: Array<Record<string, unknown>>
-): Array<Record<string, unknown>> => {
+const runPythonRoundtrip = (python_runner: PythonRunner, payload: Array<Record<string, unknown>>): Array<Record<string, unknown>> => {
   const temp_dir = mkdtempSync(join(tmpdir(), 'bubus-ts-to-python-'))
   const input_path = join(temp_dir, 'ts_events.json')
   const output_path = join(temp_dir, 'python_events.json')

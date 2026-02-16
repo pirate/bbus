@@ -344,28 +344,38 @@ async def test_event_first_skips_baseevent_result_and_uses_next_winner() -> None
             raise_if_any=False,
             raise_if_none=True,
         )
-        assert isinstance(first_completed_value, ChildCompletionEvent)
+        # Typed accessors normalize BaseEvent results to None.
+        assert first_completed_value is None
 
         values_by_handler_id = await event.event_results_by_handler_id(
             include=include_completed_values,
             raise_if_any=False,
             raise_if_none=True,
         )
-        assert any(isinstance(value, ChildCompletionEvent) for value in values_by_handler_id.values())
+        assert any(value == 'winner' for value in values_by_handler_id.values())
+        assert any(value is None for value in values_by_handler_id.values())
 
         values_by_handler_name = await event.event_results_by_handler_name(
             include=include_completed_values,
             raise_if_any=False,
             raise_if_none=True,
         )
-        assert any(isinstance(value, ChildCompletionEvent) for value in values_by_handler_name.values())
+        assert any(value == 'winner' for value in values_by_handler_name.values())
+        assert any(value is None for value in values_by_handler_name.values())
 
         values_list = await event.event_results_list(
             include=include_completed_values,
             raise_if_any=False,
             raise_if_none=True,
         )
-        assert any(isinstance(value, ChildCompletionEvent) for value in values_list)
+        assert 'winner' in values_list
+        assert None in values_list
+
+        # Raw event_results keep the underlying BaseEvent result.
+        baseevent_result = next(
+            result for result in event.event_results.values() if result.handler_name.endswith('baseevent_handler')
+        )
+        assert isinstance(baseevent_result.result, ChildCompletionEvent)
     finally:
         await bus.stop()
 

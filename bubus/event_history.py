@@ -46,13 +46,11 @@ class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
             return '*'
         if isinstance(event_pattern, str):
             return event_pattern
-        if isinstance(event_pattern, type) and issubclass(event_pattern, BaseEvent):
-            event_type_field = event_pattern.model_fields.get('event_type')
-            event_type_default = event_type_field.default if event_type_field is not None else None
-            if isinstance(event_type_default, str) and event_type_default not in ('', 'UndefinedEvent'):
-                return event_type_default
-            return event_pattern.__name__
-        raise ValueError(f'Invalid event pattern: {event_pattern}, must be a string event type, "*", or subclass of BaseEvent')
+        event_type_field = event_pattern.model_fields.get('event_type')
+        event_type_default = event_type_field.default if event_type_field is not None else None
+        if isinstance(event_type_default, str) and event_type_default not in ('', 'UndefinedEvent'):
+            return event_type_default
+        return event_pattern.__name__
 
     @staticmethod
     def is_event_complete_fast(event: BaseEvent[Any]) -> bool:

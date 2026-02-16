@@ -1252,5 +1252,4 @@ export class EventBus {
     }
     throw new Error('bus.on(match_pattern, ...) must be a string event type, "*", or a BaseEvent class, got: ' + preview)
   }
-
 }

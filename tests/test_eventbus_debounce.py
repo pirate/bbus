@@ -60,11 +60,18 @@ class TestDebouncingPattern:
 
             original = await bus.emit(ScreenshotEvent(target_id='tab1'))
 
-            is_fresh = lambda e: (datetime.now(UTC) - e.event_completed_at).seconds < 5
+            def is_fresh(event: ScreenshotEvent) -> bool:
+                if event.event_completed_at is None:
+                    return False
+                return (datetime.now(UTC) - event.event_completed_at).seconds < 5
+
+            def matches_fresh_tab(event: ScreenshotEvent) -> bool:
+                return event.target_id == 'tab1' and is_fresh(event)
+
             result = await (
                 await bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab1' and is_fresh(e),
+                    where=matches_fresh_tab,
                     past=True,
                     future=False,
                 )

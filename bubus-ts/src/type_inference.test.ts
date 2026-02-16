@@ -76,15 +76,11 @@ const find_by_class_with_where_call = bus.find(
   { past: true, future: false }
 )
 type FindByClassWithWhereReturn = Awaited<typeof find_by_class_with_where_call>
-type _assert_find_by_class_with_where_return = Assert<
-  IsEqual<FindByClassWithWhereReturn, InstanceType<typeof InferableResultEvent> | null>
->
+type _assert_find_by_class_with_where_return = Assert<IsEqual<FindByClassWithWhereReturn, InstanceType<typeof InferableResultEvent> | null>>
 
 const find_history_by_class_call = bus.event_history.find(InferableResultEvent, (event) => event.target_id.length > 0, { past: true })
 type FindHistoryByClassReturn = Awaited<typeof find_history_by_class_call>
-type _assert_find_history_by_class_return = Assert<
-  IsEqual<FindHistoryByClassReturn, InstanceType<typeof InferableResultEvent> | null>
->
+type _assert_find_history_by_class_return = Assert<IsEqual<FindHistoryByClassReturn, InstanceType<typeof InferableResultEvent> | null>>
 
 const find_by_wildcard_call = bus.find('*', { past: true, future: false })
 type FindByWildcardReturn = Awaited<typeof find_by_wildcard_call>

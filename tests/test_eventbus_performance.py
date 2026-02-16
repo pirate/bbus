@@ -1343,14 +1343,14 @@ async def test_perf_debug_hot_path_breakdown() -> None:
     profiles key hot-path methods to confirm where time is spent before optimizing.
     """
     profiler = MethodProfiler()
-    instrumented = [
-        (event_bus_module.ReentrantLock, event_bus_module.ReentrantLock.__aenter__),
-        (event_bus_module.ReentrantLock, event_bus_module.ReentrantLock.__aexit__),
-        (event_bus_module.EventBus, event_bus_module.EventBus.get_handlers_for_event),
-        (event_bus_module.EventBus, event_bus_module.EventBus.process_event),
-        (event_bus_module.EventBus, event_bus_module.EventBus.run_handler),
-        (event_bus_module.EventHistory, event_bus_module.EventHistory.trim_event_history),
-        (base_event_module.BaseEvent, base_event_module.BaseEvent.event_create_pending_handler_results),
+    instrumented: list[tuple[type[Any], str]] = [
+        (event_bus_module.ReentrantLock, '__aenter__'),
+        (event_bus_module.ReentrantLock, '__aexit__'),
+        (event_bus_module.EventBus, 'get_handlers_for_event'),
+        (event_bus_module.EventBus, 'process_event'),
+        (event_bus_module.EventBus, 'run_handler'),
+        (event_bus_module.EventHistory, 'trim_event_history'),
+        (base_event_module.BaseEvent, 'event_create_pending_handler_results'),
     ]
     for owner, method_ref in instrumented:
         profiler.instrument(owner, method_ref)

@@ -200,6 +200,8 @@ async def test_run_handler_marks_started_after_handler_lock_entry():
 
     handler_entry = bus.on(LockOrderEvent, handler)
     event = LockOrderEvent()
+    event.event_create_pending_handler_results({handler_entry.id: handler_entry}, eventbus=bus, timeout=event.event_timeout)
+    event_result = event.event_results[handler_entry.id]
     release_lock = asyncio.Event()
     original_with_handler_lock = bus.locks.with_handler_lock
 
@@ -212,9 +214,6 @@ async def test_run_handler_marks_started_after_handler_lock_entry():
     setattr(bus.locks, 'with_handler_lock', blocked_with_handler_lock)
 
     run_task = asyncio.create_task(bus.run_handler(event, handler_entry, timeout=event.event_timeout))
-    while handler_entry.id not in event.event_results:
-        await asyncio.sleep(0)
-    event_result = event.event_results[handler_entry.id]
     assert event_result.status == 'pending'
 
     release_lock.set()
@@ -237,6 +236,7 @@ async def test_run_handler_starts_slow_monitor_after_lock_wait(caplog: Any):
 
     handler_entry = bus.on(SlowMonitorOrderEvent, handler)
     event = SlowMonitorOrderEvent()
+    event.event_create_pending_handler_results({handler_entry.id: handler_entry}, eventbus=bus, timeout=event.event_timeout)
 
     release_lock = asyncio.Event()
     original_with_handler_lock = bus.locks.with_handler_lock
@@ -251,8 +251,6 @@ async def test_run_handler_starts_slow_monitor_after_lock_wait(caplog: Any):
     setattr(bus.locks, 'with_handler_lock', blocked_with_handler_lock)
     try:
         run_task = asyncio.create_task(bus.run_handler(event, handler_entry, timeout=event.event_timeout))
-        while handler_entry.id not in event.event_results:
-            await asyncio.sleep(0)
         await asyncio.sleep(0.03)
         release_lock.set()
         assert await run_task == 'ok'
