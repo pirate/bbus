@@ -421,6 +421,16 @@ export class BaseEvent {
     original.cancelEventHandlersForFirstMode(entry)
   }
 
+  private async _runHandlerWithLock(original: BaseEvent, entry: EventResult): Promise<void> {
+    const bus = this.bus
+    if (!bus) {
+      throw new Error('event has no bus attached')
+    }
+    await bus.locks.withHandlerLock(original, bus.event_handler_concurrency_default, async (handler_lock) => {
+      await entry.runHandler(handler_lock)
+    })
+  }
+
   // Run all pending handler results for the current bus context.
   async runHandlers(
     pending_entries?: Array<{
@@ -436,7 +446,7 @@ export class BaseEvent {
     if (original.event_handler_completion === 'first') {
       if (original.getHandlerLock() !== null) {
         for (const entry of pending_results) {
-          await entry.runHandler()
+          await this._runHandlerWithLock(original, entry)
           if (!this._isFirstModeWinningResult(entry)) {
             continue
           }
@@ -446,7 +456,7 @@ export class BaseEvent {
         return
       }
       const first_state = { found: false }
-      const handler_promises = pending_results.map((entry) => entry.runHandler())
+      const handler_promises = pending_results.map((entry) => this._runHandlerWithLock(original, entry))
       const monitored = pending_results.map((entry, index) =>
         handler_promises[index].then(() => {
           this._markFirstModeWinnerIfNeeded(original, entry, first_state)
@@ -455,7 +465,7 @@ export class BaseEvent {
       await Promise.all(monitored)
       return
     } else {
-      const handler_promises = pending_results.map((entry) => entry.runHandler())
+      const handler_promises = pending_results.map((entry) => this._runHandlerWithLock(original, entry))
       await Promise.all(handler_promises)
     }
   }

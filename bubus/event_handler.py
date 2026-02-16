@@ -101,6 +101,7 @@ class AsyncEventHandlerClassMethod(Protocol[T_EventInvariant]):
 # Event handlers can be plain functions, bound methods, class methods, or
 # async variants. Runtime validation in EventBus enforces callable shape.
 EventHandlerCallable: TypeAlias = Callable[..., Any]
+NormalizedEventHandlerCallable: TypeAlias = Callable[[Any], Awaitable[Any]]
 
 # Single-argument callable that accepts one BaseEvent subtype.
 ContravariantEventHandlerCallable: TypeAlias = Callable[[T_Event], Any]
@@ -192,6 +193,7 @@ class EventHandler(BaseModel):
 
     id: str = ''
     handler: EventHandlerCallable | None = Field(default=None, exclude=True, repr=False)
+    handler_async: NormalizedEventHandlerCallable | None = Field(default=None, exclude=True, repr=False)
     handler_name: str = 'anonymous'
     handler_file_path: str | None = None
     handler_timeout: float | None = None
@@ -201,6 +203,16 @@ class EventHandler(BaseModel):
     event_pattern: str = '*'
     eventbus_name: str = 'EventBus'
     eventbus_id: str = '00000000-0000-0000-0000-000000000000'
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Keep normalized async callable in sync when `handler` is reassigned."""
+        super().__setattr__(name, value)
+        if name != 'handler':
+            return
+        if value is None:
+            super().__setattr__('handler_async', None)
+            return
+        super().__setattr__('handler_async', self.resolve_async_handler(cast(EventHandlerCallable, value)))
 
     @field_validator('handler_name', mode='before')
     @classmethod
@@ -284,6 +296,31 @@ class EventHandler(BaseModel):
         handler_callable = cast(Callable[[Any], Any], self.handler)
         return handler_callable(event)
 
+    @staticmethod
+    def resolve_async_handler(handler: EventHandlerCallable) -> NormalizedEventHandlerCallable:
+        """Normalize one handler callable to a single async call signature.
+
+        Sync handlers are wrapped in an async closure that runs inline on the
+        event loop thread. Async handlers are wrapped to preserve a consistent
+        callable shape for downstream execution code.
+        """
+        if inspect.iscoroutinefunction(handler):
+
+            async def normalized_handler(event: Any) -> Any:
+                return await handler(event)
+
+            return normalized_handler
+
+        if inspect.isfunction(handler) or inspect.ismethod(handler):
+
+            async def normalized_handler(event: Any) -> Any:
+                return handler(event)
+
+            return normalized_handler
+
+        handler_name = EventHandler.get_callable_handler_name(handler)
+        raise ValueError(f'Handler {handler_name} must be a sync or async function, got: {type(handler)}')
+
     def to_json_dict(self) -> dict[str, Any]:
         return self.model_dump(mode='json', exclude={'handler'})
 
@@ -295,6 +332,7 @@ class EventHandler(BaseModel):
         handler_name_provided = isinstance(data, dict) and bool(cast(dict[str, Any], data).get('handler_name'))
         if handler is not None:
             entry.handler = handler
+            entry.handler_async = cls.resolve_async_handler(handler)
             if not handler_name_provided and entry.handler_name == 'anonymous':
                 try:
                     derived_name = cls.get_callable_handler_name(handler)
@@ -322,9 +360,11 @@ class EventHandler(BaseModel):
         resolved_file_path = handler_file_path
         if resolved_file_path is None and detect_handler_file_path:
             resolved_file_path = _get_callable_handler_file_path(_HandlerCacheKey(handler))
+        async_handler = cls.resolve_async_handler(handler)
 
         handler_params: dict[str, Any] = {
             'handler': handler,
+            'handler_async': async_handler,
             'handler_file_path': resolved_file_path,
             'handler_registered_at': handler_registered_at or datetime.now(UTC),
             'handler_registered_ts': handler_registered_ts or time.time_ns(),
@@ -360,4 +400,5 @@ __all__ = [
     'EventHandlerClassMethod',
     'EventHandlerFunc',
     'EventHandlerMethod',
+    'NormalizedEventHandlerCallable',
 ]

@@ -1160,7 +1160,7 @@ class TestHandlerMiddleware:
         async def failing_handler(event: BaseEvent) -> None:
             raise ValueError('boom')
 
-        bus = EventBus(middlewares=[LifecycleMiddleware()])
+        bus = EventBus(middlewares=[LifecycleMiddleware()], max_history_size=None)
         bus.on(UserActionEvent, failing_handler)
 
         try:
@@ -1190,17 +1190,29 @@ class TestHandlerMiddleware:
             await asyncio.sleep(0)
             return 'ok'
 
-        bus = EventBus(middlewares=[LifecycleMiddleware()])
+        bus = EventBus(middlewares=[LifecycleMiddleware()], max_history_size=None)
         bus.on(UserActionEvent, handler)
 
-        events = [bus.dispatch(UserActionEvent(action='deterministic', user_id=f'u-{i}')) for i in range(50)]
+        batch_count = 5
+        events_per_batch = 50
         try:
-            await asyncio.gather(*events)
-            await bus.wait_until_idle()
+            for batch_index in range(batch_count):
+                events = [
+                    bus.dispatch(
+                        UserActionEvent(
+                            action='deterministic',
+                            user_id=f'u-{batch_index}-{event_index}',
+                        )
+                    )
+                    for event_index in range(events_per_batch)
+                ]
+                await asyncio.gather(*events)
+                await bus.wait_until_idle()
 
-            assert len(event_statuses_by_id) == len(events)
-            for event in events:
-                assert event_statuses_by_id[event.event_id] == ['pending', 'started', 'completed']
+                for event in events:
+                    assert event_statuses_by_id[event.event_id] == ['pending', 'started', 'completed']
+
+            assert len(event_statuses_by_id) == batch_count * events_per_batch
         finally:
             await bus.stop()
 

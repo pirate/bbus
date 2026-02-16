@@ -307,8 +307,9 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     }
   }
 
-  // Run the handler end-to-end, including concurrency locks, timeouts, and result tracking.
-  async runHandler(): Promise<void> {
+  // Run one handler invocation with timeout/slow-monitor/error handling.
+  // Handler lock acquisition is owned by BaseEvent.runHandlers(...).
+  async runHandler(handler_lock: HandlerLock | null): Promise<void> {
     if (this.status === 'error' && this.error instanceof EventHandlerCancelledError) {
       return
     }
@@ -320,32 +321,30 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     }
 
     const slow_handler_warning_timer = this.createSlowHandlerWarningTimer(this.handler_timeout)
-    await this.bus.locks.withHandlerLock(event, this.bus.event_handler_concurrency_default, async (lock) => {
-      // if the result is already in an error or completed state, exit early
-      if (this.status === 'error' || this.status === 'completed') {
-        return
-      }
+    // if the result is already in an error or completed state, exit early
+    if (this.status === 'error' || this.status === 'completed') {
+      return
+    }
 
-      this._lock = lock
-      await this.bus.locks.withHandlerExecutionContext(this, async () => {
-        await runWithAsyncContext(event._event_dispatch_context ?? null, async () => {
-          try {
-            const abort_signal = this.markStarted()
-            const handler_result = await withTimeout(
-              this.handler_timeout,
-              () => this._createHandlerTimeoutError(event),
-              () =>
-                withSlowMonitor(slow_handler_warning_timer, () =>
-                  runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
-                )
-            )
-            this._finalizeHandlerResult(event, handler_result)
-          } catch (error) {
-            this._handleHandlerError(event, error)
-          } finally {
-            this._onHandlerExit(slow_handler_warning_timer)
-          }
-        })
+    this._lock = handler_lock
+    await this.bus.locks.withHandlerExecutionContext(this, async () => {
+      await runWithAsyncContext(event._event_dispatch_context ?? null, async () => {
+        try {
+          const abort_signal = this.markStarted()
+          const handler_result = await withTimeout(
+            this.handler_timeout,
+            () => this._createHandlerTimeoutError(event),
+            () =>
+              withSlowMonitor(slow_handler_warning_timer, () =>
+                runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
+              )
+          )
+          this._finalizeHandlerResult(event, handler_result)
+        } catch (error) {
+          this._handleHandlerError(event, error)
+        } finally {
+          this._onHandlerExit(slow_handler_warning_timer)
+        }
       })
     })
   }

@@ -28,7 +28,7 @@ async def test_event_result_run_handler_with_base_event() -> None:
         eventbus_id='standalone-1',
     )
 
-    event_result = EventResult(
+    event_result: EventResult[str] = EventResult(
         event_id=event.event_id,
         handler=handler_entry,
         timeout=event.event_timeout,

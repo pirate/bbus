@@ -202,7 +202,7 @@ test('middleware event lifecycle ordering is deterministic per event', async () 
     }
   }
 
-  const bus = new EventBus('MiddlewareDeterministicBus', { middlewares: [LifecycleMiddleware] })
+  const bus = new EventBus('MiddlewareDeterministicBus', { middlewares: [LifecycleMiddleware], max_history_size: null })
   const Event = BaseEvent.extend('MiddlewareDeterministicEvent', {})
 
   bus.on(Event, async () => {
@@ -210,14 +210,20 @@ test('middleware event lifecycle ordering is deterministic per event', async () 
     return 'ok'
   })
 
-  const events = Array.from({ length: 50 }, () => bus.dispatch(Event({ event_timeout: 0.2 })))
-  await Promise.all(events.map((event) => event.done()))
-  await flushHooks()
+  const batch_count = 5
+  const events_per_batch = 50
+  for (let batch_index = 0; batch_index < batch_count; batch_index += 1) {
+    const events = Array.from({ length: events_per_batch }, (_unused, event_index) =>
+      bus.dispatch(Event({ event_timeout: 0.2, event_data: { batch_index, event_index } }))
+    )
+    await Promise.all(events.map((event) => event.done()))
+    await flushHooks()
 
-  assert.equal(event_statuses_by_id.size, events.length)
-  for (const event of events) {
-    assert.deepEqual(event_statuses_by_id.get(event.event_id), ['pending', 'started', 'completed'])
+    for (const event of events) {
+      assert.deepEqual(event_statuses_by_id.get(event.event_id), ['pending', 'started', 'completed'])
+    }
   }
+  assert.equal(event_statuses_by_id.size, batch_count * events_per_batch)
 
   bus.destroy()
 })

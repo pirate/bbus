@@ -291,12 +291,19 @@ class AutoHandlerChangeEventMiddleware(EventBusMiddleware):
 
     async def on_handler_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
         try:
+            handler_snapshot = handler.model_copy(deep=False)
             if registered:
-                eventbus.dispatch(BusHandlerRegisteredEvent(handler=handler.model_copy(deep=True)))
+                eventbus.dispatch(BusHandlerRegisteredEvent(handler=handler_snapshot))
             else:
-                eventbus.dispatch(BusHandlerUnregisteredEvent(handler=handler.model_copy(deep=True)))
+                eventbus.dispatch(BusHandlerUnregisteredEvent(handler=handler_snapshot))
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to emit auto handler change event for handler %s: %s', eventbus, handler.id, exc)
+            logger.error(
+                '❌ %s Failed to emit auto handler change event for handler %s: %s(%r)',
+                eventbus,
+                handler.id,
+                type(exc).__name__,
+                exc,
+            )
 
 
 class WALEventBusMiddleware(EventBusMiddleware):

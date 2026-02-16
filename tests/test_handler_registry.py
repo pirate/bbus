@@ -1,3 +1,4 @@
+import inspect
 from typing import Any
 
 import pytest
@@ -68,5 +69,39 @@ async def test_off_removes_by_callable_id_entry_or_all() -> None:
     bus.off('RegistryEvent')
     assert 'RegistryEvent' not in bus.handlers_by_key
     assert all(entry.event_pattern != 'RegistryEvent' for entry in bus.handlers.values())
+
+    await bus.stop(clear=True)
+
+
+@pytest.mark.asyncio
+async def test_on_normalizes_sync_handler_to_async_callable() -> None:
+    bus = EventBus(name='RegistryNormalizeBus')
+
+    class RegistryNormalizeEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.2
+
+    calls: list[str] = []
+
+    def sync_handler(event: RegistryNormalizeEvent) -> str:
+        calls.append(event.event_id)
+        return 'normalized'
+
+    entry = bus.on(RegistryNormalizeEvent, sync_handler)
+
+    assert entry.handler is sync_handler
+    assert entry.handler_async is not None
+    assert inspect.iscoroutinefunction(entry.handler_async)
+    assert entry.handler_name.endswith('sync_handler')
+
+    direct_result = await entry.handler_async(RegistryNormalizeEvent())
+    assert direct_result == 'normalized'
+
+    dispatched = bus.dispatch(RegistryNormalizeEvent())
+    completed = await dispatched
+    result = completed.event_results[entry.id]
+
+    assert result.status == 'completed'
+    assert result.result == 'normalized'
+    assert len(calls) == 2
 
     await bus.stop(clear=True)

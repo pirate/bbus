@@ -781,15 +781,6 @@ class TestRetryWithEventBus:
         bus = EventBus(name='test_timeout_bus')
 
         handler_started = False
-        # handler_error = None  # Unused variable
-
-        async def slow_handler(event: TimeoutEvent) -> str:
-            nonlocal handler_started
-            handler_started = True
-
-            # This will timeout
-            await asyncio.sleep(5)
-            return 'Should not reach here'
 
         @retry(
             max_attempts=1,  # No retries
@@ -803,8 +794,8 @@ class TestRetryWithEventBus:
             await asyncio.sleep(5)
             return 'Should not reach here'
 
-        # Register handler
-        bus.on(TimeoutEvent, slow_handler)
+        # Register only the retry-wrapped handler so this test isolates
+        # handler-level retry timeout semantics without event-level races.
         bus.on(TimeoutEvent, wrapped_handler)
 
         # Dispatch event
@@ -818,8 +809,8 @@ class TestRetryWithEventBus:
         assert handler_started, 'Handler should have started'
 
         # Check event results for timeout error
-        handler_id = list(event.event_results.keys())[0]
-        result = event.event_results[handler_id]
+        assert len(event.event_results) == 1
+        result = next(iter(event.event_results.values()))
 
         assert result.status == 'error'
         assert result.error is not None

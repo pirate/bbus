@@ -132,6 +132,7 @@ class EventBus:
     _is_running: bool = False
     _runloop_task: asyncio.Task[None] | None = None
     _parallel_event_tasks: set[asyncio.Task[None]]
+    _pending_middleware_tasks: set[asyncio.Task[None]]
     _on_idle: asyncio.Event | None = None
     _active_event_ids: set[str]
     _processing_event_ids: set[str]
@@ -197,6 +198,7 @@ class EventBus:
         self._lock_for_event_bus_serial = ReentrantLock()
         self.locks = LockManager()
         self._parallel_event_tasks = set()
+        self._pending_middleware_tasks = set()
         try:
             self.event_concurrency = EventConcurrencyMode(event_concurrency or EventConcurrencyMode.BUS_SERIAL)
         except ValueError as exc:
@@ -275,6 +277,27 @@ class EventBus:
             try:
                 # Wake any blocked queue.get() in the weak runloop so it can exit.
                 self.pending_event_queue.shutdown(immediate=True)
+            except Exception:
+                pass
+        if self._runloop_task and not self._runloop_task.done():
+            try:
+                if hasattr(self._runloop_task, '_log_destroy_pending'):
+                    self._runloop_task._log_destroy_pending = False  # type: ignore[attr-defined]
+                self._runloop_task.cancel()
+            except Exception:
+                pass
+        for task in tuple(self._parallel_event_tasks):
+            if task.done():
+                continue
+            try:
+                task.cancel()
+            except Exception:
+                pass
+        for task in tuple(self._pending_middleware_tasks):
+            if task.done():
+                continue
+            try:
+                task.cancel()
             except Exception:
                 pass
 
@@ -607,6 +630,7 @@ class EventBus:
         bus._is_running = False
         bus._runloop_task = None
         bus._parallel_event_tasks = set()
+        bus._pending_middleware_tasks = set()
         bus._active_event_ids = set()
         bus._processing_event_ids = set()
         return bus
@@ -629,6 +653,24 @@ class EventBus:
         for middleware in self.middlewares:
             await middleware.on_handler_change(self, handler, registered)
 
+    def _schedule_middleware_task(self, task: asyncio.Task[None]) -> None:
+        self._pending_middleware_tasks.add(task)
+        if self._on_idle is not None:
+            self._on_idle.clear()
+
+        def _on_done(done_task: asyncio.Task[None]) -> None:
+            self._pending_middleware_tasks.discard(done_task)
+            if self._on_idle and self.pending_event_queue:
+                if not self._has_inflight_events_fast() and self.pending_event_queue.qsize() == 0:
+                    self._on_idle.set()
+            if done_task.cancelled():
+                return
+            exc = done_task.exception()
+            if exc is not None:
+                logger.error('❌ %s middleware task failed: %s(%r)', self, type(exc).__name__, exc)
+
+        task.add_done_callback(_on_done)
+
     def _notify_handler_change(self, handler: EventHandler, registered: bool) -> None:
         if not self.middlewares:
             return
@@ -636,9 +678,10 @@ class EventBus:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             # Preserve .on()/.off() notifications registered before an event loop starts.
-            self._pending_handler_changes.append((handler.model_copy(deep=True), registered))
+            self._pending_handler_changes.append((handler.model_copy(deep=False), registered))
             return
-        loop.create_task(self._on_handler_change(handler, registered))
+        task = loop.create_task(self._on_handler_change(handler, registered))
+        self._schedule_middleware_task(task)
 
     def _flush_pending_handler_changes(self) -> None:
         if not self._pending_handler_changes or not self.middlewares:
@@ -647,7 +690,8 @@ class EventBus:
         queued = list(self._pending_handler_changes)
         self._pending_handler_changes.clear()
         for handler, registered in queued:
-            loop.create_task(self._on_handler_change(handler, registered))
+            task = loop.create_task(self._on_handler_change(handler, registered))
+            self._schedule_middleware_task(task)
 
     @staticmethod
     def _event_field_is_defined(event: BaseEvent[Any], field_name: str) -> bool:
@@ -738,7 +782,9 @@ class EventBus:
         return event.event_completed_at is not None
 
     def _has_inflight_events_fast(self) -> bool:
-        return bool(self._active_event_ids or self._processing_event_ids or self._parallel_event_tasks)
+        return bool(
+            self._active_event_ids or self._processing_event_ids or self._parallel_event_tasks or self._pending_middleware_tasks
+        )
 
     @staticmethod
     def _mark_event_complete_on_all_buses(event: BaseEvent[Any]) -> None:
