@@ -670,6 +670,22 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   assert.equal(preseeded!.result, 'seeded')
   assert.equal(preseeded!.handler, restored.handlers.get(preseeded!.handler_id))
 
+  const run_order: string[] = []
+  const restored_handler_one = restored.handlers.get(handler_one.id)
+  const restored_handler_two = restored.handlers.get(handler_two.id)
+  assert.ok(restored_handler_one)
+  assert.ok(restored_handler_two)
+  restored_handler_one.handler = (event) => {
+    const label = Reflect.get(event, 'label')
+    run_order.push(`h1:${String(label)}`)
+    return `h1:${String(label)}`
+  }
+  restored_handler_two.handler = (event) => {
+    const label = Reflect.get(event, 'label')
+    run_order.push(`h2:${String(label)}`)
+    return `h2:${String(label)}`
+  }
+
   const trigger = restored.emit(ResumeEvent({ label: 'e3' }))
   await withTimeout(trigger.done(), EVENT_WAIT_TIMEOUT_MS, 'bus resume completion')
 
@@ -681,7 +697,12 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   assert.ok(Array.from(done_one?.event_results.values() ?? []).every((result) => result.status === 'completed'))
   assert.ok(Array.from(done_two?.event_results.values() ?? []).every((result) => result.status === 'completed'))
   assert.equal(done_one?.event_results.get(handler_one.id)?.result, 'seeded')
-  assert.equal(done_one?.event_results.get(handler_two.id)?.result, undefined)
+  assert.equal(done_one?.event_results.get(handler_two.id)?.result, 'h2:e1')
+  assert.equal(done_two?.event_results.get(handler_one.id)?.result, 'h1:e2')
+  assert.equal(done_two?.event_results.get(handler_two.id)?.result, 'h2:e2')
+  assert.equal(done_three?.event_results.get(handler_one.id)?.result, 'h1:e3')
+  assert.equal(done_three?.event_results.get(handler_two.id)?.result, 'h2:e3')
+  assert.deepEqual(run_order, ['h2:e1', 'h1:e2', 'h2:e2', 'h1:e3', 'h2:e3'])
 
   source_bus.destroy()
   restored.destroy()

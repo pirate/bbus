@@ -378,6 +378,17 @@ test('first: skips null result and uses the next handler winner', async () => {
 
   assert.equal(result, 'winner')
   assert.equal(third_handler_called, false)
+
+  const null_result = Array.from(event.event_results.values()).find((entry) => entry.result === null)
+  const winner_result = Array.from(event.event_results.values()).find((entry) => entry.result === 'winner')
+  assert.ok(null_result, 'expected null-producing handler result metadata')
+  assert.equal(null_result.status, 'completed')
+  assert.equal(null_result.error, undefined)
+  assert.equal(null_result.result, null)
+  assert.ok(winner_result, 'expected winner handler result metadata')
+  assert.equal(winner_result.status, 'completed')
+  assert.equal(winner_result.error, undefined)
+  assert.equal(winner_result.result, 'winner')
 })
 
 test('first: returns 0 as a valid first result', async () => {

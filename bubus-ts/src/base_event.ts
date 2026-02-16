@@ -156,6 +156,14 @@ export class BaseEvent {
   _event_completed_signal: Deferred<this> | null
   _lock_for_event_handler: AsyncLock | null
 
+  get event_bus(): EventBus | undefined {
+    return this.bus
+  }
+
+  set event_bus(value: EventBus | undefined) {
+    this.bus = value
+  }
+
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
     const ctor = this.constructor as typeof BaseEvent & {
       event_version?: string
@@ -803,7 +811,7 @@ export class BaseEvent {
     return this
   }
 
-  reset(): this {
+  eventReset(): this {
     const original = this._event_original ?? this
     const ctor = original.constructor as typeof BaseEvent
     const fresh_event = ctor.fromJSON(original.toJSON()) as this

@@ -365,9 +365,9 @@ export class EventBus {
       this.event_history.size > this.event_history.max_history_size
     ) {
       this.event_history.trimEventHistory({
-        isEventComplete: (candidate_event) => candidate_event.event_status === 'completed',
-        onDropEvent: (candidate_event) => candidate_event._gc(),
-        ownerLabel: this.toString(),
+        is_event_complete: (candidate_event) => candidate_event.event_status === 'completed',
+        on_remove: (candidate_event) => candidate_event._gc(),
+        owner_label: this.toString(),
         max_history_size: this.event_history.max_history_size,
         max_history_drop: this.event_history.max_history_drop,
       })
@@ -672,7 +672,10 @@ export class EventBus {
         continue
       }
       const handler_id = entry.id
-      if (handler === undefined || (match_by_id ? handler_id === handler : entry.handler === (handler as EventHandlerCallable))) {
+      if (
+        handler === undefined ||
+        (match_by_id ? handler_id === handler : EventHandler.handlersMatch(entry.handler, handler as EventHandlerCallable))
+      ) {
         this.handlers.delete(handler_id)
         this.removeIndexedHandler(entry.event_pattern, handler_id)
         this.scheduleMicrotask(() => {
@@ -725,9 +728,9 @@ export class EventBus {
 
     this.event_history.addEvent(original_event)
     this.event_history.trimEventHistory({
-      isEventComplete: (candidate_event) => candidate_event.event_status === 'completed',
-      onDropEvent: (candidate_event) => candidate_event._gc(),
-      ownerLabel: this.toString(),
+      is_event_complete: (candidate_event) => candidate_event.event_status === 'completed',
+      on_remove: (candidate_event) => candidate_event._gc(),
+      owner_label: this.toString(),
       max_history_size: this.event_history.max_history_size,
       max_history_drop: this.event_history.max_history_drop,
     })
@@ -762,8 +765,8 @@ export class EventBus {
     const options = typeof where_or_options === 'function' ? maybe_options : where_or_options
     const match = await this.event_history.find(event_pattern as EventPattern<T> | '*', where, {
       ...options,
-      eventIsChildOf: (event, ancestor) => this.eventIsChildOf(event, ancestor),
-      waitForFutureMatch: (normalized_event_pattern, matches, future) =>
+      event_is_child_of: (event, ancestor) => this.eventIsChildOf(event, ancestor),
+      wait_for_future_match: (normalized_event_pattern, matches, future) =>
         this._waitForFutureMatch(normalized_event_pattern, matches, future),
     })
     if (!match) {
@@ -797,8 +800,8 @@ export class EventBus {
     })
   }
 
-  async waitUntilIdle(timeout: number | null = null): Promise<void> {
-    await this.locks.waitForIdle(timeout)
+  async waitUntilIdle(timeout: number | null = null): Promise<boolean> {
+    return await this.locks.waitForIdle(timeout)
   }
 
   // Weak idle check: only checks if handlers are idle, doesnt check that the queue is empty

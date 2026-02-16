@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
-LOG_FILE="$(mktemp /tmp/bubus-playwright-perf.XXXXXX.log)"
+LOG_FILE="$(mktemp /tmp/bubus-playwright-perf.XXXXXX).log"
 trap 'rm -f "$LOG_FILE"' EXIT
 
 run_playwright_perf() {

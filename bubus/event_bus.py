@@ -191,7 +191,7 @@ class EventBus:
         event_slow_timeout: float | None = 300.0,
         event_handler_slow_timeout: float | None = 30.0,
         event_handler_detect_file_paths: bool = True,
-        middlewares: Sequence[object] | None = None,
+        middlewares: Sequence[EventBusMiddlewareInput] | None = None,
         id: UUIDStr | str | None = None,
     ):
         self.id = str(UUID(str(id))) if id is not None else uuid7str()
@@ -277,7 +277,7 @@ class EventBus:
         EventBus.all_instances.add(self)
 
     @staticmethod
-    def _normalize_middlewares(middlewares: Sequence[object] | None) -> list[EventBusMiddleware]:
+    def _normalize_middlewares(middlewares: Sequence[EventBusMiddlewareInput] | None) -> list[EventBusMiddleware]:
         """Normalize middleware inputs to concrete middleware instances.
 
         Accepts mixed instance/class entries and instantiates class entries once

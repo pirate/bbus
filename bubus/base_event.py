@@ -498,19 +498,9 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             elapsed_seconds,
         )
 
-    async def _call_async_handler(
-        self,
-        event: 'BaseEvent[T_EventResultType]',
-        eventbus: 'EventBus',
-        handler: NormalizedEventHandlerCallable,
-    ) -> T_EventResultType | 'BaseEvent[Any]' | None:
-        with eventbus.with_handler_execution_context(event, self.handler_id):
-            return await handler(event)
-
     async def call_handler(
         self,
         event: 'BaseEvent[T_EventResultType]',
-        eventbus: 'EventBus',
         handler: NormalizedEventHandlerCallable,
         dispatch_context: contextvars.Context | None,
     ) -> T_EventResultType | 'BaseEvent[Any]' | None:
@@ -518,11 +508,14 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         handler_return_value: T_EventResultType | BaseEvent[Any] | None = None
         try:
             if dispatch_context is None:
-                handler_return_value = await self._call_async_handler(event, eventbus, handler)
+                handler_return_value = await handler(event)
             else:
+                merged_context = dispatch_context.copy()
+                for variable, value in contextvars.copy_context().items():
+                    merged_context.run(variable.set, value)
                 handler_task = asyncio.create_task(
-                    self._call_async_handler(event, eventbus, handler),
-                    context=dispatch_context,
+                    handler(event),
+                    context=merged_context,
                 )
                 handler_return_value = await handler_task
             return handler_return_value
@@ -592,9 +585,9 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
 
         Runtime layering for one handler execution:
         - per-event handler lock
+        - handler execution context manager (ContextVars + dispatch lock mirror)
         - optional timeout wrapper (hard cap)
         - optional slow-handler background monitor
-        - handler execution context manager (ContextVars + dispatch lock mirror)
         - handler call + result/error normalization
         """
         _format_exception_for_log_callable = format_exception_for_log or _default_format_exception_for_log
@@ -618,22 +611,22 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                 if notify_event_started:
                     await eventbus.on_event_change(event, EventStatus.STARTED)
 
-                slow_handler_monitor = self._create_slow_handler_warning_timer(event, eventbus, handler_slow_timeout)
-                async with self.with_timeout(event):
-                    async with with_slow_monitor(
-                        slow_handler_monitor,
-                        task_name=f'{eventbus}.slow_handler_monitor({event}, {self.handler.label})',
-                    ):
-                        handler_return_value = await self.call_handler(
-                            event,
-                            eventbus,
-                            handler,
-                            dispatch_context,
-                        )
-                self.update(result=handler_return_value)
-                return handler_return_value
+                with eventbus.with_handler_execution_context(event, self.handler_id):
+                    slow_handler_monitor = self._create_slow_handler_warning_timer(event, eventbus, handler_slow_timeout)
+                    async with self.with_timeout(event):
+                        async with with_slow_monitor(
+                            slow_handler_monitor,
+                            task_name=f'{eventbus}.slow_handler_monitor({event}, {self.handler.label})',
+                        ):
+                            handler_return_value = await self.call_handler(
+                                event,
+                                handler,
+                                dispatch_context,
+                            )
+                    self.update(result=handler_return_value)
+                return self.result
 
-        except asyncio.CancelledError as exc:
+        except asyncio.CancelledError:
             handler_interrupted_error = EventHandlerAbortedError(
                 f'Event handler {self.handler.label}({event}) was interrupted because of a parent timeout'
             )

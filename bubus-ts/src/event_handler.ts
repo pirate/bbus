@@ -42,10 +42,10 @@ export class FindWaiter {
   ): EphemeralFindEventHandler {
     const record = FindWaiterJSONSchema.parse(data)
     const event_pattern = record.event_pattern
-    const default_matches = (event: BaseEvent): boolean => event_pattern === '*' || event.event_type === event_pattern
+    const defaultMatches = (event: BaseEvent): boolean => event_pattern === '*' || event.event_type === event_pattern
     return {
       event_pattern,
-      matches: overrides.matches ?? default_matches,
+      matches: overrides.matches ?? defaultMatches,
       resolve: overrides.resolve ?? (() => {}),
     }
   }
@@ -88,7 +88,7 @@ export type EventHandlerJSON = z.infer<typeof EventHandlerJSONSchema>
 // an entry in the list of event handlers that are registered on a bus
 export class EventHandler {
   id: string // unique uuidv5 based on hash of bus name, handler name, handler file path:lineno, registered at timestamp, and event key
-  handler: EventHandlerCallable // the handler function itself
+  handler: EventHandlerCallable // normalized async handler callable used by runtime execution
   handler_name: string // name of the handler function, or 'anonymous' if the handler is an anonymous/arrow function
   handler_file_path: string | null // ~/path/to/source/file.ts:123, or null when unknown
   handler_timeout?: number | null // maximum time in seconds that the handler is allowed to run before it is aborted, resolved at runtime if not set
@@ -98,6 +98,9 @@ export class EventHandler {
   event_pattern: string | '*' // event_type string to match against, or '*' to match all events
   eventbus_name: string // name of the event bus that the handler is registered on
   eventbus_id: string // uuidv7 identifier of the event bus that the handler is registered on
+
+  private static _normalized_handler_by_raw = new WeakMap<EventHandlerCallable, EventHandlerCallable>()
+  private static _raw_handler_by_normalized = new WeakMap<EventHandlerCallable, EventHandlerCallable>()
 
   constructor(params: {
     id?: string
@@ -122,7 +125,7 @@ export class EventHandler {
         handler_registered_ts: params.handler_registered_ts,
         event_pattern: params.event_pattern,
       })
-    this.handler = params.handler
+    this.handler = EventHandler.normalizeHandler(params.handler)
     this.handler_name = params.handler_name
     this.handler_file_path = params.handler_file_path ?? null
     this.handler_timeout = params.handler_timeout
@@ -132,6 +135,41 @@ export class EventHandler {
     this.event_pattern = params.event_pattern
     this.eventbus_name = params.eventbus_name
     this.eventbus_id = params.eventbus_id
+  }
+
+  private static isAsyncFunction(handler: EventHandlerCallable): boolean {
+    return Object.prototype.toString.call(handler) === '[object AsyncFunction]'
+  }
+
+  static normalizeHandler(handler: EventHandlerCallable): EventHandlerCallable {
+    const cached_normalized_handler = this._normalized_handler_by_raw.get(handler)
+    if (cached_normalized_handler) {
+      return cached_normalized_handler
+    }
+    if (this._raw_handler_by_normalized.has(handler)) {
+      return handler
+    }
+
+    const normalized_handler = this.isAsyncFunction(handler)
+      ? handler
+      : ((async (event: BaseEvent): Promise<unknown> => await handler(event as never)) as EventHandlerCallable)
+
+    this._normalized_handler_by_raw.set(handler, normalized_handler)
+    this._raw_handler_by_normalized.set(normalized_handler, handler)
+    return normalized_handler
+  }
+
+  static getRawHandler(handler: EventHandlerCallable): EventHandlerCallable {
+    return this._raw_handler_by_normalized.get(handler) ?? handler
+  }
+
+  static handlersMatch(registered_handler: EventHandlerCallable, candidate_handler: EventHandlerCallable): boolean {
+    if (registered_handler === candidate_handler) {
+      return true
+    }
+    const registered_raw_handler = this.getRawHandler(registered_handler)
+    const candidate_raw_handler = this.getRawHandler(candidate_handler)
+    return registered_raw_handler === candidate_handler || registered_raw_handler === candidate_raw_handler
   }
 
   // compute globally unique handler uuid as a hash of the bus name, handler name, handler file path, registered at timestamp, and event key

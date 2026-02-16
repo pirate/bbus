@@ -77,9 +77,9 @@ entry.linkEmittedChildEvent(childEvent)
 <Tab title="Python">
 
 - `locks.with_handler_lock(...)`
+- `eventbus.with_handler_execution_context(...)`
 - `with_timeout(...)`
 - `with_slow_monitor(...)`
-- `with_handler_execution_context(...)`
 - `call_handler(...)`
 
 </Tab>
@@ -87,10 +87,9 @@ entry.linkEmittedChildEvent(childEvent)
 
 - `withHandlerLock(...)` (acquired by `BaseEvent.runHandlers(...)` before `runHandler(...)`)
 - `withHandlerExecutionContext(...)`
-- `runWithAsyncContext(...)`
 - `withTimeout(...)`
 - `withSlowMonitor(...)`
-- `runWithAbortMonitor(...)`
+- handler call (internally wrapped by `runWithAsyncContext(...)` + `runWithAbortMonitor(...)` for context propagation and cancellation)
 
 </Tab>
 </Tabs>

@@ -14,7 +14,7 @@ type LogTreeBus = {
 export const logTree = (bus: LogTreeBus): string => {
   const parent_to_children = new Map<string, BaseEvent[]>()
 
-  const add_child = (parent_id: string, child: BaseEvent): void => {
+  const addChild = (parent_id: string, child: BaseEvent): void => {
     const existing = parent_to_children.get(parent_id) ?? []
     existing.push(child)
     parent_to_children.set(parent_id, existing)
@@ -53,7 +53,7 @@ export const logTree = (bus: LogTreeBus): string => {
     if (!nodes_by_id.has(parent_id)) {
       continue
     }
-    add_child(parent_id, node)
+    addChild(parent_id, node)
   }
 
   for (const children of parent_to_children.values()) {

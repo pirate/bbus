@@ -125,7 +125,7 @@ export class JSONLEventBridge {
   }
 
   private async dispatchInboundPayload(payload: unknown): Promise<void> {
-    const event = BaseEvent.fromJSON(payload).reset()
+    const event = BaseEvent.fromJSON(payload).eventReset()
     this.inbound_bus.emit(event)
   }
 

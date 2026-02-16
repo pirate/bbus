@@ -54,7 +54,7 @@ const ChildEvent = BaseEvent.extend('ChildEvent', { event_result_type: z.string(
 const bus = new EventBus('RpcBus')
 
 bus.on(ParentEvent, async (event) => {
-  const child = event.bus!.emit(ChildEvent({}))
+  const child = event.event_bus!.emit(ChildEvent({}))
   await child.done() // queue-jump while still inside this handler
   return `parent got: ${child.event_result}`
 })
@@ -130,8 +130,8 @@ const order: string[] = []
 
 bus.on(ParentEvent, async (event) => {
   order.push('parent_start')
-  event.bus!.emit(SiblingEvent({}))
-  const child = event.bus!.emit(ChildEvent({}))
+  event.event_bus!.emit(SiblingEvent({}))
+  const child = event.event_bus!.emit(ChildEvent({}))
   await child.done()
   order.push('parent_end')
 })

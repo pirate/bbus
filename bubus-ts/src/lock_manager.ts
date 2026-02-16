@@ -168,7 +168,7 @@ export class LockManager {
   private pause_waiters: Array<() => void> // Resolvers for waitUntilRunloopResumed; drained when pause_depth hits 0.
   private active_handler_results: EventResult[] // Stack of active handler results for "inside handler" detection.
 
-  private idle_waiters: Array<() => void> // Resolvers waiting for stable idle; cleared when idle confirmed.
+  private idle_waiters: Array<(became_idle: boolean) => void> // Resolvers waiting for stable idle; cleared when idle confirmed.
   private idle_check_pending: boolean // Debounce flag to avoid scheduling redundant idle checks.
   private idle_check_streak: number // Counts consecutive idle checks; used to require two ticks of idle.
 
@@ -244,12 +244,12 @@ export class LockManager {
     return this.active_handler_results.length > 0
   }
 
-  waitForIdle(timeout_seconds: number | null = null): Promise<void> {
+  waitForIdle(timeout_seconds: number | null = null): Promise<boolean> {
     return new Promise((resolve) => {
       let done = false
       let timeout_id: ReturnType<typeof setTimeout> | null = null
 
-      const finish = (): void => {
+      const finish = (became_idle: boolean): void => {
         if (done) {
           return
         }
@@ -258,7 +258,7 @@ export class LockManager {
           clearTimeout(timeout_id)
           timeout_id = null
         }
-        resolve()
+        resolve(became_idle)
       }
 
       this.idle_waiters.push(finish)
@@ -278,7 +278,7 @@ export class LockManager {
         if (index >= 0) {
           this.idle_waiters.splice(index, 1)
         }
-        finish()
+        finish(false)
       }, timeout_ms)
     })
   }
@@ -313,7 +313,7 @@ export class LockManager {
     const waiters = this.idle_waiters
     this.idle_waiters = []
     for (const resolve of waiters) {
-      resolve()
+      resolve(true)
     }
   }
 

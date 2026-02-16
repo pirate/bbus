@@ -265,6 +265,10 @@ class EventHandler(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         if not self.id:
             self.id = self.compute_handler_id()
+        if self.handler is None:
+            self.handler_async = None
+        elif self.handler_async is None:
+            self.handler_async = self.resolve_async_handler(self.handler)
 
     def compute_handler_id(self) -> str:
         """Match TS handler-id algorithm: uuidv5(seed, HANDLER_ID_NAMESPACE)."""
@@ -298,28 +302,17 @@ class EventHandler(BaseModel):
 
     @staticmethod
     def resolve_async_handler(handler: EventHandlerCallable) -> NormalizedEventHandlerCallable:
-        """Normalize one handler callable to a single async call signature.
+        """Normalize one handler callable to a single async call signature."""
+        if not callable(handler):
+            raise ValueError(f'Handler {handler!r} must be callable, got: {type(handler)}')
 
-        Sync handlers are wrapped in an async closure that runs inline on the
-        event loop thread. Async handlers are wrapped to preserve a consistent
-        callable shape for downstream execution code.
-        """
-        if inspect.iscoroutinefunction(handler):
+        async def normalized_handler(event: Any) -> Any:
+            handler_result = handler(event)
+            if inspect.isawaitable(handler_result):
+                return await cast(Awaitable[Any], handler_result)
+            return handler_result
 
-            async def normalized_handler(event: Any) -> Any:
-                return await handler(event)
-
-            return normalized_handler
-
-        if inspect.isfunction(handler) or inspect.ismethod(handler):
-
-            async def normalized_handler(event: Any) -> Any:
-                return handler(event)
-
-            return normalized_handler
-
-        handler_name = EventHandler.get_callable_handler_name(handler)
-        raise ValueError(f'Handler {handler_name} must be a sync or async function, got: {type(handler)}')
+        return normalized_handler
 
     def to_json_dict(self) -> dict[str, Any]:
         payload = self.model_dump(mode='json', exclude={'handler'})

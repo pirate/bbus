@@ -13,7 +13,6 @@ description: Base middleware interface for EventBus lifecycle hooks.
 ```python
 from typing import Any
 from bubus import BaseEvent, EventBus, EventHandler, EventResult, EventStatus
-from bubus.middlewares import EventBusMiddleware
 
 class EventBusMiddleware:
     async def on_event_change(self, eventbus: EventBus, event: BaseEvent[Any], status: EventStatus) -> None:

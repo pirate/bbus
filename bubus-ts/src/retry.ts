@@ -1,4 +1,3 @@
-import { AsyncLock } from './lock_manager.js'
 import { createAsyncLocalStorage, type AsyncLocalStorageLike } from './async_context.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -121,12 +120,49 @@ function scopedSemaphoreKey(base_name: string, scope: 'global' | 'class' | 'inst
 
 // ─── Global semaphore registry ───────────────────────────────────────────────
 
-const SEMAPHORE_REGISTRY = new Map<string, AsyncLock>()
+class RetrySemaphore {
+  readonly size: number
+  private inUse: number
+  private waiters: Array<() => void>
 
-function getOrCreateSemaphore(name: string, limit: number): AsyncLock {
+  constructor(size: number) {
+    this.size = size
+    this.inUse = 0
+    this.waiters = []
+  }
+
+  async acquire(): Promise<void> {
+    if (this.size === Infinity) {
+      return
+    }
+    if (this.inUse < this.size) {
+      this.inUse += 1
+      return
+    }
+    await new Promise<void>((resolve) => {
+      this.waiters.push(resolve)
+    })
+    this.inUse += 1
+  }
+
+  release(): void {
+    if (this.size === Infinity) {
+      return
+    }
+    this.inUse = Math.max(0, this.inUse - 1)
+    const next = this.waiters.shift()
+    if (next) {
+      next()
+    }
+  }
+}
+
+const SEMAPHORE_REGISTRY = new Map<string, RetrySemaphore>()
+
+function getOrCreateSemaphore(name: string, limit: number): RetrySemaphore {
   const existing = SEMAPHORE_REGISTRY.get(name)
   if (existing && existing.size === limit) return existing
-  const sem = new AsyncLock(limit)
+  const sem = new RetrySemaphore(limit)
   SEMAPHORE_REGISTRY.set(name, sem)
   return sem
 }
@@ -188,7 +224,7 @@ export function retry(options: RetryOptions = {}) {
       const is_reentrant = needs_semaphore && held.has(scoped_key)
 
       // ── Semaphore acquisition (held across all retry attempts, skipped if re-entrant) ──
-      let semaphore: AsyncLock | null = null
+      let semaphore: RetrySemaphore | null = null
       let semaphore_acquired = false
 
       if (needs_semaphore && !is_reentrant) {
@@ -222,7 +258,7 @@ export function retry(options: RetryOptions = {}) {
       }
 
       // ── Retry loop (runs inside the semaphore and re-entrancy context) ──
-      const run_retry_loop = async (): Promise<any> => {
+      const runRetryLoop = async (): Promise<any> => {
         for (let attempt = 1; attempt <= effective_max_attempts; attempt++) {
           try {
             if (timeout != null && timeout > 0) {
@@ -259,7 +295,7 @@ export function retry(options: RetryOptions = {}) {
       }
 
       try {
-        return await runWithHeldSemaphores(new_held, run_retry_loop)
+        return await runWithHeldSemaphores(new_held, runRetryLoop)
       } finally {
         if (semaphore_acquired && semaphore) {
           semaphore.release()
@@ -279,7 +315,7 @@ export function retry(options: RetryOptions = {}) {
  * If the semaphore is acquired after the timeout (due to the waiter remaining queued),
  * it is immediately released to avoid leaking slots.
  */
-async function acquireWithTimeout(semaphore: AsyncLock, timeout_ms: number): Promise<boolean> {
+async function acquireWithTimeout(semaphore: RetrySemaphore, timeout_ms: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false
 

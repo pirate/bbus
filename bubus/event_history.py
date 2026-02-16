@@ -170,15 +170,15 @@ class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
         cutoff: datetime | None = None
         if resolved_past is not True:
             cutoff = datetime.now(UTC) - timedelta(seconds=float(resolved_past))
+        missing = object()
 
         def matches(event: BaseEvent[Any]) -> bool:
             if event_key != '*' and event.event_type != event_key:
                 return False
             if child_of is not None and not child_check(event, child_of):
                 return False
-            event_values = event.model_dump(mode='python')
             field_mismatch = any(
-                field_name not in event_values or event_values[field_name] != expected_value
+                getattr(event, field_name, missing) != expected_value
                 for field_name, expected_value in event_fields.items()
             )
             if field_mismatch:
@@ -246,81 +246,47 @@ class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
                 removed_count += 1
             return removed_count
 
-        if len(self) <= self.max_history_size:
-            return 0
-
         if not self.max_history_drop:
             return 0
 
-        events_to_remove_count = len(self) - self.max_history_size
+        if len(self) <= self.max_history_size:
+            return 0
 
-        oldest_completed_ids: list[str] = []
-        for event_id, event in self.items():
-            if len(oldest_completed_ids) >= events_to_remove_count:
+        remaining_overage = len(self) - self.max_history_size
+        removed_count = 0
+
+        for event_id, event in list(self.items()):
+            if remaining_overage <= 0:
                 break
             if not self.is_event_complete_fast(event):
-                oldest_completed_ids.clear()
-                break
-            oldest_completed_ids.append(event_id)
-
-        if len(oldest_completed_ids) == events_to_remove_count and events_to_remove_count > 0:
-            for event_id in oldest_completed_ids:
-                event = self.get(event_id)
-                if event is None:
-                    continue
-                del self[event_id]
-                if on_remove is not None:
-                    on_remove(event)
-            return len(oldest_completed_ids)
-
-        pending_events: list[tuple[str, BaseEventT]] = []
-        started_events: list[tuple[str, BaseEventT]] = []
-        completed_events: list[tuple[str, BaseEventT]] = []
-
-        for event_id, event in self.items():
-            if self.is_event_complete_fast(event):
-                completed_events.append((event_id, event))
-            elif event.event_status == 'started':
-                started_events.append((event_id, event))
-            else:
-                pending_events.append((event_id, event))
-
-        events_to_remove: list[str] = []
-
-        if completed_events and events_to_remove_count > 0:
-            remove_from_completed = min(len(completed_events), events_to_remove_count)
-            events_to_remove.extend([event_id for event_id, _ in completed_events[:remove_from_completed]])
-            events_to_remove_count -= remove_from_completed
-
-        if events_to_remove_count > 0 and started_events:
-            remove_from_started = min(len(started_events), events_to_remove_count)
-            events_to_remove.extend([event_id for event_id, _ in started_events[:remove_from_started]])
-            events_to_remove_count -= remove_from_started
-
-        if events_to_remove_count > 0 and pending_events:
-            events_to_remove.extend([event_id for event_id, _ in pending_events[:events_to_remove_count]])
-
-        removed_count = 0
-        for event_id in events_to_remove:
-            event = self.get(event_id)
-            if event is None:
                 continue
             del self[event_id]
             if on_remove is not None:
                 on_remove(event)
             removed_count += 1
+            remaining_overage -= 1
 
-        if removed_count:
-            completed_event_ids = {event_id for event_id, _ in completed_events}
-            dropped_uncompleted = sum(1 for event_id in events_to_remove if event_id not in completed_event_ids)
-            if dropped_uncompleted > 0 and not self._warned_about_dropping_uncompleted_events:
-                self._warned_about_dropping_uncompleted_events = True
-                owner = owner_label or 'EventBus'
-                logger.warning(
-                    '[bubus] ⚠️ Bus %s has exceeded max_history_size=%s and is dropping oldest history entries '
-                    '(even uncompleted events). Increase max_history_size or set max_history_drop=False to reject.',
-                    owner,
-                    self.max_history_size,
-                )
+        dropped_uncompleted = 0
+        if remaining_overage > 0:
+            for event_id, event in list(self.items()):
+                if remaining_overage <= 0:
+                    break
+                if not self.is_event_complete_fast(event):
+                    dropped_uncompleted += 1
+                del self[event_id]
+                if on_remove is not None:
+                    on_remove(event)
+                removed_count += 1
+                remaining_overage -= 1
+
+        if dropped_uncompleted > 0 and not self._warned_about_dropping_uncompleted_events:
+            self._warned_about_dropping_uncompleted_events = True
+            owner = owner_label or 'EventBus'
+            logger.warning(
+                '[bubus] ⚠️ Bus %s has exceeded max_history_size=%s and is dropping oldest history entries '
+                '(even uncompleted events). Increase max_history_size or set max_history_drop=False to reject.',
+                owner,
+                self.max_history_size,
+            )
 
         return removed_count

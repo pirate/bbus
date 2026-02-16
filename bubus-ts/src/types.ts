@@ -38,7 +38,7 @@ type EventFilterFields<T extends BaseEvent> = {
         ? never
         : K extends FindReservedOptionKeys
           ? never
-          : T[K] extends (...args: unknown[]) => unknown
+          : T[K] extends (...args: any[]) => any
             ? never
             : K]?: T[K]
 }

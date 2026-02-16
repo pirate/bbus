@@ -219,6 +219,38 @@ test('parent tracking works with sync handlers and handler errors', async () => 
   }
 })
 
+test('erroring parent handlers still preserve child event_parent_id', async () => {
+  const bus = new EventBus('ErrorOnlyParentTrackingBus')
+  const child_events: BaseEvent[] = []
+
+  bus.on(ParentEvent, (event) => {
+    const child = event.bus?.emit(ChildEvent({ data: 'before_error' }))
+    if (!child) {
+      throw new Error('expected scoped bus on parent handler event')
+    }
+    child_events.push(child)
+    throw new Error('expected parent handler failure')
+  })
+  bus.on(ParentEvent, (event) => {
+    const child = event.bus?.emit(ChildEvent({ data: 'after_error' }))
+    if (!child) {
+      throw new Error('expected scoped bus on parent handler event')
+    }
+    child_events.push(child)
+    return 'recovered'
+  })
+  bus.on(ChildEvent, () => 'child_handled')
+
+  const parent = bus.emit(ParentEvent({ message: 'error_only' }))
+  await bus.waitUntilIdle()
+  await parent.done()
+
+  assert.equal(child_events.length, 2)
+  for (const child of child_events) {
+    assert.equal(child.event_parent_id, parent.event_id)
+  }
+})
+
 test('event_children tracks direct and nested descendants', async () => {
   const bus = new EventBus('ChildrenTrackingBus')
 
@@ -244,6 +276,88 @@ test('event_children tracks direct and nested descendants', async () => {
   assert.equal(child.event_children.length, 1)
   const grandchild = child.event_children[0]
   assert.equal(grandchild.event_type, 'GrandchildEvent')
+})
+
+test('event_children tracks multiple children from a single handler', async () => {
+  const bus = new EventBus('EventChildrenSingleHandlerBus')
+
+  bus.on(ParentEvent, (event) => {
+    event.bus?.emit(ChildEvent({ data: 'child_0' }))
+    event.bus?.emit(ChildEvent({ data: 'child_1' }))
+    event.bus?.emit(ChildEvent({ data: 'child_2' }))
+    return 'parent_done'
+  })
+  bus.on(ChildEvent, (event) => `handled_${event.data ?? 'unknown'}`)
+
+  const parent = bus.emit(ParentEvent({ message: 'children_tracking' }))
+  await bus.waitUntilIdle()
+  await parent.done()
+
+  assert.equal(parent.event_children.length, 3)
+  const child_data = parent.event_children.map((child) => Reflect.get(child, 'data') as string | undefined).sort()
+  assert.deepEqual(child_data, ['child_0', 'child_1', 'child_2'])
+  for (const child of parent.event_children) {
+    assert.equal(child.event_parent_id, parent.event_id)
+  }
+})
+
+test('multiple parent handlers contribute to one event_children list', async () => {
+  const bus = new EventBus('EventChildrenMultiHandlerBus')
+
+  bus.on(ParentEvent, (event) => {
+    event.bus?.emit(ChildEvent({ data: 'from_handler_1' }))
+    return 'h1'
+  })
+  bus.on(ParentEvent, (event) => {
+    event.bus?.emit(ChildEvent({ data: 'from_handler_2a' }))
+    event.bus?.emit(ChildEvent({ data: 'from_handler_2b' }))
+    return 'h2'
+  })
+  bus.on(ChildEvent, (event) => `handled_${event.data ?? 'unknown'}`)
+
+  const parent = bus.emit(ParentEvent({ message: 'multi_handler_children' }))
+  await bus.waitUntilIdle()
+  await parent.done()
+
+  assert.equal(parent.event_children.length, 3)
+  const child_data = parent.event_children.map((child) => Reflect.get(child, 'data') as string | undefined).sort()
+  assert.deepEqual(child_data, ['from_handler_1', 'from_handler_2a', 'from_handler_2b'])
+})
+
+test('event_children is empty when handlers do not emit children', async () => {
+  const bus = new EventBus('EventChildrenEmptyBus')
+
+  bus.on(ParentEvent, () => 'no_children')
+
+  const parent = bus.emit(ParentEvent({ message: 'no_children' }))
+  await bus.waitUntilIdle()
+  await parent.done()
+
+  assert.equal(parent.event_children.length, 0)
+})
+
+test('eventAreAllChildrenComplete reflects child completion state', async () => {
+  const bus = new EventBus('EventChildrenCompletionBus')
+
+  bus.on(ParentEvent, (event) => {
+    event.bus?.emit(ChildEvent({ data: 'child_a' }))
+    event.bus?.emit(ChildEvent({ data: 'child_b' }))
+    return 'parent'
+  })
+  bus.on(ChildEvent, async (event) => {
+    await delay(10)
+    return `done_${event.data ?? 'child'}`
+  })
+
+  const parent = bus.emit(ParentEvent({ message: 'completion' }))
+  assert.equal(parent.eventAreAllChildrenComplete(), true)
+  await parent.done()
+
+  assert.equal(parent.event_children.length, 2)
+  assert.equal(parent.eventAreAllChildrenComplete(), true)
+  for (const child of parent.event_children) {
+    assert.equal(child.event_status, 'completed')
+  }
 })
 
 test('forwarded events are not counted as parent event_children', async () => {

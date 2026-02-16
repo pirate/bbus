@@ -6,8 +6,8 @@ export type EventHistoryFindOptions = {
   past?: FindWindow
   future?: FindWindow
   child_of?: BaseEvent | null
-  eventIsChildOf?: (event: BaseEvent, ancestor: BaseEvent) => boolean
-  waitForFutureMatch?: (
+  event_is_child_of?: (event: BaseEvent, ancestor: BaseEvent) => boolean
+  wait_for_future_match?: (
     event_pattern: string | '*',
     matches: (event: BaseEvent) => boolean,
     future: FindWindow
@@ -15,9 +15,9 @@ export type EventHistoryFindOptions = {
 } & Record<string, unknown>
 
 export type EventHistoryTrimOptions<TEvent extends BaseEvent = BaseEvent> = {
-  isEventComplete?: (event: TEvent) => boolean
-  onDropEvent?: (event: TEvent) => void
-  ownerLabel?: string
+  is_event_complete?: (event: TEvent) => boolean
+  on_remove?: (event: TEvent) => void
+  owner_label?: string
   max_history_size?: number | null
   max_history_drop?: boolean
 }
@@ -115,8 +115,8 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
     const past = options.past ?? true
     const future = options.future ?? false
     const child_of = options.child_of ?? null
-    const event_is_child_of = options.eventIsChildOf ?? ((event: BaseEvent, ancestor: BaseEvent) => this.eventIsChildOf(event, ancestor))
-    const wait_for_future_match = options.waitForFutureMatch
+    const eventIsChildOf = options.event_is_child_of ?? ((event: BaseEvent, ancestor: BaseEvent) => this.eventIsChildOf(event, ancestor))
+    const waitForFutureMatch = options.wait_for_future_match
     if (past === false && future === false) {
       return null
     }
@@ -129,8 +129,8 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
         key !== 'past' &&
         key !== 'future' &&
         key !== 'child_of' &&
-        key !== 'eventIsChildOf' &&
-        key !== 'waitForFutureMatch' &&
+        key !== 'event_is_child_of' &&
+        key !== 'wait_for_future_match' &&
         value !== undefined
     )
 
@@ -138,7 +138,7 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
       if (event_key !== '*' && event.event_type !== event_key) {
         return false
       }
-      if (child_of && !event_is_child_of(event, child_of)) {
+      if (child_of && !eventIsChildOf(event, child_of)) {
         return false
       }
       let field_mismatch = false
@@ -170,11 +170,11 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
       }
     }
 
-    if (future === false || !wait_for_future_match) {
+    if (future === false || !waitForFutureMatch) {
       return null
     }
 
-    return (await wait_for_future_match(event_key, matches, future)) as TEvent | null
+    return (await waitForFutureMatch(event_key, matches, future)) as TEvent | null
   }
 
   cleanupExcessEvents(options: EventHistoryTrimOptions<TEvent> = {}): number {
@@ -189,7 +189,7 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
       return 0
     }
 
-    const on_drop_event = options.onDropEvent
+    const on_remove = options.on_remove
     const remove_count = this.size - max_history_size
     const event_ids_to_remove = Array.from(this._events.keys()).slice(0, remove_count)
     let removed_count = 0
@@ -200,8 +200,8 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
         continue
       }
       this._events.delete(event_id)
-      if (on_drop_event) {
-        on_drop_event(event)
+      if (on_remove) {
+        on_remove(event)
       }
       removed_count += 1
     }
@@ -216,8 +216,8 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
       return 0
     }
 
-    const is_event_complete = options.isEventComplete ?? ((event: TEvent) => event.event_status === 'completed')
-    const on_drop_event = options.onDropEvent
+    const is_event_complete = options.is_event_complete ?? ((event: TEvent) => event.event_status === 'completed')
+    const on_remove = options.on_remove
 
     if (max_history_size === 0) {
       let removed_count = 0
@@ -226,8 +226,8 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
           continue
         }
         this._events.delete(event_id)
-        if (on_drop_event) {
-          on_drop_event(event)
+        if (on_remove) {
+          on_remove(event)
         }
         removed_count += 1
       }
@@ -253,8 +253,8 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
         continue
       }
       this._events.delete(event_id)
-      if (on_drop_event) {
-        on_drop_event(event)
+      if (on_remove) {
+        on_remove(event)
       }
       removed_count += 1
       remaining_overage -= 1
@@ -270,8 +270,8 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
           dropped_uncompleted += 1
         }
         this._events.delete(event_id)
-        if (on_drop_event) {
-          on_drop_event(event)
+        if (on_remove) {
+          on_remove(event)
         }
         removed_count += 1
         remaining_overage -= 1
@@ -279,7 +279,7 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
 
       if (dropped_uncompleted > 0 && !this._warned_about_dropping_uncompleted_events) {
         this._warned_about_dropping_uncompleted_events = true
-        const owner_label = options.ownerLabel ?? 'EventBus'
+        const owner_label = options.owner_label ?? 'EventBus'
         console.error(
           `[bubus] ⚠️ Bus ${owner_label} has exceeded max_history_size=${max_history_size} and is dropping oldest history entries (even uncompleted events). Increase max_history_size or set max_history_drop=false to reject.`
         )

@@ -74,8 +74,8 @@ test('on accepts sync handlers and dispatch captures their return values', async
   }
 
   const entry = bus.on(NormalizeEvent, sync_handler)
-  const direct_result = entry.handler(new NormalizeEvent({}))
-  assert.equal(direct_result, 'normalized')
+  const normalized_result = await entry.handler(new NormalizeEvent({}))
+  assert.equal(normalized_result, 'normalized')
 
   const dispatched = bus.emit(NormalizeEvent({}))
   await dispatched.done()
@@ -85,4 +85,15 @@ test('on accepts sync handlers and dispatch captures their return values', async
   assert.equal(result!.status, 'completed')
   assert.equal(result!.result, 'normalized')
   assert.equal(calls.length, 2)
+})
+
+test('on keeps async handlers normalized through handler', async () => {
+  const bus = new EventBus('RegistryAsyncNormalizeBus')
+  const NormalizeEvent = BaseEvent.extend('RegistryAsyncNormalizeEvent', {})
+
+  const async_handler = async (_event: BaseEvent): Promise<string> => 'async_normalized'
+  const entry = bus.on(NormalizeEvent, async_handler)
+
+  const normalized_result = await entry.handler(new NormalizeEvent({}))
+  assert.equal(normalized_result, 'async_normalized')
 })

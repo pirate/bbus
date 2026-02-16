@@ -6,7 +6,7 @@ export async function withTimeout<T>(timeout_seconds: number | null, on_timeout:
   const timeout_ms = timeout_seconds * 1000
   return await new Promise<T>((resolve, reject) => {
     let settled = false
-    const finish_resolve = (value: T) => {
+    const finishResolve = (value: T) => {
       if (settled) {
         return
       }
@@ -14,7 +14,7 @@ export async function withTimeout<T>(timeout_seconds: number | null, on_timeout:
       clearTimeout(timer)
       resolve(value)
     }
-    const finish_reject = (error: unknown) => {
+    const finishReject = (error: unknown) => {
       if (settled) {
         return
       }
@@ -30,7 +30,7 @@ export async function withTimeout<T>(timeout_seconds: number | null, on_timeout:
       reject(on_timeout())
       void task.catch(() => undefined)
     }, timeout_ms)
-    task.then(finish_resolve).catch(finish_reject)
+    task.then(finishResolve).catch(finishReject)
   })
 }
 
@@ -45,5 +45,8 @@ export async function withSlowMonitor<T>(slow_timer: ReturnType<typeof setTimeou
 }
 
 export async function runWithAbortMonitor<T>(fn: () => T | Promise<T>, abort_signal: Promise<never>): Promise<T> {
-  return await Promise.race([Promise.resolve().then(fn), abort_signal])
+  const task = Promise.resolve().then(fn)
+  const raced = Promise.race([task, abort_signal])
+  void task.catch(() => undefined)
+  return await raced
 }

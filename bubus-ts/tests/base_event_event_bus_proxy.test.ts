@@ -253,10 +253,10 @@ test('dispatch preserves explicit event_parent_id and does not override it', asy
 
 // Consolidated from tests/parent_child.test.ts
 
-const LineageParentEvent = BaseEvent.extend('ParentEvent', {})
-const LineageChildEvent = BaseEvent.extend('ChildEvent', {})
-const LineageGrandchildEvent = BaseEvent.extend('GrandchildEvent', {})
-const LineageUnrelatedEvent = BaseEvent.extend('UnrelatedEvent', {})
+const LineageParentEvent = BaseEvent.extend('LineageParentEvent', {})
+const LineageChildEvent = BaseEvent.extend('LineageChildEvent', {})
+const LineageGrandchildEvent = BaseEvent.extend('LineageGrandchildEvent', {})
+const LineageUnrelatedEvent = BaseEvent.extend('LineageUnrelatedEvent', {})
 
 test('eventIsChildOf and eventIsParentOf work for direct children', async () => {
   const bus = new EventBus('ParentChildBus')
@@ -268,7 +268,7 @@ test('eventIsChildOf and eventIsParentOf work for direct children', async () => 
   const parent_event = bus.emit(LineageParentEvent({}))
   await bus.waitUntilIdle()
 
-  const child_event = Array.from(bus.event_history.values()).find((event) => event.event_type === 'ChildEvent')
+  const child_event = Array.from(bus.event_history.values()).find((event) => event.event_type === 'LineageChildEvent')
   assert.ok(child_event)
 
   assert.equal(child_event.event_parent_id, parent_event.event_id)
@@ -291,8 +291,8 @@ test('eventIsChildOf works for grandchildren', async () => {
   const parent_event = bus.emit(LineageParentEvent({}))
   await bus.waitUntilIdle()
 
-  const child_event = Array.from(bus.event_history.values()).find((event) => event.event_type === 'ChildEvent')
-  const grandchild_event = Array.from(bus.event_history.values()).find((event) => event.event_type === 'GrandchildEvent')
+  const child_event = Array.from(bus.event_history.values()).find((event) => event.event_type === 'LineageChildEvent')
+  const grandchild_event = Array.from(bus.event_history.values()).find((event) => event.event_type === 'LineageGrandchildEvent')
 
   assert.ok(child_event)
   assert.ok(grandchild_event)

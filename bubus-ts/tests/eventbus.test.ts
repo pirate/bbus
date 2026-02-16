@@ -43,16 +43,17 @@ test('waitUntilIdle(timeout) returns after timeout when work is still in-flight'
   bus.emit(WaitForIdleTimeoutEvent({}))
 
   const start_ms = performance.now()
-  await bus.waitUntilIdle(0.05)
+  const became_idle = await bus.waitUntilIdle(0.05)
   const elapsed_ms = performance.now() - start_ms
 
   try {
     assert.ok(elapsed_ms >= 30, `expected timeout wait to be >=30ms, got ${elapsed_ms}ms`)
     assert.ok(elapsed_ms < 1000, `expected timeout wait to be <1000ms, got ${elapsed_ms}ms`)
+    assert.equal(became_idle, false)
     assert.equal(bus.isIdleAndQueueEmpty(), false)
   } finally {
     release_handler()
-    await bus.waitUntilIdle()
+    assert.equal(await bus.waitUntilIdle(), true)
   }
 })
 
@@ -880,7 +881,7 @@ test('reset creates a fresh pending event for cross-bus dispatch', async () => {
   bus_b.on(ResetEvent, (event) => `b:${event.label}`)
 
   const completed = await bus_a.emit(ResetEvent({ label: 'hello' })).done()
-  const fresh = completed.reset()
+  const fresh = completed.eventReset()
 
   assert.notEqual(fresh.event_id, completed.event_id)
   assert.equal(fresh.event_status, 'pending')

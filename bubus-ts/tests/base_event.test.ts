@@ -67,7 +67,7 @@ test('BaseEvent reset returns a fresh pending event that can be redispatched', a
   bus_b.on(ResetEvent, (event) => `b:${event.label}`)
 
   const completed = await bus_a.emit(ResetEvent({ label: 'hello' })).done()
-  const fresh = completed.reset()
+  const fresh = completed.eventReset()
 
   assert.notEqual(fresh.event_id, completed.event_id)
   assert.equal(fresh.event_status, 'pending')
