@@ -196,7 +196,7 @@ export class EventHandler {
       handler_timeout: this.handler_timeout,
       handler_slow_timeout: this.handler_slow_timeout,
       handler_registered_at: this.handler_registered_at,
-      handler_registered_ts: this.handler_registered_ts,
+      handler_registered_ts: this.handler_registered_ts % 1_000_000,
     }
   }
 

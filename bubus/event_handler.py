@@ -322,7 +322,9 @@ class EventHandler(BaseModel):
         raise ValueError(f'Handler {handler_name} must be a sync or async function, got: {type(handler)}')
 
     def to_json_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode='json', exclude={'handler'})
+        payload = self.model_dump(mode='json', exclude={'handler'})
+        payload['handler_registered_ts'] = self.handler_registered_ts % 1_000_000
+        return payload
 
     @classmethod
     def from_json_dict(cls, data: Any, handler: EventHandlerCallable | None = None) -> 'EventHandler':

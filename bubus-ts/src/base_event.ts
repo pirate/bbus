@@ -354,11 +354,11 @@ export class BaseEvent {
       // mutable runtime status and timestamps
       event_status: this.event_status,
       event_created_at: this.event_created_at,
-      event_created_ts: this.event_created_ts,
+      event_created_ts: this.event_created_ts % 1_000_000,
       event_started_at: this.event_started_at,
-      event_started_ts: this.event_started_ts,
+      event_started_ts: this.event_started_ts == null ? null : this.event_started_ts % 1_000_000,
       event_completed_at: this.event_completed_at,
-      event_completed_ts: this.event_completed_ts,
+      event_completed_ts: this.event_completed_ts == null ? null : this.event_completed_ts % 1_000_000,
 
       // mutable result state
       ...(event_results.length > 0 ? { event_results } : {}),

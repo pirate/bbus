@@ -366,6 +366,15 @@ class EventBus:
     def _event_json_payload(cls, event: BaseEvent[Any]) -> dict[str, Any]:
         payload = event.model_dump(mode='json')
         payload['event_results'] = [result.model_dump(mode='json') for result in event.event_results.values()]
+        for key in ('event_created_ts', 'event_started_ts', 'event_completed_ts'):
+            value = payload.get(key)
+            if isinstance(value, (int, float)):
+                payload[key] = value % 1_000_000
+        for result_payload in payload['event_results']:
+            for key in ('handler_registered_ts', 'started_ts', 'completed_ts'):
+                value = result_payload.get(key)
+                if isinstance(value, (int, float)):
+                    result_payload[key] = value % 1_000_000
         return payload
 
     @staticmethod

@@ -323,7 +323,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             'handler_timeout': handler.handler_timeout,
             'handler_slow_timeout': handler.handler_slow_timeout,
             'handler_registered_at': self._serialize_datetime_json(handler.handler_registered_at),
-            'handler_registered_ts': handler.handler_registered_ts,
+            'handler_registered_ts': handler.handler_registered_ts % 1_000_000,
             'handler_event_pattern': handler.event_pattern,
             'eventbus_id': self.eventbus_id,
             'eventbus_name': self.eventbus_name,
