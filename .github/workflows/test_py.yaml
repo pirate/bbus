@@ -45,7 +45,7 @@ jobs:
       - id: lsgrep
         run: |
           PY_TEST_TASKS="$(
-            find tests -maxdepth 1 -type f -name 'test_*.py' \
+            find tests -maxdepth 1 -type f -name 'test_*.py' ! -name 'test_eventbus_performance.py' \
               | sort \
               | sed 's|^tests/||' \
               | sed 's|\.py$||' \
@@ -256,23 +256,5 @@ jobs:
           enable-cache: true
           activate-environment: true
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: bubus-ts/pnpm-lock.yaml
-
-      - uses: oven-sh/setup-bun@v2
-
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
       - run: uv sync --dev --all-extras
       - run: uv run python tests/performance_runtime.py
-      - run: pnpm --dir bubus-ts install --frozen-lockfile
-      - run: pnpm --dir bubus-ts run perf

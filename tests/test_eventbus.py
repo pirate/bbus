@@ -46,7 +46,7 @@ class UserActionEvent(BaseEvent):
 class SystemEventModel(BaseEvent):
     """Test event model for system events"""
 
-    event_name: str
+    name: str
     severity: str = 'info'
     details: dict[str, Any] = Field(default_factory=dict)
 
@@ -167,7 +167,7 @@ class TestEventEnqueueing:
     def test_emit_sync(self):
         """Test sync event emission"""
         bus = EventBus()
-        event = SystemEventModel(event_name='startup', severity='info')
+        event = SystemEventModel(name='startup', severity='info')
 
         with pytest.raises(RuntimeError) as e:
             bus.emit(event)
@@ -263,7 +263,7 @@ class TestHandlerRegistration:
 
         # Handler for event type by model class
         async def system_handler(event: SystemEventModel) -> str:
-            results['model'].append(event.event_name)
+            results['model'].append(event.name)
             return 'system_handled'
 
         # Universal handler
@@ -278,7 +278,7 @@ class TestHandlerRegistration:
 
         # Emit events
         eventbus.emit(UserActionEvent(action='login', user_id='u1'))
-        eventbus.emit(SystemEventModel(event_name='startup'))
+        eventbus.emit(SystemEventModel(name='startup'))
         await eventbus.wait_until_idle()
 
         # Verify all handlers were called correctly
@@ -615,7 +615,7 @@ class TestBatchOperations:
         """Test batch event emission with asyncio.gather"""
         events = [
             UserActionEvent(action='login', user_id='u1'),
-            SystemEventModel(event_name='startup'),
+            SystemEventModel(name='startup'),
             UserActionEvent(action='logout', user_id='u1'),
         ]
 
@@ -719,7 +719,7 @@ class TestEdgeCases:
             }
         }
 
-        event = SystemEventModel(event_name='complex', details=complex_data)
+        event = SystemEventModel(name='complex', details=complex_data)
 
         result = await eventbus.emit(event)
 
@@ -855,7 +855,7 @@ class TestEventTypeOverride:
         event = UserActionEvent(action='test', user_id='u1')
         assert event.event_type == 'UserActionEvent'
 
-        event2 = SystemEventModel(event_name='startup')
+        event2 = SystemEventModel(name='startup')
         assert event2.event_type == 'SystemEventModel'
 
         # Create inline event class without explicit event_type
@@ -976,7 +976,7 @@ class TestEventBusHierarchy:
             events_at_child.clear()
             events_at_subchild.clear()
 
-            middle_event = SystemEventModel(event_name='middle_test')
+            middle_event = SystemEventModel(name='middle_test')
             child_bus.emit(middle_event)
 
             await child_bus.wait_until_idle()
@@ -1078,7 +1078,7 @@ class TestEventBusHierarchy:
             events_at_peer2.clear()
             events_at_peer3.clear()
 
-            event2 = SystemEventModel(event_name='circular_test_2')
+            event2 = SystemEventModel(name='circular_test_2')
             peer2.emit(event2)
 
             await asyncio.sleep(0.2)
@@ -1165,12 +1165,12 @@ class TestFindMethod:
 
         # Dispatch different event types
         eventbus.emit(UserActionEvent(action='test', user_id='u1'))
-        target = eventbus.emit(SystemEventModel(event_name='startup', severity='info'))
+        target = eventbus.emit(SystemEventModel(name='startup', severity='info'))
 
         # Should receive the SystemEventModel
         received = await find_task
         assert isinstance(received, SystemEventModel)
-        assert received.event_name == 'startup'
+        assert received.name == 'startup'
         assert received.event_id == target.event_id
 
     async def test_multiple_concurrent_future_finds(self, eventbus):
@@ -1187,7 +1187,7 @@ class TestFindMethod:
 
         # Dispatch events
         e1 = eventbus.emit(UserActionEvent(action='normal', user_id='u1'))
-        e2 = eventbus.emit(SystemEventModel(event_name='test'))
+        e2 = eventbus.emit(SystemEventModel(name='test'))
         e3 = eventbus.emit(UserActionEvent(action='special', user_id='u2'))
 
         # Wait for all events to be processed

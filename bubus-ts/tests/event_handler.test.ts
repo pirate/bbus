@@ -11,7 +11,7 @@ const UserActionEvent = BaseEvent.extend('UserActionEvent', {
 })
 
 const SystemEventModel = BaseEvent.extend('SystemEventModel', {
-  event_name: z.string(),
+  name: z.string(),
 })
 
 test('handler registration via string, class, and wildcard', async () => {
@@ -28,7 +28,7 @@ test('handler registration via string, class, and wildcard', async () => {
   }
 
   const system_handler = async (event: InstanceType<typeof SystemEventModel>): Promise<string> => {
-    results.model.push(event.event_name)
+    results.model.push(event.name)
     return 'system_handled'
   }
 
@@ -42,7 +42,7 @@ test('handler registration via string, class, and wildcard', async () => {
   bus.on('*', universal_handler)
 
   bus.emit(UserActionEvent({ action: 'login', user_id: 'u1' }))
-  bus.emit(SystemEventModel({ event_name: 'startup' }))
+  bus.emit(SystemEventModel({ name: 'startup' }))
   await bus.waitUntilIdle()
 
   assert.deepEqual(results.specific, ['login'])

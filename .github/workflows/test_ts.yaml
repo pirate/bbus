@@ -47,7 +47,7 @@ jobs:
       - id: lsgrep
         run: |
           TS_TEST_TASKS="$(
-            find bubus-ts/tests -maxdepth 1 -type f -name '*.test.ts' \
+            find bubus-ts/tests -maxdepth 1 -type f -name '*.test.ts' ! -name 'eventbus_performance.test.ts' \
               | sort \
               | sed 's|^bubus-ts/tests/||' \
               | sed 's|\.test\.ts$||' \
@@ -319,5 +319,4 @@ jobs:
           deno-version: v2.x
 
       - run: pnpm install --frozen-lockfile
-      - run: npx --yes --package=playwright playwright install chromium
       - run: pnpm run perf
