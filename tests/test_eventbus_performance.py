@@ -208,17 +208,6 @@ def throughput_regression_floor(
     return max(hard_floor, first_run_throughput * min_fraction)
 
 
-def ci_upper_ceiling(local_ceiling: float, *, ci_ceiling: float | None = None, multiplier: float = 2.0) -> float:
-    """
-    Keep strict local upper bounds while allowing higher ceilings on shared CI runners.
-    """
-    if os.getenv('GITHUB_ACTIONS', '').lower() == 'true':
-        if ci_ceiling is not None:
-            return ci_ceiling
-        return local_ceiling * multiplier
-    return local_ceiling
-
-
 class MethodProfiler:
     """Lightweight monkeypatch profiler for selected class methods."""
 
@@ -463,13 +452,11 @@ async def test_20k_events_with_memory_control():
     print('DEBUG: About to check processed_count assertion...')
     assert processed_count == total_events, f'Only processed {processed_count} of {total_events}'
     print('DEBUG: About to check duration assertion...')
-    assert duration < ci_upper_ceiling(120.0, ci_ceiling=240.0), f'Took {duration:.2f}s, should be < 120s'
+    assert duration < 360.0, f'Took {duration:.2f}s, should be < 360s'
 
     # Check memory usage stayed reasonable
     print('DEBUG: About to check memory assertion...')
-    assert peak_growth < ci_upper_ceiling(100.0, ci_ceiling=140.0), (
-        f'Memory grew by {peak_growth:.1f} MB at peak, indicates memory leak'
-    )
+    assert peak_growth < 300.0, f'Memory grew by {peak_growth:.1f} MB at peak, indicates memory leak'
 
     # Check event history is properly limited
     print('DEBUG: About to check history size assertions...')
@@ -631,7 +618,7 @@ async def test_ephemeral_buses_with_forwarding_churn():
     assert handled_a == total_events
     assert handled_b == total_events
     assert len(EventBus.all_instances) <= initial_instances
-    assert duration < ci_upper_ceiling(60.0, ci_ceiling=120.0), f'Ephemeral bus churn took too long: {duration:.2f}s'
+    assert duration < 180.0, f'Ephemeral bus churn took too long: {duration:.2f}s'
 
 
 @pytest.mark.asyncio
@@ -711,9 +698,7 @@ async def test_forwarding_queue_jump_timeout_mix_stays_stable():
     assert timeout_count > 0
     assert len(bus_a.event_history) <= history_limit
     assert len(bus_b.event_history) <= history_limit
-    assert duration < ci_upper_ceiling(60.0, ci_ceiling=120.0), (
-        f'Mixed forwarding/queue-jump/timeout path took too long: {duration:.2f}s'
-    )
+    assert duration < 180.0, f'Mixed forwarding/queue-jump/timeout path took too long: {duration:.2f}s'
 
 
 @pytest.mark.asyncio
@@ -869,7 +854,7 @@ async def test_global_lock_contention_multi_bus_matrix(event_handler_concurrency
         f'phase2={phase2["throughput"]:.0f} '
         f'(required >= {regression_floor:.0f})'
     )
-    assert phase2['dispatch_p95_ms'] < ci_upper_ceiling(25.0, ci_ceiling=80.0)
+    assert phase2['dispatch_p95_ms'] < 75.0
     assert phase2['done_p95_ms'] < 750.0
 
 
@@ -975,7 +960,7 @@ async def test_queue_jump_perf_matrix_by_mode(event_handler_concurrency: Literal
     assert phase2[0] >= regression_floor, (
         f'queue-jump regression: phase1={phase1[0]:.0f} phase2={phase2[0]:.0f} (required >= {regression_floor:.0f})'
     )
-    assert phase2[2] < ci_upper_ceiling(15.0, ci_ceiling=60.0)
+    assert phase2[2] < 45.0
     assert phase2[4] < 360.0
 
 
@@ -1062,7 +1047,7 @@ async def test_forwarding_chain_perf_matrix_by_mode(event_handler_concurrency: L
     assert sink_count == 1_000
     assert phase1[0] >= hard_floor
     assert phase2[0] >= regression_floor
-    assert phase2[2] < ci_upper_ceiling(40.0, ci_ceiling=120.0)
+    assert phase2[2] < 120.0
     assert phase2[4] < 1050.0
 
 
@@ -1160,7 +1145,7 @@ async def test_timeout_churn_perf_matrix_by_mode(event_handler_concurrency: Lite
     assert recovery_errors == 0
     assert recovery_phase[0] >= hard_floor
     assert recovery_phase[0] >= regression_floor
-    assert recovery_phase[2] < ci_upper_ceiling(12.0, ci_ceiling=50.0)
+    assert recovery_phase[2] < 36.0
     assert recovery_phase[4] < 70.0
 
 
@@ -1208,7 +1193,7 @@ async def test_memory_envelope_by_mode_for_capped_history(event_handler_concurre
 
     assert retained <= 60
     assert metrics[0] >= 450.0
-    assert metrics[2] < ci_upper_ceiling(10.0, ci_ceiling=40.0)
+    assert metrics[2] < 30.0
     assert metrics[4] < 60.0
     assert done_delta < done_budget
     assert gc_delta < gc_budget
@@ -1263,7 +1248,7 @@ async def test_max_history_none_single_bus_stress_matrix(event_handler_concurren
     assert history_size == 3_000
     assert phase1[0] >= hard_floor
     assert phase2[0] >= regression_floor
-    assert phase2[2] < ci_upper_ceiling(12.0, ci_ceiling=50.0)
+    assert phase2[2] < 36.0
     assert phase2[4] < 240.0
     assert done_delta < 260.0
     assert gc_delta < 220.0
@@ -1339,7 +1324,7 @@ async def test_max_history_none_forwarding_chain_stress_matrix(event_handler_con
     assert sink_hist == 1_800
     assert phase1[0] >= hard_floor
     assert phase2[0] >= regression_floor
-    assert phase2[2] < ci_upper_ceiling(15.0, ci_ceiling=60.0)
+    assert phase2[2] < 45.0
     assert phase2[4] < 300.0
     assert done_delta < 320.0
     assert gc_delta < 280.0

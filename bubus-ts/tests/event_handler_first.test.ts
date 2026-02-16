@@ -488,8 +488,8 @@ test('first: event_handler_completion is set to "first" after calling first()', 
   const event = bus.emit(TestEvent({}))
   const original = (event as any)._event_original ?? event
 
-  // before first(), completion mode defaults to 'all'
-  assert.equal(original.event_handler_completion, 'all')
+  // before first(), completion mode remains unset on the event object
+  assert.equal(original.event_handler_completion ?? null, null)
 
   const result = await event.first()
 

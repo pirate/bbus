@@ -141,8 +141,14 @@ async def test_concurrency_intersection_parallel_events_with_serial_handlers() -
 
         return f'ok-{event.token}'
 
-    bus.on(ConcurrencyIntersectionEvent, tracked_handler)
-    bus.on(ConcurrencyIntersectionEvent, tracked_handler)
+    async def tracked_handler_a(event: ConcurrencyIntersectionEvent) -> str:
+        return await tracked_handler(event)
+
+    async def tracked_handler_b(event: ConcurrencyIntersectionEvent) -> str:
+        return await tracked_handler(event)
+
+    bus.on(ConcurrencyIntersectionEvent, tracked_handler_a)
+    bus.on(ConcurrencyIntersectionEvent, tracked_handler_b)
 
     try:
         events = [bus.dispatch(ConcurrencyIntersectionEvent(token=index)) for index in range(8)]

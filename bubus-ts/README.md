@@ -195,7 +195,7 @@ emit<T extends BaseEvent>(event: T): T
 
 Behavior notes:
 
-- Per-event configuration options like `event_timeout`, `event_handler_timeout`, etc. are copied from bus defaults at dispatch time if unset
+- Per-event config fields stay on the event as provided; when unset (`null`/`undefined`), each bus resolves its own defaults at processing time.
 - If same event ends up forwarded through multiple buses, it is loop-protected using `event_path`.
 - Dispatch is synchronous and returns immediately with the same event object (`event.event_status` is initially `'pending'`).
 
@@ -279,7 +279,7 @@ Important semantics:
 - Past/future matches resolve as soon as event is dispatched. If you need the completed event, await `event.done()` or pass `{event_status: 'completed'}` to filter only for completed events.
 - If both `past` and `future` are omitted, defaults are `past: true, future: false`.
 - If both `past` and `future` are `false`, it returns `null` immediately.
-- Detailed behavior matrix is covered in `bubus-ts/tests/find.test.ts`.
+- Detailed behavior matrix is covered in `bubus-ts/tests/eventbus_find.test.ts`.
 
 #### `waitUntilIdle(timeout?)`
 
@@ -329,7 +329,7 @@ destroy(): void
 ```
 
 - `destroy()` clears handlers/history/locks and removes this bus from global weak registry.
-- `destroy()`/GC behavior is exercised in `bubus-ts/tests/eventbus.test.ts` and `bubus-ts/tests/performance.test.ts`.
+- `destroy()`/GC behavior is exercised in `bubus-ts/tests/eventbus.test.ts` and `bubus-ts/tests/eventbus_performance.test.ts`.
 
 </details>
 
@@ -364,10 +364,10 @@ API behavior and lifecycle examples:
 - `bubus-ts/examples/immediate_event_processing.ts`
 - `bubus-ts/examples/forwarding_between_busses.ts`
 - `bubus-ts/tests/eventbus.test.ts`
-- `bubus-ts/tests/find.test.ts`
-- `bubus-ts/tests/first.test.ts`
-- `bubus-ts/tests/event_bus_proxy.test.ts`
-- `bubus-ts/tests/timeout.test.ts`
+- `bubus-ts/tests/eventbus_find.test.ts`
+- `bubus-ts/tests/event_handler_first.test.ts`
+- `bubus-ts/tests/base_event_event_bus_proxy.test.ts`
+- `bubus-ts/tests/eventbus_timeout.test.ts`
 - `bubus-ts/tests/event_result.test.ts`
 
 #### Event configuration fields
@@ -416,7 +416,7 @@ done(): Promise<this>
 - If called from inside a running handler, it queue-jumps child processing immediately.
 - If called outside handler context, it waits for normal completion (or processes immediately if already next).
 - Rejects if event is not attached to a bus (`event has no bus attached`).
-- Queue-jump behavior is demonstrated in `bubus-ts/examples/immediate_event_processing.ts` and `bubus-ts/tests/event_bus_proxy.test.ts`.
+- Queue-jump behavior is demonstrated in `bubus-ts/examples/immediate_event_processing.ts` and `bubus-ts/tests/base_event_event_bus_proxy.test.ts`.
 
 #### `waitForCompletion()`
 
@@ -438,7 +438,7 @@ first(): Promise<EventResultType<this> | undefined>
 - Returns temporally first non-`undefined` successful handler result.
 - Cancels pending/running losing handlers on the same bus.
 - Returns `undefined` when no handler produces a successful non-`undefined` value.
-- Cancellation and winner-selection behavior is covered in `bubus-ts/tests/first.test.ts`.
+- Cancellation and winner-selection behavior is covered in `bubus-ts/tests/event_handler_first.test.ts`.
 
 #### `reset()`
 
@@ -463,7 +463,7 @@ EventFactory.fromJSON?.(data: unknown): TypedEvent
 - JSON format is cross-language compatible with Python implementation.
 - `event_result_type` is serialized as JSON Schema when possible and rehydrated on `fromJSON`.
 - In TypeScript-only usage, `event_result_type` can be any Zod schema shape or base type like `number | string | boolean | etc.`. For cross-language roundtrips, object-like schemas (including Python `TypedDict`/`dataclass`-style shapes) are reconstructed on Python as Pydantic models, JSON object keys are always strings, and some fine-grained string-shape constraints may be normalized between Zod and Pydantic.
-- Round-trip coverage is in `bubus-ts/tests/typed_results.test.ts` and `bubus-ts/tests/eventbus.test.ts`.
+- Round-trip coverage is in `bubus-ts/tests/event_result_typed_results.test.ts` and `bubus-ts/tests/eventbus.test.ts`.
 
 #### Advanced/internal public methods
 
@@ -646,7 +646,7 @@ Timeout resolution for each handler run:
 
 Additional timeout nuance:
 
-- `BaseEvent.event_timeout` starts as `null` unless set; dispatch applies bus default timeout when still unset.
+- `BaseEvent.event_timeout` starts as `null` unless set; each processing bus resolves its own `event_timeout` default when still unset.
 - Bus/event timeouts are outer budgets for handler execution; use `@retry({ timeout })` for per-attempt timeouts.
 
 Use `@retry` for per-handler execution timeout/retry/backoff/semaphore control. Keep bus/event timeouts as outer execution budgets.
@@ -656,11 +656,11 @@ Use `@retry` for per-handler execution timeout/retry/backoff/semaphore control. 
 Dispatch flow:
 
 1. `dispatch()` normalizes to original event and captures async context when available.
-2. Bus applies defaults and appends itself to `event_path`.
+2. Bus appends itself to `event_path` and records runtime ownership for this processing pass.
 3. Event enters `event_history`, `pending_event_queue`, and runloop starts.
 4. Runloop dequeues and calls `processEvent()`.
 5. Event-level semaphore (`event_concurrency`) is applied.
-6. Handler results are created and executed under handler-level semaphore (`event_handler_concurrency`).
+6. Handler results are created and executed under handler-level semaphore (`event_handler_concurrency`), with timeout/concurrency defaults resolved at processing time on the current bus when event fields are unset.
 7. Event completion and child completion propagate through `event_pending_bus_count` and result states.
 8. History trimming evicts completed events first; if still over limit, oldest pending events can be dropped (with warning), then cleanup runs.
 

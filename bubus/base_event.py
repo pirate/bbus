@@ -1508,8 +1508,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     def _coerce_typed_result_value(
         value: Any,
     ) -> T_EventResultType | None:
-        if isinstance(value, BaseEvent):
-            raise TypeError(f'Unexpected BaseEvent result in typed handler output: {value}')
+        # Handlers may legitimately return BaseEvent instances (for example when
+        # forwarding via bus.emit/bus.dispatch). Accessors decide via `include=`
+        # whether to filter those out; coercion should not reject them.
         return value
 
     def event_mark_complete_if_all_handlers_completed(self, current_bus: 'EventBus | None' = None) -> None:

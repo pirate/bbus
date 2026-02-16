@@ -64,6 +64,9 @@ new EventBus(name?: string, options?: {
 | `max_history_drop` | If `true`, drop oldest history entries when full; if `false`, reject new emits at limit. |
 | `middlewares` | Ordered middleware instances (or middleware classes/constructors) that receive lifecycle hooks. |
 
+Defaults are resolved at processing time on each bus, not copied onto the event at dispatch.
+When event fields are unset (`None`/`null`), the current processing bus applies its own defaults.
+
 ## Runtime state
 
 Both implementations expose equivalent runtime state:

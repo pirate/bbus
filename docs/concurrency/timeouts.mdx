@@ -5,7 +5,7 @@ description: Configure execution deadlines and slow-warning thresholds at bus, e
 
 Timeout controls operate at three levels:
 
-- Bus defaults (applies to all events/handlers unless overridden)
+- Bus defaults (resolved on each bus at processing time when event-level values are unset)
 - Per-event overrides (applies to one emitted event instance)
 - Per-handler overrides (applies to one handler registration)
 
@@ -158,6 +158,9 @@ bus.on(WorkEvent, slowHandler, {
    - effective timeout is `min(resolved_handler_timeout, event_timeout)` when both are set
    - if one is unset, the other value is used
    - if both are unset, no timeout is enforced
+
+Resolution happens at processing time on each bus.
+For forwarded events, an unset timeout/concurrency field uses the target bus defaults.
 
 ### Effective handler slow-warning threshold
 

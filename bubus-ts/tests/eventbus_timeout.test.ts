@@ -979,7 +979,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 })
 
 // =============================================================================
-// Three-level timeout cascade (mirrors Python test_handler_timeout.py)
+// Three-level timeout cascade (mirrors Python test_eventbus_timeout.py)
 //
 // This test creates a deep event hierarchy:
 //   TopEvent (250ms timeout)

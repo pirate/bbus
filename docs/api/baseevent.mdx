@@ -47,12 +47,12 @@ Common event metadata fields available in both runtimes:
 - `event_type`: event name/type key
 - `event_version`: payload version marker
 - `event_result_type`: expected handler return schema/type
-- `event_timeout`: per-event timeout override
+- `event_timeout`: per-event timeout override (`None`/`null` means use the current processing bus default)
 - `event_handler_timeout`: per-handler timeout cap override
 - `event_handler_slow_timeout`: per-handler slow warning threshold
-- `event_concurrency`: event scheduling mode override
-- `event_handler_concurrency`: handler scheduling mode override
-- `event_handler_completion`: handler completion strategy override
+- `event_concurrency`: event scheduling mode override (`None`/`null` means use the current processing bus default)
+- `event_handler_concurrency`: handler scheduling mode override (`None`/`null` means use the current processing bus default)
+- `event_handler_completion`: handler completion strategy override (`None`/`null` means use the current processing bus default)
 
 ## Runtime fields
 

@@ -15,7 +15,7 @@ def _make_bus_with_pending_event() -> tuple[EventBus, SerializableEvent, str]:
         name='SerializableBus',
         id='018f8e40-1234-7000-8000-000000001234',
         max_history_size=500,
-        max_history_drop=True,
+        max_history_drop=False,
         event_concurrency='parallel',
         event_handler_concurrency='parallel',
         event_handler_completion='first',

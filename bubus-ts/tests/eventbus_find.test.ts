@@ -64,6 +64,17 @@ test('find past history lookup is bus-scoped', async () => {
   assert.equal(found_on_b!.event_id, event_on_b.event_id)
 })
 
+test('find past result retains origin bus label in event_path', async () => {
+  const bus = new EventBus('FindOriginBus')
+
+  const dispatched = bus.dispatch(ParentEvent({}))
+  await dispatched.done()
+
+  const found_event = await bus.find(ParentEvent, { past: true, future: false })
+  assert.ok(found_event)
+  assert.equal(found_event!.event_path[0], bus.label)
+})
+
 test('find past window filters by time', async () => {
   const bus = new EventBus('FindWindowBus')
 
@@ -133,6 +144,24 @@ test('find future works with string event keys', async () => {
   const found_event = await find_promise
   assert.ok(found_event)
   assert.equal(found_event.event_type, 'ParentEvent')
+})
+
+test('find class pattern matches generic BaseEvent event_type for future lookups', async () => {
+  const bus = new EventBus('FindFutureClassPatternBus')
+
+  class DifferentNameFromClass extends BaseEvent {}
+
+  bus.on('DifferentNameFromClass', () => 'done')
+
+  const find_promise = bus.find(DifferentNameFromClass, { past: false, future: 1 })
+
+  setTimeout(() => {
+    void bus.dispatch(new BaseEvent({ event_type: 'DifferentNameFromClass' }))
+  }, 30)
+
+  const found_event = await find_promise
+  assert.ok(found_event)
+  assert.equal(found_event!.event_type, 'DifferentNameFromClass')
 })
 
 test('find future ignores past events', async () => {

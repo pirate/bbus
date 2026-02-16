@@ -1,6 +1,7 @@
 import asyncio
+from typing import Any
 
-from bubus import BaseEvent, EventBus, EventHandlerCompletionMode, EventHandlerConcurrencyMode
+from bubus import BaseEvent, EventBus, EventHandlerCompletionMode, EventHandlerConcurrencyMode, EventResult
 
 
 class CompletionEvent(BaseEvent[str]):
@@ -44,7 +45,7 @@ async def test_event_handler_completion_bus_default_first_serial() -> None:
 
     try:
         event = bus.dispatch(CompletionEvent())
-        assert event.event_handler_completion == EventHandlerCompletionMode.FIRST
+        assert event.event_handler_completion is None
 
         await event
         assert second_handler_called is False
@@ -170,7 +171,7 @@ async def test_event_first_shortcut_sets_mode_and_cancels_parallel_losers() -> N
 
     try:
         event = bus.dispatch(CompletionEvent())
-        assert event.event_handler_completion == EventHandlerCompletionMode.ALL
+        assert event.event_handler_completion is None
 
         first_value = await event.first()
 
@@ -334,6 +335,40 @@ async def test_event_first_skips_baseevent_result_and_uses_next_winner() -> None
         result = await event.first()
         assert result == 'winner'
         assert third_handler_called is False
+
+        def include_completed_values(event_result: EventResult[Any]) -> bool:
+            return (
+                event_result.status == 'completed'
+                and event_result.error is None
+                and event_result.result is not None
+            )
+        first_completed_value = await event.event_result(
+            include=include_completed_values,
+            raise_if_any=False,
+            raise_if_none=True,
+        )
+        assert isinstance(first_completed_value, ChildCompletionEvent)
+
+        values_by_handler_id = await event.event_results_by_handler_id(
+            include=include_completed_values,
+            raise_if_any=False,
+            raise_if_none=True,
+        )
+        assert any(isinstance(value, ChildCompletionEvent) for value in values_by_handler_id.values())
+
+        values_by_handler_name = await event.event_results_by_handler_name(
+            include=include_completed_values,
+            raise_if_any=False,
+            raise_if_none=True,
+        )
+        assert any(isinstance(value, ChildCompletionEvent) for value in values_by_handler_name.values())
+
+        values_list = await event.event_results_list(
+            include=include_completed_values,
+            raise_if_any=False,
+            raise_if_none=True,
+        )
+        assert any(isinstance(value, ChildCompletionEvent) for value in values_list)
     finally:
         await bus.stop()
 
@@ -369,7 +404,7 @@ class ConcurrencyEvent(BaseEvent[str]):
     pass
 
 
-async def test_event_handler_concurrency_bus_default_applied_on_dispatch() -> None:
+async def test_event_handler_concurrency_bus_default_remains_unset_on_dispatch() -> None:
     bus = EventBus(name='ConcurrencyDefaultBus', event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL)
 
     async def one_handler(_event: ConcurrencyEvent) -> str:
@@ -379,7 +414,7 @@ async def test_event_handler_concurrency_bus_default_applied_on_dispatch() -> No
 
     try:
         event = bus.dispatch(ConcurrencyEvent())
-        assert event.event_handler_concurrency == EventHandlerConcurrencyMode.PARALLEL
+        assert event.event_handler_concurrency is None
         await event
     finally:
         await bus.stop()

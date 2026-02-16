@@ -582,6 +582,16 @@ class TestSQLiteHistoryMirror:
         finally:
             await bus.stop()
 
+    def test_sqlite_history_close_is_idempotent(self, tmp_path):
+        db_path = tmp_path / 'events.sqlite'
+        middleware = SQLiteHistoryMirrorMiddleware(db_path)
+
+        middleware.close()
+        middleware.close()
+
+        with pytest.raises(sqlite3.ProgrammingError):
+            middleware._conn.execute('SELECT 1')
+
 
 class TestLoggerMiddleware:
     async def test_logger_middleware_writes_file(self, tmp_path):

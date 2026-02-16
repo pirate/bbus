@@ -559,7 +559,7 @@ class TimeoutDefaultsEvent(BaseEvent[str]):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_copies_bus_timeout_defaults_to_event_fields() -> None:
+async def test_processing_time_timeout_defaults_do_not_mutate_event_fields() -> None:
     bus = EventBus(
         name='TimeoutDefaultsCopyBus',
         event_timeout=12.0,
@@ -574,11 +574,14 @@ async def test_dispatch_copies_bus_timeout_defaults_to_event_fields() -> None:
 
     try:
         event = bus.dispatch(TimeoutDefaultsEvent())
-        assert event.event_timeout == 12.0
+        assert event.event_timeout is None
         assert event.event_handler_timeout is None
-        assert event.event_handler_slow_timeout == 56.0
-        assert getattr(event, 'event_slow_timeout', None) == 34.0
-        await event
+        assert event.event_handler_slow_timeout is None
+        assert getattr(event, 'event_slow_timeout', None) is None
+
+        completed = await event
+        handler_result = next(iter(completed.event_results.values()))
+        assert handler_result.timeout is not None and abs(handler_result.timeout - 12.0) < 1e-9
     finally:
         await bus.stop()
 

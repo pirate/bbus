@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { BaseEvent, EventBus, retry } from '../src/index.js'
+import { z } from 'zod'
 
 const ParentEvent = BaseEvent.extend('ParentEvent', {})
 const ImmediateChildEvent = BaseEvent.extend('ImmediateChildEvent', {})
@@ -1015,6 +1016,64 @@ test('BUG: queue-jump two-bus mixed: bus_a parallel, bus_b serial', async () => 
   const b1_end = log.indexOf('b1_end')
   const b2_start = log.indexOf('b2_start')
   assert.ok(b1_end < b2_start, `bus_b (serial handlers): b1 should finish before b2 starts. Got: [${log.join(', ')}]`)
+})
+
+test('forwarded event uses processing-bus defaults unless explicit overrides are set', async () => {
+  const TriggerEvent = BaseEvent.extend('QJDefaults_Trigger', {})
+  const ChildEvent = BaseEvent.extend('QJDefaults_Child', {
+    mode: z.enum(['inherited', 'override']),
+  })
+
+  const bus_a = new EventBus('QJDefaults_A', {
+    event_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
+  })
+  const bus_b = new EventBus('QJDefaults_B', {
+    event_concurrency: 'bus-serial',
+    event_handler_concurrency: 'parallel',
+  })
+
+  const log: string[] = []
+
+  bus_b.on(ChildEvent, async (event: InstanceType<typeof ChildEvent>) => {
+    log.push(`${event.mode}:b1_start`)
+    await delay(15)
+    log.push(`${event.mode}:b1_end`)
+  })
+  bus_b.on(ChildEvent, async (event: InstanceType<typeof ChildEvent>) => {
+    log.push(`${event.mode}:b2_start`)
+    await delay(5)
+    log.push(`${event.mode}:b2_end`)
+  })
+
+  bus_a.on(TriggerEvent, async (event: InstanceType<typeof TriggerEvent>) => {
+    const inherited = event.bus?.emit(ChildEvent({ mode: 'inherited', event_timeout: null }))!
+    bus_b.dispatch(inherited)
+    await inherited.done()
+
+    const override = event.bus?.emit(
+      ChildEvent({
+        mode: 'override',
+        event_timeout: null,
+        event_handler_concurrency: 'serial',
+      })
+    )!
+    bus_b.dispatch(override)
+    await override.done()
+  })
+
+  const top = bus_a.dispatch(TriggerEvent({ event_timeout: null }))
+  await top.done()
+  await bus_a.waitUntilIdle()
+  await bus_b.waitUntilIdle()
+
+  const inherited_b1_end = log.indexOf('inherited:b1_end')
+  const inherited_b2_start = log.indexOf('inherited:b2_start')
+  assert.ok(inherited_b2_start < inherited_b1_end, `inherited defaults should use bus_b parallel concurrency. Got: [${log.join(', ')}]`)
+
+  const override_b1_end = log.indexOf('override:b1_end')
+  const override_b2_start = log.indexOf('override:b2_start')
+  assert.ok(override_b1_end < override_b2_start, `explicit override should force serial handler concurrency. Got: [${log.join(', ')}]`)
 })
 
 // =============================================================================

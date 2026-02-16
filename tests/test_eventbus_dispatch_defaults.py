@@ -20,7 +20,7 @@ class HandlerOverrideEvent(BaseEvent[str]):
     event_handler_completion: EventHandlerCompletionMode | None = EventHandlerCompletionMode.ALL
 
 
-async def test_event_concurrency_bus_default_and_none_propagation() -> None:
+async def test_event_concurrency_remains_unset_on_dispatch_and_resolves_during_processing() -> None:
     bus = EventBus(name='EventConcurrencyDefaultBus', event_concurrency='parallel')
 
     async def handler(_event: BaseEvent[str]) -> str:
@@ -31,8 +31,8 @@ async def test_event_concurrency_bus_default_and_none_propagation() -> None:
         implicit = bus.dispatch(PropagationEvent())
         explicit_none = bus.dispatch(PropagationEvent(event_concurrency=None))
 
-        assert implicit.event_concurrency == 'parallel'
-        assert explicit_none.event_concurrency == 'parallel'
+        assert implicit.event_concurrency is None
+        assert explicit_none.event_concurrency is None
 
         await implicit
         await explicit_none
@@ -55,7 +55,7 @@ async def test_event_concurrency_class_override_beats_bus_default() -> None:
         await bus.stop()
 
 
-async def test_handler_defaults_propagate_when_event_values_are_missing_or_none() -> None:
+async def test_handler_defaults_remain_unset_on_dispatch_and_resolve_during_processing() -> None:
     bus = EventBus(
         name='HandlerDefaultsBus',
         event_handler_concurrency='parallel',
@@ -75,10 +75,10 @@ async def test_handler_defaults_propagate_when_event_values_are_missing_or_none(
             )
         )
 
-        assert implicit.event_handler_concurrency == 'parallel'
-        assert implicit.event_handler_completion == 'first'
-        assert explicit_none.event_handler_concurrency == 'parallel'
-        assert explicit_none.event_handler_completion == 'first'
+        assert implicit.event_handler_concurrency is None
+        assert implicit.event_handler_completion is None
+        assert explicit_none.event_handler_concurrency is None
+        assert explicit_none.event_handler_completion is None
 
         await implicit
         await explicit_none

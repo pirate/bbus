@@ -177,13 +177,27 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   // Resolve handler timeout in seconds using precedence: handler -> event -> bus defaults.
   get handler_timeout(): number | null {
     const original = this.event._event_original ?? this.event
+    const resolved_event_timeout = original.event_timeout ?? this.bus.event_timeout
+
+    let resolved_handler_timeout: number | null
     if (this.handler.handler_timeout !== undefined) {
-      return this.handler.handler_timeout
+      resolved_handler_timeout = this.handler.handler_timeout
+    } else if (original.event_handler_timeout !== undefined) {
+      resolved_handler_timeout = original.event_handler_timeout
+    } else {
+      resolved_handler_timeout = this.bus.event_timeout
     }
-    if (original.event_handler_timeout !== undefined) {
-      return original.event_handler_timeout
+
+    if (resolved_handler_timeout === null && resolved_event_timeout === null) {
+      return null
     }
-    return original.event_timeout ?? null
+    if (resolved_handler_timeout === null) {
+      return resolved_event_timeout
+    }
+    if (resolved_event_timeout === null) {
+      return resolved_handler_timeout
+    }
+    return Math.min(resolved_handler_timeout, resolved_event_timeout)
   }
 
   // Resolve slow handler warning threshold in seconds using precedence: handler -> event -> bus defaults.
@@ -311,12 +325,13 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       this._lock.exitHandlerRun()
     }
 
-    const slow_handler_warning_timer = this.createSlowHandlerWarningTimer(this.handler_timeout)
+    let slow_handler_warning_timer: ReturnType<typeof setTimeout> | null = null
     // if the result is already in an error or completed state, exit early
     if (this.status === 'error' || this.status === 'completed') {
       return
     }
 
+    slow_handler_warning_timer = this.createSlowHandlerWarningTimer(this.handler_timeout)
     this._lock = handler_lock
     await this.bus.locks.withHandlerExecutionContext(this, async () => {
       await runWithAsyncContext(event.eventGetDispatchContext() ?? null, async () => {

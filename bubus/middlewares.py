@@ -8,7 +8,7 @@ import logging
 import sqlite3
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 from bubus.base_event import BaseEvent, EventResult, EventStatus
 from bubus.event_handler import EventHandler
@@ -257,7 +257,7 @@ class AutoErrorEventMiddleware(EventBusMiddleware):
                 )
             )
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to emit auto error event for %s: %s', eventbus, event.event_id, exc)
+            logger.exception('❌ %s Failed to emit auto error event for %s: %s', eventbus, event.event_id, exc)
 
 
 class AutoReturnEventMiddleware(EventBusMiddleware):
@@ -282,7 +282,7 @@ class AutoReturnEventMiddleware(EventBusMiddleware):
         try:
             eventbus.dispatch(AutoReturnEvent(event_type=f'{event.event_type}ResultEvent', data=result_value))
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to emit auto result event for %s: %s', eventbus, event.event_id, exc)
+            logger.exception('❌ %s Failed to emit auto result event for %s: %s', eventbus, event.event_id, exc)
 
 
 class AutoHandlerChangeEventMiddleware(EventBusMiddleware):
@@ -296,7 +296,7 @@ class AutoHandlerChangeEventMiddleware(EventBusMiddleware):
             else:
                 eventbus.dispatch(BusHandlerUnregisteredEvent(handler=handler_snapshot))
         except Exception as exc:  # pragma: no cover
-            logger.error(
+            logger.exception(
                 '❌ %s Failed to emit auto handler change event for handler %s: %s(%r)',
                 eventbus,
                 handler.id,
@@ -320,7 +320,7 @@ class WALEventBusMiddleware(EventBusMiddleware):
             event_json = event.model_dump_json()  # pyright: ignore[reportUnknownMemberType]
             await asyncio.to_thread(self._write_line, event_json + '\n')
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to save event %s to WAL: %s', eventbus, event.event_id, exc)
+            logger.exception('❌ %s Failed to save event %s to WAL: %s', eventbus, event.event_id, exc)
 
     def _write_line(self, line: str) -> None:
         with self._lock:
@@ -366,11 +366,27 @@ class SQLiteHistoryMirrorMiddleware(EventBusMiddleware):
 
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False, isolation_level=None)
+        self._closed = False
         self._init_db()
+
+    def close(self) -> None:
+        """Close the SQLite connection; safe to call multiple times."""
+        with self._lock:
+            if self._closed:
+                return
+            self._conn.close()
+            self._closed = True
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        self.close()
+        return False
 
     def __del__(self):
         try:
-            self._conn.close()
+            self.close()
         except Exception:
             pass
 

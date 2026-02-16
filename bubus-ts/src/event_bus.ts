@@ -314,17 +314,18 @@ export class EventBus {
     pending_entries: Array<{
       handler: EventHandler
       result: EventResult
-    }>
+    }>,
+    timeout_seconds: number
   ): EventHandlerTimeoutError {
     const timeout_anchor =
       pending_entries.find((entry) => entry.result.status === 'started') ??
       pending_entries.find((entry) => entry.result.status === 'pending') ??
       pending_entries[0]!
     return new EventHandlerTimeoutError(
-      `${this.toString()}.on(${event.toString()}, ${timeout_anchor.result.handler.toString()}) timed out after ${event.event_timeout}s`,
+      `${this.toString()}.on(${event.toString()}, ${timeout_anchor.result.handler.toString()}) timed out after ${timeout_seconds}s`,
       {
         event_result: timeout_anchor.result,
-        timeout_seconds: event.event_timeout ?? null,
+        timeout_seconds,
       }
     )
   }
@@ -335,13 +336,14 @@ export class EventBus {
       handler: EventHandler
       result: EventResult
     }>,
+    event_timeout: number | null,
     fn: () => Promise<void>
   ): Promise<void> {
     try {
-      if (event.event_timeout === null || pending_entries.length === 0) {
+      if (event_timeout === null || pending_entries.length === 0) {
         await fn()
       } else {
-        await withTimeout(event.event_timeout, () => this._createEventTimeoutError(event, pending_entries), fn)
+        await withTimeout(event_timeout, () => this._createEventTimeoutError(event, pending_entries, event_timeout), fn)
       }
     } catch (error) {
       if (error instanceof EventHandlerTimeoutError) {
@@ -685,19 +687,6 @@ export class EventBus {
       // because events may be handled async in a separate context than the dispatch site
       original_event.eventSetDispatchContext(captureAsyncContext())
     }
-    if (original_event.event_timeout === null) {
-      original_event.event_timeout = this.event_timeout
-    }
-    if (original_event.event_concurrency === null || original_event.event_concurrency === undefined) {
-      original_event.event_concurrency = this.event_concurrency
-    }
-    if (original_event.event_handler_concurrency === null || original_event.event_handler_concurrency === undefined) {
-      original_event.event_handler_concurrency = this.event_handler_concurrency_default
-    }
-    if (original_event.event_handler_completion === null || original_event.event_handler_completion === undefined) {
-      original_event.event_handler_completion = this.event_handler_completion_default
-    }
-
     if (original_event.event_path.includes(this.label) || this.hasProcessedEvent(original_event)) {
       return this.getEventProxyScopedToThisBus(original_event) as T
     }
@@ -933,6 +922,7 @@ export class EventBus {
       }
       event.markStarted()
       pending_entries = event.eventCreatePendingHandlerResults(this)
+      const resolved_event_timeout = event.event_timeout ?? this.event_timeout
       const scoped_event = this.getEventProxyScopedToThisBus(event)
       if (this.middlewares.length > 0) {
         for (const entry of pending_entries) {
@@ -942,7 +932,7 @@ export class EventBus {
       await this.locks.withEventLock(
         event,
         () =>
-          this._runHandlersWithTimeout(event, pending_entries, () =>
+          this._runHandlersWithTimeout(event, pending_entries, resolved_event_timeout, () =>
             withSlowMonitor(event.createSlowEventWarningTimer(), () => scoped_event.runHandlers(pending_entries))
           ),
         options

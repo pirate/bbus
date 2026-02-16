@@ -775,19 +775,6 @@ class EventBus:
             self._schedule_middleware_task(task)
 
     @staticmethod
-    def _event_field_is_defined(event: BaseEvent[Any], field_name: str) -> bool:
-        if field_name in event.model_fields_set:
-            return True
-        extras = event.model_extra
-        if isinstance(extras, dict) and field_name in extras:
-            return True
-        event_field = event.__class__.model_fields.get(field_name)
-        base_field = BaseEvent.model_fields.get(field_name)
-        if event_field is None or base_field is None:
-            return False
-        return event_field.default != base_field.default
-
-    @staticmethod
     def _resolve_event_slow_timeout(event: BaseEvent[Any], eventbus: 'EventBus') -> float | None:
         event_slow_timeout = event.event_slow_timeout
         if event_slow_timeout is not None:
@@ -798,9 +785,9 @@ class EventBus:
     def _resolve_handler_slow_timeout(event: BaseEvent[Any], handler: EventHandler, eventbus: 'EventBus') -> float | None:
         if 'handler_slow_timeout' in handler.model_fields_set:
             return handler.handler_slow_timeout
-        if EventBus._event_field_is_defined(event, 'event_handler_slow_timeout'):
+        if event.event_handler_slow_timeout is not None:
             return event.event_handler_slow_timeout
-        if EventBus._event_field_is_defined(event, 'event_slow_timeout'):
+        if event.event_slow_timeout is not None:
             return event.event_slow_timeout
         return eventbus.event_handler_slow_timeout
 
@@ -813,12 +800,12 @@ class EventBus:
     ) -> float | None:
         if 'handler_timeout' in handler.model_fields_set:
             resolved_handler_timeout = handler.handler_timeout
-        elif EventBus._event_field_is_defined(event, 'event_handler_timeout'):
+        elif event.event_handler_timeout is not None:
             resolved_handler_timeout = event.event_handler_timeout
         else:
             resolved_handler_timeout = eventbus.event_timeout
 
-        resolved_event_timeout = event.event_timeout
+        resolved_event_timeout = event.event_timeout if event.event_timeout is not None else eventbus.event_timeout
 
         if resolved_handler_timeout is None and resolved_event_timeout is None:
             resolved_timeout = None
@@ -1069,31 +1056,6 @@ class EventBus:
         assert event.event_id, 'Missing event.event_id: UUIDStr = uuid7str()'
         assert event.event_created_at, 'Missing event.event_created_at: datetime = datetime.now(UTC)'
         assert event.event_type and event.event_type.isidentifier(), 'Missing event.event_type: str'
-
-        # Apply bus default timeout only when event timeout is not explicitly set.
-        if event.event_timeout is None and not self._event_field_is_defined(event, 'event_timeout'):
-            event.event_timeout = self.event_timeout
-
-        # Copy bus-level slow timeout defaults only when the event has no own overrides.
-        has_event_slow_override = self._event_field_is_defined(event, 'event_slow_timeout')
-        if not has_event_slow_override:
-            setattr(event, 'event_slow_timeout', self.event_slow_timeout)
-
-        has_handler_slow_override = self._event_field_is_defined(event, 'event_handler_slow_timeout')
-        if not has_handler_slow_override and not has_event_slow_override:
-            event.event_handler_slow_timeout = self.event_handler_slow_timeout
-
-        # Default per-event event concurrency from the bus when absent or None.
-        if event.event_concurrency is None:
-            event.event_concurrency = self.event_concurrency
-
-        # Default per-event handler concurrency from the bus when absent.
-        if event.event_handler_concurrency is None:
-            event.event_handler_concurrency = self.event_handler_concurrency
-
-        # Default per-event completion mode from the bus when absent.
-        if event.event_handler_completion is None:
-            event.event_handler_completion = self.event_handler_completion
 
         # Automatically set event_parent_id from context when emitting a NEW child event.
         # If we are forwarding the same event object from inside its own handler, keep the
@@ -2043,7 +2005,9 @@ class EventBus:
         # Get applicable handlers
         applicable_handlers = self.get_handlers_for_event(event)
         slow_event_monitor_factory = self._create_slow_event_warning_timer(event)
-        resolved_event_timeout = timeout if timeout is not None else event.event_timeout
+        resolved_event_timeout = (
+            timeout if timeout is not None else (event.event_timeout if event.event_timeout is not None else self.event_timeout)
+        )
 
         await self.on_event_change(event, EventStatus.PENDING)
 

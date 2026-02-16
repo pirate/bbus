@@ -10,15 +10,6 @@ const delay = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
-const PropagationEvent = BaseEvent.extend('PropagationEvent', {})
-const ConcurrencyOverrideEvent = BaseEvent.extend('ConcurrencyOverrideEvent', {
-  event_concurrency: 'global-serial',
-})
-const HandlerOverrideEvent = BaseEvent.extend('HandlerOverrideEvent', {
-  event_handler_concurrency: 'serial',
-  event_handler_completion: 'all',
-})
-
 // ─── Constructor defaults ────────────────────────────────────────────────────
 
 test('EventBus initializes with correct defaults', async () => {
@@ -98,159 +89,6 @@ test('EventBus auto-generates name when not provided', () => {
   assert.equal(bus.name, 'EventBus')
 })
 
-test('event_concurrency bus default applies for missing and null event values', async () => {
-  const bus = new EventBus('EventConcurrencyDefaultBus', { event_concurrency: 'parallel' })
-  bus.on(PropagationEvent, async () => 'ok')
-
-  const implicit = bus.dispatch(PropagationEvent({}))
-  const explicit_null = bus.dispatch(PropagationEvent({ event_concurrency: null }))
-
-  assert.equal(implicit.event_concurrency, 'parallel')
-  assert.equal(explicit_null.event_concurrency, 'parallel')
-
-  await implicit.done()
-  await explicit_null.done()
-})
-
-test('event_concurrency class override beats bus default', async () => {
-  const bus = new EventBus('EventConcurrencyOverrideBus', { event_concurrency: 'parallel' })
-  bus.on(ConcurrencyOverrideEvent, async () => 'ok')
-
-  const event = bus.dispatch(ConcurrencyOverrideEvent({}))
-  assert.equal(event.event_concurrency, 'global-serial')
-  await event.done()
-})
-
-test('handler defaults propagate when event values are missing or null', async () => {
-  const bus = new EventBus('HandlerDefaultsBus', {
-    event_handler_concurrency: 'parallel',
-    event_handler_completion: 'first',
-  })
-  bus.on(PropagationEvent, async () => 'ok')
-
-  const implicit = bus.dispatch(PropagationEvent({}))
-  const explicit_null = bus.dispatch(
-    PropagationEvent({
-      event_handler_concurrency: null,
-      event_handler_completion: null,
-    })
-  )
-
-  assert.equal(implicit.event_handler_concurrency, 'parallel')
-  assert.equal(implicit.event_handler_completion, 'first')
-  assert.equal(explicit_null.event_handler_concurrency, 'parallel')
-  assert.equal(explicit_null.event_handler_completion, 'first')
-
-  await implicit.done()
-  await explicit_null.done()
-})
-
-test('handler class override beats bus defaults', async () => {
-  const bus = new EventBus('HandlerDefaultsOverrideBus', {
-    event_handler_concurrency: 'parallel',
-    event_handler_completion: 'first',
-  })
-  bus.on(HandlerOverrideEvent, async () => 'ok')
-
-  const event = bus.dispatch(HandlerOverrideEvent({}))
-  assert.equal(event.event_handler_concurrency, 'serial')
-  assert.equal(event.event_handler_completion, 'all')
-  await event.done()
-})
-
-test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
-  const bus = new EventBus('SerializableBus', {
-    id: '018f8e40-1234-7000-8000-000000001234',
-    max_history_size: 500,
-    max_history_drop: false,
-    event_concurrency: 'parallel',
-    event_handler_concurrency: 'parallel',
-    event_handler_completion: 'first',
-    event_timeout: null,
-    event_handler_slow_timeout: 12,
-    event_slow_timeout: 34,
-    event_handler_detect_file_paths: false,
-  })
-  const SerializableEvent = BaseEvent.extend('SerializableEvent', {})
-
-  bus.on(SerializableEvent, async () => {
-    await delay(20)
-    return 'ok'
-  })
-
-  // keep one event pending so queue/in-flight related state is serializable
-  const release_pause = bus.locks.requestRunloopPause()
-  const pending_event = bus.dispatch(SerializableEvent({ event_timeout: 11 }))
-  await Promise.resolve()
-
-  assert.equal(bus.toString(), 'SerializableBus#1234')
-
-  const json = bus.toJSON()
-  assert.equal(json.id, '018f8e40-1234-7000-8000-000000001234')
-  assert.equal(json.name, 'SerializableBus')
-  assert.equal(json.max_history_size, 500)
-  assert.equal(json.max_history_drop, false)
-  assert.equal(json.event_concurrency, 'parallel')
-  assert.equal(json.event_handler_concurrency, 'parallel')
-  assert.equal(json.event_handler_completion, 'first')
-  assert.equal(json.event_timeout, null)
-  assert.equal(json.event_handler_slow_timeout, 12)
-  assert.equal(json.event_slow_timeout, 34)
-  assert.equal(json.event_handler_detect_file_paths, false)
-  assert.equal(Object.keys(json.handlers).length, 1)
-  assert.equal(Object.keys(json.handlers_by_key).length, 1)
-  assert.equal(Array.isArray(json.handlers_by_key.SerializableEvent), true)
-  assert.equal(Object.keys(json.event_history).length, 1)
-  assert.equal((json.event_history[pending_event.event_id] as Record<string, unknown>).event_id, pending_event.event_id)
-  assert.equal(json.pending_event_queue.length, 1)
-  assert.equal(json.pending_event_queue[0], pending_event.event_id)
-
-  const restored = EventBus.fromJSON(json)
-  assert.equal(restored.id, '018f8e40-1234-7000-8000-000000001234')
-  assert.equal(restored.name, 'SerializableBus')
-  assert.equal(restored.max_history_size, 500)
-  assert.equal(restored.max_history_drop, false)
-  assert.equal(restored.event_concurrency, 'parallel')
-  assert.equal(restored.event_handler_concurrency_default, 'parallel')
-  assert.equal(restored.event_handler_completion_default, 'first')
-  assert.equal(restored.event_timeout, null)
-  assert.equal(restored.event_handler_slow_timeout, 12)
-  assert.equal(restored.event_slow_timeout, 34)
-  assert.equal(restored.event_handler_detect_file_paths, false)
-  assert.equal(restored.handlers.size, 1)
-  assert.equal(restored.handlers_by_key.get('SerializableEvent')?.length, 1)
-  assert.equal(restored.event_history.size, 1)
-  assert.equal(restored.pending_event_queue.length, 1)
-  assert.equal(restored.pending_event_queue[0].event_id, pending_event.event_id)
-  assert.equal(restored.runloop_running, false)
-
-  release_pause()
-  await pending_event.done()
-})
-
-test('EventBus.fromJSON recreates missing handler entries from event_result metadata', async () => {
-  const bus = new EventBus('MissingHandlerHydrationBus', {
-    event_handler_detect_file_paths: false,
-  })
-  const SerializableEvent = BaseEvent.extend('MissingHandlerHydrationEvent', {})
-
-  bus.on(SerializableEvent, () => 'ok')
-  const event = bus.dispatch(SerializableEvent({}))
-  await event.done()
-
-  const handler_id = Array.from(event.event_results.values())[0].handler_id
-  const json = bus.toJSON()
-  json.handlers = {}
-  json.handlers_by_key = {}
-
-  const restored = EventBus.fromJSON(json)
-  const restored_event = restored.event_history.get(event.event_id)
-  assert.ok(restored_event)
-  assert.ok(restored.handlers.has(handler_id))
-  const restored_result = restored_event!.event_results.get(handler_id)
-  assert.ok(restored_result)
-  assert.equal(restored_result!.handler, restored.handlers.get(handler_id))
-})
 
 test('EventBus exposes locks API surface', () => {
   const bus = new EventBus('GateSurfaceBus')
@@ -857,20 +695,23 @@ test('many events dispatched concurrently all complete', async () => {
 
 // ─── event_timeout default application ───────────────────────────────────────
 
-test('dispatch applies bus event_timeout when event has null timeout', async () => {
+test('dispatch leaves event_timeout unset and processing uses bus timeout default', async () => {
   const bus = new EventBus('TimeoutDefaultBus', {
     max_history_size: 100,
-    event_timeout: 42,
+    event_timeout: 0.01,
   })
   const TEvent = BaseEvent.extend('TEvent', {})
+  bus.on(TEvent, async () => {
+    await delay(30)
+  })
 
   const event = bus.dispatch(TEvent({}))
   const original = event._event_original ?? event
 
-  // The bus should have applied its default timeout
-  assert.equal(original.event_timeout, 42)
+  assert.equal(original.event_timeout, null)
 
-  await bus.waitUntilIdle()
+  await event.done()
+  assert.equal(original.event_errors.length, 1)
 })
 
 test('event with explicit timeout is not overridden by bus default', async () => {
@@ -1024,94 +865,6 @@ test('unreferenced buses with event history are garbage collected without destro
     heap_after <= heap_before + 20 * 1024 * 1024,
     `heap should return near baseline after GC, before=${(heap_before / 1024 / 1024).toFixed(1)}MB after=${(heap_after / 1024 / 1024).toFixed(1)}MB`
   )
-})
-
-// ─── off() handler deregistration ────────────────────────────────────────────
-
-test('off() removes a handler so it no longer fires', async () => {
-  const bus = new EventBus('OffBus', { max_history_size: 100 })
-  const OffEvent = BaseEvent.extend('OffEvent', {})
-  let call_count = 0
-
-  const handler = () => {
-    call_count += 1
-  }
-
-  bus.on(OffEvent, handler)
-  bus.dispatch(OffEvent({}))
-  await bus.waitUntilIdle()
-  assert.equal(call_count, 1)
-
-  bus.off(OffEvent, handler)
-  bus.dispatch(OffEvent({}))
-  await bus.waitUntilIdle()
-  assert.equal(call_count, 1, 'handler should not fire after off()')
-})
-
-test('off() removes a handler by handler_id string', async () => {
-  const bus = new EventBus('OffByIdBus', { max_history_size: 100 })
-  const OffIdEvent = BaseEvent.extend('OffIdEvent', {})
-  let call_count = 0
-
-  bus.on(OffIdEvent, function my_handler() {
-    call_count += 1
-  })
-
-  // Dispatch once so we can find the handler_id from the event results
-  const event1 = bus.dispatch(OffIdEvent({}))
-  await bus.waitUntilIdle()
-  assert.equal(call_count, 1)
-
-  // Get the handler_id from the event's results
-  const results = Array.from(event1.event_results.values())
-  assert.equal(results.length, 1, 'should have exactly one handler result')
-  const handler_id = results[0].handler_id
-  assert.ok(handler_id, 'handler_id should exist')
-
-  // Remove by handler_id string
-  bus.off(OffIdEvent, handler_id)
-
-  // Dispatch again — handler should NOT fire
-  bus.dispatch(OffIdEvent({}))
-  await bus.waitUntilIdle()
-  assert.equal(call_count, 1, 'handler should not fire after off() by handler_id')
-})
-
-test('off() with no handler removes all handlers for that event', async () => {
-  const bus = new EventBus('OffAllBus', { max_history_size: 100 })
-  const OffAllEvent = BaseEvent.extend('OffAllEvent', {})
-  const OtherEvent = BaseEvent.extend('OffAllOther', {})
-  let call_count_a = 0
-  let call_count_b = 0
-  let other_count = 0
-
-  bus.on(OffAllEvent, () => {
-    call_count_a += 1
-  })
-  bus.on(OffAllEvent, () => {
-    call_count_b += 1
-  })
-  bus.on(OtherEvent, () => {
-    other_count += 1
-  })
-
-  bus.dispatch(OffAllEvent({}))
-  await bus.waitUntilIdle()
-  assert.equal(call_count_a, 1)
-  assert.equal(call_count_b, 1)
-
-  // Remove ALL handlers for OffAllEvent
-  bus.off(OffAllEvent)
-
-  bus.dispatch(OffAllEvent({}))
-  bus.dispatch(OtherEvent({}))
-  await bus.waitUntilIdle()
-
-  // Neither OffAllEvent handler should fire
-  assert.equal(call_count_a, 1, 'handler A should not fire after off(event)')
-  assert.equal(call_count_b, 1, 'handler B should not fire after off(event)')
-  // OtherEvent handler should still work
-  assert.equal(other_count, 1, 'unrelated handler should still fire')
 })
 
 // Consolidated from tests/coverage_gaps.test.ts

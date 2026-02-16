@@ -103,3 +103,39 @@ test('BaseEvent fromJSON preserves nullable parent/emitted metadata', () => {
   assert.equal(roundtrip.event_parent_id, null)
   assert.equal(roundtrip.event_emitted_by_handler_id, null)
 })
+
+test('BaseEvent status hooks capture bus reference before event gc', async () => {
+  const HookEvent = BaseEvent.extend('BaseEventHookCaptureEvent', {})
+
+  class HookCaptureBus extends EventBus {
+    scheduled: Array<() => void> = []
+    seen_statuses: string[] = []
+
+    scheduleMicrotask(fn: () => void): void {
+      this.scheduled.push(fn)
+    }
+
+    async onEventChange(_event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
+      this.seen_statuses.push(status)
+    }
+  }
+
+  const bus = new HookCaptureBus('BaseEventHookCaptureBus')
+  const event = HookEvent({})
+  event.bus = bus
+
+  event.markStarted()
+  event.markCompleted()
+  event._gc()
+
+  assert.equal(bus.scheduled.length, 2)
+  assert.doesNotThrow(() => {
+    for (const callback of bus.scheduled) {
+      callback()
+    }
+  })
+  await Promise.resolve()
+  assert.deepEqual(bus.seen_statuses, ['started', 'completed'])
+
+  bus.destroy()
+})

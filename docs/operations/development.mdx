@@ -35,8 +35,8 @@ uv run pytest -vxs --full-trace tests/
 # Run specific test file
 uv run pytest tests/test_eventbus.py
 
-# Run Python perf suite
-uv run tests/performance_runtime.py
+# Run Python perf test suite
+uv run pytest tests/test_eventbus_performance.py -vxs
 
 # Run the entire lint+test+examples+perf suite for both python and ts
 ./test.sh

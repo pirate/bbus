@@ -106,7 +106,7 @@ Use these concrete call paths to constrain refactor changes:
 
 1. Snapshot current behavior with existing tests:
 - `tests/test_event_handler.py`
-- `tests/test_handler_timeout.py`
+- `tests/test_eventbus_timeout.py`
 - `tests/test_eventbus_dispatch_contextvars.py`
 - `tests/test_eventbus_dispatch_parent_tracking.py`
 - `tests/test_eventbus.py` (middleware sections)
@@ -256,11 +256,11 @@ Run:
 ```bash
 python -m pytest tests/test_eventbus.py -xvs
 python -m pytest tests/test_event_handler.py -xvs
-python -m pytest tests/test_handler_timeout.py -xvs
+python -m pytest tests/test_eventbus_timeout.py -xvs
 python -m pytest tests/test_events_suck.py -xvs
 python -m pytest tests/test_eventbus_dispatch_contextvars.py -xvs
 python -m pytest tests/test_eventbus_dispatch_parent_tracking.py -xvs
-python -m pytest tests/test_stress_20k_events.py -xvs
+python -m pytest tests/test_eventbus_performance.py -xvs
 ```
 
 Add/adjust tests for:

@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from bubus import BaseEvent, EventBus
+from bubus import BaseEvent, EventBus, EventHandlerConcurrencyMode
 
 
 class RelayEvent(BaseEvent[str]):
@@ -11,6 +11,16 @@ class RelayEvent(BaseEvent[str]):
 
 class SelfParentForwardEvent(BaseEvent[str]):
     """Event used to guard against self-parent cycles during forwarding."""
+
+
+class ForwardedDefaultsTriggerEvent(BaseEvent[None]):
+    """Event that emits forwarded children to validate per-bus default resolution."""
+
+
+class ForwardedDefaultsChildEvent(BaseEvent[str]):
+    """Forwarded child event used to validate local-default vs explicit-override behavior."""
+
+    mode: str
 
 
 def _dump_bus_state(buses: list[EventBus]) -> str:
@@ -105,3 +115,62 @@ async def test_forwarding_same_event_does_not_set_self_parent_id():
     finally:
         await origin.stop(clear=True)
         await target.stop(clear=True)
+
+
+@pytest.mark.asyncio
+async def test_forwarded_event_uses_processing_bus_defaults_unless_overridden():
+    bus_a = EventBus(name='ForwardDefaultsA', event_handler_concurrency='serial')
+    bus_b = EventBus(name='ForwardDefaultsB', event_handler_concurrency='parallel')
+    log: list[str] = []
+
+    async def handler_1(event: ForwardedDefaultsChildEvent) -> str:
+        log.append(f'{event.mode}:b1_start')
+        await asyncio.sleep(0.015)
+        log.append(f'{event.mode}:b1_end')
+        return 'b1'
+
+    async def handler_2(event: ForwardedDefaultsChildEvent) -> str:
+        log.append(f'{event.mode}:b2_start')
+        await asyncio.sleep(0.005)
+        log.append(f'{event.mode}:b2_end')
+        return 'b2'
+
+    async def trigger(event: ForwardedDefaultsTriggerEvent) -> None:
+        assert event.event_bus is not None
+        inherited = event.event_bus.emit(ForwardedDefaultsChildEvent(mode='inherited', event_timeout=None))
+        bus_b.dispatch(inherited)
+        await inherited
+
+        overridden = event.event_bus.emit(
+            ForwardedDefaultsChildEvent(
+                mode='override',
+                event_timeout=None,
+                event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
+            )
+        )
+        bus_b.dispatch(overridden)
+        await overridden
+
+    bus_b.on(ForwardedDefaultsChildEvent, handler_1)
+    bus_b.on(ForwardedDefaultsChildEvent, handler_2)
+    bus_a.on(ForwardedDefaultsTriggerEvent, trigger)
+
+    try:
+        top = bus_a.dispatch(ForwardedDefaultsTriggerEvent())
+        await top
+        await asyncio.gather(bus_a.wait_until_idle(), bus_b.wait_until_idle())
+
+        inherited_b1_end = log.index('inherited:b1_end')
+        inherited_b2_start = log.index('inherited:b2_start')
+        assert inherited_b2_start < inherited_b1_end, (
+            f'inherited defaults should use bus_b parallel handler concurrency; got log: {log}'
+        )
+
+        override_b1_end = log.index('override:b1_end')
+        override_b2_start = log.index('override:b2_start')
+        assert override_b1_end < override_b2_start, (
+            f'explicit event override should force serial handler concurrency; got log: {log}'
+        )
+    finally:
+        await bus_a.stop(clear=True)
+        await bus_b.stop(clear=True)

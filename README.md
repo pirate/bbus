@@ -787,9 +787,9 @@ EventBus(
 **Parameters:**
 
 - `name`: Optional unique name for the bus (auto-generated if not provided)
-- `event_handler_concurrency`: Default handler execution mode for events on this bus: `'serial'` (default) or `'parallel'` (copied onto `event.event_handler_concurrency` at emit time unless the event sets its own value)
+- `event_handler_concurrency`: Default handler execution mode for events on this bus: `'serial'` (default) or `'parallel'` (resolved at processing time when `event.event_handler_concurrency` is unset)
 - `event_handler_completion`: Handler completion mode for each event: `'all'` (default, wait for all handlers) or `'first'` (complete once first successful non-`None` result is available)
-- `event_timeout`: Default per-event timeout in seconds applied at emit time when `event.event_timeout` is `None`
+- `event_timeout`: Default per-event timeout in seconds resolved at processing time when `event.event_timeout` is `None`
 - `event_slow_timeout`: Default slow-event warning threshold in seconds
 - `event_handler_slow_timeout`: Default slow-handler warning threshold in seconds
 - `event_handler_detect_file_paths`: Whether to auto-detect handler source file paths at registration time (slightly slower when enabled)
@@ -938,11 +938,11 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     event_type: str              # Defaults to class name e.g. 'BaseEvent'
     event_result_type: Any | None  # Pydantic model/python type to validate handler return values, defaults to T_EventResultType
     event_version: str           # Defaults to '0.0.1' (override per class/instance for event payload versioning)
-    event_timeout: float | None = None # Event timeout in seconds (bus default applied at emit time if None)
+    event_timeout: float | None = None # Event timeout in seconds (bus default resolved at processing time if None)
     event_handler_timeout: float | None = None # Optional per-event handler timeout cap in seconds
     event_handler_slow_timeout: float | None = None # Optional per-event slow-handler warning threshold
-    event_handler_concurrency: Literal['serial', 'parallel'] = 'serial'  # handler scheduling strategy for this event
-    event_handler_completion: Literal['all', 'first'] = 'all'  # completion strategy for this event's handlers
+    event_handler_concurrency: Literal['serial', 'parallel'] | None = None  # optional per-event handler scheduling override (None -> bus default at processing time)
+    event_handler_completion: Literal['all', 'first'] | None = None  # optional per-event completion override (None -> bus default at processing time)
 
     # runtime state fields
     event_status: Literal['pending', 'started', 'completed']  # event processing status (auto-set)

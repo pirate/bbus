@@ -26,7 +26,8 @@ test('simple debounce uses recent history or dispatches new', async () => {
       past: 10,
       future: false,
       child_of: parent_event,
-    })) ?? (await bus.dispatch(ScreenshotEvent({ target_id: 'fallback' })).done())
+    })) ?? bus.dispatch(ScreenshotEvent({ target_id: 'fallback' }))
+  await reused_event.done()
 
   assert.equal(reused_event.event_id, child_event.event_id)
   assert.equal(reused_event.event_parent_id, parent_event.event_id)
@@ -41,8 +42,8 @@ test('advanced debounce prefers history, then waits for future, then dispatches'
     bus.dispatch(SyncEvent({}))
   }, 50)
 
-  const resolved_event =
-    (await bus.find(SyncEvent, { past: true, future: false })) ?? (await pending_event) ?? (await bus.dispatch(SyncEvent({})).done())
+  const resolved_event = (await bus.find(SyncEvent, { past: true, future: false })) ?? (await pending_event) ?? bus.dispatch(SyncEvent({}))
+  await resolved_event.done()
 
   assert.ok(resolved_event)
   assert.equal(resolved_event.event_type, 'SyncEvent')
@@ -60,7 +61,8 @@ test('debounce returns existing fresh event', async () => {
 
   const result =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1' && is_fresh(event), { past: true, future: false })) ??
-    (await bus.dispatch(ScreenshotEvent({ target_id: 'tab1' })).done())
+    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
+  await result.done()
 
   assert.equal(result.event_id, original.event_id)
 })
@@ -70,7 +72,8 @@ test('debounce dispatches new when no match', async () => {
 
   const result =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1', { past: true, future: false })) ??
-    (await bus.dispatch(ScreenshotEvent({ target_id: 'tab1' })).done())
+    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
+  await result.done()
 
   assert.ok(result)
   assert.equal(result.target_id, 'tab1')
@@ -84,7 +87,8 @@ test('debounce dispatches new when existing is stale', async () => {
 
   const result =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1' && false, { past: true, future: false })) ??
-    (await bus.dispatch(ScreenshotEvent({ target_id: 'tab1' })).done())
+    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
+  await result.done()
 
   assert.ok(result)
   const screenshots = Array.from(bus.event_history.values()).filter((event) => event.event_type === 'ScreenshotEvent')
@@ -96,17 +100,35 @@ test('debounce or-chain handles sequential lookups without blocking', async () =
 
   const result1 =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1', { past: true, future: false })) ??
-    (await bus.dispatch(ScreenshotEvent({ target_id: 'tab1' })).done())
+    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
 
   const result2 =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1', { past: true, future: false })) ??
-    (await bus.dispatch(ScreenshotEvent({ target_id: 'tab1' })).done())
+    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
 
   const result3 =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab2', { past: true, future: false })) ??
-    (await bus.dispatch(ScreenshotEvent({ target_id: 'tab2' })).done())
+    bus.dispatch(ScreenshotEvent({ target_id: 'tab2' }))
+  await Promise.all([result1.done(), result2.done(), result3.done()])
 
   assert.equal(result1.event_id, result2.event_id)
   assert.notEqual(result1.event_id, result3.event_id)
   assert.equal(result3.target_id, 'tab2')
+})
+
+test('debounce past-only and past-window lookups return immediately when empty', async () => {
+  const bus = new EventBus('DebounceImmediateLookupBus')
+
+  const past_start = Date.now()
+  const found_past = await bus.find(ParentEvent, { past: true, future: false })
+  const past_elapsed_ms = Date.now() - past_start
+
+  const window_start = Date.now()
+  const found_window = await bus.find(ParentEvent, { past: 5, future: false })
+  const window_elapsed_ms = Date.now() - window_start
+
+  assert.equal(found_past, null)
+  assert.equal(found_window, null)
+  assert.ok(past_elapsed_ms < 100)
+  assert.ok(window_elapsed_ms < 100)
 })

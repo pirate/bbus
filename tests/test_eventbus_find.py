@@ -828,6 +828,31 @@ class TestFindFutureOnly:
         finally:
             await bus.stop(clear=True)
 
+    async def test_find_returns_coroutine_that_can_be_awaited_later(self):
+        """A started find(...) coroutine should resolve later after dispatch."""
+        bus = EventBus()
+
+        try:
+            bus.on(ParentEvent, lambda e: 'done')
+
+            find_task = asyncio.create_task(
+                bus.find(
+                    ParentEvent,
+                    where=lambda e: e.event_type == 'ParentEvent',
+                    past=False,
+                    future=1,
+                )
+            )
+
+            await asyncio.sleep(0.05)
+            dispatched = await bus.dispatch(ParentEvent())
+
+            found = await find_task
+            assert found is not None
+            assert found.event_id == dispatched.event_id
+        finally:
+            await bus.stop(clear=True)
+
 
 class TestFindNeitherPastNorFuture:
     """Tests for find(past=False, future=False) - should return None."""
@@ -1308,257 +1333,6 @@ class TestFindLegacyPatternCoverage:
 
             assert found is not None
             assert found.event_id == child_ref[0].event_id
-
-        finally:
-            await bus.stop(clear=True)
-
-
-# =============================================================================
-# Debouncing Pattern Tests (Issue #10)
-# =============================================================================
-
-
-class TestDebouncingPattern:
-    """Tests for the debouncing pattern: find() or dispatch()."""
-
-    async def test_simple_debounce_with_child_of_reuses_recent_event(self):
-        """Debounce pattern can reuse a recent child event scoped to a parent."""
-        bus = EventBus()
-
-        try:
-            child_ref: list[BaseEvent] = []
-
-            async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.dispatch(ScreenshotEvent(target_id='tab-1'))
-                child_ref.append(child)
-                return 'parent_done'
-
-            bus.on(ParentEvent, parent_handler)
-            bus.on(ScreenshotEvent, lambda e: 'screenshot_done')
-
-            parent = await bus.dispatch(ParentEvent())
-            await bus.wait_until_idle()
-
-            reused = await bus.find(
-                ScreenshotEvent,
-                child_of=parent,
-                past=10,
-                future=False,
-            ) or await bus.dispatch(ScreenshotEvent(target_id='fallback'))
-
-            assert reused.event_id == child_ref[0].event_id
-            assert reused.event_parent_id == parent.event_id
-        finally:
-            await bus.stop(clear=True)
-
-    async def test_returns_existing_fresh_event(self):
-        """Pattern returns existing event when fresh."""
-        bus = EventBus()
-
-        try:
-            bus.on(ScreenshotEvent, lambda e: 'done')
-
-            # Dispatch a screenshot
-            original = await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-
-            # Use debouncing pattern - should return the existing event
-            is_fresh = lambda e: (datetime.now(UTC) - e.event_completed_at).seconds < 5
-            result = await bus.find(
-                ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab1' and is_fresh(e),
-                past=True,
-                future=False,
-            ) or await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-
-            assert result.event_id == original.event_id
-
-        finally:
-            await bus.stop(clear=True)
-
-    async def test_dispatches_new_when_no_match(self):
-        """Pattern dispatches new event when no matching event in history."""
-        bus = EventBus()
-
-        try:
-            bus.on(ScreenshotEvent, lambda e: 'done')
-
-            # No existing events - should dispatch new
-            result = await bus.find(
-                ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab1',
-                past=True,
-                future=False,
-            ) or await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-
-            assert result is not None
-            assert result.target_id == 'tab1'
-            assert result.event_status == 'completed'
-
-        finally:
-            await bus.stop(clear=True)
-
-    async def test_dispatches_new_when_stale(self):
-        """Pattern dispatches new event when existing is stale."""
-        bus = EventBus()
-
-        try:
-            bus.on(ScreenshotEvent, lambda e: 'done')
-
-            # Dispatch an event
-            await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-
-            # Filter that marks all events as stale
-            is_fresh = lambda e: False  # Nothing is fresh
-
-            result = await bus.find(
-                ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab1' and is_fresh(e),
-                past=True,
-                future=False,
-            ) or await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-
-            # Should be a new event (different ID)
-            assert result is not None
-            # Both events should be in history now
-            screenshots = [e for e in bus.event_history.values() if isinstance(e, ScreenshotEvent)]
-            assert len(screenshots) == 2
-
-        finally:
-            await bus.stop(clear=True)
-
-    async def test_find_past_only_returns_immediately_without_waiting(self):
-        """find(past=True, future=False) returns immediately, never waits."""
-        bus = EventBus()
-
-        try:
-            bus.on(ParentEvent, lambda e: 'done')
-
-            # No events in history - find should return None instantly
-            start = datetime.now(UTC)
-            result = await bus.find(ParentEvent, past=True, future=False)
-            elapsed = (datetime.now(UTC) - start).total_seconds()
-
-            assert result is None
-            assert elapsed < 0.05  # Should be nearly instant (< 50ms)
-
-        finally:
-            await bus.stop(clear=True)
-
-    async def test_find_past_float_returns_immediately_without_waiting(self):
-        """find(past=5, future=False) returns immediately, never waits."""
-        bus = EventBus()
-
-        try:
-            bus.on(ParentEvent, lambda e: 'done')
-
-            # No events in history - find should return None instantly
-            start = datetime.now(UTC)
-            result = await bus.find(ParentEvent, past=5, future=False)
-            elapsed = (datetime.now(UTC) - start).total_seconds()
-
-            assert result is None
-            assert elapsed < 0.05  # Should be nearly instant (< 50ms)
-
-        finally:
-            await bus.stop(clear=True)
-
-    async def test_or_chain_without_waiting_finds_existing(self):
-        """Or-chain pattern finds existing events without blocking."""
-        bus = EventBus()
-
-        try:
-            bus.on(ScreenshotEvent, lambda e: 'done')
-
-            # Dispatch first event
-            original = await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-
-            # Or-chain should find existing event instantly
-            start = datetime.now(UTC)
-            result = await bus.find(
-                ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab1',
-                past=True,
-                future=False,
-            ) or await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-            elapsed = (datetime.now(UTC) - start).total_seconds()
-
-            # Should return existing event
-            assert result.event_id == original.event_id
-            # Should be fast (no waiting)
-            assert elapsed < 0.1
-
-        finally:
-            await bus.stop(clear=True)
-
-    async def test_or_chain_without_waiting_dispatches_when_no_match(self):
-        """Or-chain pattern dispatches new event when no match, still fast."""
-        bus = EventBus()
-
-        try:
-            bus.on(ScreenshotEvent, lambda e: 'done')
-
-            # No matching events - should dispatch new one
-            start = datetime.now(UTC)
-            result = await bus.find(
-                ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab1',
-                past=True,
-                future=False,
-            ) or await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-            elapsed = (datetime.now(UTC) - start).total_seconds()
-
-            # Should have dispatched new event
-            assert result is not None
-            assert result.target_id == 'tab1'
-            # Should be fast (find returned None immediately, then dispatch ran)
-            assert elapsed < 0.1
-
-        finally:
-            await bus.stop(clear=True)
-
-    async def test_or_chain_multiple_sequential_lookups(self):
-        """Multiple or-chain lookups work without blocking."""
-        bus = EventBus()
-
-        try:
-            bus.on(ScreenshotEvent, lambda e: 'done')
-
-            # Multiple sequential debouncing calls
-            start = datetime.now(UTC)
-
-            # First call - dispatches new
-            result1 = await bus.find(
-                ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab1',
-                past=True,
-                future=False,
-            ) or await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-
-            # Second call - finds existing
-            result2 = await bus.find(
-                ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab1',
-                past=True,
-                future=False,
-            ) or await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-
-            # Third call - dispatches new (different target)
-            result3 = await bus.find(
-                ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab2',
-                past=True,
-                future=False,
-            ) or await bus.dispatch(ScreenshotEvent(target_id='tab2'))
-
-            elapsed = (datetime.now(UTC) - start).total_seconds()
-
-            # First two should be same event
-            assert result1.event_id == result2.event_id
-            # Third should be different
-            assert result3.event_id != result1.event_id
-            assert result3.target_id == 'tab2'
-            # All operations should be fast
-            assert elapsed < 0.2
 
         finally:
             await bus.stop(clear=True)

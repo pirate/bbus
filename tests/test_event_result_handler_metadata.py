@@ -143,7 +143,7 @@ def test_event_handler_model_detects_handler_file_path() -> None:
     )
 
     assert entry.handler_file_path is not None
-    expected_suffix = f'test_event_result_standalone.py:{handler.__code__.co_firstlineno}'
+    expected_suffix = f'test_event_result_handler_metadata.py:{handler.__code__.co_firstlineno}'
     assert entry.handler_file_path.endswith(expected_suffix)
 
 

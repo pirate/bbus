@@ -458,7 +458,8 @@ export class BaseEvent {
     if (pending_results.length === 0) {
       return
     }
-    if (original.event_handler_completion === 'first') {
+    const resolved_completion = original.event_handler_completion ?? this.bus?.event_handler_completion_default ?? 'all'
+    if (resolved_completion === 'first') {
       if (original.eventGetHandlerLock() !== null) {
         for (const entry of pending_results) {
           await this._runHandlerWithLock(original, entry)
@@ -820,9 +821,10 @@ export class BaseEvent {
     original.event_started_at = event_started_at
     original.event_started_ts = event_started_ts
     if (original.bus) {
-      const event_for_bus = original.bus.getEventProxyScopedToThisBus(original)
-      original.bus.scheduleMicrotask(() => {
-        void original.bus!.onEventChange(event_for_bus, 'started')
+      const bus_for_hook = original.bus
+      const event_for_bus = bus_for_hook.getEventProxyScopedToThisBus(original)
+      bus_for_hook.scheduleMicrotask(() => {
+        void bus_for_hook.onEventChange(event_for_bus, 'started')
       })
     }
   }
@@ -845,9 +847,10 @@ export class BaseEvent {
     original.event_completed_at = event_completed_at
     original.event_completed_ts = event_completed_ts
     if (original.bus) {
-      const event_for_bus = original.bus.getEventProxyScopedToThisBus(original)
-      original.bus.scheduleMicrotask(() => {
-        void original.bus!.onEventChange(event_for_bus, 'completed')
+      const bus_for_hook = original.bus
+      const event_for_bus = bus_for_hook.getEventProxyScopedToThisBus(original)
+      bus_for_hook.scheduleMicrotask(() => {
+        void bus_for_hook.onEventChange(event_for_bus, 'completed')
       })
     }
     original.eventSetDispatchContext(null)

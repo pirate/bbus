@@ -111,11 +111,11 @@ Use these concrete call paths to keep changes behavior-safe while refactoring:
 ## Phase 0: Baseline + safety net
 
 1. Run and snapshot current TS tests that cover locking/timeout/first/context:
-- `bubus-ts/tests/locking.test.ts`
-- `bubus-ts/tests/timeout.test.ts`
-- `bubus-ts/tests/first.test.ts`
-- `bubus-ts/tests/context_propagation.test.ts`
-- `bubus-ts/tests/forwarding.test.ts`
+- `bubus-ts/tests/eventbus_locking.test.ts`
+- `bubus-ts/tests/eventbus_timeout.test.ts`
+- `bubus-ts/tests/event_handler_first.test.ts`
+- `bubus-ts/tests/eventbus_dispatch_contextvars.test.ts`
+- `bubus-ts/tests/eventbus_forwarding.test.ts`
 
 2. Add focused middleware test file skeleton (failing tests allowed initially):
 - `bubus-ts/tests/middleware.test.ts`
@@ -236,7 +236,7 @@ Changes:
 Files:
 - `bubus-ts/src/base_event.ts`
 - `bubus-ts/src/event_result.ts`
-- `bubus-ts/tests/first.test.ts`
+- `bubus-ts/tests/event_handler_first.test.ts`
 
 Rules:
 1. Winner must be:
@@ -252,8 +252,8 @@ Rules:
 Files:
 - `bubus-ts/src/event_handler.ts`
 - `bubus-ts/src/event_result.ts`
-- `bubus-ts/tests/error_handling.test.ts`
-- `bubus-ts/tests/timeout.test.ts`
+- `bubus-ts/tests/eventbus_error_handling.test.ts`
+- `bubus-ts/tests/eventbus_timeout.test.ts`
 
 Changes:
 1. Ensure all timeout/cancel/abort/result-schema terminal paths use the four agreed classes.
@@ -266,12 +266,12 @@ Changes:
 ```bash
 cd bubus-ts
 pnpm test tests/middleware.test.ts
-pnpm test tests/locking.test.ts
-pnpm test tests/timeout.test.ts
-pnpm test tests/first.test.ts
-pnpm test tests/error_handling.test.ts
-pnpm test tests/context_propagation.test.ts
-pnpm test tests/forwarding.test.ts
+pnpm test tests/eventbus_locking.test.ts
+pnpm test tests/eventbus_timeout.test.ts
+pnpm test tests/event_handler_first.test.ts
+pnpm test tests/eventbus_error_handling.test.ts
+pnpm test tests/eventbus_dispatch_contextvars.test.ts
+pnpm test tests/eventbus_forwarding.test.ts
 ```
 
 2. Add/adjust tests for:
