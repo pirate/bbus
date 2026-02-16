@@ -33,6 +33,62 @@ test('event.bus inside handler returns the dispatching bus', async () => {
   assert.equal(child_event!.event_type, 'ChildEvent')
 })
 
+test('event.event_bus inside handler returns the dispatching bus', async () => {
+  const bus = new EventBus('EventBusPropertyBus')
+  let handler_bus_name: string | undefined
+
+  bus.on(MainEvent, (event) => {
+    handler_bus_name = event.event_bus.name
+  })
+
+  await bus.emit(MainEvent({})).done()
+  assert.equal(handler_bus_name, 'EventBusPropertyBus')
+})
+
+test('event.event_bus falls back to event_path when current handler event differs', async () => {
+  const bus = new EventBus('EventBusPropertyFallbackBus')
+  let child_bus_name: string | undefined
+
+  bus.on(MainEvent, (event) => {
+    const child = event.event_bus.emit(ChildEvent({}))
+    child_bus_name = child.event_bus.name
+  })
+  bus.on(ChildEvent, () => {})
+
+  await bus.emit(MainEvent({})).done()
+  assert.equal(child_bus_name, 'EventBusPropertyFallbackBus')
+})
+
+test('event.event_bus resolves from global registry for detached events', async () => {
+  const bus = new EventBus('EventBusPropertyDetachedBus')
+  bus.on(MainEvent, () => {})
+
+  const original = bus.emit(MainEvent({}))
+  await original.done()
+
+  const detached = BaseEvent.fromJSON(original.toJSON())
+  assert.equal(detached.bus, undefined)
+  assert.deepEqual(detached.event_path, [bus.label])
+
+  let resolved_bus_name: string | undefined
+  bus.on(ChildEvent, () => {
+    resolved_bus_name = detached.event_bus.name
+  })
+
+  await bus.emit(ChildEvent({})).done()
+  assert.equal(resolved_bus_name, 'EventBusPropertyDetachedBus')
+})
+
+test('event.event_bus throws outside handler context', async () => {
+  const bus = new EventBus('EventBusPropertyOutsideHandlerBus')
+  const event = bus.emit(MainEvent({}))
+  await event.done()
+
+  assert.throws(() => {
+    void event.event_bus
+  }, /event_bus property can only be accessed from within an event handler/)
+})
+
 test('event.bus returns correct bus when multiple buses exist', async () => {
   const bus1 = new EventBus('Bus1')
   const bus2 = new EventBus('Bus2')

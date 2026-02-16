@@ -265,6 +265,59 @@ test('retry: semaphore_limit controls max concurrent executions', async () => {
   assert.equal(max_active, 2, 'should never exceed semaphore_limit=2')
 })
 
+test('retry: semaphore handoff keeps concurrency bounded during nextTick scheduling', async () => {
+  clearSemaphoreRegistry()
+
+  let active = 0
+  let max_active = 0
+  let unblock_first!: () => void
+  const first_block = new Promise<void>((resolve) => {
+    unblock_first = resolve
+  })
+  let third_done_resolve!: () => void
+  let third_done_reject!: (reason?: unknown) => void
+  const third_done = new Promise<void>((resolve, reject) => {
+    third_done_resolve = resolve
+    third_done_reject = reject
+  })
+
+  let call_count = 0
+  const fn = retry({ max_attempts: 1, semaphore_limit: 1, semaphore_name: 'test_sem_handoff' })(async () => {
+    call_count += 1
+    const current_call = call_count
+
+    active += 1
+    max_active = Math.max(max_active, active)
+    try {
+      if (current_call === 1) {
+        await first_block
+      }
+      await delay(5)
+    } finally {
+      active -= 1
+    }
+  })
+
+  const first = fn()
+  await delay(5)
+  const second = fn()
+  await delay(5)
+  unblock_first()
+
+  void Promise.resolve().then(() => {
+    process.nextTick(() => {
+      void fn().then(
+        () => third_done_resolve(),
+        (error) => third_done_reject(error)
+      )
+    })
+  })
+
+  await Promise.all([first, second, third_done])
+  assert.equal(call_count, 3)
+  assert.equal(max_active, 1, 'should never exceed semaphore_limit=1 during handoff')
+})
+
 test('retry: semaphore_lax=false throws SemaphoreTimeoutError when slots are full', async () => {
   clearSemaphoreRegistry()
 

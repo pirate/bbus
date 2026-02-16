@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { v7 as uuidv7 } from 'uuid'
 
-import type { EventBus } from './event_bus.js'
+import { EventBus } from './event_bus.js'
 import type { EventHandler } from './event_handler.js'
 import { EventResult } from './event_result.js'
 import { EventHandlerAbortedError, EventHandlerCancelledError, EventHandlerTimeoutError } from './event_handler.js'
@@ -156,12 +156,39 @@ export class BaseEvent {
   _event_completed_signal: Deferred<this> | null
   _lock_for_event_handler: AsyncLock | null
 
-  get event_bus(): EventBus | undefined {
-    return this.bus
-  }
+  get event_bus(): EventBus {
+    const original_event = this._event_original ?? this
+    const all_instances = this.bus?.all_instances ?? EventBus.all_instances
 
-  set event_bus(value: EventBus | undefined) {
-    this.bus = value
+    let in_handler_context = false
+    for (const active_bus of all_instances) {
+      const active_handler_result = active_bus.locks.getActiveHandlerResult()
+      if (!active_handler_result) {
+        continue
+      }
+      in_handler_context = true
+      const current_event = active_handler_result.event._event_original ?? active_handler_result.event
+      if (current_event.event_id === original_event.event_id) {
+        return active_bus
+      }
+    }
+
+    if (!in_handler_context) {
+      throw new Error('event_bus property can only be accessed from within an event handler')
+    }
+
+    if (!Array.isArray(original_event.event_path) || original_event.event_path.length === 0) {
+      throw new Error('Event has no event_path - was it dispatched?')
+    }
+
+    const current_bus_label = original_event.event_path[original_event.event_path.length - 1]
+    for (const active_bus of all_instances) {
+      if (active_bus.label === current_bus_label) {
+        return active_bus
+      }
+    }
+
+    throw new Error(`Could not find active EventBus for path entry ${current_bus_label}`)
   }
 
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {

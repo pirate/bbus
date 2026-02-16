@@ -142,18 +142,19 @@ class RetrySemaphore {
     await new Promise<void>((resolve) => {
       this.waiters.push(resolve)
     })
-    this.inUse += 1
   }
 
   release(): void {
     if (this.size === Infinity) {
       return
     }
-    this.inUse = Math.max(0, this.inUse - 1)
     const next = this.waiters.shift()
     if (next) {
+      // Handoff: keep the permit accounted for and transfer it directly to the waiter.
       next()
+      return
     }
+    this.inUse = Math.max(0, this.inUse - 1)
   }
 }
 
