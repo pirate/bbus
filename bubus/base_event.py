@@ -962,80 +962,43 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     @model_validator(mode='before')
     @classmethod
-    def _set_event_type_from_class_name(cls, data: Any) -> Any:
-        """Automatically set event_type to the class name if not provided"""
+    def _normalize_and_validate_event_input(cls, data: Any) -> Any:
+        """Normalize event input once, enforce reserved namespaces, and apply built-in defaults."""
         if not isinstance(data, dict):
             return data
         params = _normalize_any_dict(data)
+
+        for key in ('bus', 'first'):
+            if key in params:
+                raise ValueError(f'Field "{key}" is reserved for BaseEvent runtime APIs and cannot be set in event payload')
+
+        for key in params:
+            if key.startswith('event_') and key not in BaseEvent.model_fields:
+                raise ValueError(f'Field "{key}" starts with "event_" but is not a recognized BaseEvent field')
+            if key.startswith('model_'):
+                raise ValueError(f'Field "{key}" starts with "model_" and is reserved for Pydantic model internals')
+
         is_class_default_unchanged = cls.model_fields['event_type'].default == 'UndefinedEvent'
         is_event_type_not_provided = 'event_type' not in params or params['event_type'] == 'UndefinedEvent'
         if is_class_default_unchanged and is_event_type_not_provided:
             params['event_type'] = cls.__name__
-        return params
 
-    @model_validator(mode='before')
-    @classmethod
-    def _set_event_result_type_from_generic_arg(cls, data: Any) -> Any:
-        """Automatically set event_result_type from Generic type parameter if not explicitly provided."""
-        if not isinstance(data, dict):
-            return data
+        if 'event_result_type' not in params:
+            if 'event_result_type' in cls.model_fields:
+                field = cls.model_fields['event_result_type']
+                if field.default is not None and field.default != BaseEvent.model_fields['event_result_type'].default:
+                    params['event_result_type'] = field.default
+                    return params
 
-        params = _normalize_any_dict(data)
-
-        # if we already have a event_result_type provided in the event constructor args
-        if 'event_result_type' in params:
-            return params
-
-        # if we already have a event_result_type defined statically on the event class
-        if 'event_result_type' in cls.model_fields:
-            field = cls.model_fields['event_result_type']
-            if field.default is not None and field.default != BaseEvent.model_fields['event_result_type'].default:
-                params['event_result_type'] = field.default
+            if cls._event_result_type_cache is not None:
+                params['event_result_type'] = cls._event_result_type_cache
                 return params
 
-        # if we already have a event_result_type cached in the class
-        if cls._event_result_type_cache is not None:
-            params['event_result_type'] = cls._event_result_type_cache
-            return params
+            extracted_type = extract_basemodel_generic_arg(cls)
+            cls._event_result_type_cache = extracted_type
+            if extracted_type is not None:
+                params['event_result_type'] = extracted_type
 
-        # if we don't have a event_result_type defined anywhere, extract it from the event class generic argument
-        extracted_type = extract_basemodel_generic_arg(cls)
-        cls._event_result_type_cache = extracted_type
-        if extracted_type is not None:
-            params['event_result_type'] = extracted_type
-        return params
-
-    @model_validator(mode='before')
-    @classmethod
-    def _reject_reserved_event_fields(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        params = _normalize_any_dict(data)
-        for key in ('bus', 'first'):
-            if key in params:
-                raise ValueError(f'Field "{key}" is reserved for BaseEvent runtime APIs and cannot be set in event payload')
-        return params
-
-    @model_validator(mode='before')
-    @classmethod
-    def _reject_unknown_event_prefixed_fields(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        params = _normalize_any_dict(data)
-        for key in params:
-            if key.startswith('event_') and key not in BaseEvent.model_fields:
-                raise ValueError(f'Field "{key}" starts with "event_" but is not a recognized BaseEvent field')
-        return params
-
-    @model_validator(mode='before')
-    @classmethod
-    def _reject_model_prefixed_payload_fields(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        params = _normalize_any_dict(data)
-        for key in params:
-            if key.startswith('model_'):
-                raise ValueError(f'Field "{key}" starts with "model_" and is reserved for Pydantic model internals')
         return params
 
     @model_validator(mode='after')
