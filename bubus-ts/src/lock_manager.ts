@@ -155,14 +155,14 @@ export class HandlerLock {
 // Interface that must be implemented by the EventBus class to be used by the LockManager
 export type EventBusInterfaceForLockManager = {
   isIdleAndQueueEmpty: () => boolean
-  event_concurrency_default: EventConcurrencyMode
+  event_concurrency: EventConcurrencyMode
 }
 
 // The LockManager is responsible for managing the concurrency of events and handlers
 export class LockManager {
   private bus: EventBusInterfaceForLockManager // Live bus reference; used to read defaults and idle state.
 
-  static global_event_lock = new AsyncLock(1) // used for the global-serial concurrency mode
+  static _lock_for_event_global_serial = new AsyncLock(1) // used for the global-serial concurrency mode
   readonly bus_event_lock: AsyncLock // Per-bus event lock; created with LockManager and never swapped.
   private pause_depth: number // Re-entrant pause counter; increments on requestRunloopPause, decrements on release.
   private pause_waiters: Array<() => void> // Resolvers for waitUntilRunloopResumed; drained when pause_depth hits 0.
@@ -244,10 +244,42 @@ export class LockManager {
     return this.active_handler_results.length > 0
   }
 
-  waitForIdle(): Promise<void> {
+  waitForIdle(timeout_seconds: number | null = null): Promise<void> {
     return new Promise((resolve) => {
-      this.idle_waiters.push(resolve)
+      let done = false
+      let timeout_id: ReturnType<typeof setTimeout> | null = null
+
+      const finish = (): void => {
+        if (done) {
+          return
+        }
+        done = true
+        if (timeout_id !== null) {
+          clearTimeout(timeout_id)
+          timeout_id = null
+        }
+        resolve()
+      }
+
+      this.idle_waiters.push(finish)
       this.scheduleIdleCheck()
+
+      if (timeout_seconds === null || timeout_seconds === undefined) {
+        return
+      }
+
+      const timeout_ms = Math.max(0, Number(timeout_seconds)) * 1000
+      if (!Number.isFinite(timeout_ms)) {
+        return
+      }
+
+      timeout_id = setTimeout(() => {
+        const index = this.idle_waiters.indexOf(finish)
+        if (index >= 0) {
+          this.idle_waiters.splice(index, 1)
+        }
+        finish()
+      }, timeout_ms)
     })
   }
 
@@ -287,12 +319,12 @@ export class LockManager {
 
   // get the bus-level lock that prevents/allows multiple events to be processed concurrently on the same bus
   getLockForEvent(event: BaseEvent): AsyncLock | null {
-    const resolved = event.event_concurrency ?? this.bus.event_concurrency_default
+    const resolved = event.event_concurrency ?? this.bus.event_concurrency
     if (resolved === 'parallel') {
       return null
     }
     if (resolved === 'global-serial') {
-      return LockManager.global_event_lock
+      return LockManager._lock_for_event_global_serial
     }
     return this.bus_event_lock
   }
@@ -314,7 +346,7 @@ export class LockManager {
     default_handler_concurrency: EventHandlerConcurrencyMode | undefined,
     fn: (lock: HandlerLock | null) => Promise<T>
   ): Promise<T> {
-    const lock = event.getHandlerLock(default_handler_concurrency)
+    const lock = event.eventGetHandlerLock(default_handler_concurrency)
     if (lock) {
       await lock.acquire()
     }

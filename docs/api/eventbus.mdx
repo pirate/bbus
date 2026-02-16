@@ -16,7 +16,7 @@ EventBus(
     event_concurrency: Literal['global-serial', 'bus-serial', 'parallel'] | str | None = None,
     event_handler_concurrency: Literal['serial', 'parallel'] | str = 'serial',
     event_handler_completion: Literal['all', 'first'] | str = 'all',
-    max_history_size: int | None = 50,
+    max_history_size: int | None = 100,
     max_history_drop: bool = False,
     event_timeout: float | None = 60.0,
     event_slow_timeout: float | None = 300.0,
@@ -41,6 +41,7 @@ new EventBus(name?: string, options?: {
   event_handler_completion?: 'all' | 'first'
   event_handler_slow_timeout?: number | null
   event_handler_detect_file_paths?: boolean
+  middlewares?: Array<EventBusMiddleware | new () => EventBusMiddleware>
 })
 ```
 
@@ -61,6 +62,7 @@ new EventBus(name?: string, options?: {
 | `event_handler_detect_file_paths` | Whether to capture source path metadata for handlers. |
 | `max_history_size` | Maximum retained history (`null` = unbounded, `0` = keep only in-flight). |
 | `max_history_drop` | If `true`, drop oldest history entries when full; if `false`, reject new emits at limit. |
+| `middlewares` | Ordered middleware instances (or middleware classes/constructors) that receive lifecycle hooks. |
 
 ## Runtime state
 
@@ -209,6 +211,63 @@ bus.event_is_parent_of(parent_event, child_event)
 ```ts
 bus.eventIsChildOf(childEvent, parentEvent)
 bus.eventIsParentOf(parentEvent, childEvent)
+```
+
+</Tab>
+</Tabs>
+
+### Execution pipeline (internal)
+
+Both runtimes use the same layered model, but with runtime-native wrapper primitives:
+
+- Event scope lock
+- Event-level timeout/slow monitor wrappers
+- Per-handler lock
+- Handler-level timeout/slow monitor wrappers
+- Handler execution context scope
+- Error normalization + completion callbacks
+
+<Tabs>
+<Tab title="Python">
+
+```python
+# Event-level wrappers inside EventBus.process_event(...)
+async with locks.with_event_lock(...):
+    async with asyncio.timeout(event_timeout):
+        async with with_slow_monitor(...):
+            await event.event_run_handlers(...)
+
+# Handler-level wrappers inside EventResult.run_handler(...)
+async with eventbus.locks.with_handler_lock(...):
+    async with event_result.with_timeout(event):
+        async with with_slow_monitor(...):
+            with eventbus.with_handler_execution_context(event, handler_id):
+                await event_result.call_handler(...)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+// Event-level wrappers inside EventBus.processEvent(...)
+await locks.withEventLock(event, () =>
+  _runHandlersWithTimeout(event, pendingEntries, () =>
+    withSlowMonitor(event.createSlowEventWarningTimer(), () =>
+      scopedEvent.runHandlers(pendingEntries)
+    )
+  )
+)
+
+// Handler-level wrappers inside EventResult.runHandler(...)
+await locks.withHandlerExecutionContext(result, async () => {
+  await runWithAsyncContext(event.eventGetDispatchContext() ?? null, async () => {
+    const handlerResult = await withTimeout(handlerTimeout, onHandlerTimeout, () =>
+      withSlowMonitor(slowTimer, () =>
+        runWithAbortMonitor(() => handler(handlerEvent), abortSignal)
+      )
+    )
+  })
+})
 ```
 
 </Tab>

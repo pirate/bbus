@@ -15,8 +15,6 @@ Tests cover:
 """
 
 import asyncio
-import json
-import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -24,18 +22,7 @@ from typing import Any
 import pytest
 from pydantic import Field
 
-from bubus import BaseEvent, EventBus, SQLiteHistoryMirrorMiddleware
-from bubus.middlewares import (
-    AutoErrorEventMiddleware,
-    AutoHandlerChangeEventMiddleware,
-    AutoReturnEventMiddleware,
-    BusHandlerRegisteredEvent,
-    BusHandlerUnregisteredEvent,
-    EventBusMiddleware,
-    LoggerEventBusMiddleware,
-    OtelTracingMiddleware,
-    WALEventBusMiddleware,
-)
+from bubus import BaseEvent, EventBus
 
 
 class CreateAgentTaskEvent(BaseEvent):
@@ -64,14 +51,6 @@ class SystemEventModel(BaseEvent):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-class MockAgent:
-    """Mock agent for testing"""
-
-    def __init__(self, name: str = 'TestAgent'):
-        self.name = name
-        self.events_received = []
-
-
 @pytest.fixture
 async def eventbus():
     """Create an event bus for testing"""
@@ -88,16 +67,10 @@ async def parallel_eventbus():
     await bus.stop()
 
 
-@pytest.fixture
-def mock_agent():
-    """Create a mock agent"""
-    return MockAgent()
-
-
 class TestEventBusBasics:
     """Test basic EventBus functionality"""
 
-    async def test_eventbus_initialization(self, mock_agent: MockAgent):
+    async def test_eventbus_initialization(self):
         """Test that EventBus initializes correctly"""
         bus = EventBus()
 
@@ -115,7 +88,7 @@ class TestEventBusBasics:
         assert bus.id == custom_id
         assert bus.label.endswith('#1234')
 
-    async def test_auto_start_and_stop(self, mock_agent):
+    async def test_auto_start_and_stop(self):
         """Test auto-start functionality and stopping the event bus"""
         bus = EventBus()
 
@@ -191,7 +164,7 @@ class TestEventEnqueueing:
         # Check event history
         assert len(eventbus.event_history) == 1
 
-    def test_emit_sync(self, mock_agent):
+    def test_emit_sync(self):
         """Test sync event emission"""
         bus = EventBus()
         event = SystemEventModel(event_name='startup', severity='info')
@@ -382,7 +355,7 @@ class TestHandlerRegistration:
         assert handler1_result is not None and handler1_result.result == 'handler1'
         assert handler2_result is not None and handler2_result.result == 'handler2'
 
-    def test_handler_can_be_sync_or_async(self, mock_agent):
+    def test_handler_can_be_sync_or_async(self):
         """Test that both sync and async handlers are accepted"""
         bus = EventBus()
 
@@ -715,7 +688,7 @@ class TestEventCompletion:
 class TestEdgeCases:
     """Test edge cases and special scenarios"""
 
-    async def test_stop_with_pending_events(self, mock_agent):
+    async def test_stop_with_pending_events(self):
         """Test stopping event bus with events still in queue"""
         bus = EventBus()
 
@@ -936,601 +909,6 @@ class TestEventTypeOverride:
         assert received[0].event_type == 'CustomEventType'
 
 
-class TestWALPersistence:
-    """Test automatic WAL persistence functionality"""
-
-    async def test_wal_persistence_handler(self, tmp_path):
-        """Test that events are automatically persisted to WAL file"""
-        # Create event bus with WAL path
-        wal_path = tmp_path / 'test_events.jsonl'
-        bus = EventBus(name='TestBus', middlewares=[WALEventBusMiddleware(wal_path)])
-
-        try:
-            # Emit some events
-            events = []
-            for i in range(3):
-                event = UserActionEvent(action=f'action_{i}', user_id=f'user_{i}')
-                emitted_event = bus.dispatch(event)
-                completed_event = await emitted_event
-                events.append(completed_event)
-
-            # Wait for processing
-            await bus.wait_until_idle()
-
-            # Check WAL file exists
-            assert wal_path.exists()
-
-            # Read and verify JSONL content
-            lines = wal_path.read_text().strip().split('\n')
-            assert len(lines) == 3
-
-            # Parse each line as JSON
-            for i, line in enumerate(lines):
-                data = json.loads(line)
-                assert data['action'] == f'action_{i}'
-                assert data['user_id'] == f'user_{i}'
-                assert data['event_type'] == 'UserActionEvent'
-                assert isinstance(data['event_created_at'], str)
-                datetime.fromisoformat(data['event_created_at'])
-
-        finally:
-            await bus.stop()
-
-    async def test_wal_persistence_creates_parent_dir(self, tmp_path):
-        """Test that WAL persistence creates parent directories"""
-        # Use a nested path that doesn't exist
-        wal_path = tmp_path / 'nested' / 'dirs' / 'events.jsonl'
-        assert not wal_path.parent.exists()
-
-        # Create event bus
-        bus = EventBus(name='TestBus', middlewares=[WALEventBusMiddleware(wal_path)])
-
-        try:
-            # Emit an event
-            event = bus.dispatch(UserActionEvent(action='test', user_id='u1'))
-            await event
-
-            # Wait for WAL persistence to complete
-            await bus.wait_until_idle()
-
-            # Parent directory should be created after event is processed
-            assert wal_path.parent.exists()
-
-            # Check file was created
-            assert wal_path.exists()
-        finally:
-            await bus.stop()
-
-    async def test_wal_persistence_skips_incomplete_events(self, tmp_path):
-        """Test that WAL persistence only writes completed events"""
-        wal_path = tmp_path / 'incomplete_events.jsonl'
-        bus = EventBus(name='TestBus', middlewares=[WALEventBusMiddleware(wal_path)])
-
-        try:
-            # Add a slow handler that will delay completion
-            async def slow_handler(event: BaseEvent) -> str:
-                await asyncio.sleep(0.1)
-                return 'slow'
-
-            bus.on('UserActionEvent', slow_handler)
-
-            # Emit event without waiting
-            event = bus.dispatch(UserActionEvent(action='test', user_id='u1'))
-
-            # Check file doesn't exist yet (event not completed)
-            assert not wal_path.exists()
-
-            # Wait for completion
-            event = await event
-            await bus.wait_until_idle()
-
-            # Now file should exist with completed event
-            assert wal_path.exists()
-            lines = wal_path.read_text().strip().split('\n')
-            assert len(lines) == 1
-            data = json.loads(lines[0])
-            assert data['event_type'] == 'UserActionEvent'
-            # The WAL should have been written after the event completed
-            assert data['action'] == 'test'
-            assert data['user_id'] == 'u1'
-
-        finally:
-            await bus.stop()
-
-
-class TestHandlerMiddleware:
-    """Tests for the handler middleware pipeline."""
-
-    def test_middleware_constructor_rejects_invalid_entries(self):
-        with pytest.raises(TypeError):
-            EventBus(middlewares=[object()])
-
-    async def test_middleware_constructor_auto_inits_classes_and_keeps_hook_order(self):
-        calls: list[str] = []
-
-        class ClassMiddleware(EventBusMiddleware):
-            def __init__(self):
-                calls.append('class:init')
-
-            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
-                if status == 'started':
-                    calls.append('class:started')
-                elif status == 'completed':
-                    calls.append('class:completed')
-
-        class InstanceMiddleware(EventBusMiddleware):
-            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
-                if status == 'started':
-                    calls.append('instance:started')
-                elif status == 'completed':
-                    calls.append('instance:completed')
-
-        instance_middleware = InstanceMiddleware()
-        bus = EventBus(middlewares=[ClassMiddleware, instance_middleware])
-        bus.on('UserActionEvent', lambda event: 'ok')
-
-        try:
-            completed = await bus.dispatch(UserActionEvent(action='test', user_id='user1'))
-            await bus.wait_until_idle()
-
-            assert isinstance(bus.middlewares[0], ClassMiddleware)
-            assert bus.middlewares[1] is instance_middleware
-            assert completed.event_results
-            assert calls == [
-                'class:init',
-                'class:started',
-                'instance:started',
-                'class:completed',
-                'instance:completed',
-            ]
-        finally:
-            await bus.stop()
-
-    async def test_middleware_wraps_successful_handler(self):
-        calls: list[tuple[str, str]] = []
-
-        class TrackingMiddleware(EventBusMiddleware):
-            def __init__(self, call_log: list[tuple[str, str]]):
-                self.call_log = call_log
-
-            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
-                if status == 'started':
-                    self.call_log.append(('before', event_result.status))
-                elif status == 'completed':
-                    self.call_log.append(('after', event_result.status))
-
-        bus = EventBus(middlewares=[TrackingMiddleware(calls)])
-        bus.on('UserActionEvent', lambda event: 'ok')
-
-        try:
-            completed = await bus.dispatch(UserActionEvent(action='test', user_id='user1'))
-            await bus.wait_until_idle()
-
-            assert completed.event_results
-            result = next(iter(completed.event_results.values()))
-            assert result.status == 'completed'
-            assert result.result == 'ok'
-            assert calls == [('before', 'started'), ('after', 'completed')]
-        finally:
-            await bus.stop()
-
-    async def test_middleware_observes_handler_errors(self):
-        observations: list[tuple[str, str]] = []
-
-        class ErrorMiddleware(EventBusMiddleware):
-            def __init__(self, log: list[tuple[str, str]]):
-                self.log = log
-
-            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
-                if status == 'started':
-                    self.log.append(('before', event_result.status))
-                elif status == 'completed' and event_result.error:
-                    self.log.append(('error', type(event_result.error).__name__))
-
-        async def failing_handler(event: BaseEvent) -> None:
-            raise ValueError('boom')
-
-        bus = EventBus(middlewares=[ErrorMiddleware(observations)])
-        bus.on('UserActionEvent', failing_handler)
-
-        try:
-            event = await bus.dispatch(UserActionEvent(action='fail', user_id='user2'))
-            await bus.wait_until_idle()
-
-            result = next(iter(event.event_results.values()))
-            assert result.status == 'error'
-            assert isinstance(result.error, ValueError)
-            assert observations == [('before', 'started'), ('error', 'ValueError')]
-        finally:
-            await bus.stop()
-
-    async def test_middleware_hook_statuses_never_emit_error(self):
-        observed_event_statuses: list[str] = []
-        observed_result_hook_statuses: list[str] = []
-        observed_result_runtime_statuses: list[str] = []
-
-        class LifecycleMiddleware(EventBusMiddleware):
-            async def on_event_change(self, eventbus: EventBus, event: BaseEvent, status):
-                observed_event_statuses.append(str(status))
-
-            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
-                observed_result_hook_statuses.append(str(status))
-                observed_result_runtime_statuses.append(event_result.status)
-
-        async def failing_handler(event: BaseEvent) -> None:
-            raise ValueError('boom')
-
-        bus = EventBus(middlewares=[LifecycleMiddleware()], max_history_size=None)
-        bus.on(UserActionEvent, failing_handler)
-
-        try:
-            event = await bus.dispatch(UserActionEvent(action='fail', user_id='u2'))
-            await bus.wait_until_idle()
-
-            result = next(iter(event.event_results.values()))
-            assert result.status == 'error'
-            assert isinstance(result.error, ValueError)
-
-            assert observed_event_statuses == ['pending', 'started', 'completed']
-            assert observed_result_hook_statuses == ['pending', 'started', 'completed']
-            assert observed_result_runtime_statuses[-1] == 'error'
-            assert 'error' not in observed_event_statuses
-            assert 'error' not in observed_result_hook_statuses
-        finally:
-            await bus.stop()
-
-    async def test_middleware_event_status_order_is_deterministic_for_each_event(self):
-        event_statuses_by_id: dict[str, list[str]] = {}
-
-        class LifecycleMiddleware(EventBusMiddleware):
-            async def on_event_change(self, eventbus: EventBus, event: BaseEvent, status):
-                event_statuses_by_id.setdefault(event.event_id, []).append(str(status))
-
-        async def handler(_event: UserActionEvent) -> str:
-            await asyncio.sleep(0)
-            return 'ok'
-
-        bus = EventBus(middlewares=[LifecycleMiddleware()], max_history_size=None)
-        bus.on(UserActionEvent, handler)
-
-        batch_count = 5
-        events_per_batch = 50
-        try:
-            for batch_index in range(batch_count):
-                events = [
-                    bus.dispatch(
-                        UserActionEvent(
-                            action='deterministic',
-                            user_id=f'u-{batch_index}-{event_index}',
-                        )
-                    )
-                    for event_index in range(events_per_batch)
-                ]
-                await asyncio.gather(*events)
-                await bus.wait_until_idle()
-
-                for event in events:
-                    assert event_statuses_by_id[event.event_id] == ['pending', 'started', 'completed']
-
-            assert len(event_statuses_by_id) == batch_count * events_per_batch
-        finally:
-            await bus.stop()
-
-    async def test_middleware_event_and_result_lifecycle_remains_monotonic_on_timeout(self):
-        observed_event_statuses: list[str] = []
-        observed_result_transitions: list[tuple[str, str, str]] = []
-
-        class LifecycleMiddleware(EventBusMiddleware):
-            async def on_event_change(self, eventbus: EventBus, event: BaseEvent, status):
-                observed_event_statuses.append(str(status))
-
-            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
-                observed_result_transitions.append((event_result.handler_name, str(status), event_result.status))
-
-        class TimeoutLifecycleEvent(BaseEvent[str]):
-            event_timeout: float | None = 0.02
-
-        async def slow_handler(_event: TimeoutLifecycleEvent) -> str:
-            await asyncio.sleep(0.05)
-            return 'slow'
-
-        async def pending_handler(_event: TimeoutLifecycleEvent) -> str:
-            return 'pending'
-
-        bus = EventBus(middlewares=[LifecycleMiddleware()])
-        bus.on(TimeoutLifecycleEvent, slow_handler)
-        bus.on(TimeoutLifecycleEvent, pending_handler)
-
-        try:
-            await bus.dispatch(TimeoutLifecycleEvent())
-            await bus.wait_until_idle()
-
-            assert observed_event_statuses == ['pending', 'started', 'completed']
-
-            slow_transitions = [entry for entry in observed_result_transitions if entry[0].endswith('slow_handler')]
-            pending_transitions = [entry for entry in observed_result_transitions if entry[0].endswith('pending_handler')]
-
-            assert [status for _, status, _ in slow_transitions] == ['pending', 'started', 'completed']
-            assert [result_status for _, _, result_status in slow_transitions] == ['pending', 'started', 'error']
-
-            assert [status for _, status, _ in pending_transitions] == ['pending', 'completed']
-            assert [result_status for _, _, result_status in pending_transitions] == ['pending', 'error']
-        finally:
-            await bus.stop()
-
-    async def test_auto_error_event_middleware_emits_and_guards_recursion(self):
-        seen: list[tuple[str, str]] = []
-        bus = EventBus(middlewares=[AutoErrorEventMiddleware()])
-
-        async def fail_handler(event: BaseEvent) -> None:
-            raise ValueError('boom')
-
-        async def fail_auto(event: BaseEvent) -> None:
-            raise RuntimeError('nested')
-
-        bus.on(UserActionEvent, fail_handler)
-        bus.on('UserActionEventErrorEvent', lambda event: seen.append((event.event_type, event.error_type)))
-        bus.on('UserActionEventErrorEvent', fail_auto)
-
-        try:
-            await bus.dispatch(UserActionEvent(action='fail', user_id='u1'))
-            await bus.wait_until_idle()
-            assert seen == [('UserActionEventErrorEvent', 'ValueError')]
-            assert await bus.find('UserActionEventErrorEventErrorEvent', past=True, future=False) is None
-        finally:
-            await bus.stop()
-
-    async def test_auto_return_event_middleware_emits_and_guards_recursion(self):
-        seen: list[tuple[str, Any]] = []
-        bus = EventBus(middlewares=[AutoReturnEventMiddleware()])
-
-        async def ok_handler(event: BaseEvent) -> int:
-            return 123
-
-        async def non_none_auto(event: BaseEvent) -> str:
-            return 'nested'
-
-        bus.on(UserActionEvent, ok_handler)
-        bus.on('UserActionEventResultEvent', lambda event: seen.append((event.event_type, event.data)))
-        bus.on('UserActionEventResultEvent', non_none_auto)
-
-        try:
-            await bus.dispatch(UserActionEvent(action='ok', user_id='u2'))
-            await bus.wait_until_idle()
-            assert seen == [('UserActionEventResultEvent', 123)]
-            assert await bus.find('UserActionEventResultEventResultEvent', past=True, future=False) is None
-        finally:
-            await bus.stop()
-
-    async def test_auto_return_event_middleware_skips_baseevent_returns(self):
-        seen: list[tuple[str, Any]] = []
-        bus = EventBus(middlewares=[AutoReturnEventMiddleware()])
-
-        class ReturnedEvent(BaseEvent):
-            value: int
-
-        async def returns_event(event: BaseEvent) -> ReturnedEvent:
-            return ReturnedEvent(value=7)
-
-        bus.on(UserActionEvent, returns_event)
-        bus.on('UserActionEventResultEvent', lambda event: seen.append((event.event_type, event.data)))
-
-        try:
-            parent = await bus.dispatch(UserActionEvent(action='ok', user_id='u3'))
-            await bus.wait_until_idle()
-            assert len(parent.event_results) == 1
-            only_result = next(iter(parent.event_results.values()))
-            assert isinstance(only_result.result, ReturnedEvent)
-            assert seen == []
-            assert await bus.find('UserActionEventResultEvent', past=True, future=False) is None
-        finally:
-            await bus.stop()
-
-    async def test_auto_handler_change_event_middleware_emits_registered_and_unregistered(self):
-        registered: list[BusHandlerRegisteredEvent] = []
-        unregistered: list[BusHandlerUnregisteredEvent] = []
-        bus = EventBus(middlewares=[AutoHandlerChangeEventMiddleware()])
-
-        bus.on(BusHandlerRegisteredEvent, lambda event: registered.append(event))
-        bus.on(BusHandlerUnregisteredEvent, lambda event: unregistered.append(event))
-
-        async def target_handler(event: UserActionEvent) -> None:
-            return None
-
-        try:
-            handler_entry = bus.on(UserActionEvent, target_handler)
-            await bus.wait_until_idle()
-
-            bus.off(UserActionEvent, handler_entry)
-            await bus.wait_until_idle()
-
-            matching_registered = [event for event in registered if event.handler.id == handler_entry.id]
-            matching_unregistered = [event for event in unregistered if event.handler.id == handler_entry.id]
-            assert matching_registered
-            assert matching_unregistered
-            assert matching_registered[-1].handler.eventbus_id == bus.id
-            assert matching_registered[-1].handler.eventbus_name == bus.name
-            assert matching_registered[-1].handler.event_pattern == 'UserActionEvent'
-            assert matching_unregistered[-1].handler.event_pattern == 'UserActionEvent'
-        finally:
-            await bus.stop()
-
-    async def test_otel_tracing_middleware_tracks_parent_event_and_handler_spans(self):
-        class RootEvent(BaseEvent):
-            pass
-
-        class ChildEvent(BaseEvent):
-            pass
-
-        class FakeSpan:
-            def __init__(self, name: str, context: Any = None):
-                self.name = name
-                self.context = context
-                self.attrs: dict[str, Any] = {}
-                self.errors: list[str] = []
-                self.ended = False
-
-            def set_attribute(self, key: str, value: Any):
-                self.attrs[key] = value
-
-            def record_exception(self, error: BaseException):
-                self.errors.append(type(error).__name__)
-
-            def end(self):
-                self.ended = True
-
-        class FakeTracer:
-            def __init__(self):
-                self.spans: list[FakeSpan] = []
-
-            def start_span(self, name: str, context: Any = None):
-                span = FakeSpan(name, context=context)
-                self.spans.append(span)
-                return span
-
-        class FakeTraceAPI:
-            @staticmethod
-            def set_span_in_context(span: FakeSpan):
-                return {'parent': span}
-
-        tracer = FakeTracer()
-        bus = EventBus(middlewares=[OtelTracingMiddleware(tracer=tracer, trace_api=FakeTraceAPI())], name='TraceBus')
-
-        async def child_handler(event: ChildEvent) -> None:
-            return None
-
-        async def root_handler(event: RootEvent) -> None:
-            child = event.event_bus.dispatch(ChildEvent())
-            await child
-
-        bus.on(RootEvent, root_handler)
-        bus.on(ChildEvent, child_handler)
-
-        try:
-            await bus.dispatch(RootEvent())
-            await bus.wait_until_idle()
-
-            root_event_span = next(span for span in tracer.spans if span.attrs.get('bubus.event_type') == 'RootEvent')
-            root_handler_span = next(
-                span for span in tracer.spans if str(span.attrs.get('bubus.handler_name', '')).endswith('root_handler')
-            )
-            child_event_span = next(span for span in tracer.spans if span.attrs.get('bubus.event_type') == 'ChildEvent')
-            child_handler_span = next(
-                span for span in tracer.spans if str(span.attrs.get('bubus.handler_name', '')).endswith('child_handler')
-            )
-
-            assert root_handler_span.context['parent'] is root_event_span
-            assert child_event_span.context['parent'] is root_handler_span
-            assert child_handler_span.context['parent'] is child_event_span
-            assert root_event_span.attrs.get('bubus.bus_name') == bus.label
-            assert root_handler_span.attrs.get('bubus.bus_name') == bus.label
-            assert child_event_span.attrs.get('bubus.bus_name') == bus.label
-            assert child_handler_span.attrs.get('bubus.bus_name') == bus.label
-            assert all(span.ended for span in tracer.spans)
-        finally:
-            await bus.stop()
-
-
-class TestSQLiteHistoryMirror:
-    async def test_sqlite_history_persists_events_and_results(self, tmp_path):
-        db_path = tmp_path / 'events.sqlite'
-        middleware = SQLiteHistoryMirrorMiddleware(db_path)
-        bus = EventBus(middlewares=[middleware])
-
-        async def handler(event: BaseEvent) -> str:
-            return 'ok'
-
-        bus.on('UserActionEvent', handler)
-
-        try:
-            await bus.dispatch(UserActionEvent(action='ping', user_id='u-1'))
-            await bus.wait_until_idle()
-
-            conn = sqlite3.connect(db_path)
-            events = conn.execute('SELECT phase, event_status FROM events_log ORDER BY id').fetchall()
-            assert [phase for phase, _ in events] == ['pending', 'started', 'completed']
-            assert [status for _, status in events] == ['pending', 'started', 'completed']
-
-            result_rows = conn.execute(
-                'SELECT phase, status, result_repr, error_repr FROM event_results_log ORDER BY id'
-            ).fetchall()
-            conn.close()
-
-            assert [phase for phase, *_ in result_rows] == ['pending', 'started', 'completed']
-            assert [status for _, status, *_ in result_rows] == ['pending', 'started', 'completed']
-            assert result_rows[-1][2] == "'ok'"
-            assert result_rows[-1][3] is None
-        finally:
-            await bus.stop()
-
-
-class TestLoggerMiddleware:
-    async def test_logger_middleware_writes_file(self, tmp_path):
-        log_path = tmp_path / 'events.log'
-        bus = EventBus(middlewares=[LoggerEventBusMiddleware(log_path)])
-
-        async def handler(event: BaseEvent) -> str:
-            return 'logged'
-
-        bus.on('UserActionEvent', handler)
-
-        try:
-            await bus.dispatch(UserActionEvent(action='log', user_id='user'))
-            await bus.wait_until_idle()
-
-            assert log_path.exists()
-            contents = log_path.read_text().strip().splitlines()
-            assert contents
-            assert 'UserActionEvent' in contents[-1]
-        finally:
-            await bus.stop()
-
-    async def test_logger_middleware_stdout_only(self, capsys):
-        bus = EventBus(middlewares=[LoggerEventBusMiddleware()])
-
-        async def handler(event: BaseEvent) -> str:
-            return 'stdout'
-
-        bus.on('UserActionEvent', handler)
-
-        try:
-            await bus.dispatch(UserActionEvent(action='log', user_id='user'))
-            await bus.wait_until_idle()
-
-            captured = capsys.readouterr()
-            assert 'UserActionEvent' in captured.out
-            assert 'stdout' not in captured.err
-        finally:
-            await bus.stop()
-
-    async def test_sqlite_history_records_errors(self, tmp_path):
-        db_path = tmp_path / 'events.sqlite'
-        middleware = SQLiteHistoryMirrorMiddleware(db_path)
-        bus = EventBus(middlewares=[middleware])
-
-        async def failing_handler(event: BaseEvent) -> None:
-            raise RuntimeError('handler boom')
-
-        bus.on('UserActionEvent', failing_handler)
-
-        try:
-            await bus.dispatch(UserActionEvent(action='boom', user_id='u-2'))
-            await bus.wait_until_idle()
-
-            conn = sqlite3.connect(db_path)
-            result_rows = conn.execute('SELECT phase, status, error_repr FROM event_results_log ORDER BY id').fetchall()
-            events = conn.execute('SELECT phase, event_status FROM events_log ORDER BY id').fetchall()
-            conn.close()
-
-            assert [phase for phase, *_ in result_rows] == ['pending', 'started', 'completed']
-            assert [status for _, status, *_ in result_rows] == ['pending', 'started', 'error']
-            assert 'RuntimeError' in result_rows[-1][2]
-            assert [phase for phase, _ in events] == ['pending', 'started', 'completed']
-            assert [status for _, status in events] == ['pending', 'started', 'completed']
-        finally:
-            await bus.stop()
-
-
 class TestEventBusHierarchy:
     """Test hierarchical EventBus subscription patterns"""
 
@@ -1655,7 +1033,7 @@ class TestEventBusHierarchy:
             for bus in buses:
                 queue_size = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
                 lines.append(
-                    f'{bus.label} queue={queue_size} active={len(bus._active_event_ids)} processing={len(bus._processing_event_ids)} history={len(bus.event_history)}'
+                    f'{bus.label} queue={queue_size} active={len(bus.in_flight_event_ids)} processing={len(bus.processing_event_ids)} history={len(bus.event_history)}'
                 )
             lines.append('--- peer1.log_tree() ---')
             lines.append(peer1.log_tree())
@@ -1825,16 +1203,16 @@ class TestFindMethod:
 
     async def test_find_waiter_cleanup(self, eventbus):
         """Test that temporary find waiters are properly cleaned up."""
-        initial_waiters = len(eventbus._find_waiters)
+        initial_waiters = len(eventbus.find_waiters)
         result = await eventbus.find('TestEvent', past=False, future=0.1)
         assert result is None
-        assert len(eventbus._find_waiters) == initial_waiters
+        assert len(eventbus.find_waiters) == initial_waiters
 
         find_task = asyncio.create_task(eventbus.find('TestEvent2', past=False, future=1.0))
         await asyncio.sleep(0.01)
         eventbus.dispatch(BaseEvent(event_type='TestEvent2'))
         await find_task
-        assert len(eventbus._find_waiters) == initial_waiters
+        assert len(eventbus.find_waiters) == initial_waiters
 
     async def test_find_future_receives_dispatched_event_before_completion(self, eventbus):
         """Test that future find resolves before slow handlers complete."""

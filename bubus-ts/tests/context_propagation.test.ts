@@ -13,16 +13,16 @@ type ContextStore = {
 const SimpleEvent = BaseEvent.extend('SimpleEvent', {})
 const ChildEvent = BaseEvent.extend('ChildEvent', {})
 
-const skip_if_no_async_local_storage = !hasAsyncLocalStorage()
-
 const require_async_local_storage = () => {
   assert.ok(async_local_storage, 'AsyncLocalStorage not available')
   return async_local_storage
 }
 
+assert.ok(hasAsyncLocalStorage(), 'AsyncLocalStorage must be available for context propagation tests')
+
 const get_store = (store: ContextStore | undefined | null): ContextStore => store ?? {}
 
-test('context propagates to handler', { skip: skip_if_no_async_local_storage }, async () => {
+test('context propagates to handler', async () => {
   const bus = new EventBus('ContextTestBus')
   const captured_values: ContextStore = {}
   const storage = require_async_local_storage()
@@ -42,7 +42,7 @@ test('context propagates to handler', { skip: skip_if_no_async_local_storage }, 
   assert.equal(captured_values.user_id, 'user-abc')
 })
 
-test('context propagates through nested handlers', { skip: skip_if_no_async_local_storage }, async () => {
+test('context propagates through nested handlers', async () => {
   const bus = new EventBus('NestedContextBus')
   const captured_parent: ContextStore = {}
   const captured_child: ContextStore = {}
@@ -76,7 +76,7 @@ test('context propagates through nested handlers', { skip: skip_if_no_async_loca
   assert.equal(captured_child.trace_id, 'trace-xyz')
 })
 
-test('context isolation between dispatches', { skip: skip_if_no_async_local_storage }, async () => {
+test('context isolation between dispatches', async () => {
   const bus = new EventBus('IsolationTestBus')
   const captured_values: string[] = []
   const storage = require_async_local_storage()
@@ -96,7 +96,7 @@ test('context isolation between dispatches', { skip: skip_if_no_async_local_stor
   assert.ok(captured_values.includes('req-B'))
 })
 
-test('context propagates to multiple handlers', { skip: skip_if_no_async_local_storage }, async () => {
+test('context propagates to multiple handlers', async () => {
   const bus = new EventBus('ParallelContextBus')
   const captured_values: string[] = []
   const storage = require_async_local_storage()
@@ -120,7 +120,7 @@ test('context propagates to multiple handlers', { skip: skip_if_no_async_local_s
   assert.ok(captured_values.includes('h2:req-parallel'))
 })
 
-test('context propagates through event forwarding', { skip: skip_if_no_async_local_storage }, async () => {
+test('context propagates through event forwarding', async () => {
   const bus_a = new EventBus('BusA')
   const bus_b = new EventBus('BusB')
   const captured_bus_a: ContextStore = {}
@@ -149,7 +149,7 @@ test('context propagates through event forwarding', { skip: skip_if_no_async_loc
   assert.equal(captured_bus_b.request_id, 'req-forwarded')
 })
 
-test('handler can modify context without affecting parent', { skip: skip_if_no_async_local_storage }, async () => {
+test('handler can modify context without affecting parent', async () => {
   const bus = new EventBus('ModifyContextBus')
   const storage = require_async_local_storage()
   let parent_value_after_child = ''
@@ -182,11 +182,11 @@ test('handler can modify context without affecting parent', { skip: skip_if_no_a
   assert.equal(parent_value_after_child, 'parent-value')
 })
 
-test('event parent_id tracking still works with context propagation', { skip: skip_if_no_async_local_storage }, async () => {
+test('event parent_id tracking still works with context propagation', async () => {
   const bus = new EventBus('ParentIdTrackingBus')
   const storage = require_async_local_storage()
   let parent_event_id: string | undefined
-  let child_event_parent_id: string | undefined
+  let child_event_parent_id: string | null | undefined
 
   bus.on(SimpleEvent, async (event) => {
     parent_event_id = event.event_id
@@ -210,10 +210,10 @@ test('event parent_id tracking still works with context propagation', { skip: sk
   assert.equal(child_event_parent_id, parent_event_id)
 })
 
-test('dispatch context and parent_id both work together', { skip: skip_if_no_async_local_storage }, async () => {
+test('dispatch context and parent_id both work together', async () => {
   const bus = new EventBus('CombinedContextBus')
   const storage = require_async_local_storage()
-  const results: Record<string, string | undefined> = {}
+  const results: Record<string, string | null | undefined> = {}
 
   bus.on(SimpleEvent, async (event) => {
     const store = storage.getStore() as ContextStore | undefined
@@ -241,14 +241,14 @@ test('dispatch context and parent_id both work together', { skip: skip_if_no_asy
   assert.equal(results.child_event_parent_id, results.parent_event_id)
 })
 
-test('deeply nested context and parent tracking', { skip: skip_if_no_async_local_storage }, async () => {
+test('deeply nested context and parent tracking', async () => {
   const bus = new EventBus('DeepNestingBus')
   const storage = require_async_local_storage()
   const results: Array<{
     level: number
     request_id?: string
     event_id: string
-    parent_id?: string
+    parent_id?: string | null
   }> = []
 
   const Level2Event = BaseEvent.extend('Level2Event', {})

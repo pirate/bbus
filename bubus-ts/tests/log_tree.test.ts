@@ -5,11 +5,11 @@ import { z } from 'zod'
 
 import { BaseEvent, EventBus, EventResult } from '../src/index.js'
 import { EventHandler } from '../src/event_handler.js'
-import type { EventHandlerFunction } from '../src/types.js'
+import type { EventHandlerCallable } from '../src/types.js'
 
 const RootEvent = BaseEvent.extend('RootEvent', { data: z.string().optional() })
 const ChildEvent = BaseEvent.extend('ChildEvent', { value: z.number().optional() })
-const GrandchildEvent = BaseEvent.extend('GrandchildEvent', { nested: z.record(z.number()).optional() })
+const GrandchildEvent = BaseEvent.extend('GrandchildEvent', { nested: z.record(z.string(), z.number()).optional() })
 
 class ValueError extends Error {
   constructor(message: string) {
@@ -19,13 +19,13 @@ class ValueError extends Error {
 }
 
 const createHandlerEntry = (bus: EventBus, handler_id: string, handler_name: string, event_pattern: string): EventHandler => {
-  const handler: EventHandlerFunction = () => undefined
+  const handler: EventHandlerCallable = () => undefined
   const { isostring: handler_registered_at, ts: handler_registered_ts } = BaseEvent.nextTimestamp()
   return new EventHandler({
     id: handler_id,
     handler,
     handler_name,
-    handler_timeout: bus.event_timeout_default,
+    handler_timeout: bus.event_timeout,
     handler_registered_at,
     handler_registered_ts,
     event_pattern,

@@ -7,9 +7,9 @@ import type { EventStatus } from './types.js'
 export type { EventStatus } from './types.js'
 
 export interface EventBusMiddleware {
-  on_event_change?(eventbus: EventBus, event: BaseEvent, status: EventStatus): void | Promise<void>
-  on_event_result_change?(eventbus: EventBus, event: BaseEvent, event_result: EventResult, status: EventStatus): void | Promise<void>
-  on_handler_change?(eventbus: EventBus, handler: EventHandler, registered: boolean): void | Promise<void>
+  onEventChange?(eventbus: EventBus, event: BaseEvent, status: EventStatus): void | Promise<void>
+  onEventResultChange?(eventbus: EventBus, event: BaseEvent, event_result: EventResult, status: EventStatus): void | Promise<void>
+  onBusHandlersChange?(eventbus: EventBus, handler: EventHandler, registered: boolean): void | Promise<void>
 }
 
 export type EventBusMiddlewareCtor = new () => EventBusMiddleware

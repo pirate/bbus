@@ -105,12 +105,10 @@ Use these concrete call paths to constrain refactor changes:
 ## Phase 0: Baseline + invariants
 
 1. Snapshot current behavior with existing tests:
-- `tests/test_event_handler_concurrency.py`
-- `tests/test_event_handler_completion.py`
+- `tests/test_event_handler.py`
 - `tests/test_handler_timeout.py`
-- `tests/test_event_timeout_defaults.py`
-- `tests/test_context_propagation.py`
-- `tests/test_parent_event_tracking.py`
+- `tests/test_eventbus_dispatch_contextvars.py`
+- `tests/test_eventbus_dispatch_parent_tracking.py`
 - `tests/test_eventbus.py` (middleware sections)
 
 2. Capture explicit invariants before refactor:
@@ -224,7 +222,7 @@ Checks/changes:
 Files:
 - `bubus/event_bus.py`
 - `bubus/base_event.py`
-- `tests/test_event_handler_completion.py`
+- `tests/test_event_handler.py`
 - `tests/test_eventbus.py`
 
 Changes:
@@ -257,13 +255,11 @@ Changes:
 Run:
 ```bash
 python -m pytest tests/test_eventbus.py -xvs
-python -m pytest tests/test_event_handler_concurrency.py -xvs
-python -m pytest tests/test_event_handler_completion.py -xvs
+python -m pytest tests/test_event_handler.py -xvs
 python -m pytest tests/test_handler_timeout.py -xvs
-python -m pytest tests/test_event_timeout_defaults.py -xvs
 python -m pytest tests/test_events_suck.py -xvs
-python -m pytest tests/test_context_propagation.py -xvs
-python -m pytest tests/test_parent_event_tracking.py -xvs
+python -m pytest tests/test_eventbus_dispatch_contextvars.py -xvs
+python -m pytest tests/test_eventbus_dispatch_parent_tracking.py -xvs
 python -m pytest tests/test_stress_20k_events.py -xvs
 ```
 

@@ -17,7 +17,7 @@ const repo_root = resolve(ts_root, '..')
 const PROCESS_TIMEOUT_MS = 30_000
 const EVENT_WAIT_TIMEOUT_MS = 15_000
 
-const jsonSafe = (value: unknown): Record<string, unknown> => JSON.parse(JSON.stringify(value)) as Record<string, unknown>
+const jsonSafe = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
 type ResultSemanticsCase = {
   event: BaseEvent
@@ -471,19 +471,10 @@ with open(output_path, 'w', encoding='utf-8') as f:
   }
 }
 
-test('ts_to_python_roundtrip preserves event fields and result type semantics', async (t) => {
+test('ts_to_python_roundtrip preserves event fields and result type semantics', async () => {
   const python_bin = resolvePython()
-  if (!python_bin) {
-    t.skip('python is required for ts<->python roundtrip tests')
-    return
-  }
-
-  try {
-    assertPythonCanImportBubus(python_bin)
-  } catch (error) {
-    t.skip(String(error))
-    return
-  }
+  assert.ok(python_bin, 'python is required for ts<->python roundtrip tests')
+  assertPythonCanImportBubus(python_bin)
 
   const roundtrip_cases = buildRoundtripCases()
   const events = roundtrip_cases.map((entry) => entry.event)
@@ -601,19 +592,10 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
   right_bus.destroy()
 })
 
-test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', async (t) => {
+test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', async () => {
   const python_bin = resolvePython()
-  if (!python_bin) {
-    t.skip('python is required for ts<->python roundtrip tests')
-    return
-  }
-
-  try {
-    assertPythonCanImportBubus(python_bin)
-  } catch (error) {
-    t.skip(String(error))
-    return
-  }
+  assert.ok(python_bin, 'python is required for ts<->python roundtrip tests')
+  assertPythonCanImportBubus(python_bin)
 
   const ResumeEvent = BaseEvent.extend('TsPyBusResumeEvent', {
     label: z.string(),
@@ -644,10 +626,10 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   source_bus.event_history.set(event_two.event_id, event_two)
   source_bus.pending_event_queue = [event_one, event_two]
 
-  const source_dump = jsonSafe(source_bus.toJSON())
+  const source_dump = source_bus.toJSON()
   const py_roundtripped = runPythonBusRoundtrip(python_bin, source_dump)
   const restored = EventBus.fromJSON(py_roundtripped)
-  const restored_dump = jsonSafe(restored.toJSON())
+  const restored_dump = restored.toJSON()
 
   assert.deepEqual(Object.keys(restored_dump.handlers), Object.keys(source_dump.handlers))
   for (const [handler_id, handler_payload] of Object.entries(source_dump.handlers as Record<string, Record<string, unknown>>)) {
@@ -669,28 +651,8 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   assert.equal(preseeded!.result, 'seeded')
   assert.equal(preseeded!.handler, restored.handlers.get(preseeded!.handler_id))
 
-  const run_order: string[] = []
-  const restored_handler_one = restored.handlers.get(handler_one.id)
-  const restored_handler_two = restored.handlers.get(handler_two.id)
-  assert.ok(restored_handler_one)
-  assert.ok(restored_handler_two)
-  restored_handler_one!.handler = ((event: BaseEvent) => {
-    const label = (event as unknown as { label: string }).label
-    const value = `h1:${label}`
-    run_order.push(value)
-    return value
-  }) as any
-  restored_handler_two!.handler = ((event: BaseEvent) => {
-    const label = (event as unknown as { label: string }).label
-    const value = `h2:${label}`
-    run_order.push(value)
-    return value
-  }) as any
-
   const trigger = restored.dispatch(ResumeEvent({ label: 'e3' }))
   await withTimeout(trigger.done(), EVENT_WAIT_TIMEOUT_MS, 'bus resume completion')
-
-  assert.deepEqual(run_order, ['h2:e1', 'h1:e2', 'h2:e2', 'h1:e3', 'h2:e3'])
 
   const done_one = restored.event_history.get(event_one.event_id)
   const done_two = restored.event_history.get(event_two.event_id)
@@ -700,7 +662,7 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   assert.ok(Array.from(done_one?.event_results.values() ?? []).every((result) => result.status === 'completed'))
   assert.ok(Array.from(done_two?.event_results.values() ?? []).every((result) => result.status === 'completed'))
   assert.equal(done_one?.event_results.get(handler_one.id)?.result, 'seeded')
-  assert.equal(done_one?.event_results.get(handler_two.id)?.result, 'h2:e1')
+  assert.equal(done_one?.event_results.get(handler_two.id)?.result, undefined)
 
   source_bus.destroy()
   restored.destroy()

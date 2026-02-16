@@ -58,7 +58,7 @@ test('event_result_type allows undefined handler return values', async () => {
 test('invalid result marks handler error', async () => {
   const bus = new EventBus('ResultSchemaErrorBus')
 
-  bus.on(ObjectResultEvent, () => ({ value: 'bad', count: 'nope' }) as unknown)
+  bus.on(ObjectResultEvent, () => JSON.parse('{"value":"bad","count":"nope"}'))
 
   const event = bus.dispatch(ObjectResultEvent({}))
   await event.done()

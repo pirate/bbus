@@ -108,6 +108,8 @@ async def _main_async() -> int:
     if not args.child_json:
         print('[python] runtime perf harness starting')
 
+    results: list[dict[str, Any]]
+
     if args.scenario:
         if args.scenario not in PERF_SCENARIO_IDS:
             raise ValueError(f'Unknown --scenario value {args.scenario!r}. Expected one of: {", ".join(PERF_SCENARIO_IDS)}')
@@ -115,7 +117,7 @@ async def _main_async() -> int:
         result['scenario_id'] = args.scenario
         results = [result]
     elif args.in_process:
-        raw_results = await run_all_perf_scenarios(perf_input)
+        raw_results: list[dict[str, Any]] = await run_all_perf_scenarios(perf_input)
         results = []
         for scenario_id, result in zip(PERF_SCENARIO_IDS, raw_results, strict=True):
             result_copy = dict(result)

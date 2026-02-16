@@ -28,8 +28,8 @@ class ChildEvent(BaseEvent[str]):
 bus = EventBus('RpcBus')
 
 async def on_parent(event: ParentEvent) -> str:
-    assert event.bus is not None
-    child = event.bus.emit(ChildEvent())
+    assert event.event_bus is not None
+    child = event.event_bus.emit(ChildEvent())
     await child  # queue-jump while still inside this handler
     value = await child.event_result()
     return f'parent got: {value}'
@@ -88,10 +88,10 @@ bus = EventBus('OrderBus', event_concurrency='bus-serial', event_handler_concurr
 order: list[str] = []
 
 async def on_parent(event: ParentEvent) -> None:
-    assert event.bus is not None
+    assert event.event_bus is not None
     order.append('parent_start')
-    event.bus.emit(SiblingEvent())
-    child = event.bus.emit(ChildEvent())
+    event.event_bus.emit(SiblingEvent())
+    child = event.event_bus.emit(ChildEvent())
     await child
     order.append('parent_end')
 

@@ -81,11 +81,11 @@ const trimBusHistoryToOneEvent = async (hooks, bus, TrimEvent) => {
 const waitForRegistrySize = async (hooks, EventBus, expectedSize, attempts = 150) => {
   for (let i = 0; i < attempts; i += 1) {
     await hooks.sleep(40)
-    if (EventBus._all_instances.size <= expectedSize) {
+    if (EventBus.all_instances.size <= expectedSize) {
       return true
     }
   }
-  return EventBus._all_instances.size <= expectedSize
+  return EventBus.all_instances.size <= expectedSize
 }
 
 const runCleanupBurst = async ({ hooks, EventBus, CleanupEvent, TrimEvent, busesPerMode, eventsPerBus, destroyMode }) => {
@@ -395,7 +395,7 @@ export const runPerfEphemeralBuses = async (input) => {
 
   assert(processedCount === totalEvents, `500x100 buses processed ${processedCount}/${totalEvents}`)
   assert(totalMs < hooks.limits.singleRunMs, `500x100 buses took ${Math.round(totalMs)}ms (limit ${hooks.limits.singleRunMs}ms)`)
-  assert(EventBus._all_instances.size === 0, `500x100 buses leaked instances: ${EventBus._all_instances.size}`)
+  assert(EventBus.all_instances.size === 0, `500x100 buses leaked instances: ${EventBus.all_instances.size}`)
 
   const result = {
     scenario: '500 buses x 100 events',
@@ -678,7 +678,7 @@ export const runPerfWorstCase = async (input) => {
     cancelCount,
   }
   record(hooks, result.scenario, result)
-  assert(EventBus._all_instances.size === 0, `worst-case leaked instances: ${EventBus._all_instances.size}`)
+  assert(EventBus.all_instances.size === 0, `worst-case leaked instances: ${EventBus.all_instances.size}`)
 
   return result
 }
@@ -691,7 +691,7 @@ export const runCleanupEquivalence = async (input) => {
   const busesPerMode = 80
   const eventsPerBus = 64
   const totalEvents = busesPerMode * eventsPerBus * 2
-  const baselineRegistrySize = EventBus._all_instances.size
+  const baselineRegistrySize = EventBus.all_instances.size
 
   const t0 = hooks.now()
 
@@ -705,8 +705,8 @@ export const runCleanupEquivalence = async (input) => {
     destroyMode: true,
   })
   assert(
-    EventBus._all_instances.size === baselineRegistrySize,
-    `cleanup equivalence destroy branch leaked instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`
+    EventBus.all_instances.size === baselineRegistrySize,
+    `cleanup equivalence destroy branch leaked instances: ${EventBus.all_instances.size}/${baselineRegistrySize}`
   )
 
   await runCleanupBurst({
@@ -724,7 +724,7 @@ export const runCleanupEquivalence = async (input) => {
   let scopeEquivalentByState = false
 
   if (!scopeCollected) {
-    const retained = Array.from(EventBus._all_instances)
+    const retained = Array.from(EventBus.all_instances)
     const allRetainedIdle = retained.every(
       (bus) =>
         bus.pending_event_queue.length === 0 &&
@@ -735,7 +735,7 @@ export const runCleanupEquivalence = async (input) => {
     )
     assert(
       allRetainedIdle,
-      `cleanup equivalence scope branch retained active deno instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`
+      `cleanup equivalence scope branch retained active deno instances: ${EventBus.all_instances.size}/${baselineRegistrySize}`
     )
     if (hooks.runtimeName === 'deno') {
       assert(
@@ -759,7 +759,7 @@ export const runCleanupEquivalence = async (input) => {
   }
 
   const equivalent = scopeCollected || scopeEquivalentByState
-  assert(equivalent, `cleanup equivalence scope branch retained instances: ${EventBus._all_instances.size}/${baselineRegistrySize}`)
+  assert(equivalent, `cleanup equivalence scope branch retained instances: ${EventBus.all_instances.size}/${baselineRegistrySize}`)
 
   const totalMs = hooks.now() - t0
   const msPerEvent = totalMs / totalEvents

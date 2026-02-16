@@ -176,6 +176,64 @@ Resolved in this order:
 1. `event_slow_timeout`
 2. bus `event_slow_timeout`
 
+## Execution scope ordering
+
+Timeout and slow-monitor behavior is implemented as stacked runtime scopes. The ordering matters:
+
+<Tabs>
+<Tab title="Python">
+
+```python
+# EventBus.process_event(...)
+async with locks.with_event_lock(...):
+    async with asyncio.timeout(event_timeout):
+        async with with_slow_monitor(event_slow_monitor):
+            await event.event_run_handlers(...)
+
+# EventResult.run_handler(...)
+async with locks.with_handler_lock(...):
+    async with event_result.with_timeout(event):
+        async with with_slow_monitor(handler_slow_monitor):
+            with eventbus.with_handler_execution_context(event, handler_id):
+                await event_result.call_handler(...)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+// EventBus.processEvent(...)
+await locks.withEventLock(event, () =>
+  _runHandlersWithTimeout(event, pendingEntries, () =>
+    withSlowMonitor(event.createSlowEventWarningTimer(), () =>
+      scopedEvent.runHandlers(pendingEntries)
+    )
+  )
+)
+
+// BaseEvent.runHandlers(...) + EventResult.runHandler(...)
+await locks.withHandlerLock(event, defaultHandlerConcurrency, async (handlerLock) => {
+  await entry.runHandler(handlerLock)
+})
+
+await locks.withHandlerExecutionContext(result, async () => {
+  await runWithAsyncContext(event.eventGetDispatchContext() ?? null, async () => {
+    await withTimeout(handlerTimeout, onHandlerTimeout, () =>
+      withSlowMonitor(handlerSlowTimer, () =>
+        runWithAbortMonitor(() => handler(handlerEvent), abortSignal)
+      )
+    )
+  })
+})
+```
+
+</Tab>
+</Tabs>
+
+Event-level timeout finalization keeps cancellation semantics explicit:
+- pending handlers -> cancelled
+- started handlers -> aborted
+
 ## Note on retry
 
 Bus/event timeouts are outer budgets. If you need per-attempt limits for retried handlers, use the `retry` decorator's `timeout` option.

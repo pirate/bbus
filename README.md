@@ -83,7 +83,9 @@ print(await event.event_result())
 
 <br/>
 
-### 🔎 Event Pattern Matching
+<details>
+<summary><strong>🔎 Event Pattern Matching</strong></summary>
+
 
 Subscribe to events using multiple patterns:
 
@@ -100,7 +102,11 @@ bus.on('*', universal_handler)
 
 <br/>
 
-### 🔀 Async and Sync Handler Support
+</details>
+
+<details>
+<summary><strong>🔀 Async and Sync Handler Support</strong></summary>
+
 
 Register both synchronous and asynchronous handlers for maximum flexibility:
 
@@ -144,7 +150,11 @@ bus.on(SomeEvent, SomeService.handlers_can_be_staticmethods)
 <br/>
 
 
-### 🔠 Type-Safe Events with Pydantic
+</details>
+
+<details>
+<summary><strong>🔠 Type-Safe Events with Pydantic</strong></summary>
+
 
 Define events as Pydantic models with full type checking and validation:
 
@@ -174,7 +184,11 @@ event = OrderCreatedEvent(
 
 
 
-### ⏩ Forward `Events` Between `EventBus`s 
+</details>
+
+<details>
+<summary><strong>⏩ Forward `Events` Between `EventBus`s</strong></summary>
+
 
 You can define separate `EventBus` instances in different "microservices" to separate different areas of concern.
 `EventBus`s can be set up to forward events between each other (with automatic loop prevention):
@@ -198,7 +212,11 @@ print(event.event_path)  # ['MainBus#ab12', 'AuthBus#cd34', 'DataBus#ef56']  # l
 
 <br/>
 
-### Bridges
+</details>
+
+<details>
+<summary><strong>Bridges</strong></summary>
+
 
 Bridges are optional extra connectors provided that allow you to send/receive events from an external service, and you do not need to use a bridge to use bubus since it's normally purely in-memory. These are just simple helpers to forward bubus events JSON to storage engines / other processes / other machines; they prevent loops automatically, but beyond that it's only basic forwarding with no handler pickling or anything fancy.
 
@@ -222,7 +240,11 @@ bridge.on('*', bus.emit)  # listen for new events in redis channel and emit them
 
 <br/>
 
-### 🔱 Event Results Aggregation
+</details>
+
+<details>
+<summary><strong>🔱 Event Results Aggregation</strong></summary>
+
 
 Collect and aggregate results from multiple handlers:
 
@@ -249,7 +271,11 @@ await event.event_results_list()
 
 <br/>
 
-### 🚦 FIFO Event Processing
+</details>
+
+<details>
+<summary><strong>🚦 FIFO Event Processing</strong></summary>
+
 
 Events are processed in strict FIFO order, maintaining consistency:
 
@@ -284,7 +310,11 @@ await bus.emit(MainEvent()).event_result()
 
 <br/>
 
-### 🪆 Emit Nested Child Events From Handlers
+</details>
+
+<details>
+<summary><strong>🪆 Emit Nested Child Events From Handlers</strong></summary>
+
 
 Automatically track event relationships and causality tree:
 
@@ -327,7 +357,11 @@ if __name__ == '__main__':
 
 <br/><br/>
 
-### 🔎 Find Events in History or Wait for Future Events
+</details>
+
+<details>
+<summary><strong>🔎 Find Events in History or Wait for Future Events</strong></summary>
+
 
 `find()` is the single lookup API: search history, wait for future events, or combine both.
 
@@ -379,7 +413,11 @@ See the `EventBus.find(...)` API section below for full parameter details.
 
 <br/>
 
-### 🔁 Event Debouncing
+</details>
+
+<details>
+<summary><strong>🔁 Event Debouncing</strong></summary>
+
 
 Avoid re-running expensive work by reusing recent events. The `find()` method makes debouncing simple:
 
@@ -401,7 +439,11 @@ await event                                              # get completed event
 
 <br/>
 
-### 🎯 Event Handler Return Values
+</details>
+
+<details>
+<summary><strong>🎯 Event Handler Return Values</strong></summary>
+
 
 There are two ways to get return values from event handlers:
 
@@ -505,7 +547,11 @@ For pure Python usage, `event_result_type` can be any Python/Pydantic type you w
 
 <br/>
 
-### 🧵 ContextVar Propagation
+</details>
+
+<details>
+<summary><strong>🧵 ContextVar Propagation</strong></summary>
+
 
 ContextVars set before `emit()` are automatically propagated to event handlers. This is essential for request-scoped context like request IDs, user sessions, or tracing spans:
 
@@ -568,7 +614,11 @@ await event_b  # Still sees 'req-B'
 
 <br/>
 
-### 🧹 Memory Management
+</details>
+
+<details>
+<summary><strong>🧹 Memory Management</strong></summary>
+
 
 EventBus includes automatic memory management to prevent unbounded growth in long-running applications:
 
@@ -612,7 +662,11 @@ finally:
 
 <br/>
 
-### ⛓️ Parallel Handler Execution
+</details>
+
+<details>
+<summary><strong>⛓️ Parallel Handler Execution</strong></summary>
+
 
 > [!CAUTION]
 > **Not Recommended.** Only for advanced users willing to implement their own concurrency control.
@@ -636,7 +690,11 @@ await bus.emit(DataEvent())
 
 <br/>
 
-### 🧩 Middlwares
+</details>
+
+<details>
+<summary><strong>🧩 Middlwares</strong></summary>
+
 
 Middlewares can observe or mutate the `EventResult` at each step, emit additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
 
@@ -671,7 +729,7 @@ Built-in middlwares you can import from `bubus.middlwares.*`:
 
 #### Defining a custom middleware
 
-Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need (`on_event_change`, `on_event_result_change`, `on_handler_change`):
+Handler middlewares subclass `EventBusMiddleware` and override whichever lifecycle hooks they need (`on_event_change`, `on_event_result_change`, `on_bus_handlers_change`):
 
 ```python
 from bubus.middlewares import EventBusMiddleware
@@ -688,7 +746,7 @@ class AnalyticsMiddleware(EventBusMiddleware):
                 )
             )
 
-    async def on_handler_change(self, eventbus, handler, registered):
+    async def on_bus_handlers_change(self, eventbus, handler, registered):
         await analytics_bus.emit(
             HandlerRegistryChangedEvent(handler_id=handler.id, registered=registered, bus=eventbus.name)
         )
@@ -701,9 +759,13 @@ class AnalyticsMiddleware(EventBusMiddleware):
 
 <br/>
 
+</details>
+
 ## 📚 API Documentation
 
-### `EventBus`
+<details>
+<summary><strong>Review bus construction, defaults, and core lifecycle methods.</strong></summary>
+
 
 The main event bus class that manages event processing and handler execution.
 
@@ -855,7 +917,11 @@ await bus.stop(clear=True)   # Stop and clear all event history and handlers to 
 
 ---
 
-### `BaseEvent`
+</details>
+
+<details>
+<summary><strong>Review event fields, runtime state, and result helper methods.</strong></summary>
+
 
 Base class for all events. Subclass `BaseEvent` to define your own events.
 
@@ -1044,13 +1110,13 @@ long_lists = await event.event_results_flat_list(include=lambda r: isinstance(r.
 all_items = await event.event_results_flat_list(raise_if_any=False, raise_if_none=False)
 ```
 
-##### `event_create_pending_results(handlers: dict[str, EventHandler], eventbus: EventBus | None = None, timeout: float | None = None) -> dict[str, EventResult]`
+##### `event_create_pending_handler_results(handlers: dict[str, EventHandler], eventbus: EventBus | None = None, timeout: float | None = None) -> dict[str, EventResult]`
 
 Create (or reset) the `EventResult` placeholders for the provided handlers. The `EventBus` uses this internally before it begins executing handlers so that the event's state is immediately visible. Advanced users can call it when coordinating handler execution manually.
 
 ```python
-applicable_handlers = bus._get_applicable_handlers(event)  # internal helper shown for illustration
-pending_results = event.event_create_pending_results(applicable_handlers, eventbus=bus)
+applicable_handlers = bus.get_handlers_for_event(event)  # internal helper shown for illustration
+pending_results = event.event_create_pending_handler_results(applicable_handlers, eventbus=bus)
 
 assert all(result.status == 'pending' for result in pending_results.values())
 ```
@@ -1072,7 +1138,11 @@ async def some_handler(event: MyEvent):
 
 ---
 
-### `EventResult`
+</details>
+
+<details>
+<summary><strong>Review per-handler status, timing, outputs, and captured errors.</strong></summary>
+
 
 The placeholder object that represents the pending result from a single handler executing an event.  
 `Event.event_results` contains a `dict[PythonIdStr, EventResult]` in the shape of `{handler_id: EventResult()}`.
@@ -1110,14 +1180,18 @@ handler_result = event.event_results['handler_id']
 value = await handler_result  # Returns result or raises an exception if handler hits an error
 ```
 
-- `execute(event, handler, *, eventbus, timeout, enter_handler_context, exit_handler_context, format_exception_for_log)`  
-  Low-level helper that runs the handler, updates timing/status fields, captures errors, and notifies its completion signal. `EventBus.execute_handler()` delegates to this; you generally only need it when building a custom bus or integrating the event system into another emitter runtime.
+- `run_handler(event, handler, *, eventbus, timeout, enter_handler_context, exit_handler_context, format_exception_for_log)`  
+  Low-level helper that runs the handler, updates timing/status fields, captures errors, and notifies its completion signal. `EventBus.run_handler()` delegates to this; you generally only need it when building a custom bus or integrating the event system into another emitter runtime.
 
-### `EventHandler`
+</details>
+
+<details>
+<summary><strong>Review handler metadata, registration fields, and serialization helpers.</strong></summary>
+
 
 Serializable metadata wrapper around a registered handler callable.
 
-You usually get an `EventHandler` back from `bus.on(...)`, can pass it to `bus.off(...)`, and may see it in middleware hooks like `on_handler_change(...)`.
+You usually get an `EventHandler` back from `bus.on(...)`, can pass it to `bus.off(...)`, and may see it in middleware hooks like `on_bus_handlers_change(...)`.
 
 #### `EventHandler` Fields
 
@@ -1146,6 +1220,8 @@ The raw callable is stored on `handler`, but is excluded from JSON serialization
 - `from_callable(...) -> EventHandler`: Build a new handler entry from a callable plus bus/pattern metadata.
 
 ---
+
+</details>
 
 ## 🧵 Advanced Concurrency Control
 

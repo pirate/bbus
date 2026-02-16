@@ -1,26 +1,21 @@
-import { BaseEvent, EventBus, EventHandlerCancelledError, EventHandlerTimeoutError } from '../dist/esm/index.js'
+import { BaseEvent, EventBus, EventHandlerCancelledError, EventHandlerTimeoutError } from '../src/index.js'
 import { PERF_SCENARIO_IDS, runAllPerfScenarios, runPerfScenarioById } from './performance.scenarios.js'
 
 declare const Bun: { gc?: (full?: boolean) => void } | undefined
 declare const Deno:
   | {
+      args?: string[]
       memoryUsage?: () => { rss: number; heapUsed: number }
       [key: symbol]: unknown
-    }
-  | undefined
-declare const process:
-  | {
-      versions?: { node?: string; bun?: string }
-      memoryUsage?: () => { rss: number; heapUsed: number }
     }
   | undefined
 
 const runtime = typeof Bun !== 'undefined' && Bun ? 'bun' : typeof Deno !== 'undefined' && Deno ? 'deno' : 'node'
 
 const getCliArgs = () => {
-  const processArgs = typeof process !== 'undefined' && process && Array.isArray(process.argv) ? process.argv.slice(2) : []
+  const processArgs = typeof process !== 'undefined' && Array.isArray(process.argv) ? process.argv.slice(2) : []
   if (processArgs.length > 0) return processArgs
-  return typeof Deno !== 'undefined' && Deno && Array.isArray((Deno as { args?: string[] }).args) ? (Deno.args ?? []) : []
+  return typeof Deno !== 'undefined' && Deno && Array.isArray(Deno.args) ? (Deno.args ?? []) : []
 }
 
 const getScenarioArg = () => {

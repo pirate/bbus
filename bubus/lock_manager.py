@@ -2,37 +2,36 @@ import asyncio
 import contextvars
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
-from bubus.base_event import BaseEvent, EventConcurrencyMode, EventHandlerConcurrencyMode
-from bubus.event_result import EventResult
+from bubus.base_event import BaseEvent, EventConcurrencyMode, EventHandlerConcurrencyMode, EventResult
 
 if TYPE_CHECKING:
     from bubus.event_bus import EventBus
+
+T_EventResultType = TypeVar('T_EventResultType')
 
 
 class LockManagerProtocol(Protocol):
     """Minimal lock API required by EventBus runtime execution paths."""
 
-    def get_lock_for_event(self, bus: 'EventBus', event: BaseEvent[Any]) -> 'ReentrantLock | None':
+    def get_lock_for_event(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> 'ReentrantLock | None':
         """Return the concrete event-level lock object or ``None`` for parallel mode."""
         ...
 
-    def with_event_lock(self, bus: 'EventBus', event: BaseEvent[Any]) -> Any:
+    def with_event_lock(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> Any:
         """Context manager for event-level lock scope."""
         ...
 
-    def with_handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], event_result: EventResult[Any]) -> Any:
+    def with_handler_lock(
+        self, bus: 'EventBus', event: BaseEvent[T_EventResultType], event_result: EventResult[T_EventResultType]
+    ) -> Any:
         """Context manager for per-handler lock scope."""
         ...
 
-    def with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[Any]) -> Any:
+    def with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> Any:
         """Context manager that mirrors held event-lock state into dispatch context."""
         ...
-
-
-# Context variable storing lock-id -> re-entrant depth for the current async context.
-_held_lock_depths: ContextVar[dict[int, int]] = ContextVar('held_lock_depths', default={})
 
 
 class ReentrantLock:
@@ -44,6 +43,9 @@ class ReentrantLock:
     2. Nested entries in the same context only bump the local depth counter.
     3. `__aexit__` decrements depth and releases semaphore at depth zero.
     """
+
+    # Context variable storing lock-id -> re-entrant depth for the current async context.
+    _held_lock_depths: ContextVar[dict[int, int]] = ContextVar('held_lock_depths', default={})
 
     def __init__(self):
         self._semaphore: asyncio.Semaphore | None = None
@@ -60,16 +62,16 @@ class ReentrantLock:
         return self._semaphore
 
     def _depth(self) -> int:
-        return _held_lock_depths.get().get(self._lock_id, 0)
+        return ReentrantLock._held_lock_depths.get().get(self._lock_id, 0)
 
     def _set_depth(self, depth: int) -> None:
-        current = _held_lock_depths.get()
+        current = ReentrantLock._held_lock_depths.get()
         updated = dict(current)
         if depth <= 0:
             updated.pop(self._lock_id, None)
         else:
             updated[self._lock_id] = depth
-        _held_lock_depths.set(updated)
+        ReentrantLock._held_lock_depths.set(updated)
 
     def mark_held_in_current_context(self) -> contextvars.Token[dict[int, int]]:
         """Temporarily mark this lock as already held in the current context.
@@ -77,15 +79,15 @@ class ReentrantLock:
         Used when a handler runs in a copied dispatch context and needs re-entrant
         lock behavior to match the parent processing context.
         """
-        current = _held_lock_depths.get()
+        current = ReentrantLock._held_lock_depths.get()
         updated = dict(current)
         updated[self._lock_id] = updated.get(self._lock_id, 0) + 1
-        return _held_lock_depths.set(updated)
+        return ReentrantLock._held_lock_depths.set(updated)
 
     @staticmethod
     def reset_context_mark(token: contextvars.Token[dict[int, int]]) -> None:
         """Undo a prior `mark_held_in_current_context` update."""
-        _held_lock_depths.reset(token)
+        ReentrantLock._held_lock_depths.reset(token)
 
     async def __aenter__(self):
         depth = self._depth()
@@ -130,7 +132,7 @@ class LockManager:
 
     _lock_for_event_global_serial = ReentrantLock()
 
-    def get_lock_for_event(self, bus: 'EventBus', event: BaseEvent[Any]) -> ReentrantLock | None:
+    def get_lock_for_event(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> ReentrantLock | None:
         """Resolve the event-level lock for one event execution.
 
         Lifecycle:
@@ -139,8 +141,7 @@ class LockManager:
         - Returns the shared class lock for `'global-serial'`.
         - Returns `bus.event_bus_serial_lock` for `'bus-serial'`.
         """
-        event_concurrency = getattr(event, 'event_concurrency', None)
-        resolved = event_concurrency or bus.event_concurrency
+        resolved = event.event_concurrency or bus.event_concurrency
         if resolved == EventConcurrencyMode.PARALLEL:
             return None
         if resolved == EventConcurrencyMode.GLOBAL_SERIAL:
@@ -150,8 +151,8 @@ class LockManager:
     def get_lock_for_event_handler(
         self,
         bus: 'EventBus',
-        event: BaseEvent[Any],
-        event_result: EventResult[Any],
+        event: BaseEvent[T_EventResultType],
+        event_result: EventResult[T_EventResultType],
     ) -> ReentrantLock | None:
         """Resolve the per-event handler lock for one handler execution.
 
@@ -161,8 +162,7 @@ class LockManager:
         - Returns and lazily initializes the event handler lock for `'serial'`.
         """
         del event_result  # reserved for future mode-specific rules
-        event_handler_concurrency = getattr(event, 'event_handler_concurrency', None)
-        resolved = event_handler_concurrency or bus.event_handler_concurrency
+        resolved = event.event_handler_concurrency or bus.event_handler_concurrency
         if resolved == EventHandlerConcurrencyMode.PARALLEL:
             return None
         current_lock = event.event_get_handler_lock()
@@ -172,7 +172,7 @@ class LockManager:
         return current_lock
 
     @asynccontextmanager
-    async def with_event_lock(self, bus: 'EventBus', event: BaseEvent[Any]):
+    async def with_event_lock(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]):
         """Acquire/release the resolved event lock around event processing.
 
         Lifecycle:
@@ -187,7 +187,9 @@ class LockManager:
             yield
 
     @asynccontextmanager
-    async def with_handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], event_result: EventResult[Any]):
+    async def with_handler_lock(
+        self, bus: 'EventBus', event: BaseEvent[T_EventResultType], event_result: EventResult[T_EventResultType]
+    ):
         """Acquire/release the resolved per-event handler lock around one handler run.
 
         Lifecycle:
@@ -202,7 +204,7 @@ class LockManager:
             yield
 
     @contextmanager
-    def with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[Any]):
+    def with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]):
         """Mirror parent event-lock ownership into the current copied context.
 
         Lifecycle:

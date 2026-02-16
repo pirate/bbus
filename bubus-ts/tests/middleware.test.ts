@@ -31,6 +31,13 @@ type HookRecord = {
   registered?: boolean
 }
 
+type HandlerChangeRecord = {
+  handler_id: string
+  event_pattern: string
+  registered: boolean
+  eventbus_id: string
+}
+
 class RecordingMiddleware implements EventBusMiddleware {
   name: string
   records: HookRecord[]
@@ -42,12 +49,12 @@ class RecordingMiddleware implements EventBusMiddleware {
     this.sequence = sequence
   }
 
-  async on_event_change(eventbus: EventBus, _event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
+  async onEventChange(eventbus: EventBus, _event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
     this.records.push({ middleware: this.name, hook: 'event', status, bus_id: eventbus.id })
     this.sequence?.push(`${this.name}:event:${status}`)
   }
 
-  async on_event_result_change(
+  async onEventResultChange(
     eventbus: EventBus,
     _event: BaseEvent,
     event_result: { handler_id: string },
@@ -57,7 +64,7 @@ class RecordingMiddleware implements EventBusMiddleware {
     this.sequence?.push(`${this.name}:result:${status}`)
   }
 
-  async on_handler_change(eventbus: EventBus, handler: { id: string }, registered: boolean): Promise<void> {
+  async onBusHandlersChange(eventbus: EventBus, handler: { id: string }, registered: boolean): Promise<void> {
     this.records.push({ middleware: this.name, hook: 'handler', registered, handler_id: handler.id, bus_id: eventbus.id })
     this.sequence?.push(`${this.name}:handler:${registered ? 'registered' : 'unregistered'}`)
   }
@@ -194,11 +201,11 @@ test('middleware event lifecycle ordering is deterministic per event', async () 
       super('deterministic')
     }
 
-    async on_event_change(eventbus: EventBus, event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
+    async onEventChange(eventbus: EventBus, event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
       const statuses = event_statuses_by_id.get(event.event_id) ?? []
       statuses.push(status)
       event_statuses_by_id.set(event.event_id, statuses)
-      await super.on_event_change(eventbus, event, status)
+      await super.onEventChange(eventbus, event, status)
     }
   }
 
@@ -213,9 +220,7 @@ test('middleware event lifecycle ordering is deterministic per event', async () 
   const batch_count = 5
   const events_per_batch = 50
   for (let batch_index = 0; batch_index < batch_count; batch_index += 1) {
-    const events = Array.from({ length: events_per_batch }, (_unused, event_index) =>
-      bus.dispatch(Event({ event_timeout: 0.2, event_data: { batch_index, event_index } }))
-    )
+    const events = Array.from({ length: events_per_batch }, (_unused, _event_index) => bus.dispatch(Event({ event_timeout: 0.2 })))
     await Promise.all(events.map((event) => event.done()))
     await flushHooks()
 
@@ -315,7 +320,7 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
     event_handler_concurrency: 'parallel',
   })
 
-  serial_bus.on(SchemaEvent, async () => 'not-a-number')
+  serial_bus.on(SchemaEvent, async () => JSON.parse('"not-a-number"'))
   const schema_event = serial_bus.dispatch(SchemaEvent({ event_timeout: 0.2 }))
   await schema_event.done()
   const schema_result = Array.from(schema_event.event_results.values())[0]
@@ -365,4 +370,205 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
 
   serial_bus.destroy()
   parallel_bus.destroy()
+})
+
+test('middleware hooks cover class/string/wildcard handler patterns', async () => {
+  const event_statuses_by_id = new Map<string, string[]>()
+  const result_hook_statuses_by_handler = new Map<string, string[]>()
+  const result_runtime_statuses_by_handler = new Map<string, string[]>()
+  const handler_change_records: HandlerChangeRecord[] = []
+
+  class PatternRecordingMiddleware implements EventBusMiddleware {
+    async onEventChange(_eventbus: EventBus, event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
+      const statuses = event_statuses_by_id.get(event.event_id) ?? []
+      statuses.push(status)
+      event_statuses_by_id.set(event.event_id, statuses)
+    }
+
+    async onEventResultChange(
+      _eventbus: EventBus,
+      _event: BaseEvent,
+      event_result: { handler_id: string; status: string },
+      status: 'pending' | 'started' | 'completed'
+    ): Promise<void> {
+      const hook_statuses = result_hook_statuses_by_handler.get(event_result.handler_id) ?? []
+      hook_statuses.push(status)
+      result_hook_statuses_by_handler.set(event_result.handler_id, hook_statuses)
+
+      const runtime_statuses = result_runtime_statuses_by_handler.get(event_result.handler_id) ?? []
+      runtime_statuses.push(event_result.status)
+      result_runtime_statuses_by_handler.set(event_result.handler_id, runtime_statuses)
+    }
+
+    async onBusHandlersChange(
+      _eventbus: EventBus,
+      handler: { id: string; event_pattern: string; eventbus_id: string },
+      registered: boolean
+    ): Promise<void> {
+      handler_change_records.push({
+        handler_id: handler.id,
+        event_pattern: handler.event_pattern,
+        registered,
+        eventbus_id: handler.eventbus_id,
+      })
+    }
+  }
+
+  const bus = new EventBus('MiddlewareHookPatternParityBus', {
+    middlewares: [new PatternRecordingMiddleware()],
+  })
+  const PatternEvent = BaseEvent.extend('MiddlewarePatternEvent', {})
+
+  const class_entry = bus.on(PatternEvent, async () => 'class-result')
+  const string_entry = bus.on('MiddlewarePatternEvent', async () => 'string-result')
+  const wildcard_entry = bus.on('*', async (event) => `wildcard:${event.event_type}`)
+
+  await flushHooks()
+
+  const registered_records = handler_change_records.filter((record) => record.registered)
+  assert.equal(registered_records.length, 3)
+
+  const expected_patterns = new Map<string, string>([
+    [class_entry.id, 'MiddlewarePatternEvent'],
+    [string_entry.id, 'MiddlewarePatternEvent'],
+    [wildcard_entry.id, '*'],
+  ])
+
+  assert.deepEqual(new Set(registered_records.map((record) => record.handler_id)), new Set(expected_patterns.keys()))
+  for (const record of registered_records) {
+    assert.equal(record.event_pattern, expected_patterns.get(record.handler_id))
+    assert.equal(record.eventbus_id, bus.id)
+  }
+
+  const event = bus.dispatch(PatternEvent({ event_timeout: 0.2 }))
+  await event.done()
+  await bus.waitUntilIdle()
+  await flushHooks()
+
+  assert.equal(event.event_status, 'completed')
+  assert.deepEqual(event_statuses_by_id.get(event.event_id), ['pending', 'started', 'completed'])
+  assert.deepEqual(new Set(event.event_results.keys()), new Set(expected_patterns.keys()))
+
+  for (const handler_id of expected_patterns.keys()) {
+    assert.deepEqual(result_hook_statuses_by_handler.get(handler_id), ['pending', 'started', 'completed'])
+    assert.deepEqual(result_runtime_statuses_by_handler.get(handler_id), ['pending', 'started', 'completed'])
+  }
+
+  assert.equal(event.event_results.get(class_entry.id)?.result, 'class-result')
+  assert.equal(event.event_results.get(string_entry.id)?.result, 'string-result')
+  assert.equal(event.event_results.get(wildcard_entry.id)?.result, 'wildcard:MiddlewarePatternEvent')
+
+  bus.off(PatternEvent, class_entry)
+  bus.off('MiddlewarePatternEvent', string_entry)
+  bus.off('*', wildcard_entry)
+  await flushHooks()
+
+  const unregistered_records = handler_change_records.filter((record) => !record.registered)
+  assert.equal(unregistered_records.length, 3)
+  assert.deepEqual(new Set(unregistered_records.map((record) => record.handler_id)), new Set(expected_patterns.keys()))
+  for (const record of unregistered_records) {
+    assert.equal(record.event_pattern, expected_patterns.get(record.handler_id))
+  }
+
+  bus.destroy()
+})
+
+test('middleware hooks cover ad-hoc BaseEvent string + wildcard patterns', async () => {
+  const event_statuses_by_id = new Map<string, string[]>()
+  const result_hook_statuses_by_handler = new Map<string, string[]>()
+  const result_runtime_statuses_by_handler = new Map<string, string[]>()
+  const handler_change_records: HandlerChangeRecord[] = []
+
+  class PatternRecordingMiddleware implements EventBusMiddleware {
+    async onEventChange(_eventbus: EventBus, event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
+      const statuses = event_statuses_by_id.get(event.event_id) ?? []
+      statuses.push(status)
+      event_statuses_by_id.set(event.event_id, statuses)
+    }
+
+    async onEventResultChange(
+      _eventbus: EventBus,
+      _event: BaseEvent,
+      event_result: { handler_id: string; status: string },
+      status: 'pending' | 'started' | 'completed'
+    ): Promise<void> {
+      const hook_statuses = result_hook_statuses_by_handler.get(event_result.handler_id) ?? []
+      hook_statuses.push(status)
+      result_hook_statuses_by_handler.set(event_result.handler_id, hook_statuses)
+
+      const runtime_statuses = result_runtime_statuses_by_handler.get(event_result.handler_id) ?? []
+      runtime_statuses.push(event_result.status)
+      result_runtime_statuses_by_handler.set(event_result.handler_id, runtime_statuses)
+    }
+
+    async onBusHandlersChange(
+      _eventbus: EventBus,
+      handler: { id: string; event_pattern: string; eventbus_id: string },
+      registered: boolean
+    ): Promise<void> {
+      handler_change_records.push({
+        handler_id: handler.id,
+        event_pattern: handler.event_pattern,
+        registered,
+        eventbus_id: handler.eventbus_id,
+      })
+    }
+  }
+
+  const bus = new EventBus('MiddlewareHookStringPatternParityBus', {
+    middlewares: [new PatternRecordingMiddleware()],
+  })
+
+  const ad_hoc_event_type = 'AdHocPatternEvent'
+  const string_entry = bus.on(ad_hoc_event_type, async (event) => {
+    assert.equal(event.event_type, ad_hoc_event_type)
+    return `string:${event.event_type}`
+  })
+  const wildcard_entry = bus.on('*', async (event) => `wildcard:${event.event_type}`)
+
+  await flushHooks()
+
+  const registered_records = handler_change_records.filter((record) => record.registered)
+  assert.equal(registered_records.length, 2)
+
+  const expected_patterns = new Map<string, string>([
+    [string_entry.id, ad_hoc_event_type],
+    [wildcard_entry.id, '*'],
+  ])
+
+  assert.deepEqual(new Set(registered_records.map((record) => record.handler_id)), new Set(expected_patterns.keys()))
+  for (const record of registered_records) {
+    assert.equal(record.event_pattern, expected_patterns.get(record.handler_id))
+    assert.equal(record.eventbus_id, bus.id)
+  }
+
+  const event = bus.dispatch(new BaseEvent({ event_type: ad_hoc_event_type, event_timeout: 0.2 }))
+  await event.done()
+  await bus.waitUntilIdle()
+  await flushHooks()
+
+  assert.equal(event.event_status, 'completed')
+  assert.deepEqual(event_statuses_by_id.get(event.event_id), ['pending', 'started', 'completed'])
+  assert.deepEqual(new Set(event.event_results.keys()), new Set(expected_patterns.keys()))
+
+  for (const handler_id of expected_patterns.keys()) {
+    assert.deepEqual(result_hook_statuses_by_handler.get(handler_id), ['pending', 'started', 'completed'])
+    assert.deepEqual(result_runtime_statuses_by_handler.get(handler_id), ['pending', 'started', 'completed'])
+  }
+
+  assert.equal(event.event_results.get(string_entry.id)?.result, `string:${ad_hoc_event_type}`)
+  assert.equal(event.event_results.get(wildcard_entry.id)?.result, `wildcard:${ad_hoc_event_type}`)
+
+  bus.off(ad_hoc_event_type, string_entry)
+  bus.off('*', wildcard_entry)
+  await flushHooks()
+
+  const unregistered_records = handler_change_records.filter((record) => !record.registered)
+  assert.equal(unregistered_records.length, 2)
+  assert.deepEqual(new Set(unregistered_records.map((record) => record.handler_id)), new Set(expected_patterns.keys()))
+  for (const record of unregistered_records) {
+    assert.equal(record.event_pattern, expected_patterns.get(record.handler_id))
+  }
+
+  bus.destroy()
 })

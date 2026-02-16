@@ -1,10 +1,360 @@
-"""Test automatic event_result_type extraction from Generic type parameters."""
+"""Test typed event results with automatic casting."""
+
+# pyright: reportAssertTypeFailure=false
+# pyright: reportUnnecessaryIsInstance=false
+
+import asyncio
+from typing import Any, Literal, assert_type
+
+from pydantic import BaseModel
+
+from bubus import BaseEvent, EventBus
+
+
+class ScreenshotEventResult(BaseModel):
+    screenshot_base64: bytes | None = None
+    error: str | None = None
+
+
+class ScreenshotEvent(BaseEvent[ScreenshotEventResult]):
+    screenshot_width: int = 1080
+    screenshot_height: int = 900
+
+
+class StringEvent(BaseEvent[str]):
+    pass
+
+
+class IntEvent(BaseEvent[int]):
+    pass
+
+
+async def test_pydantic_model_result_casting():
+    """Test that handler results are automatically cast to Pydantic models."""
+    bus = EventBus(name='pydantic_test_bus')
+
+    def screenshot_handler(event: ScreenshotEvent):
+        # Return a dict that should be cast to ScreenshotEventResult
+        return {'screenshot_base64': b'fake_screenshot_data', 'error': None}
+
+    bus.on('ScreenshotEvent', screenshot_handler)
+
+    event = ScreenshotEvent(screenshot_width=1920, screenshot_height=1080)
+    await bus.dispatch(event)
+
+    # Get the result
+    result = await event.event_result()
+
+    # Verify it was cast to the correct type
+    assert isinstance(result, ScreenshotEventResult)
+    assert result.screenshot_base64 == b'fake_screenshot_data'
+    assert result.error is None
+
+    await bus.stop(clear=True)
+
+
+async def test_builtin_type_casting():
+    """Test that handler results are automatically cast to built-in types."""
+    bus = EventBus(name='builtin_test_bus')
+
+    def string_handler(event: StringEvent):
+        return '42'  # Return a proper string
+
+    def int_handler(event: IntEvent):
+        return 123  # Return a proper int
+
+    bus.on('StringEvent', string_handler)
+    bus.on('IntEvent', int_handler)
+
+    # Test string validation
+    string_event = StringEvent()
+    await bus.dispatch(string_event)
+    string_result = await string_event.event_result()
+    assert isinstance(string_result, str)
+    assert string_result == '42'
+
+    # Test int validation
+    int_event = IntEvent()
+    await bus.dispatch(int_event)
+    int_result = await int_event.event_result()
+    assert isinstance(int_result, int)
+    assert int_result == 123
+    await bus.stop(clear=True)
+
+
+async def test_casting_failure_handling():
+    """Test that casting failures are handled gracefully."""
+    bus = EventBus(name='failure_test_bus')
+
+    def bad_handler(event: IntEvent):
+        return 'not_a_number'  # Should fail validation as int
+
+    bus.on('IntEvent', bad_handler)
+
+    event = IntEvent()
+    await bus.dispatch(event)
+
+    # The event should complete but the result should be an error
+    try:
+        await event.event_results_by_handler_id(raise_if_any=False)
+        handler_id = list(event.event_results.keys())[0]
+        event_result = event.event_results[handler_id]
+    except Exception:
+        # If event_results_by_handler_id raises, get the result directly
+        handler_id = list(event.event_results.keys())[0]
+        event_result = event.event_results[handler_id]
+
+    assert event_result.status == 'error'
+    assert isinstance(event_result.error, ValueError)
+    assert 'expected event_result_type' in str(event_result.error)
+
+    await bus.stop(clear=True)
+
+
+async def test_no_casting_when_no_result_type():
+    """Test that events without result_type work normally."""
+    bus = EventBus(name='normal_test_bus')
+
+    class NormalEvent(BaseEvent[None]):
+        pass  # No event_result_type specified
+
+    def normal_handler(event: NormalEvent):
+        return {'raw': 'data'}
+
+    bus.on('NormalEvent', normal_handler)
+
+    event = NormalEvent()
+    await bus.dispatch(event)
+
+    result = await event.event_result()
+
+    # Should remain as original dict, no casting
+    assert isinstance(result, dict)
+    assert result == {'raw': 'data'}
+
+    await bus.stop(clear=True)
+
+
+async def test_result_type_stored_in_event_result():
+    """Test that result_type is stored in EventResult for inspection."""
+    bus = EventBus(name='storage_test_bus')
+
+    def handler(event: StringEvent):
+        return '123'  # Already a string, will validate successfully
+
+    bus.on('StringEvent', handler)
+
+    event = StringEvent()
+    await bus.dispatch(event)
+
+    # Check that result_type is accessible
+    handler_id = list(event.event_results.keys())[0]
+    event_result = event.event_results[handler_id]
+
+    assert event_result.result_type is str
+    assert isinstance(event_result.result, str)
+    assert event_result.result == '123'
+
+    await bus.stop(clear=True)
+
+
+async def test_find_type_inference():
+    """Test that EventBus.find() returns the correct typed event."""
+    bus = EventBus(name='expect_type_test_bus')
+
+    class CustomResult(BaseModel):
+        data: str
+
+    class SpecificEvent(BaseEvent[CustomResult]):
+        request_id: str = 'test123'
+
+    # Validate inline isinstance usage works with await find()
+    async def dispatch_inline_isinstance():
+        await asyncio.sleep(0.01)
+        bus.dispatch(SpecificEvent(request_id='inline-isinstance'))
+
+    inline_isinstance_task = asyncio.create_task(dispatch_inline_isinstance())
+    assert isinstance(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent)
+    await inline_isinstance_task
+
+    # Validate inline assert_type usage works with await find()
+    async def dispatch_inline_assert_type():
+        await asyncio.sleep(0.01)
+        bus.dispatch(SpecificEvent(request_id='inline-assert-type'))
+
+    inline_type_task = asyncio.create_task(dispatch_inline_assert_type())
+    assert_type(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent | None)
+    await inline_type_task
+
+    # Validate assert_type with isinstance expression
+    async def dispatch_inline_isinstance_type():
+        await asyncio.sleep(0.01)
+        bus.dispatch(SpecificEvent(request_id='inline-isinstance-type'))
+
+    inline_isinstance_type_task = asyncio.create_task(dispatch_inline_isinstance_type())
+    assert_type(isinstance(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent), bool)
+    await inline_isinstance_type_task
+
+    # Start a task that will dispatch the event
+    async def dispatch_later():
+        await asyncio.sleep(0.01)
+        bus.dispatch(SpecificEvent(request_id='req456'))
+
+    dispatch_task = asyncio.create_task(dispatch_later())
+
+    # Use find with the event class - should return SpecificEvent type
+    expected_event = await bus.find(SpecificEvent, past=False, future=1.0)
+    assert expected_event is not None
+    assert isinstance(expected_event, SpecificEvent)
+
+    # Type checking - this should work without cast
+    assert_type(expected_event, SpecificEvent)  # Verify type is SpecificEvent, not BaseEvent[Any]
+
+    # Runtime check
+    assert type(expected_event) is SpecificEvent
+    assert expected_event.request_id == 'req456'
+
+    # Test with filters - type should still be preserved
+    async def dispatch_multiple():
+        await asyncio.sleep(0.01)
+        bus.dispatch(SpecificEvent(request_id='wrong'))
+        bus.dispatch(SpecificEvent(request_id='correct'))
+
+    dispatch_task2 = asyncio.create_task(dispatch_multiple())
+
+    # find with where filter
+    def is_correct(event: SpecificEvent) -> bool:
+        return event.request_id == 'correct'
+
+    filtered_event = await bus.find(
+        SpecificEvent,
+        where=is_correct,
+        past=False,
+        future=1.0,
+    )
+    assert filtered_event is not None
+
+    assert_type(filtered_event, SpecificEvent)  # Should still be SpecificEvent
+    assert isinstance(filtered_event, SpecificEvent)
+    assert type(filtered_event) is SpecificEvent
+    assert filtered_event.request_id == 'correct'
+
+    # Test with string event type - returns BaseEvent[Any]
+    async def dispatch_string_event():
+        await asyncio.sleep(0.01)
+        bus.dispatch(BaseEvent(event_type='StringEvent'))
+
+    dispatch_task3 = asyncio.create_task(dispatch_string_event())
+    string_event = await bus.find('StringEvent', past=False, future=1.0)
+    assert string_event is not None
+
+    assert_type(string_event, BaseEvent[Any])  # Should be BaseEvent[Any]
+    assert string_event.event_type == 'StringEvent'
+
+    await dispatch_task
+    await dispatch_task2
+    await dispatch_task3
+
+    await bus.stop(clear=True)
+
+
+async def test_find_past_type_inference():
+    """Test that EventBus.find() with past-window returns the correct typed event."""
+    bus = EventBus(name='query_type_test_bus')
+
+    class QueryEvent(BaseEvent[str]):
+        pass
+
+    # Dispatch an event so it appears in history
+    event = bus.dispatch(QueryEvent())
+    await bus.wait_until_idle()
+
+    assert isinstance(await bus.find(QueryEvent, past=10, future=False), QueryEvent)
+    assert_type(await bus.find(QueryEvent, past=10, future=False), QueryEvent | None)
+    assert_type(isinstance(await bus.find(QueryEvent, past=10, future=False), QueryEvent), bool)
+    queried = await bus.find(QueryEvent, past=10, future=False)
+
+    assert queried is not None
+    assert isinstance(queried, QueryEvent)
+    assert_type(queried, QueryEvent)
+    assert queried.event_id == event.event_id
+
+    await bus.stop(clear=True)
+
+
+async def test_dispatch_type_inference():
+    """Test that EventBus.dispatch() returns the same type as its input."""
+    bus = EventBus(name='type_inference_test_bus')
+
+    class CustomResult(BaseModel):
+        value: str
+
+    class CustomEvent(BaseEvent[CustomResult]):
+        pass
+
+    # Create an event instance
+    original_event = CustomEvent()
+
+    # Dispatch should return the same type WITHOUT needing cast()
+    dispatched_event = bus.dispatch(original_event)
+    assert isinstance(dispatched_event, CustomEvent)
+
+    # Type checking - this should work without cast
+    assert_type(dispatched_event, CustomEvent)  # Should be CustomEvent, not BaseEvent[Any]
+
+    # Runtime check
+    assert type(dispatched_event) is CustomEvent
+    assert dispatched_event is original_event  # Should be the same object
+
+    # The returned event should be fully typed
+    async def handler(event: CustomEvent) -> CustomResult:
+        return CustomResult(value='test')
+
+    bus.on('CustomEvent', handler)
+
+    # Validate inline isinstance usage works with dispatch()
+    another_event = CustomEvent()
+    assert isinstance(bus.dispatch(another_event), CustomEvent)
+
+    # Validate assert_type captures dispatch() return type when called inline
+    type_event = CustomEvent()
+    dispatched_type_event = bus.dispatch(type_event)
+    assert_type(dispatched_type_event, CustomEvent)
+
+    # Validate assert_type with isinstance expression using dispatch()
+    isinstance_type_event = CustomEvent()
+    assert_type(isinstance(bus.dispatch(isinstance_type_event), CustomEvent), Literal[True])
+
+    # We should be able to use it without casting
+    result = await dispatched_event.event_result()
+
+    # Type checking for the result
+    assert_type(result, CustomResult | None)  # Should be CustomResult | None
+
+    # Test that we can access type-specific attributes without cast
+    # This would fail type checking if dispatched_event was BaseEvent[Any]
+    assert dispatched_event.event_type == 'CustomEvent'
+
+    # Demonstrate the improvement - no cast needed!
+    # Before: event = cast(CustomEvent, bus.dispatch(CustomEvent()))
+    # After: event = bus.dispatch(CustomEvent())  # Type is preserved!
+
+    await another_event.event_result()
+    await type_event.event_result()
+    await isinstance_type_event.event_result()
+
+    await bus.stop(clear=True)
+
+
+# Consolidated from tests/test_auto_event_result_schema.py
+
+# Test automatic event_result_type extraction from Generic type parameters.
 
 from dataclasses import dataclass
-from typing import Any
 
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic_core import to_jsonable_python
 from typing_extensions import TypedDict
 
 from bubus.base_event import BaseEvent
@@ -12,15 +362,12 @@ from bubus.helpers import extract_basemodel_generic_arg
 
 
 def _to_plain(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return {key: _to_plain(item) for key, item in value.model_dump().items()}
-    if isinstance(value, list):
-        return [_to_plain(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_to_plain(item) for item in value)
-    if isinstance(value, dict):
-        return {key: _to_plain(item) for key, item in value.items()}
-    return value
+    return to_jsonable_python(value)
+
+
+def _event_result_schema_json(event: BaseEvent[Any]) -> dict[str, Any]:
+    raw_schema = event.model_dump(mode='json')['event_result_type']
+    return TypeAdapter(dict[str, Any]).validate_python(raw_schema)
 
 
 class UserData(BaseModel):
@@ -157,8 +504,7 @@ def test_json_schema_primitive_deserialization(json_schema: dict[str, str], expe
     event = BaseEvent[Any].model_validate({'event_type': 'SchemaEvent', 'event_result_type': json_schema})
 
     assert event.event_result_type is expected_schema
-    serialized_schema = event.model_dump(mode='json')['event_result_type']
-    assert isinstance(serialized_schema, dict)
+    serialized_schema = _event_result_schema_json(event)
     assert serialized_schema.get('type') == json_schema['type']
 
 
@@ -168,14 +514,12 @@ def test_json_schema_list_of_models_deserialization():
     event = BaseEvent[Any].model_validate({'event_type': 'SchemaEvent', 'event_result_type': json_schema})
 
     adapter = TypeAdapter(event.event_result_type)
-    validated = adapter.validate_python([{'name': 'alice', 'age': 33}])
-    assert isinstance(validated, list)
+    validated = TypeAdapter(list[Any]).validate_python(adapter.validate_python([{'name': 'alice', 'age': 33}]))
     assert len(validated) == 1
     assert isinstance(validated[0], BaseModel)
     assert validated[0].model_dump() == {'name': 'alice', 'age': 33}
 
-    serialized_schema = event.model_dump(mode='json')['event_result_type']
-    assert isinstance(serialized_schema, dict)
+    serialized_schema = _event_result_schema_json(event)
     assert serialized_schema.get('type') == 'array'
     assert '$defs' in serialized_schema
 
@@ -192,8 +536,7 @@ def test_json_schema_nested_object_collection_deserialization():
     assert isinstance(validated['batch_a'][0], BaseModel)
     assert validated['batch_a'][0].model_dump() == {'task_id': 't1', 'status': 'ok'}
 
-    serialized_schema = event.model_dump(mode='json')['event_result_type']
-    assert isinstance(serialized_schema, dict)
+    serialized_schema = _event_result_schema_json(event)
     assert serialized_schema.get('type') == 'object'
     assert '$defs' in serialized_schema
 
@@ -221,8 +564,7 @@ def test_json_schema_top_level_shape_deserialization_matrix(shape: Any, payload:
     expected_value = expected_adapter.validate_python(payload)
     assert _to_plain(hydrated_value) == _to_plain(expected_value)
 
-    serialized_schema = event.model_dump(mode='json')['event_result_type']
-    assert isinstance(serialized_schema, dict)
+    serialized_schema = _event_result_schema_json(event)
     assert '$schema' in serialized_schema
 
 
@@ -533,3 +875,35 @@ def test_type_adapter_validation():
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '-s'])
+
+
+# Consolidated from tests/test_simple_typed_results.py (rewritten for strict assertions)
+
+
+async def test_simple_typed_result_model_roundtrip_and_status() -> None:
+    bus = EventBus(name='typed_result_simple_bus')
+
+    class SimpleResult(BaseModel):
+        value: str
+        count: int
+
+    class SimpleTypedEvent(BaseEvent[SimpleResult]):
+        event_result_type: Any = SimpleResult
+
+    def handler(_event: SimpleTypedEvent) -> SimpleResult:
+        return SimpleResult(value='hello', count=42)
+
+    handler_entry = bus.on(SimpleTypedEvent, handler)
+
+    try:
+        completed_event = await bus.dispatch(SimpleTypedEvent())
+        assert completed_event.event_status == 'completed'
+        assert handler_entry.id in completed_event.event_results
+
+        event_result = completed_event.event_results[handler_entry.id]
+        assert event_result.status == 'completed'
+        assert event_result.error is None
+        assert isinstance(event_result.result, SimpleResult)
+        assert event_result.result == SimpleResult(value='hello', count=42)
+    finally:
+        await bus.stop(clear=True)

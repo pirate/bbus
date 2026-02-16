@@ -11,6 +11,18 @@ class IntCompletionEvent(BaseEvent[int]):
     pass
 
 
+class ChildCompletionEvent(BaseEvent[str]):
+    pass
+
+
+class BoolCompletionEvent(BaseEvent[bool]):
+    pass
+
+
+class StrCompletionEvent(BaseEvent[str]):
+    pass
+
+
 async def test_event_handler_completion_bus_default_first_serial() -> None:
     bus = EventBus(
         name='CompletionDefaultFirstBus',
@@ -201,6 +213,60 @@ async def test_event_first_preserves_falsy_results() -> None:
         await bus.stop()
 
 
+async def test_event_first_preserves_false_and_empty_string_results() -> None:
+    bool_bus = EventBus(
+        name='CompletionFalsyFalseBus',
+        event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
+        event_handler_completion=EventHandlerCompletionMode.ALL,
+    )
+    bool_second_handler_called = False
+
+    async def bool_first_handler(_event: BoolCompletionEvent) -> bool:
+        return False
+
+    async def bool_second_handler(_event: BoolCompletionEvent) -> bool:
+        nonlocal bool_second_handler_called
+        bool_second_handler_called = True
+        return True
+
+    bool_bus.on(BoolCompletionEvent, bool_first_handler)
+    bool_bus.on(BoolCompletionEvent, bool_second_handler)
+
+    try:
+        bool_event = bool_bus.dispatch(BoolCompletionEvent())
+        bool_result = await bool_event.first()
+        assert bool_result is False
+        assert bool_second_handler_called is False
+    finally:
+        await bool_bus.stop()
+
+    str_bus = EventBus(
+        name='CompletionFalsyEmptyStringBus',
+        event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
+        event_handler_completion=EventHandlerCompletionMode.ALL,
+    )
+    str_second_handler_called = False
+
+    async def str_first_handler(_event: StrCompletionEvent) -> str:
+        return ''
+
+    async def str_second_handler(_event: StrCompletionEvent) -> str:
+        nonlocal str_second_handler_called
+        str_second_handler_called = True
+        return 'second'
+
+    str_bus.on(StrCompletionEvent, str_first_handler)
+    str_bus.on(StrCompletionEvent, str_second_handler)
+
+    try:
+        str_event = str_bus.dispatch(StrCompletionEvent())
+        str_result = await str_event.first()
+        assert str_result == ''
+        assert str_second_handler_called is False
+    finally:
+        await str_bus.stop()
+
+
 async def test_event_first_skips_none_result_and_uses_next_winner() -> None:
     bus = EventBus(
         name='CompletionNoneSkipBus',
@@ -240,6 +306,38 @@ async def test_event_first_skips_none_result_and_uses_next_winner() -> None:
         await bus.stop()
 
 
+async def test_event_first_skips_baseevent_result_and_uses_next_winner() -> None:
+    bus = EventBus(
+        name='CompletionBaseEventSkipBus',
+        event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
+        event_handler_completion=EventHandlerCompletionMode.ALL,
+    )
+    third_handler_called = False
+
+    async def baseevent_handler(_event: CompletionEvent) -> ChildCompletionEvent:
+        return ChildCompletionEvent()
+
+    async def winner_handler(_event: CompletionEvent) -> str:
+        return 'winner'
+
+    async def third_handler(_event: CompletionEvent) -> str:
+        nonlocal third_handler_called
+        third_handler_called = True
+        return 'third'
+
+    bus.on(CompletionEvent, baseevent_handler)
+    bus.on(CompletionEvent, winner_handler)
+    bus.on(CompletionEvent, third_handler)
+
+    try:
+        event = bus.dispatch(CompletionEvent())
+        result = await event.first()
+        assert result == 'winner'
+        assert third_handler_called is False
+    finally:
+        await bus.stop()
+
+
 async def test_event_first_returns_none_when_all_handlers_fail() -> None:
     bus = EventBus(name='CompletionAllFailBus', event_handler_concurrency='parallel')
 
@@ -257,5 +355,73 @@ async def test_event_first_returns_none_when_all_handlers_fail() -> None:
         event = bus.dispatch(CompletionEvent())
         result = await event.first()
         assert result is None
+    finally:
+        await bus.stop()
+
+
+# Consolidated from tests/test_event_handler_concurrency.py
+
+
+from bubus import BaseEvent
+
+
+class ConcurrencyEvent(BaseEvent[str]):
+    pass
+
+
+async def test_event_handler_concurrency_bus_default_applied_on_dispatch() -> None:
+    bus = EventBus(name='ConcurrencyDefaultBus', event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL)
+
+    async def one_handler(_event: ConcurrencyEvent) -> str:
+        return 'ok'
+
+    bus.on(ConcurrencyEvent, one_handler)
+
+    try:
+        event = bus.dispatch(ConcurrencyEvent())
+        assert event.event_handler_concurrency == EventHandlerConcurrencyMode.PARALLEL
+        await event
+    finally:
+        await bus.stop()
+
+
+async def test_event_handler_concurrency_per_event_override_controls_execution_mode() -> None:
+    bus = EventBus(name='ConcurrencyPerEventBus', event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL)
+    inflight_by_event_id: dict[str, int] = {}
+    max_inflight_by_event_id: dict[str, int] = {}
+    counter_lock = asyncio.Lock()
+
+    async def track_concurrency(event: ConcurrencyEvent) -> None:
+        event_id = event.event_id
+        async with counter_lock:
+            current_inflight = inflight_by_event_id.get(event_id, 0) + 1
+            inflight_by_event_id[event_id] = current_inflight
+            max_inflight_by_event_id[event_id] = max(max_inflight_by_event_id.get(event_id, 0), current_inflight)
+        await asyncio.sleep(0.02)
+        async with counter_lock:
+            inflight_by_event_id[event_id] = max(inflight_by_event_id.get(event_id, 1) - 1, 0)
+
+    async def handler_a(event: ConcurrencyEvent) -> str:
+        await track_concurrency(event)
+        return 'a'
+
+    async def handler_b(event: ConcurrencyEvent) -> str:
+        await track_concurrency(event)
+        return 'b'
+
+    bus.on(ConcurrencyEvent, handler_a)
+    bus.on(ConcurrencyEvent, handler_b)
+
+    try:
+        serial_event = bus.dispatch(ConcurrencyEvent(event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL))
+        parallel_event = bus.dispatch(ConcurrencyEvent(event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL))
+        assert serial_event.event_handler_concurrency == EventHandlerConcurrencyMode.SERIAL
+        assert parallel_event.event_handler_concurrency == EventHandlerConcurrencyMode.PARALLEL
+
+        await serial_event
+        await parallel_event
+
+        assert max_inflight_by_event_id.get(serial_event.event_id) == 1
+        assert max_inflight_by_event_id.get(parallel_event.event_id, 0) >= 2
     finally:
         await bus.stop()

@@ -8,10 +8,6 @@ BaseEventT = TypeVar('BaseEventT', bound=BaseEvent[Any])
 
 
 class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
-    """Backward-compatible in-memory history with plain dict behaviour."""
+    """In-memory event history map with plain dict behaviour."""
 
     __slots__ = ()
-
-
-# Backwards compatible alias – before refactor this was the default backend.
-InMemoryEventHistory = EventHistory

@@ -69,6 +69,9 @@ console.log(event.event_result) // { user_id: 'some-user-uuid' }
 
 ## ✨ Features
 
+<details>
+<summary><strong>See the core TypeScript features and how they map to Python.</strong></summary>
+
 The features offered in TS are broadly similar to the ones offered in the python library.
 
 - Typed events with Zod schemas (cross-compatible with Pydantic events from python library)
@@ -81,6 +84,8 @@ The features offered in TS are broadly similar to the ones offered in the python
 
 See the [Python README](../README.md) for more details.
 
+</details>
+
 <br/>
 
 ---
@@ -89,7 +94,8 @@ See the [Python README](../README.md) for more details.
 
 ## 📚 API Documentation
 
-### `EventBus`
+<details>
+<summary><strong>Review bus construction, defaults, and core lifecycle methods.</strong></summary>
 
 The main bus class that registers handlers, schedules events, and tracks results.
 
@@ -141,7 +147,7 @@ new EventBus(name?: string, options?: {
 ```ts
 on<T extends BaseEvent>(
   event_pattern: string | '*' | EventClass<T>,
-  handler: EventHandlerFunction<T>,
+  handler: EventHandlerCallable<T>,
   options?: Partial<EventHandler>
 ): EventHandler
 ```
@@ -167,7 +173,7 @@ Notes:
 ```ts
 off<T extends BaseEvent>(
   event_pattern: EventPattern<T> | '*',
-  handler?: EventHandlerFunction<T> | string | EventHandler
+  handler?: EventHandlerCallable<T> | string | EventHandler
 ): void
 ```
 
@@ -275,15 +281,17 @@ Important semantics:
 - If both `past` and `future` are `false`, it returns `null` immediately.
 - Detailed behavior matrix is covered in `bubus-ts/tests/find.test.ts`.
 
-#### `waitUntilIdle()`
+#### `waitUntilIdle(timeout?)`
 
 `await bus.waitUntilIdle()` is the normal "drain bus work" call to wait until bus is done processing everything queued.
+Pass an optional timeout in seconds (`await bus.waitUntilIdle(5)`) for a bounded wait.
 
 ```ts
 bus.emit(OneEvent(...))
 bus.emit(TwoEvent(...))
 bus.emit(ThreeEvent(...))
 await bus.waitUntilIdle()   // this resolves once all three events have finished processing
+await bus.waitUntilIdle(5)  // wait up to 5 seconds, then continue even if work is still in-flight
 ```
 
 #### Parent/child/event lookup helpers
@@ -321,9 +329,12 @@ destroy(): void
 ```
 
 - `destroy()` clears handlers/history/locks and removes this bus from global weak registry.
-- `destroy()`/GC behavior is exercised in `bubus-ts/tests/eventbus_basics.test.ts` and `bubus-ts/tests/performance.test.ts`.
+- `destroy()`/GC behavior is exercised in `bubus-ts/tests/eventbus.test.ts` and `bubus-ts/tests/performance.test.ts`.
 
-### `BaseEvent`
+</details>
+
+<details>
+<summary><strong>Review event fields, runtime state, and helper methods.</strong></summary>
 
 Base class + factory builder for typed event models.
 
@@ -352,12 +363,12 @@ API behavior and lifecycle examples:
 - `bubus-ts/examples/simple.ts`
 - `bubus-ts/examples/immediate_event_processing.ts`
 - `bubus-ts/examples/forwarding_between_busses.ts`
-- `bubus-ts/tests/eventbus_basics.test.ts`
+- `bubus-ts/tests/eventbus.test.ts`
 - `bubus-ts/tests/find.test.ts`
 - `bubus-ts/tests/first.test.ts`
 - `bubus-ts/tests/event_bus_proxy.test.ts`
 - `bubus-ts/tests/timeout.test.ts`
-- `bubus-ts/tests/event_results.test.ts`
+- `bubus-ts/tests/event_result.test.ts`
 
 #### Event configuration fields
 
@@ -452,7 +463,7 @@ EventFactory.fromJSON?.(data: unknown): TypedEvent
 - JSON format is cross-language compatible with Python implementation.
 - `event_result_type` is serialized as JSON Schema when possible and rehydrated on `fromJSON`.
 - In TypeScript-only usage, `event_result_type` can be any Zod schema shape or base type like `number | string | boolean | etc.`. For cross-language roundtrips, object-like schemas (including Python `TypedDict`/`dataclass`-style shapes) are reconstructed on Python as Pydantic models, JSON object keys are always strings, and some fine-grained string-shape constraints may be normalized between Zod and Pydantic.
-- Round-trip coverage is in `bubus-ts/tests/typed_results.test.ts` and `bubus-ts/tests/eventbus_basics.test.ts`.
+- Round-trip coverage is in `bubus-ts/tests/typed_results.test.ts` and `bubus-ts/tests/eventbus.test.ts`.
 
 #### Advanced/internal public methods
 
@@ -461,11 +472,14 @@ Mostly used by bus internals or custom runtimes:
 - `markStarted()`
 - `markCancelled(cause)`
 - `markCompleted(force?, notify_parents?)`
-- `createPendingHandlerResults(bus)`
-- `processEvent(pending_entries?)`
-- `cancelPendingDescendants(reason)`
+- `eventCreatePendingHandlerResults(bus)`
+- `runHandlers(pending_entries?)`
+- `eventCancelPendingChildProcessing(reason)`
 
-### `EventResult`
+</details>
+
+<details>
+<summary><strong>Review per-handler status, timing, outputs, and captured errors.</strong></summary>
 
 Each handler execution creates one `EventResult` stored in `event.event_results`.
 
@@ -518,7 +532,10 @@ toJSON(): EventResultJSON
 EventResult.fromJSON(event, data): EventResult
 ```
 
-### `EventHandler`
+</details>
+
+<details>
+<summary><strong>Review handler metadata, registration fields, and serialization helpers.</strong></summary>
 
 Represents one registered handler entry on a bus. You usually get these from `bus.on(...)`, then pass them to `bus.off(...)` to remove.
 
@@ -541,7 +558,7 @@ Represents one registered handler entry on a bus. You usually get these from `bu
 ```ts
 toString(): string
 toJSON(): EventHandlerJSON
-EventHandler.fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandler
+EventHandler.fromJSON(data: unknown, handler?: EventHandlerCallable): EventHandler
 ```
 
 - `toString()` returns `handlerName() (path:line)` when path/name are available, otherwise `function#abcd()`.
@@ -553,6 +570,8 @@ EventHandler.fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandl
 ---
 
 <br/>
+
+</details>
 
 ## 🧵 Advanced Concurrency Control
 

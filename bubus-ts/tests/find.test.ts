@@ -48,6 +48,22 @@ test('find past returns null when no matching event exists', async () => {
   assert.ok(elapsed_ms < 100)
 })
 
+test('find past history lookup is bus-scoped', async () => {
+  const bus_a = new EventBus('FindScopeA')
+  const bus_b = new EventBus('FindScopeB')
+
+  bus_b.on(ParentEvent, () => 'done')
+  const event_on_b = bus_b.dispatch(ParentEvent({}))
+  await event_on_b.done()
+
+  const found_on_a = await bus_a.find(ParentEvent, { past: true, future: false })
+  const found_on_b = await bus_b.find(ParentEvent, { past: true, future: false })
+
+  assert.equal(found_on_a, null)
+  assert.ok(found_on_b)
+  assert.equal(found_on_b!.event_id, event_on_b.event_id)
+})
+
 test('find past window filters by time', async () => {
   const bus = new EventBus('FindWindowBus')
 
@@ -499,7 +515,11 @@ test('find child_of works across forwarded buses', async () => {
 
   main_bus.on(ParentEvent, auth_bus.dispatch)
   auth_bus.on(ParentEvent, async (event) => {
-    const child = await event.bus?.emit(ChildEvent({})).done()
+    const event_bus = event.bus
+    assert.ok(event_bus)
+    const child_event = event_bus.emit(ChildEvent({}))
+    const child = await child_event.done()
+    assert.ok(child)
     child_event_id = child.event_id
   })
 

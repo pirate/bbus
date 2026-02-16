@@ -50,7 +50,7 @@ Used by bus internals; generally not needed for normal app code.
 
 ```python
 # internal methods used by EventBus
-await entry.execute(...)
+await entry.run_handler(...)
 entry.update(status='started' | 'completed' | 'error', result=..., error=...)
 ```
 
@@ -61,10 +61,36 @@ entry.update(status='started' | 'completed' | 'error', result=..., error=...)
 entry.markStarted()
 entry.markCompleted(result)
 entry.markError(error)
-await entry.runHandler()
+await entry.runHandler(...)
 entry.signalAbort(error)
 entry.linkEmittedChildEvent(childEvent)
 ```
+
+</Tab>
+</Tabs>
+
+## Scope stack ordering
+
+`EventResult` execution is intentionally layered as nested scopes/wrappers.
+
+<Tabs>
+<Tab title="Python">
+
+- `locks.with_handler_lock(...)`
+- `with_timeout(...)`
+- `with_slow_monitor(...)`
+- `with_handler_execution_context(...)`
+- `call_handler(...)`
+
+</Tab>
+<Tab title="TypeScript">
+
+- `withHandlerLock(...)` (acquired by `BaseEvent.runHandlers(...)` before `runHandler(...)`)
+- `withHandlerExecutionContext(...)`
+- `runWithAsyncContext(...)`
+- `withTimeout(...)`
+- `withSlowMonitor(...)`
+- `runWithAbortMonitor(...)`
 
 </Tab>
 </Tabs>

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import socket
 import sqlite3
 import subprocess
@@ -27,9 +26,6 @@ from bubus.bridge_nats import NATSEventBridge
 from bubus.bridge_postgres import PostgresEventBridge
 from bubus.bridge_redis import RedisEventBridge
 from bubus.bridge_sqlite import SQLiteEventBridge
-
-if os.getenv('GITHUB_ACTIONS', '').lower() == 'true':
-    pytestmark = pytest.mark.skip(reason='bridge tests are skipped on GitHub Actions')
 
 
 class IPCPingEvent(BaseEvent):
@@ -107,7 +103,7 @@ async def _wait_for_port(port: int, timeout: float = 30.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            reader, writer = await asyncio.open_connection('127.0.0.1', port)
+            _, writer = await asyncio.open_connection('127.0.0.1', port)
             writer.close()
             await writer.wait_closed()
             return

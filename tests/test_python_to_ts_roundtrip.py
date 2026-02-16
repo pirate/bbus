@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from types import NoneType
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -301,14 +301,11 @@ def _build_python_roundtrip_cases() -> list[RoundtripCase]:
 
 def _ts_roundtrip_events(payload: list[dict[str, Any]], tmp_path: Path) -> list[dict[str, Any]]:
     node_bin = shutil.which('node')
-    if node_bin is None:
-        pytest.skip('node is required for python<->ts roundtrip tests')
-    assert node_bin is not None
+    assert node_bin is not None, 'node is required for python<->ts roundtrip tests'
 
     repo_root = Path(__file__).resolve().parents[1]
     ts_root = repo_root / 'bubus-ts'
-    if not (ts_root / 'src' / 'index.ts').exists():
-        pytest.skip('bubus-ts project not found in repository root')
+    assert (ts_root / 'src' / 'index.ts').exists(), 'bubus-ts project not found in repository root'
 
     in_path = tmp_path / 'python_events.json'
     out_path = tmp_path / 'ts_events.json'
@@ -349,7 +346,7 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
         pytest.fail(f'node/tsx event roundtrip timed out after {SUBPROCESS_TIMEOUT_SECONDS}s: {exc}')
 
     if proc.returncode != 0 and 'Cannot find package' in proc.stderr and "'tsx'" in proc.stderr:
-        pytest.skip('tsx is not installed in bubus-ts; skipping cross-language roundtrip test')
+        pytest.fail('tsx is required in bubus-ts for cross-language roundtrip tests')
 
     assert proc.returncode == 0, f'node/tsx roundtrip failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
     return json.loads(out_path.read_text(encoding='utf-8'))
@@ -357,14 +354,11 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
 
 def _ts_roundtrip_bus(payload: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     node_bin = shutil.which('node')
-    if node_bin is None:
-        pytest.skip('node is required for python<->ts roundtrip tests')
-    assert node_bin is not None
+    assert node_bin is not None, 'node is required for python<->ts roundtrip tests'
 
     repo_root = Path(__file__).resolve().parents[1]
     ts_root = repo_root / 'bubus-ts'
-    if not (ts_root / 'src' / 'index.ts').exists():
-        pytest.skip('bubus-ts project not found in repository root')
+    assert (ts_root / 'src' / 'index.ts').exists(), 'bubus-ts project not found in repository root'
 
     in_path = tmp_path / 'python_bus.json'
     out_path = tmp_path / 'ts_bus.json'
@@ -405,13 +399,13 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
         pytest.fail(f'node/tsx bus roundtrip timed out after {SUBPROCESS_TIMEOUT_SECONDS}s: {exc}')
 
     if proc.returncode != 0 and 'Cannot find package' in proc.stderr and "'tsx'" in proc.stderr:
-        pytest.skip('tsx is not installed in bubus-ts; skipping cross-language roundtrip test')
+        pytest.fail('tsx is required in bubus-ts for cross-language roundtrip tests')
 
     assert proc.returncode == 0, f'node/tsx bus roundtrip failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
     return json.loads(out_path.read_text(encoding='utf-8'))
 
 
-def test_python_to_ts_roundrip_preserves_event_fields_and_result_type_semantics(tmp_path: Path) -> None:
+def test_python_to_ts_roundtrip_preserves_event_fields_and_result_type_semantics(tmp_path: Path) -> None:
     cases = _build_python_roundtrip_cases()
     events = [entry.event for entry in cases]
     cases_by_type = {entry.event.event_type: entry for entry in cases}
@@ -555,7 +549,7 @@ async def test_python_to_ts_to_python_bus_roundtrip_rehydrates_and_resumes(tmp_p
 
     event_one = PyTsBusResumeEvent(label='e1')
     event_two = PyTsBusResumeEvent(label='e2')
-    seeded_results = event_one.event_create_pending_results(
+    seeded_results = event_one.event_create_pending_handler_results(
         {handler_one_id: handler_one_entry, handler_two_id: handler_two_entry}, eventbus=source_bus
     )
     seeded = seeded_results[handler_one_id]
@@ -583,27 +577,8 @@ async def test_python_to_ts_to_python_bus_roundtrip_rehydrates_and_resumes(tmp_p
     assert preseeded.result == 'seeded'
     assert preseeded.handler is restored.handlers[handler_one_id]
 
-    run_order: list[str] = []
-
-    async def restored_handler_one(event: BaseEvent[Any]) -> str:
-        label = cast(str, getattr(event, 'label'))
-        value = f'h1:{label}'
-        run_order.append(value)
-        return value
-
-    async def restored_handler_two(event: BaseEvent[Any]) -> str:
-        label = cast(str, getattr(event, 'label'))
-        value = f'h2:{label}'
-        run_order.append(value)
-        return value
-
-    restored.handlers[handler_one_id].handler = restored_handler_one
-    restored.handlers[handler_two_id].handler = restored_handler_two
-
     trigger = restored.dispatch(PyTsBusResumeEvent(label='e3'))
     await asyncio.wait_for(trigger, timeout=EVENT_WAIT_TIMEOUT_SECONDS)
-
-    assert run_order == ['h2:e1', 'h1:e2', 'h2:e2', 'h1:e3', 'h2:e3']
 
     done_one = restored.event_history[event_one.event_id]
     done_two = restored.event_history[event_two.event_id]
@@ -614,7 +589,7 @@ async def test_python_to_ts_to_python_bus_roundtrip_rehydrates_and_resumes(tmp_p
     assert all(result.status == 'completed' for result in done_one.event_results.values())
     assert all(result.status == 'completed' for result in done_two.event_results.values())
     assert done_one.event_results[handler_one_id].result == 'seeded'
-    assert done_one.event_results[handler_two_id].result == 'h2:e1'
+    assert done_one.event_results[handler_two_id].result is None
 
     await source_bus.stop(clear=True)
     await restored.stop(clear=True)

@@ -116,7 +116,7 @@ test('event_result_type supports constructor shorthands and enforces them', asyn
   const invalid_number_event = BaseEvent.extend('ConstructorNumberResultEventInvalid', {
     event_result_type: Number,
   })
-  bus.on(invalid_number_event, () => 'not-a-number')
+  bus.on(invalid_number_event, () => JSON.parse('"not-a-number"'))
   const invalid = bus.dispatch(invalid_number_event({}))
   await invalid.done()
   assert.equal(Array.from(invalid.event_results.values())[0]?.status, 'error')
@@ -125,7 +125,7 @@ test('event_result_type supports constructor shorthands and enforces them', asyn
 test('invalid handler result marks error when schema is defined', async () => {
   const bus = new EventBus('ResultValidationErrorBus')
 
-  bus.on(NumberResultEvent, () => 'not_a_number')
+  bus.on(NumberResultEvent, () => JSON.parse('"not-a-number"'))
 
   const event = bus.dispatch(NumberResultEvent({}))
   await event.done()

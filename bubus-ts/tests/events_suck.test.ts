@@ -56,20 +56,32 @@ test('events_suck.make_events works with inline handlers', async () => {
   }
 
   const ping_user = (user_id: string): string => `pong:${user_id}`
+  const service = new LegacyService()
+
+  const create_from_payload = (payload: { id: string | null; name: string; age: number }): string => {
+    return service.create(payload.id, payload.name, payload.age)
+  }
+
+  const update_from_payload = (payload: { id: string; name?: string | null; age?: number | null } & Record<string, unknown>): boolean => {
+    const { id, name, age, ...extra } = payload
+    return service.update(id, name, age, extra)
+  }
+
+  const ping_from_payload = (payload: { user_id: string }): string => ping_user(payload.user_id)
 
   const events = events_suck.make_events({
-    FooBarAPICreateEvent: LegacyService.prototype.create,
-    FooBarAPIUpdateEvent: LegacyService.prototype.update,
-    FooBarAPIPingEvent: ping_user,
+    FooBarAPICreateEvent: create_from_payload,
+    FooBarAPIUpdateEvent: update_from_payload,
+    FooBarAPIPingEvent: ping_from_payload,
   })
 
-  const service = new LegacyService()
   const bus = new EventBus('LegacyBus')
-  bus.on(events.FooBarAPICreateEvent, ({ id, name, age }) => service.create(id, name, age))
-  bus.on(events.FooBarAPIUpdateEvent, ({ id, name, age, ...event_fields }) => service.update(id, name, age, event_fields))
-  bus.on(events.FooBarAPIPingEvent, ({ user_id }) => ping_user(user_id))
+  bus.on(events.FooBarAPICreateEvent, (event) => create_from_payload(event))
+  bus.on(events.FooBarAPIUpdateEvent, (event) => update_from_payload(event))
+  bus.on(events.FooBarAPIPingEvent, (event) => ping_from_payload(event))
 
   const created = await bus.emit(events.FooBarAPICreateEvent({ id: null, name: 'bob', age: 45 })).first()
+  assert.ok(created !== undefined)
   const updated = await bus.emit(events.FooBarAPIUpdateEvent({ id: created, age: 46, source: 'sync' })).first()
   const pong = await bus.emit(events.FooBarAPIPingEvent({ user_id: 'u1' })).first()
 

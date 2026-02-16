@@ -357,17 +357,27 @@ test('first: works with a single handler', async () => {
 
 // ─── first() preserves non-undefined falsy values ───────────────────────────
 
-test('first: returns null as a valid first result (not treated as undefined)', async () => {
-  const bus = new EventBus('FirstNullBus', { event_timeout: null })
-  const TestEvent = BaseEvent.extend('FirstNullEvent', {})
+test('first: skips null result and uses the next handler winner', async () => {
+  const bus = new EventBus('FirstNullSkipBus', { event_timeout: null, event_handler_concurrency: 'serial' })
+  const TestEvent = BaseEvent.extend('FirstNullSkipEvent', {})
+  let third_handler_called = false
 
   bus.on(TestEvent, async (_event) => {
     return null
   })
+  bus.on(TestEvent, async (_event) => {
+    return 'winner'
+  })
+  bus.on(TestEvent, async (_event) => {
+    third_handler_called = true
+    return 'third'
+  })
 
-  const result = await bus.emit(TestEvent({})).first()
+  const event = bus.emit(TestEvent({}))
+  const result = await event.first()
 
-  assert.equal(result, null, 'null is a valid non-undefined result')
+  assert.equal(result, 'winner')
+  assert.equal(third_handler_called, false)
 })
 
 test('first: returns 0 as a valid first result', async () => {
@@ -407,6 +417,28 @@ test('first: returns false as a valid first result', async () => {
   const result = await bus.emit(TestEvent({})).first()
 
   assert.equal(result, false, 'false is a valid non-undefined result')
+})
+
+test('first: skips BaseEvent return values and uses the next scalar winner', async () => {
+  const bus = new EventBus('FirstBaseEventSkipBus', { event_timeout: null, event_handler_concurrency: 'serial' })
+  const ParentEvent = BaseEvent.extend('FirstBaseEventSkipParent', {})
+  const ChildEvent = BaseEvent.extend('FirstBaseEventSkipChild', {})
+  let third_handler_called = false
+
+  bus.on(ParentEvent, async (_event) => {
+    return ChildEvent({})
+  })
+  bus.on(ParentEvent, async (_event) => {
+    return 'winner'
+  })
+  bus.on(ParentEvent, async (_event) => {
+    third_handler_called = true
+    return 'third'
+  })
+
+  const result = await bus.emit(ParentEvent({})).first()
+  assert.equal(result, 'winner')
+  assert.equal(third_handler_called, false)
 })
 
 // ─── first() cancels child events of losing handlers ────────────────────────

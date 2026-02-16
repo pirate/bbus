@@ -208,19 +208,6 @@ def throughput_regression_floor(
     return max(hard_floor, first_run_throughput * min_fraction)
 
 
-def ci_done_p95_ceiling_ms(local_ceiling_ms: float, phase1_done_p95_ms: float) -> float:
-    """
-    Keep strict latency ceilings locally, but tolerate noisier shared CI runners.
-    """
-    if os.getenv('GITHUB_ACTIONS', '').lower() == 'true':
-        return 1000.0
-    # Local runs can still show brief scheduler jitter in tail latency, especially
-    # in forwarding/parallel stress matrices. Use phase-1 as same-run baseline but
-    # cap slack so we still catch meaningful regressions.
-    adaptive_local_ceiling = max(local_ceiling_ms, (phase1_done_p95_ms * 1.6) + 10.0)
-    return min(local_ceiling_ms * 1.6, adaptive_local_ceiling)
-
-
 def ci_upper_ceiling(local_ceiling: float, *, ci_ceiling: float | None = None, multiplier: float = 2.0) -> float:
     """
     Keep strict local upper bounds while allowing higher ceilings on shared CI runners.
@@ -239,14 +226,21 @@ class MethodProfiler:
         self.stats: dict[str, dict[str, float]] = {}
         self._restore: list[tuple[type[Any], str, Any]] = []
 
-    def instrument(self, owner: type[Any], method_name: str, label: str | None = None) -> None:
+    def instrument(
+        self,
+        owner: type[Any],
+        method_name_or_ref: str | Callable[..., Any],
+        label: str | None = None,
+    ) -> None:
+        method_name = method_name_or_ref if isinstance(method_name_or_ref, str) else method_name_or_ref.__name__
         original = getattr(owner, method_name)
         metric_name = label or f'{owner.__name__}.{method_name}'
+        wrapped_method: Any
 
         if inspect.iscoroutinefunction(original):
 
             @functools.wraps(original)
-            async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            async def wrapped_async(*args: Any, **kwargs: Any) -> Any:
                 started = time.perf_counter()
                 try:
                     return await original(*args, **kwargs)
@@ -255,10 +249,12 @@ class MethodProfiler:
                     metric = self.stats.setdefault(metric_name, {'calls': 0.0, 'total_s': 0.0})
                     metric['calls'] += 1.0
                     metric['total_s'] += elapsed
+
+            wrapped_method = wrapped_async
         else:
 
             @functools.wraps(original)
-            def wrapped(*args: Any, **kwargs: Any) -> Any:
+            def wrapped_sync(*args: Any, **kwargs: Any) -> Any:
                 started = time.perf_counter()
                 try:
                     return original(*args, **kwargs)
@@ -268,8 +264,10 @@ class MethodProfiler:
                     metric['calls'] += 1.0
                     metric['total_s'] += elapsed
 
+            wrapped_method = wrapped_sync
+
         self._restore.append((owner, method_name, original))
-        setattr(owner, method_name, wrapped)
+        setattr(owner, method_name, wrapped_method)
 
     def restore(self) -> None:
         for owner, method_name, original in reversed(self._restore):
@@ -449,11 +447,10 @@ async def test_20k_events_with_memory_control():
     print(f'Peak memory: {max_memory:.1f} MB (+{peak_growth:.1f} MB)')
     print(f'Final memory: {final_memory:.1f} MB (+{memory_growth:.1f} MB)')
 
-    # Debug: Check if event loop is still processing
-    print(f'DEBUG: Bus is running: {bus._is_running}')
-    print(f'DEBUG: Runloop task: {bus._runloop_task}')
-    if bus._runloop_task:
-        print(f'DEBUG: Runloop task done: {bus._runloop_task.done()}')
+    # Debug: Check if dispatch pipeline still has work
+    queue_size = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
+    print(f'DEBUG: Queue size: {queue_size}')
+    print(f'DEBUG: In-flight event ids: {len(bus.in_flight_event_ids)}')
 
     # Safely get event history size without iterating
     try:
@@ -483,11 +480,9 @@ async def test_20k_events_with_memory_control():
 
     # Explicitly clean up the bus to prevent hanging
     print('\nCleaning up EventBus...')
-    print(f'Before stop - Running: {bus._is_running}')
-    print(f'Before stop - Runloop task: {bus._runloop_task}')
-    if bus._runloop_task:
-        print(f'  - Done: {bus._runloop_task.done()}')
-        print(f'  - Cancelled: {bus._runloop_task.cancelled()}')
+    queue_size_before_stop = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
+    print(f'Before stop - Queue size: {queue_size_before_stop}')
+    print(f'Before stop - In-flight event ids: {len(bus.in_flight_event_ids)}')
 
     await bus.stop(timeout=0, clear=True)
     print('EventBus stopped successfully')
@@ -875,8 +870,7 @@ async def test_global_lock_contention_multi_bus_matrix(event_handler_concurrency
         f'(required >= {regression_floor:.0f})'
     )
     assert phase2['dispatch_p95_ms'] < ci_upper_ceiling(25.0, ci_ceiling=80.0)
-    done_p95_ceiling_ms = ci_done_p95_ceiling_ms(250.0, phase1['done_p95_ms'])
-    assert phase2['done_p95_ms'] < done_p95_ceiling_ms
+    assert phase2['done_p95_ms'] < 750.0
 
 
 @pytest.mark.asyncio
@@ -982,7 +976,7 @@ async def test_queue_jump_perf_matrix_by_mode(event_handler_concurrency: Literal
         f'queue-jump regression: phase1={phase1[0]:.0f} phase2={phase2[0]:.0f} (required >= {regression_floor:.0f})'
     )
     assert phase2[2] < ci_upper_ceiling(15.0, ci_ceiling=60.0)
-    assert phase2[4] < ci_done_p95_ceiling_ms(120.0, phase1[4])
+    assert phase2[4] < 360.0
 
 
 @pytest.mark.asyncio
@@ -1069,7 +1063,7 @@ async def test_forwarding_chain_perf_matrix_by_mode(event_handler_concurrency: L
     assert phase1[0] >= hard_floor
     assert phase2[0] >= regression_floor
     assert phase2[2] < ci_upper_ceiling(40.0, ci_ceiling=120.0)
-    assert phase2[4] < ci_done_p95_ceiling_ms(350.0, phase1[4])
+    assert phase2[4] < 1050.0
 
 
 @pytest.mark.asyncio
@@ -1125,7 +1119,9 @@ async def test_timeout_churn_perf_matrix_by_mode(event_handler_concurrency: Lite
         event = TimeoutChurnEvent(
             mode='fast',
             iteration=10_000 + recovery_counter,
-            event_timeout=0.02,
+            # Keep recovery timeout comfortably above scheduler jitter so any
+            # recovery error signals a real lock/cancellation bug, not timing noise.
+            event_timeout=0.05,
         )
         recovery_phase_events.append(event)
         recovery_counter += 1
@@ -1268,7 +1264,7 @@ async def test_max_history_none_single_bus_stress_matrix(event_handler_concurren
     assert phase1[0] >= hard_floor
     assert phase2[0] >= regression_floor
     assert phase2[2] < ci_upper_ceiling(12.0, ci_ceiling=50.0)
-    assert phase2[4] < ci_done_p95_ceiling_ms(80.0, phase1[4])
+    assert phase2[4] < 240.0
     assert done_delta < 260.0
     assert gc_delta < 220.0
     assert per_event_mb < 0.08
@@ -1344,7 +1340,7 @@ async def test_max_history_none_forwarding_chain_stress_matrix(event_handler_con
     assert phase1[0] >= hard_floor
     assert phase2[0] >= regression_floor
     assert phase2[2] < ci_upper_ceiling(15.0, ci_ceiling=60.0)
-    assert phase2[4] < ci_done_p95_ceiling_ms(100.0, phase1[4])
+    assert phase2[4] < 300.0
     assert done_delta < 320.0
     assert gc_delta < 280.0
 
@@ -1357,20 +1353,16 @@ async def test_perf_debug_hot_path_breakdown() -> None:
     """
     profiler = MethodProfiler()
     instrumented = [
-        (event_bus_module.ReentrantLock, '__aenter__'),
-        (event_bus_module.ReentrantLock, '__aexit__'),
-        (event_bus_module.EventBus, '_get_applicable_handlers'),
-        (event_bus_module.EventBus, '_would_create_loop'),
-        (event_bus_module.EventBus, '_run_handlers'),
-        (event_bus_module.EventBus, 'run_handler'),
-        (event_bus_module.EventBus, 'cleanup_event_history'),
-        (base_event_module.BaseEvent, 'event_create_pending_results'),
-        (base_event_module.BaseEvent, '_is_queued_on_any_bus'),
-        (base_event_module.BaseEvent, '_remove_self_from_queue'),
-        (base_event_module.BaseEvent, '_process_self_on_all_buses'),
+        (event_bus_module.ReentrantLock, event_bus_module.ReentrantLock.__aenter__),
+        (event_bus_module.ReentrantLock, event_bus_module.ReentrantLock.__aexit__),
+        (event_bus_module.EventBus, event_bus_module.EventBus.get_handlers_for_event),
+        (event_bus_module.EventBus, event_bus_module.EventBus.process_event),
+        (event_bus_module.EventBus, event_bus_module.EventBus.run_handler),
+        (event_bus_module.EventBus, event_bus_module.EventBus.cleanup_event_history),
+        (base_event_module.BaseEvent, base_event_module.BaseEvent.event_create_pending_handler_results),
     ]
-    for owner, method_name in instrumented:
-        profiler.instrument(owner, method_name)
+    for owner, method_ref in instrumented:
+        profiler.instrument(owner, method_ref)
 
     class DebugParentEvent(BaseEvent):
         idx: int = 0

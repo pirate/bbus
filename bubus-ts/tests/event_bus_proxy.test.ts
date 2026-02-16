@@ -230,3 +230,88 @@ test('event.bus.dispatch from handler correctly attributes event_emitted_by_hand
   const handler_result = parent_from_history!.event_results.get(child!.event_emitted_by_handler_id!)
   assert.ok(handler_result, 'handler_id on child should match a handler result on the parent')
 })
+
+test('dispatch preserves explicit event_parent_id and does not override it', async () => {
+  const bus = new EventBus('ExplicitParentBus')
+  const explicit_parent_id = '018f8e40-1234-7000-8000-000000001234'
+
+  bus.on(MainEvent, (event) => {
+    const child = ChildEvent({
+      event_parent_id: explicit_parent_id,
+    })
+    event.bus?.emit(child)
+  })
+
+  const parent = bus.dispatch(MainEvent({}))
+  await bus.waitUntilIdle()
+
+  const child = Array.from(bus.event_history.values()).find((event) => event.event_type === 'ChildEvent')
+  assert.ok(child, 'child event should be in history')
+  assert.equal(child.event_parent_id, explicit_parent_id)
+  assert.notEqual(child.event_parent_id, parent.event_id)
+})
+
+// Consolidated from tests/parent_child.test.ts
+
+const LineageParentEvent = BaseEvent.extend('ParentEvent', {})
+const LineageChildEvent = BaseEvent.extend('ChildEvent', {})
+const LineageGrandchildEvent = BaseEvent.extend('GrandchildEvent', {})
+const LineageUnrelatedEvent = BaseEvent.extend('UnrelatedEvent', {})
+
+test('eventIsChildOf and eventIsParentOf work for direct children', async () => {
+  const bus = new EventBus('ParentChildBus')
+
+  bus.on(LineageParentEvent, (event) => {
+    event.bus?.emit(LineageChildEvent({}))
+  })
+
+  const parent_event = bus.dispatch(LineageParentEvent({}))
+  await bus.waitUntilIdle()
+
+  const child_event = Array.from(bus.event_history.values()).find((event) => event.event_type === 'ChildEvent')
+  assert.ok(child_event)
+
+  assert.equal(child_event.event_parent_id, parent_event.event_id)
+  assert.equal(child_event.event_parent?.event_id, parent_event.event_id)
+  assert.equal(bus.eventIsChildOf(child_event, parent_event), true)
+  assert.equal(bus.eventIsParentOf(parent_event, child_event), true)
+})
+
+test('eventIsChildOf works for grandchildren', async () => {
+  const bus = new EventBus('GrandchildBus')
+
+  bus.on(LineageParentEvent, (event) => {
+    event.bus?.emit(LineageChildEvent({}))
+  })
+
+  bus.on(LineageChildEvent, (event) => {
+    event.bus?.emit(LineageGrandchildEvent({}))
+  })
+
+  const parent_event = bus.dispatch(LineageParentEvent({}))
+  await bus.waitUntilIdle()
+
+  const child_event = Array.from(bus.event_history.values()).find((event) => event.event_type === 'ChildEvent')
+  const grandchild_event = Array.from(bus.event_history.values()).find((event) => event.event_type === 'GrandchildEvent')
+
+  assert.ok(child_event)
+  assert.ok(grandchild_event)
+
+  assert.equal(bus.eventIsChildOf(child_event, parent_event), true)
+  assert.equal(bus.eventIsChildOf(grandchild_event, parent_event), true)
+  assert.equal(child_event.event_parent?.event_id, parent_event.event_id)
+  assert.equal(grandchild_event.event_parent?.event_id, child_event.event_id)
+  assert.equal(bus.eventIsParentOf(parent_event, grandchild_event), true)
+})
+
+test('eventIsChildOf returns false for unrelated events', async () => {
+  const bus = new EventBus('UnrelatedBus')
+
+  const parent_event = bus.dispatch(LineageParentEvent({}))
+  const unrelated_event = bus.dispatch(LineageUnrelatedEvent({}))
+  await parent_event.done()
+  await unrelated_event.done()
+
+  assert.equal(bus.eventIsChildOf(unrelated_event, parent_event), false)
+  assert.equal(bus.eventIsParentOf(parent_event, unrelated_event), false)
+})

@@ -18,7 +18,7 @@ const GrandchildEvent = BaseEvent.extend('GrandchildEvent', {
   note: z.string(),
 })
 
-const shortId = (id?: string): string => (id ? id.slice(-8) : 'none')
+const shortId = (id?: string | null): string => (id ? id.slice(-8) : 'none')
 
 async function main(): Promise<void> {
   // Step 2: Create one bus so parent/child linkage is easy to inspect in one history.

@@ -67,8 +67,20 @@ class CleanShutdownQueue(asyncio.Queue[QueueEntryType]):
     """asyncio.Queue subclass that handles shutdown cleanly without warnings."""
 
     _is_shutdown: bool = False
+    _queue: deque[QueueEntryType]
     _getters: deque[asyncio.Future[QueueEntryType]]
     _putters: deque[asyncio.Future[QueueEntryType]]
+
+    def iter_items(self) -> tuple[QueueEntryType, ...]:
+        """Return a snapshot of queued items in FIFO order."""
+        return tuple(self._queue)
+
+    def remove_item(self, item: QueueEntryType) -> bool:
+        """Remove one matching queued item if present."""
+        if item not in self._queue:
+            return False
+        self._queue.remove(item)
+        return True
 
     def shutdown(self, immediate: bool = True):
         """Shutdown the queue and clean up all pending futures."""
@@ -94,7 +106,7 @@ class CleanShutdownQueue(asyncio.Queue[QueueEntryType]):
             if self._is_shutdown:
                 raise QueueShutDown
 
-            getter = cast(asyncio.Future[QueueEntryType], asyncio.get_running_loop().create_future())
+            getter: asyncio.Future[QueueEntryType] = asyncio.get_running_loop().create_future()
             assert isinstance(getter, asyncio.Future)
             self._getters.append(getter)
             try:
@@ -117,7 +129,7 @@ class CleanShutdownQueue(asyncio.Queue[QueueEntryType]):
             if self._is_shutdown:
                 raise QueueShutDown
 
-            putter = cast(asyncio.Future[QueueEntryType], asyncio.get_running_loop().create_future())
+            putter: asyncio.Future[QueueEntryType] = asyncio.get_running_loop().create_future()
             assert isinstance(putter, asyncio.Future)
             self._putters.append(putter)
             try:

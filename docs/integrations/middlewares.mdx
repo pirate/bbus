@@ -1,35 +1,75 @@
 ---
 title: Overview
-description: Python middleware integrations for EventBus lifecycle hooks.
+description: Middleware integrations for EventBus lifecycle hooks in Python and TypeScript.
 ---
 
-Middlewares can observe event lifecycle transitions, emit auto events, and persist or trace runtime behavior.
+Middlewares can observe event lifecycle transitions, react to handler registration changes, and add cross-cutting behavior around event execution.
 
 ## Quick setup
 
+<Tabs>
+<Tab title="Python">
+
 ```python
 from bubus import EventBus
-from bubus.middlewares import (
-    WALEventBusMiddleware,
-    LoggerEventBusMiddleware,
-    SQLiteHistoryMirrorMiddleware,
-    OtelTracingMiddleware,
-)
+from bubus.middlewares import LoggerEventBusMiddleware, WALEventBusMiddleware
 
 bus = EventBus(
     name='MyBus',
     middlewares=[
-        SQLiteHistoryMirrorMiddleware('./events.sqlite3'),
         WALEventBusMiddleware('./events.jsonl'),
         LoggerEventBusMiddleware('./events.log'),
-        OtelTracingMiddleware(),
     ],
 )
 ```
 
-## Middleware pages
+</Tab>
+<Tab title="TypeScript">
 
-- [EventBusMiddleware](../api/eventbusmiddleware)
+```ts
+import { BaseEvent, EventBus, type EventBusMiddleware, type EventStatus } from 'bubus'
+
+class LoggingMiddleware implements EventBusMiddleware {
+  async onEventChange(eventbus: EventBus, event: BaseEvent, status: EventStatus): Promise<void> {
+    if (status === 'completed') {
+      console.log(`[${eventbus.label}] ${event.event_type}#${event.event_id.slice(-4)}`)
+    }
+  }
+}
+
+const bus = new EventBus('MyBus', {
+  middlewares: [LoggingMiddleware],
+})
+```
+
+</Tab>
+</Tabs>
+
+## Middleware interface
+
+Use three optional hooks:
+
+- Event lifecycle: `on_event_change` / `onEventChange`
+- Handler-result lifecycle: `on_event_result_change` / `onEventResultChange`
+- Handler registration lifecycle: `on_bus_handlers_change` / `onBusHandlersChange`
+
+See [EventBusMiddleware](../api/eventbusmiddleware) for full signatures and custom middleware examples.
+
+## Lifecycle
+
+Middleware hooks receive lifecycle statuses in strict order:
+
+- Event hooks: `pending` -> `started` -> `completed`
+- Event-result hooks: `pending` -> `started` -> `completed`
+- Handler registration hooks: called when handlers are added or removed via `on(...)` and `off(...)`
+
+`status` passed to lifecycle hooks is never `error`. Handler failures are exposed on `event_result.status` and `event_result.error` during the `completed` callback.
+
+## Built-in classes
+
+<Tabs>
+<Tab title="Python">
+
 - [OtelTracingMiddleware](./middleware-otel-tracing)
 - [AutoErrorEventMiddleware](./middleware-auto-error)
 - [AutoReturnEventMiddleware](./middleware-auto-return)
@@ -37,3 +77,11 @@ bus = EventBus(
 - [WALEventBusMiddleware](./middleware-wal)
 - [LoggerEventBusMiddleware](./middleware-logger)
 - [SQLiteHistoryMirrorMiddleware](./middleware-sqlite-history-mirror)
+
+</Tab>
+<Tab title="TypeScript">
+
+TypeScript currently exposes the middleware interface only. No built-in middleware classes are exported yet.
+
+</Tab>
+</Tabs>

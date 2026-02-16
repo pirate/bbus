@@ -33,9 +33,14 @@ done
   done
 )
 
-# Perf suites run at the end, outside the default parallel checks.
-uv run tests/performance_runtime.py
-(
-  cd bubus-ts
-  pnpm run perf
-)
+# Perf suites are expensive and can push total runtime well past the main CI budget.
+# Run them explicitly with RUN_PERF=1 (or use ./test_perf.sh).
+if [[ "${RUN_PERF:-0}" == "1" ]]; then
+  uv run tests/performance_runtime.py
+  (
+    cd bubus-ts
+    pnpm run perf
+  )
+else
+  echo "Skipping perf suites (set RUN_PERF=1 to include them)."
+fi

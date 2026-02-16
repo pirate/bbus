@@ -65,7 +65,7 @@ async def test_event_and_result_without_eventbus() -> None:
     )
     assert handler_entry.id is not None
     handler_id = handler_entry.id
-    pending_results = event.event_create_pending_results({handler_id: handler_entry})
+    pending_results = event.event_create_pending_handler_results({handler_id: handler_entry})
     event_result = pending_results[handler_id]
 
     test_bus = EventBus(name='StandaloneTest2')

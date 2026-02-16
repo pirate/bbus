@@ -14,6 +14,26 @@ const SystemEventModel = BaseEvent.extend('SystemEventModel', {
   event_name: z.string(),
 })
 
+test('on stores EventHandler entry and indexes it by event key', async () => {
+  const bus = new EventBus('RegistryBus')
+  const RegistryEvent = BaseEvent.extend('RegistryEvent', {})
+  const handler = (event: BaseEvent): string => event.event_type
+
+  const entry = bus.on('RegistryEvent', handler)
+
+  assert.ok(entry.id)
+  assert.equal(bus.handlers.has(entry.id), true)
+  assert.equal(bus.handlers.get(entry.id), entry)
+  assert.equal((bus.handlers_by_key.get('RegistryEvent') ?? []).includes(entry.id), true)
+
+  const dispatched = bus.dispatch(RegistryEvent({}))
+  await dispatched.done()
+
+  const result = dispatched.event_results.get(entry.id)
+  assert.ok(result)
+  assert.equal(result!.handler.id, entry.id)
+})
+
 test('handler registration via string, class, and wildcard', async () => {
   const bus = new EventBus('HandlerRegistrationBus')
   const results: Record<string, string[]> = {
@@ -37,10 +57,8 @@ test('handler registration via string, class, and wildcard', async () => {
     return 'universal'
   }
 
-  const system_event_class = (SystemEventModel as unknown as { class: typeof BaseEvent }).class
-
   bus.on('UserActionEvent', user_handler)
-  bus.on(system_event_class, system_handler)
+  bus.on(SystemEventModel, system_handler)
   bus.on('*', universal_handler)
 
   bus.dispatch(UserActionEvent({ action: 'login', user_id: 'u1' }))

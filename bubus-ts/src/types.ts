@@ -15,23 +15,39 @@ export type EventResultTypeConstructor = StringConstructor | NumberConstructor |
 
 export type EventResultTypeInput = z.ZodTypeAny | EventResultTypeConstructor | unknown
 
-export type EventHandlerFunction<T extends BaseEvent = BaseEvent> = (
-  event: T
-) => void | EventResultType<T> | Promise<void | EventResultType<T>>
+export type EventHandlerReturn<T extends BaseEvent = BaseEvent> = EventResultType<T> | BaseEvent | null | void
+
+export type EventHandlerCallable<T extends BaseEvent = BaseEvent> = (event: T) => EventHandlerReturn<T> | Promise<EventHandlerReturn<T>>
 
 // For string and wildcard subscriptions we cannot reliably infer which event
 // type will arrive, so return type checking intentionally degrades to unknown.
-export type UntypedEventHandlerFunction<T extends BaseEvent = BaseEvent> = (event: T) => void | unknown | Promise<void | unknown>
+export type UntypedEventHandlerFunction<T extends BaseEvent = BaseEvent> = (
+  event: T
+) => EventHandlerReturn<T> | unknown | Promise<EventHandlerReturn<T> | unknown>
 
 export type FindWindow = boolean | number
 
 type FindReservedOptionKeys = 'past' | 'future' | 'child_of'
 
+type EventFilterFields<T extends BaseEvent> = {
+  [K in keyof T as string extends K
+    ? never
+    : number extends K
+      ? never
+      : symbol extends K
+        ? never
+        : K extends FindReservedOptionKeys
+          ? never
+          : T[K] extends (...args: unknown[]) => unknown
+            ? never
+            : K]?: T[K]
+}
+
 export type FindOptions<T extends BaseEvent = BaseEvent> = {
   past?: FindWindow
   future?: FindWindow
   child_of?: BaseEvent | null
-} & Partial<Omit<T, FindReservedOptionKeys>> &
+} & EventFilterFields<T> &
   Record<string, unknown>
 
 export const normalizeEventPattern = (event_pattern: EventPattern | '*'): string | '*' => {

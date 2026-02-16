@@ -18,8 +18,8 @@ def _dump_bus_state(buses: list[EventBus]) -> str:
     for bus in buses:
         queue_size = bus.pending_event_queue.qsize() if bus.pending_event_queue else 0
         lines.append(
-            f'{bus.label} queue={queue_size} active={len(bus._active_event_ids)} '
-            f'processing={len(bus._processing_event_ids)} history={len(bus.event_history)}'
+            f'{bus.label} queue={queue_size} active={len(bus.in_flight_event_ids)} '
+            f'processing={len(bus.processing_event_ids)} history={len(bus.event_history)}'
         )
     for bus in buses:
         lines.append(f'--- {bus.label}.log_tree() ---')
@@ -32,7 +32,7 @@ async def test_forwarded_event_does_not_leave_stale_active_ids():
     """
     Regression test for the original forwarding completion race:
     an event could be marked completed while another bus still retained its
-    event_id in _active_event_ids, causing wait_until_idle() to hang.
+    event_id in in_flight_event_ids, causing wait_until_idle() to hang.
     """
     peer1 = EventBus(name='RacePeer1')
     peer2 = EventBus(name='RacePeer2')
@@ -71,8 +71,8 @@ async def test_forwarded_event_does_not_leave_stale_active_ids():
 
         assert second.event_status == 'completed'
         for bus in buses:
-            assert second.event_id not in bus._active_event_ids
-            assert second.event_id not in bus._processing_event_ids
+            assert second.event_id not in bus.in_flight_event_ids
+            assert second.event_id not in bus.processing_event_ids
 
     finally:
         await peer1.stop(clear=True)

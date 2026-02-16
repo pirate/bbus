@@ -10,6 +10,15 @@ const delay = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
+const PropagationEvent = BaseEvent.extend('PropagationEvent', {})
+const ConcurrencyOverrideEvent = BaseEvent.extend('ConcurrencyOverrideEvent', {
+  event_concurrency: 'global-serial',
+})
+const HandlerOverrideEvent = BaseEvent.extend('HandlerOverrideEvent', {
+  event_handler_concurrency: 'serial',
+  event_handler_completion: 'all',
+})
+
 // ─── Constructor defaults ────────────────────────────────────────────────────
 
 test('EventBus initializes with correct defaults', async () => {
@@ -18,13 +27,42 @@ test('EventBus initializes with correct defaults', async () => {
   assert.equal(bus.name, 'DefaultsBus')
   assert.equal(bus.max_history_size, 100)
   assert.equal(bus.max_history_drop, false)
-  assert.equal(bus.event_concurrency_default, 'bus-serial')
+  assert.equal(bus.event_concurrency, 'bus-serial')
   assert.equal(bus.event_handler_concurrency_default, 'serial')
   assert.equal(bus.event_handler_completion_default, 'all')
-  assert.equal(bus.event_timeout_default, 60)
+  assert.equal(bus.event_timeout, 60)
   assert.equal(bus.event_history.size, 0)
-  assert.ok(EventBus._all_instances.has(bus))
+  assert.ok(EventBus.all_instances.has(bus))
   await bus.waitUntilIdle()
+})
+
+test('waitUntilIdle(timeout) returns after timeout when work is still in-flight', async () => {
+  const WaitForIdleTimeoutEvent = BaseEvent.extend('WaitForIdleTimeoutEvent', {})
+  const bus = new EventBus('WaitForIdleTimeoutBus')
+
+  let release_handler!: () => void
+  const handler_gate = new Promise<void>((resolve) => {
+    release_handler = resolve
+  })
+
+  bus.on(WaitForIdleTimeoutEvent, async () => {
+    await handler_gate
+  })
+
+  bus.dispatch(WaitForIdleTimeoutEvent({}))
+
+  const start_ms = performance.now()
+  await bus.waitUntilIdle(0.05)
+  const elapsed_ms = performance.now() - start_ms
+
+  try {
+    assert.ok(elapsed_ms >= 30, `expected timeout wait to be >=30ms, got ${elapsed_ms}ms`)
+    assert.ok(elapsed_ms < 1000, `expected timeout wait to be <1000ms, got ${elapsed_ms}ms`)
+    assert.equal(bus.isIdleAndQueueEmpty(), false)
+  } finally {
+    release_handler()
+    await bus.waitUntilIdle()
+  }
 })
 
 test('EventBus applies custom options', () => {
@@ -39,10 +77,10 @@ test('EventBus applies custom options', () => {
 
   assert.equal(bus.max_history_size, 500)
   assert.equal(bus.max_history_drop, false)
-  assert.equal(bus.event_concurrency_default, 'parallel')
+  assert.equal(bus.event_concurrency, 'parallel')
   assert.equal(bus.event_handler_concurrency_default, 'serial')
   assert.equal(bus.event_handler_completion_default, 'first')
-  assert.equal(bus.event_timeout_default, 30)
+  assert.equal(bus.event_timeout, 30)
 })
 
 test('EventBus with null max_history_size means unlimited', () => {
@@ -52,12 +90,72 @@ test('EventBus with null max_history_size means unlimited', () => {
 
 test('EventBus with null event_timeout disables timeouts', () => {
   const bus = new EventBus('NoTimeoutBus', { event_timeout: null })
-  assert.equal(bus.event_timeout_default, null)
+  assert.equal(bus.event_timeout, null)
 })
 
 test('EventBus auto-generates name when not provided', () => {
   const bus = new EventBus()
   assert.equal(bus.name, 'EventBus')
+})
+
+test('event_concurrency bus default applies for missing and null event values', async () => {
+  const bus = new EventBus('EventConcurrencyDefaultBus', { event_concurrency: 'parallel' })
+  bus.on(PropagationEvent, async () => 'ok')
+
+  const implicit = bus.dispatch(PropagationEvent({}))
+  const explicit_null = bus.dispatch(PropagationEvent({ event_concurrency: null }))
+
+  assert.equal(implicit.event_concurrency, 'parallel')
+  assert.equal(explicit_null.event_concurrency, 'parallel')
+
+  await implicit.done()
+  await explicit_null.done()
+})
+
+test('event_concurrency class override beats bus default', async () => {
+  const bus = new EventBus('EventConcurrencyOverrideBus', { event_concurrency: 'parallel' })
+  bus.on(ConcurrencyOverrideEvent, async () => 'ok')
+
+  const event = bus.dispatch(ConcurrencyOverrideEvent({}))
+  assert.equal(event.event_concurrency, 'global-serial')
+  await event.done()
+})
+
+test('handler defaults propagate when event values are missing or null', async () => {
+  const bus = new EventBus('HandlerDefaultsBus', {
+    event_handler_concurrency: 'parallel',
+    event_handler_completion: 'first',
+  })
+  bus.on(PropagationEvent, async () => 'ok')
+
+  const implicit = bus.dispatch(PropagationEvent({}))
+  const explicit_null = bus.dispatch(
+    PropagationEvent({
+      event_handler_concurrency: null,
+      event_handler_completion: null,
+    })
+  )
+
+  assert.equal(implicit.event_handler_concurrency, 'parallel')
+  assert.equal(implicit.event_handler_completion, 'first')
+  assert.equal(explicit_null.event_handler_concurrency, 'parallel')
+  assert.equal(explicit_null.event_handler_completion, 'first')
+
+  await implicit.done()
+  await explicit_null.done()
+})
+
+test('handler class override beats bus defaults', async () => {
+  const bus = new EventBus('HandlerDefaultsOverrideBus', {
+    event_handler_concurrency: 'parallel',
+    event_handler_completion: 'first',
+  })
+  bus.on(HandlerOverrideEvent, async () => 'ok')
+
+  const event = bus.dispatch(HandlerOverrideEvent({}))
+  assert.equal(event.event_handler_concurrency, 'serial')
+  assert.equal(event.event_handler_completion, 'all')
+  await event.done()
 })
 
 test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
@@ -112,10 +210,10 @@ test('EventBus toString and toJSON/fromJSON roundtrip full state', async () => {
   assert.equal(restored.name, 'SerializableBus')
   assert.equal(restored.max_history_size, 500)
   assert.equal(restored.max_history_drop, false)
-  assert.equal(restored.event_concurrency_default, 'parallel')
+  assert.equal(restored.event_concurrency, 'parallel')
   assert.equal(restored.event_handler_concurrency_default, 'parallel')
   assert.equal(restored.event_handler_completion_default, 'first')
-  assert.equal(restored.event_timeout_default, null)
+  assert.equal(restored.event_timeout, null)
   assert.equal(restored.event_handler_slow_timeout, 12)
   assert.equal(restored.event_slow_timeout, 34)
   assert.equal(restored.event_handler_detect_file_paths, false)
@@ -191,8 +289,8 @@ test('EventBus locks methods are callable and preserve lock resolution behavior'
     event_concurrency: 'global-serial',
     event_handler_concurrency: 'serial',
   })
-  assert.equal(bus.locks.getLockForEvent(event_with_global), LockManager.global_event_lock)
-  const handler_lock = event_with_global.getHandlerLock(bus.event_handler_concurrency_default)
+  assert.equal(bus.locks.getLockForEvent(event_with_global), LockManager._lock_for_event_global_serial)
+  const handler_lock = event_with_global.eventGetHandlerLock(bus.event_handler_concurrency_default)
   assert.ok(handler_lock)
 
   const event_with_parallel = GateEvent({
@@ -200,10 +298,10 @@ test('EventBus locks methods are callable and preserve lock resolution behavior'
     event_handler_concurrency: 'parallel',
   })
   assert.equal(bus.locks.getLockForEvent(event_with_parallel), null)
-  assert.equal(event_with_parallel.getHandlerLock(bus.event_handler_concurrency_default), null)
+  assert.equal(event_with_parallel.eventGetHandlerLock(bus.event_handler_concurrency_default), null)
 
   const another_serial_event = GateEvent({ event_handler_concurrency: 'serial' })
-  const another_lock = another_serial_event.getHandlerLock(bus.event_handler_concurrency_default)
+  const another_lock = another_serial_event.eventGetHandlerLock(bus.event_handler_concurrency_default)
   assert.notEqual(handler_lock, another_lock)
 
   bus.dispatch(GateEvent({}))
@@ -759,7 +857,7 @@ test('many events dispatched concurrently all complete', async () => {
 
 // ─── event_timeout default application ───────────────────────────────────────
 
-test('dispatch applies bus event_timeout_default when event has null timeout', async () => {
+test('dispatch applies bus event_timeout when event has null timeout', async () => {
   const bus = new EventBus('TimeoutDefaultBus', {
     max_history_size: 100,
     event_timeout: 42,
@@ -790,16 +888,16 @@ test('event with explicit timeout is not overridden by bus default', async () =>
   await bus.waitUntilIdle()
 })
 
-// ─── EventBus._all_instances tracking ─────────────────────────────────────────────
+// ─── EventBus.all_instances tracking ─────────────────────────────────────────────
 
-test('EventBus._all_instances tracks all created buses', () => {
-  const initial_count = EventBus._all_instances.size
+test('EventBus.all_instances tracks all created buses', () => {
+  const initial_count = EventBus.all_instances.size
   const bus_a = new EventBus('TrackA')
   const bus_b = new EventBus('TrackB')
 
-  assert.ok(EventBus._all_instances.has(bus_a))
-  assert.ok(EventBus._all_instances.has(bus_b))
-  assert.equal(EventBus._all_instances.size, initial_count + 2)
+  assert.ok(EventBus.all_instances.has(bus_a))
+  assert.ok(EventBus.all_instances.has(bus_b))
+  assert.equal(EventBus.all_instances.size, initial_count + 2)
 })
 
 // ─── Circular forwarding prevention ──────────────────────────────────────────
@@ -851,7 +949,7 @@ test('circular forwarding does not cause infinite loop', async () => {
 
 // ─── EventBus GC / memory leak ───────────────────────────────────────────────
 
-test('unreferenced EventBus can be garbage collected (not retained by _all_instances)', async () => {
+test('unreferenced EventBus can be garbage collected (not retained by all_instances)', async () => {
   // This test requires --expose-gc to force garbage collection
   const gc = globalThis.gc as (() => void) | undefined
   if (typeof gc !== 'function') {
@@ -872,14 +970,14 @@ test('unreferenced EventBus can be garbage collected (not retained by _all_insta
   await delay(50)
   gc()
 
-  // If EventBus._all_instances holds a strong reference (Set<EventBus>),
+  // If EventBus.all_instances holds a strong reference (Set<EventBus>),
   // the bus will NOT be collected — proving the memory leak.
   // After the fix (WeakRef-based storage), the bus should be collected.
   assert.equal(
     weak_ref!.deref(),
     undefined,
     'bus should be garbage collected when no external references remain — ' +
-      'EventBus._all_instances is holding a strong reference (memory leak)'
+      'EventBus.all_instances is holding a strong reference (memory leak)'
   )
 })
 
@@ -921,7 +1019,7 @@ test('unreferenced buses with event history are garbage collected without destro
   const heap_after = process.memoryUsage().heapUsed
 
   assert.equal(alive_count, 0, 'all unreferenced buses should be garbage collected without explicit destroy()')
-  assert.equal(EventBus._all_instances.size, 0, '_all_instances should not retain unreferenced buses')
+  assert.equal(EventBus.all_instances.size, 0, 'all_instances should not retain unreferenced buses')
   assert.ok(
     heap_after <= heap_before + 20 * 1024 * 1024,
     `heap should return near baseline after GC, before=${(heap_before / 1024 / 1024).toFixed(1)}MB after=${(heap_after / 1024 / 1024).toFixed(1)}MB`
@@ -1014,4 +1112,88 @@ test('off() with no handler removes all handlers for that event', async () => {
   assert.equal(call_count_b, 1, 'handler B should not fire after off(event)')
   // OtherEvent handler should still work
   assert.equal(other_count, 1, 'unrelated handler should still fire')
+})
+
+// Consolidated from tests/coverage_gaps.test.ts
+
+test('reset creates a fresh pending event for cross-bus dispatch', async () => {
+  const ResetEvent = BaseEvent.extend('ResetCoverageEvent', {
+    label: z.string(),
+  })
+
+  const bus_a = new EventBus('ResetCoverageBusA')
+  const bus_b = new EventBus('ResetCoverageBusB')
+
+  bus_a.on(ResetEvent, (event) => `a:${event.label}`)
+  bus_b.on(ResetEvent, (event) => `b:${event.label}`)
+
+  const completed = await bus_a.dispatch(ResetEvent({ label: 'hello' })).done()
+  const fresh = completed.reset()
+
+  assert.notEqual(fresh.event_id, completed.event_id)
+  assert.equal(fresh.event_status, 'pending')
+  assert.equal(fresh.event_results.size, 0)
+  assert.equal(fresh.event_started_at, null)
+  assert.equal(fresh.event_completed_at, null)
+
+  const forwarded = await bus_b.dispatch(fresh).done()
+  assert.equal(forwarded.event_status, 'completed')
+  assert.equal(
+    Array.from(forwarded.event_results.values()).some((result) => result.result === 'b:hello'),
+    true
+  )
+  assert.equal(
+    forwarded.event_path.some((entry) => entry.startsWith('ResetCoverageBusA#')),
+    true
+  )
+  assert.equal(
+    forwarded.event_path.some((entry) => entry.startsWith('ResetCoverageBusB#')),
+    true
+  )
+
+  bus_a.destroy()
+  bus_b.destroy()
+})
+
+test('scoped handler event reports bus and _event_original via in-operator', async () => {
+  const ProxyEvent = BaseEvent.extend('ProxyHasCoverageEvent', {})
+  const bus = new EventBus('ProxyHasCoverageBus')
+  let has_bus = false
+  let has_original = false
+
+  bus.on(ProxyEvent, (event) => {
+    has_bus = 'bus' in event
+    has_original = '_event_original' in event
+  })
+
+  await bus.dispatch(ProxyEvent({})).done()
+
+  assert.equal(has_bus, true)
+  assert.equal(has_original, true)
+  bus.destroy()
+})
+
+test('on() rejects BaseEvent matcher without a concrete event type', () => {
+  const bus = new EventBus('InvalidMatcherCoverageBus')
+  assert.throws(() => bus.on(BaseEvent as unknown as any, () => undefined), /must be a string event type/)
+  bus.destroy()
+})
+
+test('max_history_size=0 prunes previously completed events on later dispatch', async () => {
+  const HistEvent = BaseEvent.extend('ZeroHistoryCoverageEvent', {
+    label: z.string(),
+  })
+  const bus = new EventBus('ZeroHistoryCoverageBus', { max_history_size: 1 })
+  bus.on(HistEvent, () => undefined)
+
+  const first = await bus.dispatch(HistEvent({ label: 'first' })).done()
+  assert.equal(bus.event_history.has(first.event_id), true)
+
+  bus.max_history_size = 0
+  const second = await bus.dispatch(HistEvent({ label: 'second' })).done()
+  assert.equal(bus.event_history.has(first.event_id), false)
+  assert.equal(bus.event_history.has(second.event_id), false)
+  assert.equal(bus.event_history.size, 0)
+
+  bus.destroy()
 })

@@ -7,7 +7,7 @@ import type { EventBus } from './event_bus.js'
 import { EventHandler, EventHandlerCancelledError, EventHandlerResultSchemaError, EventHandlerTimeoutError } from './event_handler.js'
 import { withResolvers, type HandlerLock } from './lock_manager.js'
 import type { Deferred } from './lock_manager.js'
-import type { EventHandlerFunction, EventResultType } from './types.js'
+import type { EventHandlerCallable, EventResultType } from './types.js'
 import { isZodSchema } from './types.js'
 import { runWithAsyncContext } from './async_context.js'
 import { RetryTimeoutError } from './retry.js'
@@ -125,15 +125,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     if (!root_bus) {
       return undefined
     }
-    if (root_bus.id === this.eventbus_id) {
-      return root_bus
-    }
-    for (const bus of root_bus._all_instances) {
-      if (bus.id === this.eventbus_id) {
-        return bus
-      }
-    }
-    return root_bus
+    return root_bus.all_instances.findBusById(this.eventbus_id) ?? root_bus
   }
 
   private scheduleStatusHook(status: 'started' | 'completed'): void {
@@ -143,7 +135,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     }
     const event_for_bus = bus.getEventProxyScopedToThisBus(this.event._event_original ?? this.event, this)
     bus.scheduleMicrotask(() => {
-      void bus._on_event_result_change(event_for_bus, this, status)
+      void bus.onEventResultChange(event_for_bus, this, status)
     })
   }
 
@@ -197,7 +189,6 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   // Resolve slow handler warning threshold in seconds using precedence: handler -> event -> bus defaults.
   get handler_slow_timeout(): number | null {
     const original = this.event._event_original ?? this.event
-    const bus = this.bus
 
     if (this.handler.handler_slow_timeout !== undefined) {
       return this.handler.handler_slow_timeout
@@ -209,10 +200,10 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     if (event_slow_timeout !== undefined) {
       return event_slow_timeout
     }
-    if (bus?.event_handler_slow_timeout !== undefined) {
-      return bus.event_handler_slow_timeout
+    if (this.bus?.event_handler_slow_timeout !== undefined) {
+      return this.bus.event_handler_slow_timeout
     }
-    return bus?.event_slow_timeout ?? null
+    return this.bus?.event_slow_timeout ?? null
   }
 
   // Create a slow-handler warning timer that logs if the handler runs too long.
@@ -275,7 +266,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
         : error
     if (normalized_error instanceof EventHandlerTimeoutError) {
       this.markError(normalized_error)
-      event.cancelPendingDescendants(normalized_error)
+      event.eventCancelPendingChildProcessing(normalized_error)
     } else {
       this.markError(normalized_error)
     }
@@ -328,7 +319,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
 
     this._lock = handler_lock
     await this.bus.locks.withHandlerExecutionContext(this, async () => {
-      await runWithAsyncContext(event._event_dispatch_context ?? null, async () => {
+      await runWithAsyncContext(event.eventGetDispatchContext() ?? null, async () => {
         try {
           const abort_signal = this.markStarted()
           const handler_result = await withTimeout(
@@ -432,7 +423,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       handler_registered_at: record.handler_registered_at ?? event.event_created_at,
       handler_registered_ts: record.handler_registered_ts ?? event.event_created_ts,
     } as const
-    const handler_stub = EventHandler.fromJSON(handler_record, (() => undefined) as EventHandlerFunction)
+    const handler_stub = EventHandler.fromJSON(handler_record, (() => undefined) as EventHandlerCallable)
 
     const result = new EventResult<TEvent>({ event, handler: handler_stub })
     result.id = record.id

@@ -184,7 +184,7 @@ class ChargeCardEvent(BaseEvent[str]):
     order_id: str
 
 async def on_checkout(event: CheckoutEvent) -> str:
-    child = event.bus.emit(ChargeCardEvent(order_id=event.order_id))
+    child = event.event_bus.emit(ChargeCardEvent(order_id=event.order_id))
     await child                       # immediate path while inside handler
     receipt_id = await child.event_result()
     return receipt_id

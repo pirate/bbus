@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { v5 as uuidv5 } from 'uuid'
 
-import { normalizeEventPattern, type EventHandlerFunction, type EventPattern } from './types.js'
+import { normalizeEventPattern, type EventHandlerCallable, type EventPattern } from './types.js'
 import { BaseEvent } from './base_event.js'
 import type { EventResult } from './event_result.js'
 
@@ -88,7 +88,7 @@ export type EventHandlerJSON = z.infer<typeof EventHandlerJSONSchema>
 // an entry in the list of event handlers that are registered on a bus
 export class EventHandler {
   id: string // unique uuidv5 based on hash of bus name, handler name, handler file path:lineno, registered at timestamp, and event key
-  handler: EventHandlerFunction // the handler function itself
+  handler: EventHandlerCallable // the handler function itself
   handler_name: string // name of the handler function, or 'anonymous' if the handler is an anonymous/arrow function
   handler_file_path: string | null // ~/path/to/source/file.ts:123, or null when unknown
   handler_timeout?: number | null // maximum time in seconds that the handler is allowed to run before it is aborted, resolved at runtime if not set
@@ -101,7 +101,7 @@ export class EventHandler {
 
   constructor(params: {
     id?: string
-    handler: EventHandlerFunction
+    handler: EventHandlerCallable
     handler_name: string
     handler_file_path?: string | null
     handler_timeout?: number | null
@@ -200,9 +200,9 @@ export class EventHandler {
     }
   }
 
-  static fromJSON(data: unknown, handler?: EventHandlerFunction): EventHandler {
+  static fromJSON(data: unknown, handler?: EventHandlerCallable): EventHandler {
     const record = EventHandlerJSONSchema.parse(data)
-    const handler_fn = handler ?? ((() => undefined) as EventHandlerFunction)
+    const handler_fn = handler ?? ((() => undefined) as EventHandlerCallable)
     const handler_name = record.handler_name || handler_fn.name || 'anonymous' // 'anonymous' is the default name for anonymous/arrow functions
     return new EventHandler({
       id: record.id,
@@ -223,7 +223,7 @@ export class EventHandler {
     return Array.from(handlers, (handler) => handler.toJSON())
   }
 
-  static fromJSONArray(data: unknown, handler?: EventHandlerFunction): EventHandler[] {
+  static fromJSONArray(data: unknown, handler?: EventHandlerCallable): EventHandler[] {
     if (!Array.isArray(data)) {
       return []
     }

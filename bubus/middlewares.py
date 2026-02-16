@@ -10,9 +10,8 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from bubus.base_event import BaseEvent, EventStatus
+from bubus.base_event import BaseEvent, EventResult, EventStatus
 from bubus.event_handler import EventHandler
-from bubus.event_result import EventResult
 from bubus.logging import log_eventbus_tree
 
 if TYPE_CHECKING:
@@ -41,7 +40,7 @@ class EventBusMiddleware:
     Hooks:
         on_event_change(eventbus, event, status): Called on event state transitions
         on_event_result_change(eventbus, event, event_result, status): Called on EventResult lifecycle transitions
-        on_handler_change(eventbus, handler, registered): Called when handlers are added/removed via on()/off()
+        on_bus_handlers_change(eventbus, handler, registered): Called when handlers are added/removed via on()/off()
 
     Status values for these hooks are only:
     EventStatus.PENDING, EventStatus.STARTED, EventStatus.COMPLETED.
@@ -65,7 +64,7 @@ class EventBusMiddleware:
         and ``event_result.error`` on the completed callback to detect failures.
         """
 
-    async def on_handler_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
+    async def on_bus_handlers_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
         """Called when handlers are added (registered=True) or removed (registered=False)."""
 
 
@@ -289,7 +288,7 @@ class AutoReturnEventMiddleware(EventBusMiddleware):
 class AutoHandlerChangeEventMiddleware(EventBusMiddleware):
     """Use in `EventBus(middlewares=[...])` to emit handler metadata events on .on() and .off()."""
 
-    async def on_handler_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
+    async def on_bus_handlers_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
         try:
             handler_snapshot = handler.model_copy(deep=False)
             if registered:
@@ -353,7 +352,8 @@ class LoggerEventBusMiddleware(EventBusMiddleware):
             log_eventbus_tree(eventbus)
 
     def _write_line(self, line: str) -> None:
-        with self.log_path.open('a', encoding='utf-8') as fp:  # type: ignore[union-attr]
+        assert self.log_path is not None
+        with self.log_path.open('a', encoding='utf-8') as fp:
             fp.write(line)
 
 

@@ -179,7 +179,7 @@ class TestParentEventTracking:
         async def parent_handler(event: BaseEvent[Any]) -> str:
             nonlocal captured_child
             # Create child with explicit event_parent_id
-            explicit_parent_id = '01234567-89ab-cdef-0123-456789abcdef'
+            explicit_parent_id = '018f8e40-1234-7000-8000-000000001234'
             child = ChildEvent(data='explicit', event_parent_id=explicit_parent_id)
             eventbus.dispatch(child)
             captured_child = child
@@ -194,7 +194,7 @@ class TestParentEventTracking:
 
         # Explicit event_parent_id should be preserved
         assert captured_child is not None
-        assert captured_child.event_parent_id == '01234567-89ab-cdef-0123-456789abcdef'
+        assert captured_child.event_parent_id == '018f8e40-1234-7000-8000-000000001234'
         assert captured_child.event_parent_id != parent.event_id
 
     async def test_cross_eventbus_parent_tracking(self):

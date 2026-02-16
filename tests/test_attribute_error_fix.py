@@ -10,6 +10,10 @@ class SampleEvent(BaseEvent[str]):
     data: str = 'test'
 
 
+def _noop_handler(_event: SampleEvent) -> None:
+    return
+
+
 def test_event_started_at_with_deserialized_event():
     """Test that event_started_at works even with events created through deserialization"""
     # Create an event and convert to dict (simulating serialization)
@@ -82,7 +86,7 @@ async def test_event_without_handlers():
 
 
 def test_event_with_manually_set_completed_at():
-    """Test events where event_completed_at is manually set (like in test_log_history_tree.py)"""
+    """Test events where event_completed_at is manually set (like in test_eventbus_log_tree.py)"""
     event = SampleEvent(data='manual')
 
     # Initialize the completion signal
@@ -104,7 +108,7 @@ def test_event_with_manually_set_completed_at():
     assert event.event_started_at is not None
 
     # Add a handler result to make it incomplete
-    event.event_result_update(handler=lambda e: None, status='started')
+    event.event_result_update(handler=_noop_handler, status='started')
     assert event.event_completed_at is None  # Now it's not complete
 
     # Complete the handler
@@ -137,7 +141,7 @@ def test_event_started_at_is_serialized_and_stateful():
     assert 'event_started_at' in pending_payload
     assert pending_payload['event_started_at'] is None
 
-    event.event_result_update(handler=lambda e: None, status='started')
+    event.event_result_update(handler=_noop_handler, status='started')
     first_started_at = event.model_dump(mode='json')['event_started_at']
     assert isinstance(first_started_at, str)
 
@@ -159,7 +163,7 @@ def test_event_status_is_serialized_and_stateful():
     pending_payload = event.model_dump(mode='json')
     assert pending_payload['event_status'] == 'pending'
 
-    result = event.event_result_update(handler=lambda e: None, status='started')
+    result = event.event_result_update(handler=_noop_handler, status='started')
     started_payload = event.model_dump(mode='json')
     assert started_payload['event_status'] == 'started'
 

@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import inspect
 import multiprocessing
 import os
@@ -9,6 +10,8 @@ from typing import Any
 import pytest
 
 import bubus.retry as retry_helpers
+from bubus import BaseEvent, EventBus
+from bubus.lock_manager import LockManager
 from bubus.retry import retry
 
 
@@ -204,7 +207,7 @@ class TestMultiprocessSemaphore:
             p.join(timeout=10)
 
         # Collect results
-        results: list[tuple[str, int, float]] = []
+        results: list[tuple[Any, ...]] = []
         while not results_queue.empty():
             results.append(results_queue.get())
 
@@ -232,8 +235,12 @@ class TestMultiprocessSemaphore:
         # Verify semaphore is actually limiting concurrency
         # Check that no more than 3 workers held the semaphore simultaneously
         active_workers: list[int] = []
-        # Filter out events that don't have timing information
-        timed_events: list[tuple[str, int, float]] = [e for e in results if len(e) >= 3 and isinstance(e[2], (int, float))]
+        # Keep only acquire/release events with numeric timestamps.
+        timed_events: list[tuple[str, int, float]] = [
+            (str(e[0]), int(e[1]), float(e[2]))
+            for e in results
+            if len(e) >= 3 and e[0] in ('acquired', 'released') and isinstance(e[2], (int, float))
+        ]
         for event in sorted(timed_events, key=lambda x: x[2]):  # Sort all events by time
             if event[0] == 'acquired':
                 active_workers.append(event[1])
@@ -917,11 +924,14 @@ class TestRetryApiParity:
         active = 0
         max_active = 0
 
+        def _semaphore_key(a: str, b: str) -> str:
+            return f'{a}-{b}'
+
         @retry(
             max_attempts=1,
             semaphore_limit=1,
             semaphore_scope='global',
-            semaphore_name=lambda a, b: f'{a}-{b}',
+            semaphore_name=_semaphore_key,
         )
         async def keyed(a: str, b: str):
             nonlocal active, max_active
@@ -942,3 +952,50 @@ class TestRetryApiParity:
 if __name__ == '__main__':
     # Run the tests
     pytest.main([__file__, '-v'])
+
+
+# Consolidated from tests/test_lock_manager.py
+
+
+class LockEvent(BaseEvent[str]):
+    pass
+
+
+def test_lock_manager_uses_context_manager_api_only() -> None:
+    assert hasattr(LockManager, 'with_event_lock')
+    assert hasattr(LockManager, 'with_handler_lock')
+    assert hasattr(LockManager, 'with_handler_dispatch_context')
+
+    # Legacy alias methods were intentionally removed in the refactor.
+    assert not hasattr(LockManager, 'lock_for_event')
+    assert not hasattr(LockManager, 'lock_for_event_handler')
+    assert not hasattr(LockManager, 'lock_context_for_current_handler')
+
+
+async def test_handler_dispatch_context_preserves_reentrant_locking_in_dispatch_context() -> None:
+    bus = EventBus(name='LockDispatchContextBus')
+    lock_manager = bus.locks
+    event: BaseEvent[str] = LockEvent()
+
+    # Simulate a captured dispatch context from outside event processing.
+    dispatch_context = contextvars.Context()
+
+    async with lock_manager.with_event_lock(bus, event):
+
+        async def lock_without_dispatch_mark() -> str:
+            async with lock_manager.with_event_lock(bus, event):
+                return 'acquired'
+
+        blocked_task = asyncio.create_task(lock_without_dispatch_mark(), context=dispatch_context)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(blocked_task, timeout=0.05)
+        blocked_task.cancel()
+        await asyncio.gather(blocked_task, return_exceptions=True)
+
+        async def lock_with_dispatch_mark() -> str:
+            with lock_manager.with_handler_dispatch_context(bus, event):
+                async with lock_manager.with_event_lock(bus, event):
+                    return 'acquired'
+
+        marked_task = asyncio.create_task(lock_with_dispatch_mark(), context=dispatch_context)
+        assert await asyncio.wait_for(marked_task, timeout=0.05) == 'acquired'

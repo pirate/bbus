@@ -100,7 +100,10 @@ reportMissingImports = "error"
 reportMissingTypeStubs = false
 venvPath = "."
 venv = ".venv"
-include = ["bubus"]
+include = ["bubus", "examples", "tests"]
+
+[tool.ty.src]
+include = ["bubus", "examples", "tests"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
