@@ -693,7 +693,7 @@ await bus.emit(DataEvent())
 </details>
 
 <details>
-<summary><strong>🧩 Middlwares</strong></summary>
+<summary><strong>🧩 Middlewares</strong></summary>
 
 
 Middlewares can observe or mutate the `EventResult` at each step, emit additional events, or trigger other side effects (metrics, retries, auth checks, etc.).
