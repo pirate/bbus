@@ -89,9 +89,7 @@ class TestDebouncingPattern:
             dispatch_task = asyncio.create_task(dispatch_later())
 
             resolved_event = await (
-                (await bus.find(SyncEvent, past=True, future=False))
-                or (await pending_event)
-                or bus.dispatch(SyncEvent())
+                (await bus.find(SyncEvent, past=True, future=False)) or (await pending_event) or bus.dispatch(SyncEvent())
             )
 
             await dispatch_task

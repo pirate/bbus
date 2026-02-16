@@ -337,11 +337,8 @@ async def test_event_first_skips_baseevent_result_and_uses_next_winner() -> None
         assert third_handler_called is False
 
         def include_completed_values(event_result: EventResult[Any]) -> bool:
-            return (
-                event_result.status == 'completed'
-                and event_result.error is None
-                and event_result.result is not None
-            )
+            return event_result.status == 'completed' and event_result.error is None and event_result.result is not None
+
         first_completed_value = await event.event_result(
             include=include_completed_values,
             raise_if_any=False,

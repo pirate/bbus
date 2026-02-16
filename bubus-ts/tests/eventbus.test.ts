@@ -89,7 +89,6 @@ test('EventBus auto-generates name when not provided', () => {
   assert.equal(bus.name, 'EventBus')
 })
 
-
 test('EventBus exposes locks API surface', () => {
   const bus = new EventBus('GateSurfaceBus')
   const locks = bus.locks as unknown as Record<string, unknown>
