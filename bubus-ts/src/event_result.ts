@@ -59,7 +59,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   // Abort signal: created when handler starts, rejected by signalAbort() to
   // interrupt runHandler's await via Promise.race.
   _abort: Deferred<never> | null
-  // Handler lock: tracks ownership of the handler concurrency semaphore
+  // Handler lock: tracks ownership of the handler concurrency lock
   // during handler execution. Set by runHandler(), used by
   // processEventImmediately for yield-and-reacquire during queue-jumps.
   _lock: HandlerLock | null

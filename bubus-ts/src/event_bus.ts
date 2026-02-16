@@ -2,7 +2,7 @@ import { BaseEvent, type BaseEventJSON } from './base_event.js'
 import { EventResult } from './event_result.js'
 import { captureAsyncContext } from './async_context.js'
 import {
-  AsyncSemaphore,
+  AsyncLock,
   type EventConcurrencyMode,
   type EventHandlerConcurrencyMode,
   type EventHandlerCompletionMode,
@@ -519,7 +519,7 @@ export class EventBus {
     }
 
     // Reset runtime execution state after restore. Queue/history/handlers are restored,
-    // but lock/semaphore internals should always restart from a clean default state.
+    // but lock internals should always restart from a clean default state.
     bus.in_flight_event_ids.clear()
     bus.runloop_running = false
     bus.locks.clear()
@@ -821,7 +821,7 @@ export class EventBus {
   // Walk up the parent event chain to find an in-flight ancestor handler result.
   // Returns the result if found, null otherwise. Used by processEventImmediately to detect
   // cross-bus queue-jump scenarios where the calling handler is on a different bus.
-  getParentEventResultAcrossAllBusses(event: BaseEvent): EventResult | null {
+  getParentEventResultAcrossAllBuses(event: BaseEvent): EventResult | null {
     const original = event._event_original ?? event
     let current_parent_id = original.event_parent_id
     let current_handler_id = original.event_emitted_by_handler_id
@@ -847,12 +847,12 @@ export class EventBus {
   }
 
   // schedule the processing of an event on the event bus by its normal runloop
-  // optionally using a pre-acquired semaphore if we're inside handling of a parent event
+  // optionally using a pre-acquired lock if we're inside handling of a parent event
   private async processEvent(
     event: BaseEvent,
     options: {
-      bypass_event_semaphores?: boolean
-      pre_acquired_semaphore?: AsyncSemaphore | null
+      bypass_event_locks?: boolean
+      pre_acquired_lock?: AsyncLock | null
     } = {}
   ): Promise<void> {
     let pending_entries: Array<{
@@ -916,8 +916,8 @@ export class EventBus {
         throw error
       }
     } finally {
-      if (options.pre_acquired_semaphore) {
-        options.pre_acquired_semaphore.release()
+      if (options.pre_acquired_lock) {
+        options.pre_acquired_lock.release()
       }
       this.in_flight_event_ids.delete(event.event_id)
       this.locks.notifyIdleListeners()
@@ -927,10 +927,10 @@ export class EventBus {
   // Called when a handler does `await child.done()` — processes the child event
   // immediately ("queue-jump") instead of waiting for the runloop to pick it up.
   //
-  // Yield-and-reacquire: if the calling handler holds a handler concurrency semaphore,
+  // Yield-and-reacquire: if the calling handler holds a handler concurrency lock,
   // we temporarily release it so child handlers on the same bus can acquire it
   // (preventing deadlock for serial handler mode). We re-acquire after
-  // the child completes so the parent handler can continue with the semaphore held.
+  // the child completes so the parent handler can continue with the lock held.
   async processEventImmediately<T extends BaseEvent>(event: T, handler_result?: EventResult): Promise<T> {
     const original_event = event._event_original ?? event
     // Find the parent handler's result: prefer the proxy-provided one (only if
@@ -939,7 +939,7 @@ export class EventBus {
     // handler and should fall back to waitForCompletion.
     const proxy_result = handler_result?.status === 'started' ? handler_result : undefined
     const currently_active_event_result =
-      proxy_result ?? this.locks.getActiveHandlerResult() ?? this.getParentEventResultAcrossAllBusses(original_event) ?? undefined
+      proxy_result ?? this.locks.getActiveHandlerResult() ?? this.getParentEventResultAcrossAllBuses(original_event) ?? undefined
     if (!currently_active_event_result) {
       // Not inside any handler scope — avoid queue-jump, but if this event is
       // next in line we can process it immediately without waiting on the runloop.
@@ -979,7 +979,7 @@ export class EventBus {
   }
 
   // Processes a queue-jumped event across all buses that have it dispatched.
-  // Called from processEventImmediately after the parent handler's semaphore has been yielded.
+  // Called from processEventImmediately after the parent handler's lock has been yielded.
   private async processEventImmediatelyAcrossBuses(event: BaseEvent): Promise<void> {
     // Use event_path ordering to pick candidate buses and filter out buses that
     // haven't seen the event or already processed it.
@@ -1011,9 +1011,9 @@ export class EventBus {
       return
     }
 
-    // Determine which event semaphore the initiating bus resolves to, so we can
+    // Determine which event lock the initiating bus resolves to, so we can
     // detect when other buses share the same instance (global-serial).
-    const initiating_event_semaphore = this.locks.getSemaphoreForEvent(event)
+    const initiating_event_lock = this.locks.getLockForEvent(event)
     const pause_releases: Array<() => void> = []
 
     try {
@@ -1036,15 +1036,14 @@ export class EventBus {
         }
         bus.in_flight_event_ids.add(event.event_id)
 
-        // Bypass event semaphore on the initiating bus (we're already inside a handler
+        // Bypass event lock on the initiating bus (we're already inside a handler
         // that acquired it). For other buses, only bypass if they resolve to the same
-        // semaphore instance (global-serial shares one semaphore across all buses).
-        const bus_event_semaphore = bus.locks.getSemaphoreForEvent(event)
-        const should_bypass_event_semaphore =
-          bus === this || (initiating_event_semaphore !== null && bus_event_semaphore === initiating_event_semaphore)
+        // lock instance (global-serial shares one lock across all buses).
+        const bus_event_lock = bus.locks.getLockForEvent(event)
+        const should_bypass_event_lock = bus === this || (initiating_event_lock !== null && bus_event_lock === initiating_event_lock)
 
         await bus.processEvent(event, {
-          bypass_event_semaphores: should_bypass_event_semaphore,
+          bypass_event_locks: should_bypass_event_lock,
         })
       }
 
@@ -1075,23 +1074,23 @@ export class EventBus {
           this.pending_event_queue.shift()
           continue
         }
-        let pre_acquired_semaphore: AsyncSemaphore | null = null
-        const event_semaphore = this.locks.getSemaphoreForEvent(original_event)
-        if (event_semaphore) {
-          await event_semaphore.acquire()
-          pre_acquired_semaphore = event_semaphore
+        let pre_acquired_lock: AsyncLock | null = null
+        const event_lock = this.locks.getLockForEvent(original_event)
+        if (event_lock) {
+          await event_lock.acquire()
+          pre_acquired_lock = event_lock
         }
         this.pending_event_queue.shift()
         if (this.in_flight_event_ids.has(original_event.event_id)) {
-          if (pre_acquired_semaphore) {
-            pre_acquired_semaphore.release()
+          if (pre_acquired_lock) {
+            pre_acquired_lock.release()
           }
           continue
         }
         this.in_flight_event_ids.add(original_event.event_id)
         void this.processEvent(original_event, {
-          bypass_event_semaphores: true,
-          pre_acquired_semaphore,
+          bypass_event_locks: true,
+          pre_acquired_lock,
         })
         await Promise.resolve()
       }

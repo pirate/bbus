@@ -1496,34 +1496,23 @@ class EventBus:
         remaining_timeout = timeout
 
         try:
-            # First wait for the queue to be empty
-            join_task = asyncio.create_task(self.pending_event_queue.join())
-            await asyncio.wait_for(join_task, timeout=remaining_timeout)
+            # Wait until both queue and inflight execution are empty.
+            # Avoid relying on queue.join() because unfinished-task counters can
+            # drift under queue-jump paths while observable runtime state is idle.
+            while True:
+                queue_empty = self.pending_event_queue.qsize() == 0
+                has_inflight = self._has_inflight_events_fast()
+                if queue_empty and not has_inflight:
+                    self._on_idle.set()
+                    break
 
-            # Update remaining timeout
-            if timeout is not None:
-                elapsed = asyncio.get_event_loop().time() - start_time
-                remaining_timeout = max(0, timeout - elapsed)
-
-            # Wait for idle state
-            idle_task = asyncio.create_task(self._on_idle.wait())
-            await asyncio.wait_for(idle_task, timeout=remaining_timeout)
-
-            # Critical: Ensure the runloop has settled by yielding control
-            # This allows the runloop to complete any in-flight operations
-            # and prevents race conditions with event_history access
-            await asyncio.sleep(0)  # Yield to event loop
-
-            # Double-check we're truly idle - if new events came in, wait again
-            while not self._on_idle.is_set() or self._has_inflight_events_fast():
                 if timeout is not None:
                     elapsed = asyncio.get_event_loop().time() - start_time
                     remaining_timeout = max(0, timeout - elapsed)
                     if remaining_timeout <= 0:
                         raise TimeoutError()
 
-                # Clear and wait again
-                self._on_idle.clear()
+                # Wait again for an idle transition.
                 idle_task = asyncio.create_task(self._on_idle.wait())
                 await asyncio.wait_for(idle_task, timeout=remaining_timeout)
                 await asyncio.sleep(0)  # Yield again

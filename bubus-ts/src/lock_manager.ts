@@ -33,9 +33,9 @@ export type EventHandlerConcurrencyMode = (typeof EVENT_HANDLER_CONCURRENCY_MODE
 export const EVENT_HANDLER_COMPLETION_MODES = ['all', 'first'] as const
 export type EventHandlerCompletionMode = (typeof EVENT_HANDLER_COMPLETION_MODES)[number]
 
-// ─── AsyncSemaphore ──────────────────────────────────────────────────────────
+// ─── AsyncLock ───────────────────────────────────────────────────────────────
 
-export class AsyncSemaphore {
+export class AsyncLock {
   size: number
   in_use: number
   waiters: Array<() => void>
@@ -72,15 +72,15 @@ export class AsyncSemaphore {
   }
 }
 
-export const runWithSemaphore = async <T>(semaphore: AsyncSemaphore | null, fn: () => Promise<T>): Promise<T> => {
-  if (!semaphore) {
+export const runWithLock = async <T>(lock: AsyncLock | null, fn: () => Promise<T>): Promise<T> => {
+  if (!lock) {
     return await fn()
   }
-  await semaphore.acquire()
+  await lock.acquire()
   try {
     return await fn()
   } finally {
-    semaphore.release()
+    lock.release()
   }
 }
 
@@ -88,37 +88,37 @@ export const runWithSemaphore = async <T>(semaphore: AsyncSemaphore | null, fn: 
 
 export type HandlerExecutionState = 'held' | 'yielded' | 'closed'
 
-// Tracks a single handler execution's ownership of a semaphore lock.
+// Tracks a single handler execution's ownership of a handler lock.
 // Reacquire is race-safe: if the handler exits while waiting to reclaim,
 // the reclaimed lock is immediately released to avoid leaks.
 export class HandlerLock {
-  private semaphore: AsyncSemaphore | null
+  private lock: AsyncLock | null
   private state: HandlerExecutionState
 
-  constructor(semaphore: AsyncSemaphore | null) {
-    this.semaphore = semaphore
+  constructor(lock: AsyncLock | null) {
+    this.lock = lock
     this.state = 'held'
   }
 
   // used by EventBus.processEventImmediately to yield the parent handler's lock to the child event so it can be processed immediately
   yieldHandlerLockForChildRun(): boolean {
-    if (!this.semaphore || this.state !== 'held') {
+    if (!this.lock || this.state !== 'held') {
       return false
     }
     this.state = 'yielded'
-    this.semaphore.release()
+    this.lock.release()
     return true
   }
 
   // used by EventBus.processEventImmediately to reacquire the handler lock after the child event has been processed
   async reclaimHandlerLockIfRunning(): Promise<boolean> {
-    if (!this.semaphore || this.state !== 'yielded') {
+    if (!this.lock || this.state !== 'yielded') {
       return false
     }
-    await this.semaphore.acquire()
+    await this.lock.acquire()
     if (this.state !== 'yielded') {
       // Handler exited while this reacquire was pending.
-      this.semaphore.release()
+      this.lock.release()
       return false
     }
     this.state = 'held'
@@ -130,10 +130,10 @@ export class HandlerLock {
     if (this.state === 'closed') {
       return
     }
-    const should_release = !!this.semaphore && this.state === 'held'
+    const should_release = !!this.lock && this.state === 'held'
     this.state = 'closed'
     if (should_release) {
-      this.semaphore!.release()
+      this.lock!.release()
     }
   }
 
@@ -162,8 +162,8 @@ export type EventBusInterfaceForLockManager = {
 export class LockManager {
   private bus: EventBusInterfaceForLockManager // Live bus reference; used to read defaults and idle state.
 
-  static global_event_semaphore = new AsyncSemaphore(1) // used for the global-serial concurrency mode
-  readonly bus_event_semaphore: AsyncSemaphore // Per-bus event semaphore; created with LockManager and never swapped.
+  static global_event_lock = new AsyncLock(1) // used for the global-serial concurrency mode
+  readonly bus_event_lock: AsyncLock // Per-bus event lock; created with LockManager and never swapped.
   private pause_depth: number // Re-entrant pause counter; increments on requestRunloopPause, decrements on release.
   private pause_waiters: Array<() => void> // Resolvers for waitUntilRunloopResumed; drained when pause_depth hits 0.
   private active_handler_results: EventResult[] // Stack of active handler results for "inside handler" detection.
@@ -174,7 +174,7 @@ export class LockManager {
 
   constructor(bus: EventBusInterfaceForLockManager) {
     this.bus = bus
-    this.bus_event_semaphore = new AsyncSemaphore(1) // used for the bus-serial concurrency mode
+    this.bus_event_lock = new AsyncLock(1) // used for the bus-serial concurrency mode
 
     this.pause_depth = 0
     this.pause_waiters = []
@@ -236,9 +236,9 @@ export class LockManager {
   }
 
   // Per-bus check: true only if this specific bus has a handler on its stack.
-  // For cross-bus queue-jumping, EventBus.processEventImmediately uses getParentEventResultAcrossAllBusses()
+  // For cross-bus queue-jumping, EventBus.processEventImmediately uses getParentEventResultAcrossAllBuses()
   // to walk up the parent event tree, and the bus proxy passes handler_result
-  // to processEventImmediately so it can yield/reacquire the correct semaphore.
+  // to processEventImmediately so it can yield/reacquire the correct lock.
   isAnyHandlerActive(): boolean {
     return this.active_handler_results.length > 0
   }
@@ -284,28 +284,28 @@ export class LockManager {
     }
   }
 
-  // get the bus-level semaphore that prevents/allows multiple events to be processed concurrently on the same bus
-  getSemaphoreForEvent(event: BaseEvent): AsyncSemaphore | null {
+  // get the bus-level lock that prevents/allows multiple events to be processed concurrently on the same bus
+  getLockForEvent(event: BaseEvent): AsyncLock | null {
     const resolved = event.event_concurrency ?? this.bus.event_concurrency_default
     if (resolved === 'parallel') {
       return null
     }
     if (resolved === 'global-serial') {
-      return LockManager.global_event_semaphore
+      return LockManager.global_event_lock
     }
-    return this.bus_event_semaphore
+    return this.bus_event_lock
   }
 
   async withEventLock<T>(
     event: BaseEvent,
     fn: () => Promise<T>,
-    options: { bypass_event_semaphores?: boolean; pre_acquired_semaphore?: AsyncSemaphore | null } = {}
+    options: { bypass_event_locks?: boolean; pre_acquired_lock?: AsyncLock | null } = {}
   ): Promise<T> {
-    const pre_acquired = options.pre_acquired_semaphore ?? null
-    if (options.bypass_event_semaphores || pre_acquired) {
+    const pre_acquired = options.pre_acquired_lock ?? null
+    if (options.bypass_event_locks || pre_acquired) {
       return await fn()
     }
-    return await runWithSemaphore(this.getSemaphoreForEvent(event), fn)
+    return await runWithLock(this.getLockForEvent(event), fn)
   }
 
   async withHandlerLock<T>(
@@ -313,15 +313,15 @@ export class LockManager {
     default_handler_concurrency: EventHandlerConcurrencyMode | undefined,
     fn: (lock: HandlerLock | null) => Promise<T>
   ): Promise<T> {
-    const semaphore = event.getHandlerSemaphore(default_handler_concurrency)
-    if (semaphore) {
-      await semaphore.acquire()
+    const lock = event.getHandlerLock(default_handler_concurrency)
+    if (lock) {
+      await lock.acquire()
     }
-    const lock = semaphore ? new HandlerLock(semaphore) : null
+    const handler_lock = lock ? new HandlerLock(lock) : null
     try {
-      return await fn(lock)
+      return await fn(handler_lock)
     } finally {
-      lock?.exitHandlerRun()
+      handler_lock?.exitHandlerRun()
     }
   }
 

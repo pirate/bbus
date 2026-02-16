@@ -1,4 +1,4 @@
-import { AsyncSemaphore } from './lock_manager.js'
+import { AsyncLock } from './lock_manager.js'
 import { createAsyncLocalStorage, type AsyncLocalStorageLike } from './async_context.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -121,12 +121,12 @@ function scopedSemaphoreKey(base_name: string, scope: 'global' | 'class' | 'inst
 
 // ─── Global semaphore registry ───────────────────────────────────────────────
 
-const SEMAPHORE_REGISTRY = new Map<string, AsyncSemaphore>()
+const SEMAPHORE_REGISTRY = new Map<string, AsyncLock>()
 
-function getOrCreateSemaphore(name: string, limit: number): AsyncSemaphore {
+function getOrCreateSemaphore(name: string, limit: number): AsyncLock {
   const existing = SEMAPHORE_REGISTRY.get(name)
   if (existing && existing.size === limit) return existing
-  const sem = new AsyncSemaphore(limit)
+  const sem = new AsyncLock(limit)
   SEMAPHORE_REGISTRY.set(name, sem)
   return sem
 }
@@ -188,7 +188,7 @@ export function retry(options: RetryOptions = {}) {
       const is_reentrant = needs_semaphore && held.has(scoped_key)
 
       // ── Semaphore acquisition (held across all retry attempts, skipped if re-entrant) ──
-      let semaphore: AsyncSemaphore | null = null
+      let semaphore: AsyncLock | null = null
       let semaphore_acquired = false
 
       if (needs_semaphore && !is_reentrant) {
@@ -279,7 +279,7 @@ export function retry(options: RetryOptions = {}) {
  * If the semaphore is acquired after the timeout (due to the waiter remaining queued),
  * it is immediately released to avoid leaking slots.
  */
-async function acquireWithTimeout(semaphore: AsyncSemaphore, timeout_ms: number): Promise<boolean> {
+async function acquireWithTimeout(semaphore: AsyncLock, timeout_ms: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false
 

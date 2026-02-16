@@ -722,8 +722,8 @@ test('deeply nested awaited children', async () => {
 // =============================================================================
 // Queue-Jump Concurrency Tests (Two-Bus)
 //
-// BUG: processEventImmediately (queue-jump across buses) passes { bypass_handler_semaphores: true,
-// bypass_event_semaphores: true } for ALL buses. This causes:
+// BUG: processEventImmediately (queue-jump across buses) passes { bypass_handler_locks: true,
+// bypass_event_locks: true } for ALL buses. This causes:
 //   1. Handlers to run in parallel regardless of configured concurrency
 //   2. Event semaphores on remote buses to be skipped
 //

@@ -440,16 +440,16 @@ const STEP1_HANDLER_MODES = [
   { label: 'serial-global', global_lock: true },
 ] as const
 
-const getHandlerSemaphore = (bus: EventBus, event: BaseEvent) => {
-  const semaphore = event.getHandlerSemaphore(bus.event_handler_concurrency_default)
-  if (!semaphore) {
-    throw new Error('expected handler semaphore')
+const getHandlerLock = (bus: EventBus, event: BaseEvent) => {
+  const lock = event.getHandlerLock(bus.event_handler_concurrency_default)
+  if (!lock) {
+    throw new Error('expected handler lock')
   }
-  return semaphore
+  return lock
 }
 
 for (const handler_mode of STEP1_HANDLER_MODES) {
-  test(`regression: timeout during awaited child.done() does not leak handler semaphore lock [${handler_mode.label}]`, async () => {
+  test(`regression: timeout during awaited child.done() does not leak handler lock [${handler_mode.label}]`, async () => {
     const ParentEvent = BaseEvent.extend(`TimeoutLeakParent-${handler_mode.label}`, {})
     const ChildEvent = BaseEvent.extend(`TimeoutLeakChild-${handler_mode.label}`, {})
 
@@ -459,12 +459,12 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
     })
 
     const parent = ParentEvent({ event_timeout: 0.01 })
-    const semaphore = getHandlerSemaphore(bus, parent)
-    const baseline_in_use = semaphore.in_use
-    const original_acquire = semaphore.acquire.bind(semaphore)
+    const lock = getHandlerLock(bus, parent)
+    const baseline_in_use = lock.in_use
+    const original_acquire = lock.acquire.bind(lock)
     let acquire_count = 0
 
-    semaphore.acquire = async () => {
+    lock.acquire = async () => {
       acquire_count += 1
       // Second acquire is the parent reclaim in processEventImmediately finally.
       // Delay it so the parent handler timeout can fire in the middle.
@@ -509,14 +509,14 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
       assert.equal(parent_result.status, 'error')
       assert.ok(parent_result.error instanceof EventHandlerTimeoutError)
       assert.equal(
-        semaphore.in_use,
+        lock.in_use,
         baseline_in_use,
-        `handler semaphore leaked lock (mode=${handler_mode.label}, in_use=${semaphore.in_use}, baseline=${baseline_in_use}, acquires=${acquire_count})`
+        `handler lock leaked (mode=${handler_mode.label}, in_use=${lock.in_use}, baseline=${baseline_in_use}, acquires=${acquire_count})`
       )
     } finally {
-      semaphore.acquire = original_acquire
-      while (semaphore.in_use > baseline_in_use) {
-        semaphore.release()
+      lock.acquire = original_acquire
+      while (lock.in_use > baseline_in_use) {
+        lock.release()
       }
     }
   })
@@ -533,8 +533,8 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
     })
 
     const parent = ParentEvent({ event_timeout: 0.01 })
-    const semaphore = getHandlerSemaphore(bus, parent)
-    const baseline_in_use = semaphore.in_use
+    const lock = getHandlerLock(bus, parent)
+    const baseline_in_use = lock.in_use
     const withGlobalLock = <T extends (...args: any[]) => any>(fn: T): T =>
       handler_mode.global_lock
         ? retry({ semaphore_scope: 'global', semaphore_name: `timeout_contention_${handler_mode.label}`, semaphore_limit: 1 })(fn)
@@ -557,7 +557,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
       })
     )
 
-    // This handler queues behind parent_main, then holds the serial semaphore
+    // This handler queues behind parent_main, then holds the serial lock
     // while parent_main is trying to reclaim after child.done() completes.
     bus.on(
       ParentEvent,
@@ -574,7 +574,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
     const parent_results = Array.from(parent.event_results.values())
     const timeout_results = parent_results.filter((result) => result.error instanceof EventHandlerTimeoutError)
     assert.ok(timeout_results.length >= 1, `expected at least one timeout result in ${handler_mode.label}`)
-    assert.equal(semaphore.in_use, baseline_in_use)
+    assert.equal(lock.in_use, baseline_in_use)
   })
 }
 
@@ -589,11 +589,11 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
       event_handler_concurrency: 'serial',
     })
     const parent = ParentEvent({ event_timeout: 0.01 })
-    const semaphore = getHandlerSemaphore(bus, parent)
-    const baseline_in_use = semaphore.in_use
-    const original_acquire = semaphore.acquire.bind(semaphore)
+    const lock = getHandlerLock(bus, parent)
+    const baseline_in_use = lock.in_use
+    const original_acquire = lock.acquire.bind(lock)
     let acquire_count = 0
-    semaphore.acquire = async () => {
+    lock.acquire = async () => {
       acquire_count += 1
       if (acquire_count === 2) {
         await delay(30)
@@ -643,15 +643,15 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
         assert.equal(
           followup_completed,
           true,
-          `follow-up event stalled after timeout queue-jump path (mode=${handler_mode.label}, in_use=${semaphore.in_use}, acquires=${acquire_count})`
+          `follow-up event stalled after timeout queue-jump path (mode=${handler_mode.label}, in_use=${lock.in_use}, acquires=${acquire_count})`
         )
         assert.equal(followup_runs, 1)
       }
-      assert.equal(semaphore.in_use, baseline_in_use)
+      assert.equal(lock.in_use, baseline_in_use)
     } finally {
-      semaphore.acquire = original_acquire
-      while (semaphore.in_use > baseline_in_use) {
-        semaphore.release()
+      lock.acquire = original_acquire
+      while (lock.in_use > baseline_in_use) {
+        lock.release()
       }
     }
   })
@@ -670,8 +670,8 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
       event_handler_concurrency: 'serial',
     })
     const parent = ParentEvent({ event_timeout: 0.01 })
-    const semaphore = getHandlerSemaphore(bus, parent)
-    const baseline_in_use = semaphore.in_use
+    const lock = getHandlerLock(bus, parent)
+    const baseline_in_use = lock.in_use
     const withGlobalLock = <T extends (...args: any[]) => any>(fn: T): T =>
       handler_mode.global_lock
         ? retry({ semaphore_scope: 'global', semaphore_name: `timeout_nested_${handler_mode.label}`, semaphore_limit: 1 })(fn)
@@ -738,17 +738,17 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
     const queued_sibling_results = Array.from(queued_sibling_ref!.event_results.values())
     assert.ok(queued_sibling_results.some((result) => result.error instanceof EventHandlerCancelledError))
 
-    assert.equal(semaphore.in_use, baseline_in_use)
+    assert.equal(lock.in_use, baseline_in_use)
 
     const tail = bus.dispatch(TailEvent({ event_timeout: 0.05 }))
     const tail_completed = await Promise.race([tail.done().then(() => true), delay(100).then(() => false)])
     assert.equal(tail_completed, true)
     assert.equal(tail_runs, 1)
-    assert.equal(semaphore.in_use, baseline_in_use)
+    assert.equal(lock.in_use, baseline_in_use)
   })
 }
 
-test('parent timeout cancels pending child handler results under serial handler semaphore', async () => {
+test('parent timeout cancels pending child handler results under serial handler lock', async () => {
   const ParentEvent = BaseEvent.extend('TimeoutCancelParentEvent', {})
   const ChildEvent = BaseEvent.extend('TimeoutCancelChildEvent', {})
 

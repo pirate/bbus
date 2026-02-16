@@ -86,7 +86,7 @@ def log_event_tree(
 
         for i, (_handler_id, result) in enumerate(results_sorted):
             is_last_item = i == total_items - 1
-            lines.append(log_eventresult_tree(result, new_indent, is_last_item, event_children_by_parent))
+            lines.append(log_event_result_tree(result, new_indent, is_last_item, event_children_by_parent))
             # Track child events printed by this result
             for child in result.event_children:
                 printed_child_ids.add(child.event_id)
@@ -102,7 +102,7 @@ def log_event_tree(
     return '\n'.join(lines)
 
 
-def log_eventresult_tree(
+def log_event_result_tree(
     result: 'EventResult[Any]',
     indent: str = '',
     is_last: bool = True,

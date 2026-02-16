@@ -22,7 +22,7 @@ class LockManagerProtocol(Protocol):
         """Context manager for event-level lock scope."""
         ...
 
-    def handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], eventresult: EventResult[Any]) -> Any:
+    def handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], event_result: EventResult[Any]) -> Any:
         """Context manager for per-handler lock scope."""
         ...
 
@@ -151,7 +151,7 @@ class LockManager:
         self,
         bus: 'EventBus',
         event: BaseEvent[Any],
-        eventresult: EventResult[Any],
+        event_result: EventResult[Any],
     ) -> ReentrantLock | None:
         """Resolve the per-event handler lock for one handler execution.
 
@@ -160,7 +160,7 @@ class LockManager:
         - Returns `None` for `'parallel'` handler mode.
         - Returns and lazily initializes the event handler lock for `'serial'`.
         """
-        del eventresult  # reserved for future mode-specific rules
+        del event_result  # reserved for future mode-specific rules
         event_handler_concurrency = getattr(event, 'event_handler_concurrency', None)
         resolved = event_handler_concurrency or bus.event_handler_concurrency
         if resolved == EventHandlerConcurrencyMode.PARALLEL:
@@ -187,14 +187,14 @@ class LockManager:
             yield
 
     @asynccontextmanager
-    async def handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], eventresult: EventResult[Any]):
+    async def handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], event_result: EventResult[Any]):
         """Acquire/release the resolved per-event handler lock around one handler run.
 
         Lifecycle:
         - Wraps `EventResult.execute(...)` within `EventBus.execute_handler`.
         - No-op for `'parallel'` handler mode.
         """
-        lock = self.get_lock_for_event_handler(bus, event, eventresult)
+        lock = self.get_lock_for_event_handler(bus, event, event_result)
         if lock is None:
             yield
             return

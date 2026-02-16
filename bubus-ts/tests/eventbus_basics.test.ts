@@ -163,10 +163,10 @@ test('EventBus exposes locks API surface', () => {
   assert.equal(typeof locks.isPaused, 'function')
   assert.equal(typeof locks.waitForIdle, 'function')
   assert.equal(typeof locks.notifyIdleListeners, 'function')
-  assert.equal(typeof locks.getSemaphoreForEvent, 'function')
+  assert.equal(typeof locks.getLockForEvent, 'function')
 })
 
-test('EventBus locks methods are callable and preserve semaphore resolution behavior', async () => {
+test('EventBus locks methods are callable and preserve lock resolution behavior', async () => {
   const bus = new EventBus('GateInvocationBus', {
     event_concurrency: 'bus-serial',
     event_handler_concurrency: 'serial',
@@ -191,20 +191,20 @@ test('EventBus locks methods are callable and preserve semaphore resolution beha
     event_concurrency: 'global-serial',
     event_handler_concurrency: 'serial',
   })
-  assert.equal(bus.locks.getSemaphoreForEvent(event_with_global), LockManager.global_event_semaphore)
-  const handler_semaphore = event_with_global.getHandlerSemaphore(bus.event_handler_concurrency_default)
-  assert.ok(handler_semaphore)
+  assert.equal(bus.locks.getLockForEvent(event_with_global), LockManager.global_event_lock)
+  const handler_lock = event_with_global.getHandlerLock(bus.event_handler_concurrency_default)
+  assert.ok(handler_lock)
 
   const event_with_parallel = GateEvent({
     event_concurrency: 'parallel',
     event_handler_concurrency: 'parallel',
   })
-  assert.equal(bus.locks.getSemaphoreForEvent(event_with_parallel), null)
-  assert.equal(event_with_parallel.getHandlerSemaphore(bus.event_handler_concurrency_default), null)
+  assert.equal(bus.locks.getLockForEvent(event_with_parallel), null)
+  assert.equal(event_with_parallel.getHandlerLock(bus.event_handler_concurrency_default), null)
 
   const another_serial_event = GateEvent({ event_handler_concurrency: 'serial' })
-  const another_semaphore = another_serial_event.getHandlerSemaphore(bus.event_handler_concurrency_default)
-  assert.notEqual(handler_semaphore, another_semaphore)
+  const another_lock = another_serial_event.getHandlerLock(bus.event_handler_concurrency_default)
+  assert.notEqual(handler_lock, another_lock)
 
   bus.dispatch(GateEvent({}))
   bus.locks.notifyIdleListeners()

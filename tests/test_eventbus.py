@@ -135,6 +135,26 @@ class TestEventBusBasics:
         await bus.stop()
         assert bus._is_running is False
 
+    async def test_wait_until_idle_recovers_when_idle_flag_was_cleared(self):
+        """wait_until_idle should not hang if _on_idle was cleared after work finished."""
+        bus = EventBus()
+
+        async def handler(_event: UserActionEvent) -> None:
+            return None
+
+        bus.on(UserActionEvent, handler)
+
+        try:
+            await bus.dispatch(UserActionEvent(action='test', user_id='u1'))
+            await bus.wait_until_idle()
+
+            assert bus._on_idle is not None
+            bus._on_idle.clear()
+
+            await asyncio.wait_for(bus.wait_until_idle(), timeout=1.0)
+        finally:
+            await bus.stop()
+
         # Stop again should be idempotent
         await bus.stop()
         assert bus._is_running is False
@@ -1121,6 +1141,41 @@ class TestHandlerMiddleware:
             assert result.status == 'error'
             assert isinstance(result.error, ValueError)
             assert observations == [('before', 'started'), ('error', 'ValueError')]
+        finally:
+            await bus.stop()
+
+    async def test_middleware_hook_statuses_never_emit_error(self):
+        observed_event_statuses: list[str] = []
+        observed_result_hook_statuses: list[str] = []
+        observed_result_runtime_statuses: list[str] = []
+
+        class LifecycleMiddleware(EventBusMiddleware):
+            async def on_event_change(self, eventbus: EventBus, event: BaseEvent, status):
+                observed_event_statuses.append(str(status))
+
+            async def on_event_result_change(self, eventbus: EventBus, event: BaseEvent, event_result, status):
+                observed_result_hook_statuses.append(str(status))
+                observed_result_runtime_statuses.append(event_result.status)
+
+        async def failing_handler(event: BaseEvent) -> None:
+            raise ValueError('boom')
+
+        bus = EventBus(middlewares=[LifecycleMiddleware()])
+        bus.on(UserActionEvent, failing_handler)
+
+        try:
+            event = await bus.dispatch(UserActionEvent(action='fail', user_id='u2'))
+            await bus.wait_until_idle()
+
+            result = next(iter(event.event_results.values()))
+            assert result.status == 'error'
+            assert isinstance(result.error, ValueError)
+
+            assert observed_event_statuses == ['pending', 'started', 'completed']
+            assert observed_result_hook_statuses == ['pending', 'started', 'completed']
+            assert observed_result_runtime_statuses[-1] == 'error'
+            assert 'error' not in observed_event_statuses
+            assert 'error' not in observed_result_hook_statuses
         finally:
             await bus.stop()
 

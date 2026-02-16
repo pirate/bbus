@@ -57,10 +57,11 @@ logger.setLevel(BUBUS_LOGGING_LEVEL)
 
 
 class EventStatus(StrEnum):
-    """Status of an event or handler in the EventBus lifecycle.
+    """Lifecycle status used for events and middleware transition hooks.
 
-    Uses string-valued enums so runtime checks can compare either enum members
-    or their string values (for example ``status == 'pending'``).
+    Event statuses are strictly ``pending`` -> ``started`` -> ``completed``.
+    Handler-level failures are represented on ``EventResult.status == 'error'``
+    and ``EventResult.error``, not as an event status.
     """
 
     PENDING = 'pending'
@@ -593,9 +594,9 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         event_children_by_parent: dict[str | None, list['BaseEvent[Any]']] | None = None,
     ) -> None:
         """Print this result and its child events with proper tree formatting."""
-        from bubus.logging import log_eventresult_tree
+        from bubus.logging import log_event_result_tree
 
-        log_eventresult_tree(self, indent, is_last, event_children_by_parent)
+        log_event_result_tree(self, indent, is_last, event_children_by_parent)
 
 
 class BaseEvent(BaseModel, Generic[T_EventResultType]):

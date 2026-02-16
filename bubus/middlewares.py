@@ -40,14 +40,17 @@ class EventBusMiddleware:
 
     Hooks:
         on_event_change(eventbus, event, status): Called on event state transitions
-        on_event_result_change(eventbus, event, event_result, status): Called on EventResult state transitions
+        on_event_result_change(eventbus, event, event_result, status): Called on EventResult lifecycle transitions
         on_handler_change(eventbus, handler, registered): Called when handlers are added/removed via on()/off()
 
-    Status values: EventStatus.PENDING, STARTED, COMPLETED, ERROR
+    Status values for these hooks are only:
+    EventStatus.PENDING, EventStatus.STARTED, EventStatus.COMPLETED.
+    Handler failures are surfaced via ``event_result.status == 'error'`` and ``event_result.error``
+    when ``status`` is ``EventStatus.COMPLETED``.
     """
 
     async def on_event_change(self, eventbus: EventBus, event: BaseEvent[Any], status: EventStatus) -> None:
-        """Called on event state transitions (pending, started, completed, error)."""
+        """Called on event state transitions (pending, started, completed)."""
 
     async def on_event_result_change(
         self,
@@ -56,7 +59,11 @@ class EventBusMiddleware:
         event_result: EventResult[Any],
         status: EventStatus,
     ) -> None:
-        """Called on EventResult state transitions (pending, started, completed, error)."""
+        """Called on EventResult lifecycle transitions (pending, started, completed).
+
+        Note: ``status`` never equals ``'error'``. Check ``event_result.status``
+        and ``event_result.error`` on the completed callback to detect failures.
+        """
 
     async def on_handler_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
         """Called when handlers are added (registered=True) or removed (registered=False)."""

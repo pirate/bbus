@@ -7,7 +7,7 @@ import { EventResult } from './event_result.js'
 import { EventHandlerAbortedError, EventHandlerCancelledError, EventHandlerTimeoutError } from './event_handler.js'
 import type { EventConcurrencyMode, EventHandlerConcurrencyMode, EventHandlerCompletionMode, Deferred } from './lock_manager.js'
 import {
-  AsyncSemaphore,
+  AsyncLock,
   EVENT_CONCURRENCY_MODES,
   EVENT_HANDLER_CONCURRENCY_MODES,
   EVENT_HANDLER_COMPLETION_MODES,
@@ -151,7 +151,7 @@ export class BaseEvent {
   _event_dispatch_context?: unknown | null // captured AsyncLocalStorage context at dispatch site, used to restore that context when running handlers
 
   _event_done_signal: Deferred<this> | null
-  _event_handler_semaphore: AsyncSemaphore | null
+  _event_handler_lock: AsyncLock | null
 
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
     const ctor = this.constructor as typeof BaseEvent & {
@@ -214,7 +214,7 @@ export class BaseEvent {
     this.event_created_ts = parsed.event_created_ts ?? event_created_ts
 
     this._event_done_signal = null
-    this._event_handler_semaphore = null
+    this._event_handler_lock = null
     this._event_dispatch_context = undefined
   }
 
@@ -406,7 +406,7 @@ export class BaseEvent {
       return
     }
     if (original.event_handler_completion === 'first') {
-      const is_serial_handler_mode = original.getHandlerSemaphore() !== null
+      const is_serial_handler_mode = original.getHandlerLock() !== null
       if (is_serial_handler_mode) {
         for (const entry of pending_results) {
           await entry.runHandler()
@@ -434,17 +434,17 @@ export class BaseEvent {
     }
   }
 
-  getHandlerSemaphore(default_concurrency?: EventHandlerConcurrencyMode): AsyncSemaphore | null {
+  getHandlerLock(default_concurrency?: EventHandlerConcurrencyMode): AsyncLock | null {
     const original = this._event_original ?? this
     const resolved =
       original.event_handler_concurrency ?? default_concurrency ?? original.bus?.event_handler_concurrency_default ?? 'serial'
     if (resolved === 'parallel') {
       return null
     }
-    if (!original._event_handler_semaphore) {
-      original._event_handler_semaphore = new AsyncSemaphore(1)
+    if (!original._event_handler_lock) {
+      original._event_handler_lock = new AsyncLock(1)
     }
-    return original._event_handler_semaphore
+    return original._event_handler_lock
   }
 
   // Get parent event object from event_parent_id (checks across all busses)
@@ -733,7 +733,7 @@ export class BaseEvent {
     original.event_pending_bus_count = 0
     original._event_dispatch_context = undefined
     original._event_done_signal = null
-    original._event_handler_semaphore = null
+    original._event_handler_lock = null
     original.bus = undefined
     return this
   }
@@ -877,7 +877,7 @@ export class BaseEvent {
     this._event_done_signal = null
     this._event_dispatch_context = null
     this.bus = undefined
-    this._event_handler_semaphore = null
+    this._event_handler_lock = null
     for (const result of this.event_results.values()) {
       result.event_children = []
     }
