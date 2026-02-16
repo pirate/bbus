@@ -97,14 +97,9 @@ async def test_casting_failure_handling():
     await bus.emit(event)
 
     # The event should complete but the result should be an error
-    try:
-        await event.event_results_by_handler_id(raise_if_any=False)
-        handler_id = list(event.event_results.keys())[0]
-        event_result = event.event_results[handler_id]
-    except Exception:
-        # If event_results_by_handler_id raises, get the result directly
-        handler_id = list(event.event_results.keys())[0]
-        event_result = event.event_results[handler_id]
+    await event.event_results_list(raise_if_any=False, raise_if_none=False)
+    handler_id = list(event.event_results.keys())[0]
+    event_result = event.event_results[handler_id]
 
     assert event_result.status == 'error'
     assert isinstance(event_result.error, ValueError)
@@ -179,11 +174,8 @@ async def test_typed_accessors_normalize_forwarded_event_results_to_none():
 
     result = await event.event_result(include=include_all, raise_if_any=False, raise_if_none=False)
     results_list = await event.event_results_list(include=include_all, raise_if_any=False, raise_if_none=False)
-    results_by_handler_id = await event.event_results_by_handler_id(include=include_all, raise_if_any=False, raise_if_none=False)
-
     assert result is None
     assert results_list == [None]
-    assert list(results_by_handler_id.values()) == [None]
 
     await bus.stop(clear=True)
 

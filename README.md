@@ -246,7 +246,7 @@ bridge.on('*', bus.emit)  # listen for new events in redis channel and emit them
 <summary><strong>🔱 Event Results Aggregation</strong></summary>
 
 
-Collect and aggregate results from multiple handlers:
+Collect results from multiple handlers:
 
 ```python
 async def load_user_config(event: GetConfigEvent) -> dict[str, Any]:
@@ -258,15 +258,13 @@ async def load_system_config(event: GetConfigEvent) -> dict[str, Any]:
 bus.on(GetConfigEvent, load_user_config)
 bus.on(GetConfigEvent, load_system_config)
 
-# Get a merger of all dict results
-# (conflicting keys raise ValueError unless raise_if_conflicts=False)
+# Get all handler result values
 event = await bus.emit(GetConfigEvent())
-config = await event.event_results_flat_dict(raise_if_conflicts=False)
-# {'debug': False, 'port': 8080, 'timeout': 30}
+results = await event.event_results_list()
 
-# Or get individual results
-await event.event_results_by_handler_id()
-await event.event_results_list()
+# Inspect per-handler metadata when needed
+for handler_id, event_result in event.event_results.items():
+    print(handler_id, event_result.handler_name, event_result.result)
 ```
 
 <br/>
@@ -469,8 +467,7 @@ You can use these helpers to interact with the results returned by handlers:
 
 - `BaseEvent.event_result()`
 - `BaseEvent.event_results_list()`, `BaseEvent.event_results_filtered()`
-- `BaseEvent.event_results_by_handler_id()`, `BaseEvent.event_results_by_handler_name()`
-- `BaseEvent.event_results_flat_list()`, `BaseEvent.event_results_flat_dict()`
+- Inspect raw per-handler entries via `BaseEvent.event_results`
 
 **2. Have the handler do the work, then emit another event containing the result value, which other code can find:**
 
@@ -1017,29 +1014,6 @@ valid_result = await event.event_result(include=lambda r: isinstance(r.result, s
 result_or_none = await event.event_result(raise_if_any=False, raise_if_none=False)
 ```
 
-##### `event_results_by_handler_id(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> dict`
-
-Utility method helper to get all raw result values organized by `{handler_id: result_value}`.
-
-**Parameters:**
-
-- `timeout`: Maximum time to wait for handlers to complete (None = use default event timeout)
-- `include`: Filter function to include only specific results (default: only non-None, non-exception results)
-- `raise_if_any`: If `True`, raise exception if any handler raises any `Exception` (`default: True`)
-- `raise_if_none`: If `True`, raise exception if results are empty / all results are `None` or `Exception` (`default: True`)
-
-```python
-# by default it returns all successful non-None result values
-results = await event.event_results_by_handler_id()
-# {'handler_id_1': result1, 'handler_id_2': result2}
-
-# Only include results from handlers that returned integers
-int_results = await event.event_results_by_handler_id(include=lambda r: isinstance(r.result, int))
-
-# Get all results including errors and None values
-all_results = await event.event_results_by_handler_id(raise_if_any=False, raise_if_none=False)
-```
-
 ##### `event_results_list(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> list[Any]`
 
 Utility method helper to get all raw result values in a list.
@@ -1063,52 +1037,7 @@ filtered_results = await event.event_results_list(include=lambda r: isinstance(r
 all_results = await event.event_results_list(raise_if_any=False, raise_if_none=False)
 ```
 
-##### `event_results_flat_dict(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=False, raise_if_conflicts: bool=True) -> dict`
-
-Utility method helper to merge all raw result values that are `dict`s into a single flat `dict`.
-
-**Parameters:**
-
-- `timeout`: Maximum time to wait for handlers to complete (None = use default event timeout)
-- `include`: Filter function to include only specific results (default: only non-None, non-exception results)
-- `raise_if_any`: If `True`, raise exception if any handler raises any `Exception` (`default: True`)
-- `raise_if_none`: If `True`, raise exception if results are empty / all results are `None` or `Exception` (`default: False`)
-- `raise_if_conflicts`: If `True`, raise exception if dict keys conflict between handlers (`default: True`)
-
-```python
-# by default it merges all successful dict results
-results = await event.event_results_flat_dict()
-# {'key1': 'value1', 'key2': 'value2'}
-
-# Merge only dicts with specific keys
-config_dicts = await event.event_results_flat_dict(include=lambda r: isinstance(r.result, dict) and 'config' in r.result)
-
-# Allow conflicts, last handler wins
-merged = await event.event_results_flat_dict(raise_if_conflicts=False)
-```
-
-##### `event_results_flat_list(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> list`
-
-Utility method helper to merge all raw result values that are `list`s into a single flat `list`.
-
-**Parameters:**
-
-- `timeout`: Maximum time to wait for handlers to complete (None = use default event timeout)
-- `include`: Filter function to include only specific results (default: only non-None, non-exception results)
-- `raise_if_any`: If `True`, raise exception if any handler raises any `Exception` (`default: True`)
-- `raise_if_none`: If `True`, raise exception if results are empty / all results are `None` or `Exception` (`default: True`)
-
-```python
-# by default it merges all successful list results
-results = await event.event_results_flat_list()
-# ['item1', 'item2', 'item3']
-
-# Merge only lists with more than 2 items
-long_lists = await event.event_results_flat_list(include=lambda r: isinstance(r.result, list) and len(r.result) > 2)
-
-# Get all list results without raising on errors
-all_items = await event.event_results_flat_list(raise_if_any=False, raise_if_none=False)
-```
+`event_results_list()` is the canonical collection helper for multiple handler return values.
 
 ##### `event_create_pending_handler_results(handlers: dict[str, EventHandler], eventbus: EventBus | None = None, timeout: float | None = None) -> dict[str, EventResult]`
 

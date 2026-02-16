@@ -664,6 +664,65 @@ test('one handler error does not prevent other handlers from running', async () 
   assert.equal(error_results.length, 1)
 })
 
+test('eventResultsList returns filtered values by default and can return raw values with include', async () => {
+  const bus = new EventBus('EventResultsListBus', { event_handler_concurrency: 'serial' })
+  const ResultListEvent = BaseEvent.extend('ResultListEvent', {})
+
+  bus.on(ResultListEvent, () => ({ one: 1 }))
+  bus.on(ResultListEvent, () => ['two'])
+  bus.on(ResultListEvent, () => undefined)
+
+  const values = await bus.emit(ResultListEvent({})).eventResultsList()
+  assert.deepEqual(values, [{ one: 1 }, ['two']])
+
+  const raw_values = await bus.emit(ResultListEvent({})).eventResultsList(() => true, {
+    raise_if_any: false,
+    raise_if_none: false,
+  })
+  assert.deepEqual(raw_values, [{ one: 1 }, ['two'], undefined])
+})
+
+test('eventResultsList supports timeout/include/raise_if_any/raise_if_none arguments', async () => {
+  const bus = new EventBus('EventResultsListArgsBus', { event_handler_concurrency: 'serial' })
+  const ArgsEvent = BaseEvent.extend('ArgsEvent', {})
+  const EmptyEvent = BaseEvent.extend('EmptyEvent', {})
+  const IncludeEvent = BaseEvent.extend('IncludeEvent', {})
+  const MixedEvent = BaseEvent.extend('MixedEvent', {})
+  const TimeoutEvent = BaseEvent.extend('TimeoutEvent', {})
+
+  bus.on(ArgsEvent, () => 'ok')
+  bus.on(ArgsEvent, () => {
+    throw new Error('boom')
+  })
+  await assert.rejects(async () => bus.emit(ArgsEvent({})).eventResultsList(), /boom/)
+
+  const values_without_errors = await bus.emit(ArgsEvent({})).eventResultsList({ raise_if_any: false, raise_if_none: true })
+  assert.deepEqual(values_without_errors, ['ok'])
+
+  bus.on(EmptyEvent, () => undefined)
+  await assert.rejects(async () => bus.emit(EmptyEvent({})).eventResultsList(), /Expected at least one handler/)
+  const empty_values = await bus.emit(EmptyEvent({})).eventResultsList({ raise_if_any: false, raise_if_none: false })
+  assert.deepEqual(empty_values, [])
+
+  bus.on(MixedEvent, () => undefined)
+  bus.on(MixedEvent, () => 'valid')
+  const mixed_values = await bus.emit(MixedEvent({})).eventResultsList({ raise_if_any: false, raise_if_none: true })
+  assert.deepEqual(mixed_values, ['valid'])
+
+  bus.on(IncludeEvent, () => 'keep')
+  bus.on(IncludeEvent, () => 'drop')
+  const filtered_values = await bus
+    .emit(IncludeEvent({}))
+    .eventResultsList((result) => result === 'keep', { raise_if_any: false, raise_if_none: true })
+  assert.deepEqual(filtered_values, ['keep'])
+
+  bus.on(TimeoutEvent, async () => {
+    await delay(50)
+    return 'late'
+  })
+  await assert.rejects(async () => bus.emit(TimeoutEvent({})).eventResultsList({ timeout: 0.01 }), /Timed out waiting/)
+})
+
 // ─── Concurrent dispatch ─────────────────────────────────────────────────────
 
 test('many events dispatched concurrently all complete', async () => {

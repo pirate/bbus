@@ -26,6 +26,7 @@ You usually end up writing verbose call sites repeatedly.
 # Without wrap: valid, but noisy at every call site
 event = bus.emit(CreateUserEvent(name='bob', age=45))
 user_id = await event.event_result()
+all_values = await event.event_results_list(raise_if_any=False, raise_if_none=False)
 
 # With wrap: looks like normal async function calls
 SDKClient = events_suck.wrap('SDKClient', {'create': CreateUserEvent, 'update': UpdateUserEvent})
@@ -42,6 +43,7 @@ updated = await client.update(id=user_id, age=46, source='sync')
 const event = bus.emit(CreateUserEvent({ name: 'bob', age: 45 }))
 await event.done()
 const user_id = event.event_result
+const all_values = await event.eventResultsList({ raise_if_any: false, raise_if_none: false })
 
 // With wrap: looks like normal async function calls
 const SDKClient = events_suck.wrap('SDKClient', { create: CreateUserEvent, update: UpdateUserEvent })

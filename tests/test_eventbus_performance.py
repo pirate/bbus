@@ -221,7 +221,12 @@ class MethodProfiler:
         method_name_or_ref: str | Callable[..., Any],
         label: str | None = None,
     ) -> None:
-        method_name = method_name_or_ref if isinstance(method_name_or_ref, str) else method_name_or_ref.__name__
+        if isinstance(method_name_or_ref, str):
+            method_name = method_name_or_ref
+        else:
+            method_name = getattr(method_name_or_ref, '__name__', '')
+            if not method_name:
+                raise ValueError('method_name_or_ref callable must define __name__')
         original = getattr(owner, method_name)
         metric_name = label or f'{owner.__name__}.{method_name}'
         wrapped_method: Any

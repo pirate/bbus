@@ -39,19 +39,21 @@ test('event.event_bus inside handler returns the dispatching bus', async () => {
 
   bus.on(MainEvent, (event) => {
     handler_bus_name = event.event_bus.name
+    assert.equal(event.event_bus, event.bus)
   })
 
   await bus.emit(MainEvent({})).done()
   assert.equal(handler_bus_name, 'EventBusPropertyBus')
 })
 
-test('event.event_bus falls back to event_path when current handler event differs', async () => {
+test('event.event_bus aliases event.bus for child events emitted in handler', async () => {
   const bus = new EventBus('EventBusPropertyFallbackBus')
   let child_bus_name: string | undefined
 
   bus.on(MainEvent, (event) => {
     const child = event.event_bus.emit(ChildEvent({}))
     child_bus_name = child.event_bus.name
+    assert.equal(child.event_bus, child.bus)
   })
   bus.on(ChildEvent, () => {})
 
@@ -59,7 +61,7 @@ test('event.event_bus falls back to event_path when current handler event differ
   assert.equal(child_bus_name, 'EventBusPropertyFallbackBus')
 })
 
-test('event.event_bus resolves from global registry for detached events', async () => {
+test('event.event_bus aliases event.bus for detached events', async () => {
   const bus = new EventBus('EventBusPropertyDetachedBus')
   bus.on(MainEvent, () => {})
 
@@ -69,24 +71,15 @@ test('event.event_bus resolves from global registry for detached events', async 
   const detached = BaseEvent.fromJSON(original.toJSON())
   assert.equal(detached.bus, undefined)
   assert.deepEqual(detached.event_path, [bus.label])
-
-  let resolved_bus_name: string | undefined
-  bus.on(ChildEvent, () => {
-    resolved_bus_name = detached.event_bus.name
-  })
-
-  await bus.emit(ChildEvent({})).done()
-  assert.equal(resolved_bus_name, 'EventBusPropertyDetachedBus')
+  assert.equal(detached.event_bus, detached.bus)
 })
 
-test('event.event_bus throws outside handler context', async () => {
+test('event.event_bus aliases event.bus outside handler context', async () => {
   const bus = new EventBus('EventBusPropertyOutsideHandlerBus')
   const event = bus.emit(MainEvent({}))
   await event.done()
 
-  assert.throws(() => {
-    void event.event_bus
-  }, /event_bus property can only be accessed from within an event handler/)
+  assert.equal(event.event_bus, event.bus)
 })
 
 test('event.bus returns correct bus when multiple buses exist', async () => {

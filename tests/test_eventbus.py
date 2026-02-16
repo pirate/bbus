@@ -1406,12 +1406,9 @@ class TestEventResults:
 
         # Wait for completion
         await result
-        # Get results by handler ID
-        all_results = await result.event_results_flat_dict()
-        assert isinstance(all_results, dict)
-        # Should contain only test_handler result
-        assert len(all_results) == 1
-        assert all_results['result'] == 'test_result'
+        all_results = await result.event_results_list()
+        assert isinstance(all_results, list)
+        assert all_results == [{'result': 'test_result'}]
 
         # Test with no specific handlers
         result_no_handlers = eventbus.emit(BaseEvent(event_type='NoHandlersEvent'))
@@ -1529,8 +1526,8 @@ class TestEventResults:
 
         event = await eventbus.emit(BaseEvent(event_type='TestEvent'))
 
-        # Get results by handler ID using the method that exists
-        results = await event.event_results_by_handler_id()
+        await event.event_results_list()
+        results = {handler_id: result.result for handler_id, result in event.event_results.items()}
 
         # All handlers present with unique IDs even with same name
         # Should have 2 results: handler1, handler2
@@ -1538,8 +1535,8 @@ class TestEventResults:
         assert 'v1' in results.values()
         assert 'v2' in results.values()
 
-    async def test_flat_dict(self, eventbus):
-        """Test event_results_flat_dict() merging"""
+    async def test_manual_dict_merge(self, eventbus):
+        """Users can merge dict handler results manually from event_results_list()."""
 
         async def config_base(event):
             return {'debug': False, 'port': 8080, 'name': 'base'}
@@ -1551,7 +1548,10 @@ class TestEventResults:
         eventbus.on('GetConfig', config_override)
 
         event = await eventbus.emit(BaseEvent(event_type='GetConfig'))
-        merged = await event.event_results_flat_dict(raise_if_conflicts=False)
+        merged = {}
+        for result in await event.event_results_list(include=lambda r: isinstance(r.result, dict), raise_if_any=False):
+            assert isinstance(result, dict)
+            merged.update(result)
 
         # Later handlers override earlier ones
         assert merged == {
@@ -1568,12 +1568,18 @@ class TestEventResults:
         eventbus.on('BadConfig', bad_handler)
         event_bad = await eventbus.emit(BaseEvent(event_type='BadConfig'))
 
-        # Non-dict results should be skipped, not raise error
-        merged_bad = await event_bad.event_results_flat_dict()
+        merged_bad = {}
+        for result in await event_bad.event_results_list(
+            include=lambda r: isinstance(r.result, dict),
+            raise_if_any=False,
+            raise_if_none=False,
+        ):
+            assert isinstance(result, dict)
+            merged_bad.update(result)
         assert merged_bad == {}  # Empty dict since no dict results
 
-    async def test_flat_dict_conflict_raises(self, eventbus):
-        """event_results_flat_dict() raises by default when handlers conflict."""
+    async def test_manual_dict_merge_conflicts_last_write_wins(self, eventbus):
+        """Manual dict merge from results is explicit and uses user-defined conflict behavior."""
 
         async def handler_one(event):
             return {'shared': 1, 'unique1': 'a'}
@@ -1586,13 +1592,17 @@ class TestEventResults:
 
         event = await eventbus.emit(BaseEvent(event_type='ConflictEvent'))
 
-        with pytest.raises(ValueError) as exc_info:
-            await event.event_results_flat_dict()
+        merged = {}
+        for result in await event.event_results_list(include=lambda r: isinstance(r.result, dict), raise_if_any=False):
+            assert isinstance(result, dict)
+            merged.update(result)
 
-        assert 'overwrite values from previous handlers' in str(exc_info.value)
+        assert merged['shared'] == 2
+        assert merged['unique1'] == 'a'
+        assert merged['unique2'] == 'b'
 
-    async def test_flat_list(self, eventbus):
-        """Test event_results_flat_list() concatenation"""
+    async def test_manual_list_flatten(self, eventbus):
+        """Users can flatten list handler results manually from event_results_list()."""
 
         async def errors1(event):
             return ['error1', 'error2']
@@ -1608,7 +1618,12 @@ class TestEventResults:
         eventbus.on('GetErrors', errors3)
 
         event = await eventbus.emit(BaseEvent(event_type='GetErrors'))
-        all_errors = await event.event_results_flat_list()
+        all_errors = [
+            item
+            for result in await event.event_results_list(include=lambda r: isinstance(r.result, list), raise_if_any=False)
+            if isinstance(result, list)
+            for item in result
+        ]
 
         # Check that all errors are collected (order may vary due to handler execution)
         assert all_errors == ['error1', 'error2', 'error3', 'error4', 'error5']
@@ -1620,7 +1635,16 @@ class TestEventResults:
         eventbus.on('GetSingle', single_value)
         event_single = await eventbus.emit(BaseEvent(event_type='GetSingle'))
 
-        result = await event_single.event_results_flat_list(raise_if_none=False)
+        result = [
+            item
+            for nested in await event_single.event_results_list(
+                include=lambda r: isinstance(r.result, list),
+                raise_if_any=False,
+                raise_if_none=False,
+            )
+            if isinstance(nested, list)
+            for item in nested
+        ]
         assert 'single' not in result  # Single values should be skipped, as they are not lists
         assert len(result) == 0
 
@@ -1846,13 +1870,19 @@ class TestComplexIntegration:
             assert auth_bus.label in event.event_path
             assert data_bus.label in event.event_path
 
-            # Test flat dict merging
-            dict_result = await event.event_results_flat_dict()
+            dict_result: dict[str, Any] = {}
+            for result in await event.event_results_list(include=lambda r: isinstance(r.result, dict), raise_if_any=False):
+                assert isinstance(result, dict)
+                dict_result.update(result)
             # Should have merged all dict returns
             assert 'app_valid' in dict_result and 'auth_valid' in dict_result and 'data_valid' in dict_result
 
-            # Test flat list
-            list_result = await event.event_results_flat_list()
+            list_result = [
+                item
+                for result in await event.event_results_list(include=lambda r: isinstance(r.result, list), raise_if_any=False)
+                if isinstance(result, list)
+                for item in result
+            ]
             # Should include all list items
             assert any('log' in str(item) for item in list_result)
 
@@ -1916,8 +1946,14 @@ class TestComplexIntegration:
                 assert 'did not match expected event_result_type' in error_msg
                 assert 'dict' in error_msg
 
-            # event_results_flat_dict should still work when raise_if_any=False, only including valid dict results
-            dict_result = await event.event_results_flat_dict(raise_if_any=False)
+            dict_result: dict[str, Any] = {}
+            for result in await event.event_results_list(
+                include=lambda r: isinstance(r.result, dict),
+                raise_if_any=False,
+                raise_if_none=False,
+            ):
+                assert isinstance(result, dict)
+                dict_result.update(result)
             assert 'key1' in dict_result and 'key2' in dict_result
             assert len(dict_result) == 2  # Only the two dict results
 
@@ -1979,8 +2015,16 @@ class TestComplexIntegration:
                 assert 'did not match expected event_result_type' in error_msg
                 assert 'list' in error_msg
 
-            # event_results_flat_list should still work when raise_if_any=False, only including valid list results
-            list_result = await event.event_results_flat_list(raise_if_any=False)
+            list_result = [
+                item
+                for result in await event.event_results_list(
+                    include=lambda r: isinstance(r.result, list),
+                    raise_if_any=False,
+                    raise_if_none=False,
+                )
+                if isinstance(result, list)
+                for item in result
+            ]
             assert list_result == [1, 2, 3, 'a', 'b', 'c']  # Flattened from both list handlers
 
         finally:

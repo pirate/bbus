@@ -118,16 +118,19 @@ const value = await event.first()
 <Tab title="Python">
 
 ```python
-by_handler = await event.event_results_by_handler_id()
 items = await event.event_results_list()
-flat_dict = await event.event_results_flat_dict(raise_if_conflicts=False)
-flat_list = await event.event_results_flat_list()
+by_handler = {handler_id: result.result for handler_id, result in event.event_results.items()}
 ```
 
 </Tab>
 <Tab title="TypeScript">
 
 ```ts
+const items = await event.eventResultsList()
+const filtered = await event.eventResultsList((result) => typeof result === 'string', {
+  raise_if_any: false,
+  raise_if_none: true,
+})
 const all = event.all_results
 const first = event.event_result
 const last = event.last_result
@@ -203,6 +206,53 @@ const restored = BaseEvent.fromJSON(payload)
 
 ## Notes
 
-- Keep custom payload field names away from `event_*` reserved metadata names.
+- Reserved names are validated in both runtimes:
+  - `bus` and `first` are reserved runtime APIs and cannot be provided as payload fields.
+  - Unknown `event_*` fields are rejected.
+  - Known built-in `event_*` fields (for example `event_timeout`) can still be intentionally overridden in event definitions.
+- `model_*` is also reserved:
+  - Python: unknown `model_*` fields are rejected, but valid Pydantic namespace overrides (for example `model_config`) are allowed.
+  - TypeScript: any `model_*` field is rejected.
 - `event_result_type` drives handler return validation in both runtimes.
 - Parent-child tracking is automatic when events are emitted from handlers.
+
+## Reserved Fields
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from pydantic import ConfigDict
+from bubus import BaseEvent
+
+class AllowedEvent(BaseEvent[None]):
+    event_timeout: float | None = 30  # allowed built-in event_* override
+    model_config = ConfigDict(extra='allow')  # allowed Pydantic model_* override
+
+# rejected: unknown reserved prefixes
+class InvalidEvent(BaseEvent[None]):
+    event_some_field_we_dont_recognize: int = 1  # raises
+    model_something_random: int = 2  # raises
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { BaseEvent } from 'bubus'
+import { z } from 'zod'
+
+const AllowedEvent = BaseEvent.extend('AllowedEvent', {
+  event_timeout: 30, // allowed built-in event_* override
+  payload: z.string(),
+})
+
+// rejected: unknown event_* and all model_*
+BaseEvent.extend('InvalidEvent', {
+  event_some_field_we_dont_recognize: 1, // throws
+  model_something_random: 2, // throws
+})
+```
+
+</Tab>
+</Tabs>

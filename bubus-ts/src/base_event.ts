@@ -16,6 +16,34 @@ import {
 import { extractZodShape, normalizeEventResultType, toJsonSchema } from './types.js'
 import type { EventResultType } from './types.js'
 
+const RESERVED_USER_EVENT_FIELDS = new Set(['bus', 'first'])
+
+function assertNoReservedUserEventFields(data: Record<string, unknown>, context: string): void {
+  for (const field_name of RESERVED_USER_EVENT_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(data, field_name)) {
+      throw new Error(`${context} field "${field_name}" is reserved for EventBus runtime context and cannot be set in event payload`)
+    }
+  }
+}
+
+function assertNoUnknownEventPrefixedFields(data: Record<string, unknown>, context: string): void {
+  for (const field_name of Object.keys(data)) {
+    if (field_name.startsWith('event_') && !KNOWN_BASE_EVENT_FIELDS.has(field_name)) {
+      throw new Error(
+        `${context} field "${field_name}" starts with "event_" but is not a recognized BaseEvent field`
+      )
+    }
+  }
+}
+
+function assertNoModelPrefixedFields(data: Record<string, unknown>, context: string): void {
+  for (const field_name of Object.keys(data)) {
+    if (field_name.startsWith('model_')) {
+      throw new Error(`${context} field "${field_name}" starts with "model_" and is reserved for model internals`)
+    }
+  }
+}
+
 export const BaseEventSchema = z
   .object({
     event_id: z.string().uuid(),
@@ -42,6 +70,8 @@ export const BaseEventSchema = z
     event_handler_completion: z.enum(EVENT_HANDLER_COMPLETION_MODES).nullable().optional(),
   })
   .loose()
+
+const KNOWN_BASE_EVENT_FIELDS = new Set(Object.keys(BaseEventSchema.shape))
 
 export type BaseEventData = z.infer<typeof BaseEventSchema>
 export type BaseEventJSON = BaseEventData & Record<string, unknown>
@@ -98,6 +128,16 @@ type ResultTypeFromEventResultTypeInput<TInput> = TInput extends z.ZodTypeAny
             : unknown
 
 type ResultSchemaFromShape<TShape> = TShape extends { event_result_type: infer S } ? ResultTypeFromEventResultTypeInput<S> : unknown
+type EventResultsListInclude<TEvent extends BaseEvent> = (
+  result: EventResultType<TEvent> | undefined,
+  event_result: EventResult<TEvent>
+) => boolean
+type EventResultsListOptions<TEvent extends BaseEvent> = {
+  timeout?: number | null
+  include?: EventResultsListInclude<TEvent>
+  raise_if_any?: boolean
+  raise_if_none?: boolean
+}
 
 const EVENT_CLASS_DEFAULTS = new WeakMap<Function, Record<string, unknown>>()
 
@@ -157,41 +197,13 @@ export class BaseEvent {
   _lock_for_event_handler: AsyncLock | null
 
   get event_bus(): EventBus {
-    const original_event = this._event_original ?? this
-    const all_instances = this.bus?.all_instances ?? EventBus.all_instances
-
-    let in_handler_context = false
-    for (const active_bus of all_instances) {
-      const active_handler_result = active_bus.locks.getActiveHandlerResult()
-      if (!active_handler_result) {
-        continue
-      }
-      in_handler_context = true
-      const current_event = active_handler_result.event._event_original ?? active_handler_result.event
-      if (current_event.event_id === original_event.event_id) {
-        return active_bus
-      }
-    }
-
-    if (!in_handler_context) {
-      throw new Error('event_bus property can only be accessed from within an event handler')
-    }
-
-    if (!Array.isArray(original_event.event_path) || original_event.event_path.length === 0) {
-      throw new Error('Event has no event_path - was it dispatched?')
-    }
-
-    const current_bus_label = original_event.event_path[original_event.event_path.length - 1]
-    for (const active_bus of all_instances) {
-      if (active_bus.label === current_bus_label) {
-        return active_bus
-      }
-    }
-
-    throw new Error(`Could not find active EventBus for path entry ${current_bus_label}`)
+    return this.bus as EventBus
   }
 
   constructor(data: BaseEventInit<Record<string, unknown>> = {}) {
+    assertNoReservedUserEventFields(data as Record<string, unknown>, 'BaseEvent')
+    assertNoUnknownEventPrefixedFields(data as Record<string, unknown>, 'BaseEvent')
+    assertNoModelPrefixedFields(data as Record<string, unknown>, 'BaseEvent')
     const ctor = this.constructor as typeof BaseEvent & {
       event_version?: string
       event_result_type?: z.ZodTypeAny
@@ -285,6 +297,9 @@ export class BaseEvent {
     shape: TShape = {} as TShape
   ): EventFactory<ZodShapeFrom<TShape>, ResultSchemaFromShape<TShape>> {
     const raw_shape = shape as Record<string, unknown>
+    assertNoReservedUserEventFields(raw_shape, `BaseEvent.extend(${event_type})`)
+    assertNoUnknownEventPrefixedFields(raw_shape, `BaseEvent.extend(${event_type})`)
+    assertNoModelPrefixedFields(raw_shape, `BaseEvent.extend(${event_type})`)
     const raw_event_result_type = raw_shape.event_result_type
     const event_result_type = normalizeEventResultType(raw_event_result_type)
     const event_version = typeof raw_shape.event_version === 'string' ? raw_shape.event_version : undefined
@@ -806,6 +821,95 @@ export class BaseEvent {
         .map((result) => result.result as EventResultType<this>)
         .at(0)
     })
+  }
+
+  // returns handler result values in event_results insertion order.
+  // equivalent to await event.done(); Array.from(event.event_results.values()).map((entry) => entry.result)
+  eventResultsList(
+    include: EventResultsListInclude<this>,
+    options?: EventResultsListOptions<this>
+  ): Promise<Array<EventResultType<this> | undefined>>
+  eventResultsList(options?: EventResultsListOptions<this>): Promise<Array<EventResultType<this> | undefined>>
+  async eventResultsList(
+    include_or_options?: EventResultsListInclude<this> | EventResultsListOptions<this>,
+    maybe_options?: EventResultsListOptions<this>
+  ): Promise<Array<EventResultType<this> | undefined>> {
+    const default_include: EventResultsListInclude<this> = (_result, event_result) =>
+      event_result.status === 'completed' &&
+      event_result.result !== undefined &&
+      event_result.result !== null &&
+      !(event_result.result instanceof Error) &&
+      !(event_result.result instanceof BaseEvent) &&
+      event_result.error === undefined
+
+    let options: EventResultsListOptions<this>
+    let include: EventResultsListInclude<this>
+    if (typeof include_or_options === 'function') {
+      options = maybe_options ?? {}
+      include = include_or_options
+    } else {
+      options = include_or_options ?? {}
+      include = options.include ?? default_include
+    }
+    const raise_if_any = options.raise_if_any ?? true
+    const raise_if_none = options.raise_if_none ?? true
+
+    const original = this._event_original ?? this
+    const resolved_timeout_seconds = options.timeout ?? original.event_timeout ?? this.bus?.event_timeout ?? null
+    let completed_event: this
+
+    if (resolved_timeout_seconds === null) {
+      completed_event = await this.done()
+    } else {
+      completed_event = await Promise.race([
+        this.done(),
+        new Promise<never>((_, reject) => {
+          setTimeout(
+            () => reject(new Error(`Timed out waiting for ${original.event_type} results after ${resolved_timeout_seconds}s`)),
+            resolved_timeout_seconds * 1000
+          )
+        }),
+      ])
+    }
+
+    const all_results: EventResult<this>[] = Array.from(completed_event.event_results.values())
+    const error_results = all_results.filter((event_result) => event_result.error !== undefined || event_result.result instanceof Error)
+
+    if (raise_if_any && error_results.length > 0) {
+      if (error_results.length === 1) {
+        const first_error = error_results[0]
+        if (first_error.error instanceof Error) {
+          throw first_error.error
+        }
+        if (first_error.result instanceof Error) {
+          throw first_error.result
+        }
+        throw new Error(String(first_error.error ?? first_error.result))
+      }
+
+      const errors = error_results.map((event_result) => {
+        if (event_result.error instanceof Error) {
+          return event_result.error
+        }
+        if (event_result.result instanceof Error) {
+          return event_result.result
+        }
+        return new Error(String(event_result.error ?? event_result.result))
+      })
+      throw new AggregateError(
+        errors,
+        `Event ${completed_event.event_type}#${completed_event.event_id.slice(-4)} had ${errors.length} handler error(s)`
+      )
+    }
+
+    const included_results = all_results.filter((event_result) => include(event_result.result, event_result))
+    if (raise_if_none && included_results.length === 0) {
+      throw new Error(
+        `Expected at least one handler to return a non-null result, but none did: ${completed_event.event_type}#${completed_event.event_id.slice(-4)}`
+      )
+    }
+
+    return included_results.map((event_result) => event_result.result)
   }
 
   // awaitable that waits for the event to be processed in normal queue order by the runloop

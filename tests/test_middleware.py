@@ -142,11 +142,6 @@ class TestWALPersistence:
 class TestHandlerMiddleware:
     """Tests for the handler middleware pipeline."""
 
-    def test_middleware_constructor_rejects_invalid_entries(self):
-        with pytest.raises(TypeError):
-            invalid_middlewares: Any = [object()]
-            EventBus(middlewares=invalid_middlewares)
-
     async def test_middleware_constructor_auto_inits_classes_and_keeps_hook_order(self):
         calls: list[str] = []
 

@@ -236,6 +236,10 @@ export class LockManager {
     return this.active_handler_results[this.active_handler_results.length - 1]
   }
 
+  getActiveHandlerResults(): EventResult[] {
+    return [...this.active_handler_results]
+  }
+
   // Per-bus check: true only if this specific bus has a handler on its stack.
   // For cross-bus queue-jumping, EventBus.processEventImmediately uses getParentEventResultAcrossAllBuses()
   // to walk up the parent event tree, and the bus proxy passes handler_result

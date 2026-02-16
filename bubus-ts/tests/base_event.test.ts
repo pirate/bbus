@@ -23,6 +23,61 @@ test('BaseEvent lifecycle transitions are explicit and awaitable', async () => {
   await standalone.waitForCompletion()
 })
 
+test('BaseEvent rejects reserved bus/first fields in payload and event shape', () => {
+  const ReservedFieldEvent = BaseEvent.extend('BaseEventReservedFieldEvent', {})
+
+  assert.throws(() => {
+    void ReservedFieldEvent({ bus: 'payload_bus_field' } as unknown as never)
+  }, /field "bus" is reserved/i)
+
+  assert.throws(() => {
+    void BaseEvent.extend('BaseEventReservedFieldShapeEvent', { bus: z.string() })
+  }, /field "bus" is reserved/i)
+
+  assert.throws(() => {
+    void ReservedFieldEvent({ first: 'payload_first_field' } as unknown as never)
+  }, /field "first" is reserved/i)
+
+  assert.throws(() => {
+    void BaseEvent.extend('BaseEventReservedFirstShapeEvent', { first: z.string() })
+  }, /field "first" is reserved/i)
+})
+
+test('BaseEvent rejects unknown event_* fields while allowing known event_* overrides', () => {
+  const AllowedEvent = BaseEvent.extend('BaseEventAllowedEventConfigEvent', {
+    event_timeout: 123,
+    event_handler_timeout: 45,
+    value: z.string(),
+  })
+
+  const event = AllowedEvent({ value: 'ok' })
+  assert.equal(event.event_timeout, 123)
+  assert.equal(event.event_handler_timeout, 45)
+
+  assert.throws(() => {
+    void BaseEvent.extend('BaseEventUnknownEventShapeFieldEvent', { event_some_field_we_dont_recognize: 1 })
+  }, /starts with "event_" but is not a recognized BaseEvent field/i)
+
+  assert.throws(() => {
+    void AllowedEvent({
+      value: 'ok',
+      event_some_field_we_dont_recognize: 1,
+    } as unknown as never)
+  }, /starts with "event_" but is not a recognized BaseEvent field/i)
+})
+
+test('BaseEvent rejects model_* fields in payload and event shape', () => {
+  const ModelReservedEvent = BaseEvent.extend('BaseEventModelReservedEvent', {})
+
+  assert.throws(() => {
+    void BaseEvent.extend('BaseEventModelReservedShapeEvent', { model_something_random: 1 })
+  }, /starts with "model_" and is reserved/i)
+
+  assert.throws(() => {
+    void ModelReservedEvent({ model_something_random: 1 } as unknown as never)
+  }, /starts with "model_" and is reserved/i)
+})
+
 test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', async () => {
   const RuntimeEvent = BaseEvent.extend('BaseEventRuntimeSerializationEvent', {
     event_result_type: z.string(),

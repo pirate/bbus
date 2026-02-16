@@ -347,21 +347,22 @@ async def test_event_first_skips_baseevent_result_and_uses_next_winner() -> None
         # Typed accessors normalize BaseEvent results to None.
         assert first_completed_value is None
 
-        values_by_handler_id = await event.event_results_by_handler_id(
+        await event.event_results_list(
             include=include_completed_values,
             raise_if_any=False,
             raise_if_none=True,
         )
+        values_by_handler_id = {
+            handler_id: result.result for handler_id, result in event.event_results.items() if include_completed_values(result)
+        }
         assert any(value == 'winner' for value in values_by_handler_id.values())
-        assert any(value is None for value in values_by_handler_id.values())
+        assert any(isinstance(value, ChildCompletionEvent) for value in values_by_handler_id.values())
 
-        values_by_handler_name = await event.event_results_by_handler_name(
-            include=include_completed_values,
-            raise_if_any=False,
-            raise_if_none=True,
-        )
+        values_by_handler_name = {
+            result.handler_name: result.result for result in event.event_results.values() if include_completed_values(result)
+        }
         assert any(value == 'winner' for value in values_by_handler_name.values())
-        assert any(value is None for value in values_by_handler_name.values())
+        assert any(isinstance(value, ChildCompletionEvent) for value in values_by_handler_name.values())
 
         values_list = await event.event_results_list(
             include=include_completed_values,

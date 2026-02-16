@@ -37,7 +37,6 @@ from bubus.event_handler import (
 )
 from bubus.helpers import cancel_and_await, extract_basemodel_generic_arg, with_slow_monitor
 from bubus.jsonschema import (
-    normalize_result_dict,
     pydantic_model_from_json_schema,
     pydantic_model_to_json_schema,
     result_type_identifier_from_schema,
@@ -119,6 +118,7 @@ class EventConcurrencyMode(StrEnum):
 
 T_EventResultType = TypeVar('T_EventResultType', bound=Any, default=None)
 # TypeVar for BaseEvent and its subclasses
+allowed_pydantic_model_attrs = {name for name in dir(BaseModel) if name.startswith('model_')}
 # We use contravariant=True because if a handler accepts BaseEvent,
 # it can also handle any subclass of BaseEvent
 T_Event = TypeVar('T_Event', bound='BaseEvent[Any]', contravariant=True, default='BaseEvent[Any]')
@@ -677,6 +677,30 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     # Class-level cache for auto-extracted event_result_type from BaseEvent[T]
     _event_result_type_cache: ClassVar[Any | None] = None
 
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        if cls is BaseEvent:
+            return
+        invalid_event_fields = sorted(
+            key for key in cls.model_fields if key.startswith('event_') and key not in BaseEvent.model_fields
+        )
+        invalid_model_fields = sorted(
+            key for key in cls.model_fields if key.startswith('model_') and key not in allowed_pydantic_model_attrs
+        )
+        if invalid_event_fields:
+            formatted_fields = ', '.join(f'"{field}"' for field in invalid_event_fields)
+            raise TypeError(
+                f'{cls.__name__} defines unknown reserved event_* field(s): {formatted_fields}. '
+                'Only built-in BaseEvent event_* fields may be overridden.'
+            )
+        if invalid_model_fields:
+            formatted_fields = ', '.join(f'"{field}"' for field in invalid_model_fields)
+            raise TypeError(
+                f'{cls.__name__} defines unknown reserved model_* field(s): {formatted_fields}. '
+                'Only Pydantic model_* namespace attributes may be overridden intentionally.'
+            )
+
     event_type: PythonIdentifierStr = Field(default='UndefinedEvent', description='Event type name', max_length=64)
     event_version: str = Field(
         default=LIBRARY_VERSION,
@@ -981,6 +1005,39 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             params['event_result_type'] = extracted_type
         return params
 
+    @model_validator(mode='before')
+    @classmethod
+    def _reject_reserved_event_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        params = _normalize_any_dict(data)
+        for key in ('bus', 'first'):
+            if key in params:
+                raise ValueError(f'Field "{key}" is reserved for BaseEvent runtime APIs and cannot be set in event payload')
+        return params
+
+    @model_validator(mode='before')
+    @classmethod
+    def _reject_unknown_event_prefixed_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        params = _normalize_any_dict(data)
+        for key in params:
+            if key.startswith('event_') and key not in BaseEvent.model_fields:
+                raise ValueError(f'Field "{key}" starts with "event_" but is not a recognized BaseEvent field')
+        return params
+
+    @model_validator(mode='before')
+    @classmethod
+    def _reject_model_prefixed_payload_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        params = _normalize_any_dict(data)
+        for key in params:
+            if key.startswith('model_'):
+                raise ValueError(f'Field "{key}" starts with "model_" and is reserved for Pydantic model internals')
+        return params
+
     @model_validator(mode='after')
     def _hydrate_event_result_types_from_event(self) -> Self:
         """Rehydrate per-handler result_type from the event-level event_result_type."""
@@ -1274,13 +1331,13 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 f'Expected at least one handler to return a non-None result, but none did! {self} -> {self.event_results}'
             )
 
-        event_results_by_handler_id: dict[PythonIdStr, EventResult[T_EventResultType]] = {
+        results_by_handler_id: dict[PythonIdStr, EventResult[T_EventResultType]] = {
             handler_key: result for handler_key, result in included_results.items()
         }
-        for event_result in event_results_by_handler_id.values():
+        for event_result in results_by_handler_id.values():
             assert event_result.result is not None, f'EventResult {event_result} has no result'
 
-        return event_results_by_handler_id
+        return results_by_handler_id
 
     def _collect_handler_errors(self, include_cancelled: bool) -> list[Exception]:
         """Collect handler errors as Exception instances for aggregation."""
@@ -1307,38 +1364,6 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             wrapped.__cause__ = original_error
             collected_errors.append(wrapped)
         return collected_errors
-
-    async def event_results_by_handler_id(
-        self,
-        timeout: float | None = None,
-        include: EventResultFilter = _event_result_is_truthy,
-        raise_if_any: bool = True,
-        raise_if_none: bool = True,
-    ) -> dict[PythonIdStr, T_EventResultType | None]:
-        """Get all raw result values organized by handler id {handler1_id: handler1_result, handler2_id: handler2_result, ...}"""
-        included_results = await self.event_results_filtered(
-            timeout=timeout, include=include, raise_if_any=raise_if_any, raise_if_none=raise_if_none
-        )
-        results_by_handler_id: dict[PythonIdStr, T_EventResultType | None] = {}
-        for handler_id, event_result in included_results.items():
-            results_by_handler_id[handler_id] = self._coerce_typed_result_value(event_result.result)
-        return results_by_handler_id
-
-    async def event_results_by_handler_name(
-        self,
-        timeout: float | None = None,
-        include: EventResultFilter = _event_result_is_truthy,
-        raise_if_any: bool = True,
-        raise_if_none: bool = True,
-    ) -> dict[PythonIdentifierStr, T_EventResultType | None]:
-        """Get all raw result values organized by handler name {handler1_name: handler1_result, handler2_name: handler2_result, ...}"""
-        included_results = await self.event_results_filtered(
-            timeout=timeout, include=include, raise_if_any=raise_if_any, raise_if_none=raise_if_none
-        )
-        results_by_handler_name: dict[PythonIdentifierStr, T_EventResultType | None] = {}
-        for event_result in included_results.values():
-            results_by_handler_name[event_result.handler_name] = self._coerce_typed_result_value(event_result.result)
-        return results_by_handler_name
 
     async def event_result(
         self,
@@ -1371,65 +1396,6 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         for event_result in valid_results.values():
             results_list.append(self._coerce_typed_result_value(event_result.result))
         return results_list
-
-    async def event_results_flat_dict(
-        self,
-        timeout: float | None = None,
-        include: EventResultFilter = _event_result_is_truthy,
-        raise_if_any: bool = True,
-        raise_if_none: bool = False,
-        raise_if_conflicts: bool = True,
-    ) -> dict[str, Any]:
-        """Assuming all handlers return dicts, merge all the returned dicts into a single flat dict {**handler1_result, **handler2_result, ...}"""
-
-        valid_results = await self.event_results_filtered(
-            timeout=timeout,
-            include=lambda event_result: isinstance(event_result.result, dict) and include(event_result),
-            raise_if_any=raise_if_any,
-            raise_if_none=raise_if_none,
-        )
-
-        merged_results: dict[str, Any] = {}
-        for event_result in valid_results.values():
-            if not event_result.result:
-                continue
-            result_value = event_result.result
-            if not isinstance(result_value, dict):
-                continue
-
-            # check for event results trampling each other / conflicting
-            result_dict = normalize_result_dict(result_value)
-            if not result_dict:
-                continue
-            overlapping_keys: set[str] = merged_results.keys() & result_dict.keys()
-            if raise_if_conflicts and overlapping_keys:
-                raise ValueError(
-                    f'Event handler {event_result.handler_name} returned a dict with keys that would overwrite values from previous handlers: {overlapping_keys} (pass raise_if_conflicts=False to merge with last-handler-wins)'
-                )
-
-            merged_results.update(result_dict)  # update the merged dict with the contents of the result dict
-        return merged_results
-
-    async def event_results_flat_list(
-        self,
-        timeout: float | None = None,
-        include: EventResultFilter = _event_result_is_truthy,
-        raise_if_any: bool = True,
-        raise_if_none: bool = True,
-    ) -> list[Any]:
-        """Assuming all handlers return lists, merge all the returned lists into a single flat list [*handler1_result, *handler2_result, ...]"""
-        valid_results = await self.event_results_filtered(
-            timeout=timeout,
-            include=lambda event_result: isinstance(event_result.result, list) and include(event_result),
-            raise_if_any=raise_if_any,
-            raise_if_none=raise_if_none,
-        )
-        merged_results: list[T_EventResultType | None] = []
-        for event_result in valid_results.values():
-            result_value = event_result.result
-            if isinstance(result_value, list):
-                merged_results.extend(_normalize_any_list(result_value))  # append the contents of the list to the merged list
-        return merged_results
 
     def event_result_update(
         self,
@@ -1661,12 +1627,12 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         log_event_tree(self, indent, is_last, event_children_by_parent)
 
     @property
-    def event_bus(self) -> 'EventBus':
+    def bus(self) -> 'EventBus':
         """Get the EventBus that is currently processing this event"""
         from bubus.event_bus import EventBus, get_current_event, get_current_eventbus, in_handler_context
 
         if not in_handler_context():
-            raise AttributeError('event_bus property can only be accessed from within an event handler')
+            raise AttributeError('bus property can only be accessed from within an event handler')
 
         current_bus = get_current_eventbus()
         current_event = get_current_event()
@@ -1688,9 +1654,13 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
         raise RuntimeError(f'Could not find active EventBus for path entry {current_bus_label}')
 
+    @property
+    def event_bus(self) -> 'EventBus':
+        return self.bus
+
 
 def attr_name_allowed_on_event(key: str) -> bool:
-    allowed_unprefixed_attrs = {'first'}
+    allowed_unprefixed_attrs = {'first', 'bus'}
     return key in pydantic_builtin_attrs or key in event_builtin_attrs or key.startswith('_') or key in allowed_unprefixed_attrs
 
 

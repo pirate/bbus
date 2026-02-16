@@ -437,6 +437,29 @@ first(): Promise<EventResultType<this> | undefined>
 - Returns `undefined` when no handler produces a successful non-`undefined` value.
 - Cancellation and winner-selection behavior is covered in `bubus-ts/tests/event_handler_first.test.ts`.
 
+#### `eventResultsList(include?, options?)`
+
+```ts
+eventResultsList(
+  include?: (result: EventResultType<this> | undefined, event_result: EventResult<this>) => boolean,
+  options?: {
+    timeout?: number | null
+    include?: (result: EventResultType<this> | undefined, event_result: EventResult<this>) => boolean
+    raise_if_any?: boolean
+    raise_if_none?: boolean
+  }
+): Promise<Array<EventResultType<this> | undefined>>
+```
+
+- Returns handler result values in `event_results` order.
+- Default filter includes completed non-`null`/non-`undefined` non-error, non-forwarded (`BaseEvent`) values.
+- `raise_if_any` defaults to `true` and throws when any handler result has an error.
+- `raise_if_none` defaults to `true` and throws when no results match `include`.
+- `timeout` is in seconds and bounds how long to wait for completion.
+- Examples:
+  - `await event.eventResultsList({ raise_if_any: false, raise_if_none: false })`
+  - `await event.eventResultsList((result) => typeof result === 'object', { raise_if_any: false })`
+
 #### `reset()`
 
 ```ts

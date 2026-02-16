@@ -708,6 +708,10 @@ export class EventBus {
       original_event.event_path.push(this.label)
     }
 
+    if (!original_event.event_parent_id && !original_event.event_emitted_by_handler_id) {
+      this.resolveImplicitParentHandlerResult()?.linkEmittedChildEvent(original_event)
+    }
+
     if (original_event.event_parent_id && original_event.event_emitted_by_handler_id) {
       const parent_result = original_event.event_parent?.event_results.get(original_event.event_emitted_by_handler_id)
       if (parent_result) {
@@ -1117,6 +1121,26 @@ export class EventBus {
       return false
     }
     return results.every((result) => result.status === 'completed' || result.status === 'error')
+  }
+
+  private resolveImplicitParentHandlerResult(): EventResult | null {
+    const active_on_target_bus = this.locks.getActiveHandlerResults().filter((result) => result.status === 'started')
+    if (active_on_target_bus.length === 1) {
+      return active_on_target_bus[0]
+    }
+
+    const active_globally: EventResult[] = []
+    for (const bus of EventBus.all_instances) {
+      for (const result of bus.locks.getActiveHandlerResults()) {
+        if (result.status === 'started') {
+          active_globally.push(result)
+        }
+      }
+    }
+    if (active_globally.length === 1) {
+      return active_globally[0]
+    }
+    return null
   }
 
   // get a proxy wrapper around an Event that will automatically link emitted child events to this bus and handler

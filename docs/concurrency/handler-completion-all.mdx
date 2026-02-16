@@ -49,8 +49,8 @@ event = bus.emit(CompletionEvent())
 await event
 
 assert set(seen) == {'fast', 'slow'}
-results = await event.event_results_by_handler_name(raise_if_any=False, raise_if_none=False)
-assert set(results.values()) == {'fast', 'slow'}
+results = await event.event_results_list(raise_if_any=False, raise_if_none=False)
+assert set(results) == {'fast', 'slow'}
 ```
 
 </Tab>

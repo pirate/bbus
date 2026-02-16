@@ -96,6 +96,100 @@ test('multiple children from same parent keep same event_parent_id', async () =>
   }
 })
 
+test('bus.emit inside handler auto-links parent when not using event.bus', async () => {
+  const bus = new EventBus('ImplicitParentLinkBus')
+  const child_events: BaseEvent[] = []
+
+  bus.on(ParentEvent, (event) => {
+    const child = ChildEvent({ data: `implicit_for_${event.event_id.slice(-4)}` })
+    child_events.push(bus.emit(child))
+    return 'parent_done'
+  })
+  bus.on(ChildEvent, () => 'child_done')
+
+  const parent = bus.emit(ParentEvent({ message: 'implicit_parent' }))
+  await bus.waitUntilIdle()
+  await parent.done()
+
+  assert.equal(child_events.length, 1)
+  const child = child_events[0]
+  assert.equal(child.event_parent_id, parent.event_id)
+  assert.ok(child.event_emitted_by_handler_id)
+  assert.ok(parent.event_results.has(child.event_emitted_by_handler_id!))
+})
+
+test('cross-bus bus.emit inside handler auto-links parent when exactly one handler is active', async () => {
+  const bus1 = new EventBus('ImplicitParentLinkBus1')
+  const bus2 = new EventBus('ImplicitParentLinkBus2')
+  const emitted_children: BaseEvent[] = []
+
+  bus1.on(ParentEvent, (event) => {
+    const child = ChildEvent({ data: `cross_implicit_for_${event.event_id.slice(-4)}` })
+    emitted_children.push(bus2.emit(child))
+    return 'parent_done'
+  })
+  bus2.on(ChildEvent, () => 'child_done')
+
+  const parent = bus1.emit(ParentEvent({ message: 'cross_implicit_parent' }))
+  await Promise.all([bus1.waitUntilIdle(), bus2.waitUntilIdle()])
+  await parent.done()
+
+  assert.equal(emitted_children.length, 1)
+  const child = emitted_children[0]
+  assert.equal(child.event_parent_id, parent.event_id)
+  assert.ok(child.event_emitted_by_handler_id)
+  assert.ok(parent.event_results.has(child.event_emitted_by_handler_id!))
+})
+
+test('bus.emit outside handler does not guess a parent when multiple handlers are active', async () => {
+  const bus1 = new EventBus('ImplicitParentAmbiguousBus1')
+  const bus2 = new EventBus('ImplicitParentAmbiguousBus2')
+  const bus3 = new EventBus('ImplicitParentAmbiguousBus3')
+
+  let release_a!: () => void
+  let release_b!: () => void
+  let mark_started_a!: () => void
+  let mark_started_b!: () => void
+  const hold_a = new Promise<void>((resolve) => {
+    release_a = resolve
+  })
+  const hold_b = new Promise<void>((resolve) => {
+    release_b = resolve
+  })
+  const started_a = new Promise<void>((resolve) => {
+    mark_started_a = resolve
+  })
+  const started_b = new Promise<void>((resolve) => {
+    mark_started_b = resolve
+  })
+
+  bus1.on(ParentEvent, async () => {
+    mark_started_a()
+    await hold_a
+    return 'a_done'
+  })
+  bus2.on(ParentEvent, async () => {
+    mark_started_b()
+    await hold_b
+    return 'b_done'
+  })
+  bus3.on(ChildEvent, () => 'child_done')
+
+  const parent_a = bus1.emit(ParentEvent({ message: 'a' }))
+  const parent_b = bus2.emit(ParentEvent({ message: 'b' }))
+  await Promise.all([started_a, started_b])
+
+  const unrelated_child = bus3.emit(ChildEvent({ data: 'outside_handler_emit' }))
+
+  release_a()
+  release_b()
+  await Promise.all([parent_a.done(), parent_b.done(), unrelated_child.done()])
+  await Promise.all([bus1.waitUntilIdle(), bus2.waitUntilIdle(), bus3.waitUntilIdle()])
+
+  assert.equal(unrelated_child.event_parent_id, null)
+  assert.equal(unrelated_child.event_emitted_by_handler_id, null)
+})
+
 test('parallel parent handlers preserve parent tracking', async () => {
   const bus = new EventBus('ParallelParentTrackingBus', { event_handler_concurrency: 'parallel' })
   const child_events_h1: BaseEvent[] = []
