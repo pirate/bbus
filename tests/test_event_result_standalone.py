@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import cast
 from uuid import NAMESPACE_DNS, uuid4, uuid5
 
 import pytest
@@ -9,61 +9,43 @@ from bubus.event_bus import EventBus
 from bubus.event_handler import EventHandler, EventHandlerCallable
 
 
-class _StubEvent:
-    """Minimal event-like object used to verify EventResult independence."""
-
-    def __init__(self):
-        self.event_id = 'stub-event'
-        self.event_children: list[BaseEvent | _StubEvent] = []
-        self.event_result_type = str
-        self.event_timeout = 0.5
-        self.event_completed_at = None
-        self.event_results: dict[str, EventResult] = {}
-        self._cancelled_due_to_error: BaseException | None = None
-
-    def event_cancel_pending_child_processing(self, error: BaseException) -> None:
-        self._cancelled_due_to_error = error
+class StandaloneEvent(BaseEvent[str]):
+    data: str
 
 
 @pytest.mark.asyncio
-async def test_event_result_execute_without_base_event() -> None:
-    """EventResult should execute without requiring a real BaseEvent or EventBus."""
+async def test_event_result_run_handler_with_base_event() -> None:
+    """EventResult should run correctly when called directly with a real BaseEvent."""
+    event = StandaloneEvent(data='ok')
 
-    stub_event = _StubEvent()
-
-    async def handler(event: _StubEvent) -> str:
+    async def handler(_event: StandaloneEvent) -> str:
         return 'ok'
 
     handler_entry = EventHandler.from_callable(
         handler=cast(EventHandlerCallable, handler),
-        event_pattern='StubEvent',
+        event_pattern='StandaloneEvent',
         eventbus_name='Standalone',
         eventbus_id='standalone-1',
     )
 
     event_result = EventResult(
-        event_id=str(uuid4()),
+        event_id=event.event_id,
         handler=handler_entry,
-        timeout=stub_event.event_timeout,
+        timeout=event.event_timeout,
         result_type=str,
     )
 
     test_bus = EventBus(name='StandaloneTest1')
-    result_value = await event_result.execute(
-        cast(BaseEvent[Any], stub_event),
+    result_value = await event_result.run_handler(
+        event,
         eventbus=test_bus,
-        timeout=stub_event.event_timeout,
+        timeout=event.event_timeout,
     )
 
     assert result_value == 'ok'
     assert event_result.status == 'completed'
     assert event_result.result == 'ok'
-    assert stub_event.__dict__.get('_cancelled_due_to_error') is None
     await test_bus.stop()
-
-
-class StandaloneEvent(BaseEvent[str]):
-    data: str
 
 
 @pytest.mark.asyncio
@@ -87,7 +69,7 @@ async def test_event_and_result_without_eventbus() -> None:
     event_result = pending_results[handler_id]
 
     test_bus = EventBus(name='StandaloneTest2')
-    value = await event_result.execute(
+    value = await event_result.run_handler(
         event,
         eventbus=test_bus,
         timeout=event.event_timeout,

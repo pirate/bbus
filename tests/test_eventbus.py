@@ -1179,6 +1179,31 @@ class TestHandlerMiddleware:
         finally:
             await bus.stop()
 
+    async def test_middleware_event_status_order_is_deterministic_for_each_event(self):
+        event_statuses_by_id: dict[str, list[str]] = {}
+
+        class LifecycleMiddleware(EventBusMiddleware):
+            async def on_event_change(self, eventbus: EventBus, event: BaseEvent, status):
+                event_statuses_by_id.setdefault(event.event_id, []).append(str(status))
+
+        async def handler(_event: UserActionEvent) -> str:
+            await asyncio.sleep(0)
+            return 'ok'
+
+        bus = EventBus(middlewares=[LifecycleMiddleware()])
+        bus.on(UserActionEvent, handler)
+
+        events = [bus.dispatch(UserActionEvent(action='deterministic', user_id=f'u-{i}')) for i in range(50)]
+        try:
+            await asyncio.gather(*events)
+            await bus.wait_until_idle()
+
+            assert len(event_statuses_by_id) == len(events)
+            for event in events:
+                assert event_statuses_by_id[event.event_id] == ['pending', 'started', 'completed']
+        finally:
+            await bus.stop()
+
     async def test_middleware_event_and_result_lifecycle_remains_monotonic_on_timeout(self):
         observed_event_statuses: list[str] = []
         observed_result_transitions: list[tuple[str, str, str]] = []

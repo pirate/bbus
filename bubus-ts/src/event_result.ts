@@ -258,10 +258,6 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     this._queue_jump_pause_releases.clear()
   }
 
-  private withHandlerDispatchContext<T>(event: BaseEvent, fn: () => Promise<T>): Promise<T> {
-    return Promise.resolve().then(() => runWithAsyncContext(event._event_dispatch_context ?? null, fn))
-  }
-
   private _createHandlerTimeoutError(event: BaseEvent): EventHandlerTimeoutError {
     return new EventHandlerTimeoutError(
       `${this.bus.toString()}.on(${event.toString()}, ${this.handler.toString()}) timed out after ${this.handler_timeout}s`,
@@ -331,25 +327,25 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       }
 
       this._lock = lock
-      await this.bus.locks.withActiveHandlerContext(this, async () => {
-        try {
-          const abort_signal = this.markStarted()
-          const handler_result = await withTimeout(
-            this.handler_timeout,
-            () => this._createHandlerTimeoutError(event),
-            () =>
-              withSlowMonitor(slow_handler_warning_timer, () =>
-                this.withHandlerDispatchContext(event, () =>
+      await this.bus.locks.withHandlerExecutionContext(this, async () => {
+        await runWithAsyncContext(event._event_dispatch_context ?? null, async () => {
+          try {
+            const abort_signal = this.markStarted()
+            const handler_result = await withTimeout(
+              this.handler_timeout,
+              () => this._createHandlerTimeoutError(event),
+              () =>
+                withSlowMonitor(slow_handler_warning_timer, () =>
                   runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
                 )
-              )
-          )
-          this._finalizeHandlerResult(event, handler_result)
-        } catch (error) {
-          this._handleHandlerError(event, error)
-        } finally {
-          this._onHandlerExit(slow_handler_warning_timer)
-        }
+            )
+            this._finalizeHandlerResult(event, handler_result)
+          } catch (error) {
+            this._handleHandlerError(event, error)
+          } finally {
+            this._onHandlerExit(slow_handler_warning_timer)
+          }
+        })
       })
     })
   }

@@ -18,15 +18,15 @@ class LockManagerProtocol(Protocol):
         """Return the concrete event-level lock object or ``None`` for parallel mode."""
         ...
 
-    def event_lock(self, bus: 'EventBus', event: BaseEvent[Any]) -> Any:
+    def with_event_lock(self, bus: 'EventBus', event: BaseEvent[Any]) -> Any:
         """Context manager for event-level lock scope."""
         ...
 
-    def handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], event_result: EventResult[Any]) -> Any:
+    def with_handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], event_result: EventResult[Any]) -> Any:
         """Context manager for per-handler lock scope."""
         ...
 
-    def handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[Any]) -> Any:
+    def with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[Any]) -> Any:
         """Context manager that mirrors held event-lock state into dispatch context."""
         ...
 
@@ -156,7 +156,7 @@ class LockManager:
         """Resolve the per-event handler lock for one handler execution.
 
         Lifecycle:
-        - Called inside `EventBus.execute_handler` before running a handler.
+        - Called inside `EventBus.run_handler` before running a handler.
         - Returns `None` for `'parallel'` handler mode.
         - Returns and lazily initializes the event handler lock for `'serial'`.
         """
@@ -172,7 +172,7 @@ class LockManager:
         return current_lock
 
     @asynccontextmanager
-    async def event_lock(self, bus: 'EventBus', event: BaseEvent[Any]):
+    async def with_event_lock(self, bus: 'EventBus', event: BaseEvent[Any]):
         """Acquire/release the resolved event lock around event processing.
 
         Lifecycle:
@@ -187,11 +187,11 @@ class LockManager:
             yield
 
     @asynccontextmanager
-    async def handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], event_result: EventResult[Any]):
+    async def with_handler_lock(self, bus: 'EventBus', event: BaseEvent[Any], event_result: EventResult[Any]):
         """Acquire/release the resolved per-event handler lock around one handler run.
 
         Lifecycle:
-        - Wraps `EventResult.execute(...)` within `EventBus.execute_handler`.
+        - Used directly inside `EventResult.run_handler(...)`.
         - No-op for `'parallel'` handler mode.
         """
         lock = self.get_lock_for_event_handler(bus, event, event_result)
@@ -202,11 +202,11 @@ class LockManager:
             yield
 
     @contextmanager
-    def handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[Any]):
+    def with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[Any]):
         """Mirror parent event-lock ownership into the current copied context.
 
         Lifecycle:
-        - Used only by `EventResult.execute` when running handlers inside a copied
+        - Used only by `EventResult.run_handler` when running handlers inside a copied
           dispatch context (`context=dispatch_context`).
         - Marks the resolved event lock as held in this context without acquiring
           the semaphore, enabling safe re-entry for awaited child events.

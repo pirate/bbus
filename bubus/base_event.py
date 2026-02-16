@@ -5,9 +5,9 @@ import logging
 import os
 from collections import deque
 from collections.abc import Callable, Coroutine, Generator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import partial
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Generic, Literal, Self, TypeAlias, cast
 from uuid import UUID
 
@@ -34,7 +34,7 @@ from bubus.event_handler import (
     EventHandlerResultSchemaError,
     EventHandlerTimeoutError,
 )
-from bubus.helpers import await_with_timeout, background_task_scope, cancel_and_await, extract_basemodel_generic_arg
+from bubus.helpers import cancel_and_await, extract_basemodel_generic_arg, with_slow_monitor
 from bubus.jsonschema import (
     normalize_result_dict,
     pydantic_model_from_json_schema,
@@ -124,12 +124,6 @@ T_Event = TypeVar('T_Event', bound='BaseEvent[Any]', contravariant=True, default
 EventResultFilter = Callable[['EventResult[Any]'], bool]
 
 
-@contextmanager
-def _default_handler_execution_context(_event: 'BaseEvent[Any]', _handler_id: str):
-    """No-op context manager used when EventBus does not provide one."""
-    yield
-
-
 def _default_format_exception_for_log(exc: BaseException) -> str:
     from traceback import TracebackException
 
@@ -155,7 +149,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         revalidate_instances='always',
     )
 
-    # Automatically set fields, setup at Event init and updated by EventBus.execute_handler()
+    # Automatically set fields, setup at Event init and updated by EventBus.run_handler()
     id: str = Field(default_factory=uuid7str)
     status: Literal['pending', 'started', 'completed', 'error'] = 'pending'
     event_id: str
@@ -164,13 +158,14 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
     timeout: float | None = None
     started_at: datetime | None = None
 
-    # Result fields, updated by EventBus.execute_handler()
+    # Result fields, updated by EventBus.run_handler()
     result: T_EventResultType | 'BaseEvent[Any]' | None = None
     error: BaseException | None = None
     completed_at: datetime | None = None
 
     # Completion signal
     _handler_completed_signal: asyncio.Event | None = PrivateAttr(default=None)
+    _handler_task: asyncio.Task[Any] | None = PrivateAttr(default=None)
 
     # Child events emitted during handler execution
     event_children: list['BaseEvent[Any]'] = Field(default_factory=list)  # pyright: ignore[reportUnknownVariableType]
@@ -462,25 +457,143 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                 self.handler_completed_signal.set()
         return self
 
-    async def execute(
+    def _create_slow_handler_monitor(
+        self,
+        event: 'BaseEvent[Any]',
+        eventbus: 'EventBus',
+        handler_slow_timeout: float | None,
+    ) -> Callable[[], Coroutine[Any, Any, None]] | None:
+        should_warn_for_slow_handler = handler_slow_timeout is not None and (
+            self.timeout is None or self.timeout > handler_slow_timeout
+        )
+        if not should_warn_for_slow_handler:
+            return None
+        return cast(
+            Callable[[], Coroutine[Any, Any, None]],
+            partial(self._slow_handler_monitor, event=event, eventbus=eventbus, handler_slow_timeout=handler_slow_timeout),
+        )
+
+    async def _slow_handler_monitor(
+        self,
+        *,
+        event: 'BaseEvent[Any]',
+        eventbus: 'EventBus',
+        handler_slow_timeout: float | None,
+    ) -> None:
+        assert handler_slow_timeout is not None
+        await asyncio.sleep(handler_slow_timeout)
+        if self.status != 'started':
+            return
+        started_at = self.started_at or event.event_started_at or event.event_created_at
+        elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+        logger.warning(
+            '⚠️ Slow event handler: %s.on(%s#%s, %s) still running after %.1fs',
+            eventbus.label,
+            event.event_type,
+            event.event_id[-4:],
+            self.handler.label,
+            elapsed_seconds,
+        )
+
+    async def _call_async_handler(
+        self,
+        event: 'BaseEvent[Any]',
+        eventbus: 'EventBus',
+        handler: EventHandlerCallable,
+    ) -> Any:
+        with eventbus.with_handler_execution_context(event, self.handler_id):
+            return await handler(event)
+
+    def _call_sync_handler(
+        self,
+        event: 'BaseEvent[Any]',
+        eventbus: 'EventBus',
+        handler: EventHandlerCallable,
+    ) -> Any:
+        with eventbus.with_handler_execution_context(event, self.handler_id):
+            return handler(event)
+
+    async def call_handler(
+        self,
+        event: 'BaseEvent[Any]',
+        eventbus: 'EventBus',
+        handler: EventHandlerCallable,
+        dispatch_context: contextvars.Context | None,
+    ) -> Any:
+        if inspect.iscoroutinefunction(handler):
+            if dispatch_context is not None:
+                self._handler_task = asyncio.create_task(
+                    self._call_async_handler(event, eventbus, handler),
+                    context=dispatch_context,
+                )
+            else:
+                self._handler_task = asyncio.create_task(
+                    self._call_async_handler(event, eventbus, handler),
+                )
+            return await self._handler_task
+
+        if inspect.isfunction(handler) or inspect.ismethod(handler):
+            if dispatch_context is not None:
+                handler_return_value: Any = dispatch_context.run(self._call_sync_handler, event, eventbus, handler)
+            else:
+                handler_return_value = self._call_sync_handler(event, eventbus, handler)
+            if isinstance(handler_return_value, BaseEvent):
+                logger.debug(f'Handler {self.handler.label} returned BaseEvent, not awaiting to avoid circular dependency')
+            return cast(Any, handler_return_value)
+
+        handler_name = EventHandler.get_callable_handler_name(handler)
+        raise ValueError(f'Handler {handler_name} must be a sync or async function, got: {type(handler)}')
+
+    def on_handler_timeout(self, event: 'BaseEvent[Any]') -> EventHandlerTimeoutError:
+        children = f' and interrupted any processing of {len(event.event_children)} child events' if event.event_children else ''
+        timeout_error = EventHandlerTimeoutError(
+            f'Event handler {self.handler.label}({event}) timed out after {self.timeout}s{children}'
+        )
+        self.update(error=timeout_error)
+        event.event_cancel_pending_child_processing(timeout_error)
+
+        from bubus.logging import log_timeout_tree
+
+        log_timeout_tree(event, self)
+        return timeout_error
+
+    def on_handler_error(
+        self,
+        event: 'BaseEvent[Any]',
+        eventbus: 'EventBus',
+        exc: Exception,
+        *,
+        format_exception_for_log: Callable[[BaseException], str],
+    ) -> None:
+        self.update(error=exc)
+        red = '\033[91m'
+        reset = '\033[0m'
+        logger.error(
+            f'❌ {eventbus} Error in event handler {self.handler_name}({event}) -> \n{red}{type(exc).__name__}({exc}){reset}\n{format_exception_for_log(exc)}',
+        )
+
+    async def on_handler_exit(self) -> None:
+        await cancel_and_await(self._handler_task, timeout=0.1)
+        self._handler_task = None
+
+    async def run_handler(
         self,
         event: 'BaseEvent[T_EventResultType]',
         *,
         eventbus: 'EventBus',
         timeout: float | None,
         handler_slow_timeout: float | None = None,
-        handler_execution_context: Callable[['BaseEvent[Any]', str], Any] | None = None,
         format_exception_for_log: Callable[[BaseException], str] | None = None,
     ) -> T_EventResultType | 'BaseEvent[Any]' | None:
         """Execute one handler inside the unified runtime scope stack.
 
         Runtime layering for one handler execution:
-        - handler execution context manager (ContextVars + dispatch lock mirror)
+        - per-event handler lock
+        - optional timeout wrapper (hard cap)
         - optional slow-handler background monitor
-        - optional timeout wrapper
+        - handler execution context manager (ContextVars + dispatch lock mirror)
         - handler call + result/error normalization
         """
-        _handler_execution_context_callable = handler_execution_context or _default_handler_execution_context
         _format_exception_for_log_callable = format_exception_for_log or _default_format_exception_for_log
 
         handler = self.handler.handler
@@ -491,101 +604,49 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         self.result_type = event.event_result_type
         self.update(status='started')
 
-        handler_task: asyncio.Task[Any] | None = None
         dispatch_context = getattr(event, '_event_dispatch_context', None)
+        slow_handler_monitor = self._create_slow_handler_monitor(event, eventbus, handler_slow_timeout)
 
-        should_warn_for_slow_handler = handler_slow_timeout is not None and (
-            self.timeout is None or self.timeout > handler_slow_timeout
-        )
-        if should_warn_for_slow_handler:
-
-            async def slow_handler_monitor() -> None:
-                assert handler_slow_timeout is not None
-                await asyncio.sleep(handler_slow_timeout)
-                if self.status != 'started':
-                    return
-                started_at = self.started_at or event.event_started_at or event.event_created_at
-                elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
-                logger.warning(
-                    '⚠️ Slow event handler: %s.on(%s#%s, %s) still running after %.1fs',
-                    eventbus.label,
-                    event.event_type,
-                    event.event_id[-4:],
-                    self.handler.label,
-                    elapsed_seconds,
-                )
-
-            slow_handler_monitor_factory: Callable[[], Coroutine[Any, Any, None]] | None = slow_handler_monitor
-        else:
-            slow_handler_monitor_factory = None
-
-        async def async_handler_with_context() -> Any:
-            with _handler_execution_context_callable(event, self.handler_id):
-                return await handler(event)
-
-        def sync_handler_with_context() -> Any:
-            with _handler_execution_context_callable(event, self.handler_id):
-                return handler(event)
-
-        async with background_task_scope(
-            slow_handler_monitor_factory,
-            task_name=f'{eventbus}.slow_handler_monitor({event}, {self.handler.label})',
-        ):
-            try:
-                if inspect.iscoroutinefunction(handler):
-                    create_task_kwargs = {'context': dispatch_context} if dispatch_context is not None else {}
-                    handler_task = asyncio.create_task(async_handler_with_context(), **create_task_kwargs)
-                    handler_return_value: Any = await await_with_timeout(handler_task, timeout=self.timeout)
-                elif inspect.isfunction(handler) or inspect.ismethod(handler):
-                    if dispatch_context is not None:
-                        handler_return_value = dispatch_context.run(sync_handler_with_context)
-                    else:
-                        handler_return_value = sync_handler_with_context()
-                    if isinstance(handler_return_value, BaseEvent):
-                        logger.debug(
-                            f'Handler {self.handler.label} returned BaseEvent, not awaiting to avoid circular dependency'
+        timeout_scope = asyncio.timeout(self.timeout)
+        try:
+            async with eventbus.locks.with_handler_lock(eventbus, event, self):
+                async with timeout_scope:
+                    async with with_slow_monitor(
+                        slow_handler_monitor,
+                        task_name=f'{eventbus}.slow_handler_monitor({event}, {self.handler.label})',
+                    ):
+                        handler_return_value: Any = await self.call_handler(
+                            event,
+                            eventbus,
+                            handler,
+                            dispatch_context,
                         )
-                else:
-                    handler_name = EventHandler.get_callable_handler_name(handler)
-                    raise ValueError(f'Handler {handler_name} must be a sync or async function, got: {type(handler)}')
-
                 self.update(result=handler_return_value)
                 return self.result
 
-            except asyncio.CancelledError as exc:
-                handler_interrupted_error = EventHandlerAbortedError(
-                    f'Event handler {self.handler.label}({event}) was interrupted because of a parent timeout'
-                )
-                self.update(error=handler_interrupted_error)
-                raise handler_interrupted_error from exc
+        except asyncio.CancelledError as exc:
+            handler_interrupted_error = EventHandlerAbortedError(
+                f'Event handler {self.handler.label}({event}) was interrupted because of a parent timeout'
+            )
+            self.update(error=handler_interrupted_error)
+            raise handler_interrupted_error from exc
 
-            except TimeoutError as exc:
-                children = (
-                    f' and interrupted any processing of {len(event.event_children)} child events' if event.event_children else ''
-                )
-                timeout_error = EventHandlerTimeoutError(
-                    f'Event handler {self.handler.label}({event}) timed out after {self.timeout}s{children}'
-                )
-                self.update(error=timeout_error)
-                event.event_cancel_pending_child_processing(timeout_error)
-
-                from bubus.logging import log_timeout_tree
-
-                log_timeout_tree(event, self)
-                raise timeout_error from exc
-
-            except Exception as exc:
-                self.update(error=exc)
-
-                red = '\033[91m'
-                reset = '\033[0m'
-                logger.error(
-                    f'❌ {eventbus} Error in event handler {self.handler_name}({event}) -> \n{red}{type(exc).__name__}({exc}){reset}\n{_format_exception_for_log_callable(exc)}',
-                )
+        except TimeoutError as exc:
+            if not timeout_scope.expired():
                 raise
+            timeout_error = self.on_handler_timeout(event)
+            raise timeout_error from exc
 
-            finally:
-                await cancel_and_await(handler_task, timeout=0.1)
+        except Exception as exc:
+            self.on_handler_error(
+                event,
+                eventbus,
+                exc,
+                format_exception_for_log=_format_exception_for_log_callable,
+            )
+            raise
+        finally:
+            await self.on_handler_exit()
 
     def log_tree(
         self,

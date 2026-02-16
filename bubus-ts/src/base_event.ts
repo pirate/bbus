@@ -410,11 +410,7 @@ export class BaseEvent {
     return entry.status === 'completed' && entry.result !== undefined && !(entry.result instanceof BaseEvent)
   }
 
-  private _markFirstModeWinnerIfNeeded(
-    original: BaseEvent,
-    entry: EventResult,
-    first_state: { found: boolean }
-  ): void {
+  private _markFirstModeWinnerIfNeeded(original: BaseEvent, entry: EventResult, first_state: { found: boolean }): void {
     if (first_state.found) {
       return
     }
@@ -426,7 +422,7 @@ export class BaseEvent {
   }
 
   // Run all pending handler results for the current bus context.
-  async processEvent(
+  async runHandlers(
     pending_entries?: Array<{
       handler: EventHandler
       result: EventResult

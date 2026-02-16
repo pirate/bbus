@@ -220,23 +220,15 @@ export class LockManager {
     return this.pause_depth > 0
   }
 
-  enterActiveHandlerContext(result: EventResult): void {
+  async withHandlerExecutionContext<T>(result: EventResult, fn: () => Promise<T>): Promise<T> {
     this.active_handler_results.push(result)
-  }
-
-  exitActiveHandlerContext(result: EventResult): void {
-    const idx = this.active_handler_results.indexOf(result)
-    if (idx >= 0) {
-      this.active_handler_results.splice(idx, 1)
-    }
-  }
-
-  async withActiveHandlerContext<T>(result: EventResult, fn: () => Promise<T>): Promise<T> {
-    this.enterActiveHandlerContext(result)
     try {
       return await fn()
     } finally {
-      this.exitActiveHandlerContext(result)
+      const idx = this.active_handler_results.indexOf(result)
+      if (idx >= 0) {
+        this.active_handler_results.splice(idx, 1)
+      }
     }
   }
 

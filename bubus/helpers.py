@@ -14,7 +14,7 @@ P = ParamSpec('P')
 QueueEntryType = TypeVar('QueueEntryType')
 
 
-async def await_with_timeout(awaitable: Awaitable[R], timeout: float | None = None) -> R:
+async def with_timeout(awaitable: Awaitable[R], timeout: float | None = None) -> R:
     """Await `awaitable` with optional timeout."""
     if timeout is None:
         return await awaitable
@@ -28,7 +28,7 @@ async def cancel_and_await(task: asyncio.Task[Any] | None, timeout: float | None
     if not task.done():
         task.cancel()
     try:
-        await await_with_timeout(task, timeout=timeout)
+        await with_timeout(task, timeout=timeout)
     except (asyncio.CancelledError, TimeoutError):
         pass
     except Exception:
@@ -36,22 +36,21 @@ async def cancel_and_await(task: asyncio.Task[Any] | None, timeout: float | None
 
 
 @asynccontextmanager
-async def background_task_scope(
-    coro_factory: Callable[[], Coroutine[Any, Any, Any]] | None,
+async def with_slow_monitor(
+    monitor_factory: Callable[[], Coroutine[Any, Any, Any]] | None,
     *,
     task_name: str | None = None,
 ):
-    """Create a scoped background task and guarantee cancellation on exit.
+    """Run an optional slow-monitor task scoped to the surrounding execution.
 
-    Used by runtime timeout/slow-monitor paths to keep monitor lifecycle tied
-    to the surrounding event/handler execution scope.
+    The monitor is started on enter and always cancelled on exit.
     """
     task: asyncio.Task[Any] | None = None
-    if coro_factory is not None:
+    if monitor_factory is not None:
         if task_name is None:
-            task = asyncio.create_task(coro_factory())
+            task = asyncio.create_task(monitor_factory())
         else:
-            task = asyncio.create_task(coro_factory(), name=task_name)
+            task = asyncio.create_task(monitor_factory(), name=task_name)
     try:
         yield task
     finally:
@@ -229,9 +228,9 @@ def log_filtered_traceback(exc: BaseException) -> str:
 
 
 __all__ = [
-    'await_with_timeout',
+    'with_timeout',
     'cancel_and_await',
-    'background_task_scope',
+    'with_slow_monitor',
     'log_filtered_traceback',
     'CleanShutdownQueue',
     'QueueShutDown',

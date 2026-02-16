@@ -186,6 +186,42 @@ test('middleware emits event lifecycle hooks for no-handler events', async () =>
   bus.destroy()
 })
 
+test('middleware event lifecycle ordering is deterministic per event', async () => {
+  const event_statuses_by_id = new Map<string, Array<'pending' | 'started' | 'completed'>>()
+
+  class LifecycleMiddleware extends RecordingMiddleware {
+    constructor() {
+      super('deterministic')
+    }
+
+    async on_event_change(eventbus: EventBus, event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
+      const statuses = event_statuses_by_id.get(event.event_id) ?? []
+      statuses.push(status)
+      event_statuses_by_id.set(event.event_id, statuses)
+      await super.on_event_change(eventbus, event, status)
+    }
+  }
+
+  const bus = new EventBus('MiddlewareDeterministicBus', { middlewares: [LifecycleMiddleware] })
+  const Event = BaseEvent.extend('MiddlewareDeterministicEvent', {})
+
+  bus.on(Event, async () => {
+    await delay(0)
+    return 'ok'
+  })
+
+  const events = Array.from({ length: 50 }, () => bus.dispatch(Event({ event_timeout: 0.2 })))
+  await Promise.all(events.map((event) => event.done()))
+  await flushHooks()
+
+  assert.equal(event_statuses_by_id.size, events.length)
+  for (const event of events) {
+    assert.deepEqual(event_statuses_by_id.get(event.event_id), ['pending', 'started', 'completed'])
+  }
+
+  bus.destroy()
+})
+
 test('middleware result hooks never reverse from completed to started', async () => {
   const middleware = new RecordingMiddleware('ordering')
   const bus = new EventBus('MiddlewareOrderingBus', { middlewares: [middleware], event_handler_concurrency: 'parallel' })
@@ -316,7 +352,10 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
     parallel_results.some((result) => result.error instanceof EventHandlerAbortedError || result.error instanceof EventHandlerTimeoutError),
     true
   )
-  assert.equal(parallel_results.some((result) => result.error instanceof EventHandlerCancelledError), false)
+  assert.equal(
+    parallel_results.some((result) => result.error instanceof EventHandlerCancelledError),
+    false
+  )
 
   serial_bus.destroy()
   parallel_bus.destroy()

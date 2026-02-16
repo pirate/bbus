@@ -236,7 +236,7 @@ export class EventBus {
     await this.runMiddlewareHook('on_handler_change', [this, handler, registered])
   }
 
-  private _finalizeTimedOutEvent(
+  private _finalizeEventTimeout(
     event: BaseEvent,
     pending_entries: Array<{
       handler: EventHandler
@@ -279,7 +279,7 @@ export class EventBus {
     event.markCompleted()
   }
 
-  private _createProcessEventTimeoutError(
+  private _createEventTimeoutError(
     event: BaseEvent,
     pending_entries: Array<{
       handler: EventHandler
@@ -299,7 +299,7 @@ export class EventBus {
     )
   }
 
-  private async _processEventWithTimeoutHandling(
+  private async _runHandlersWithTimeout(
     event: BaseEvent,
     pending_entries: Array<{
       handler: EventHandler
@@ -311,18 +311,18 @@ export class EventBus {
       if (event.event_timeout === null || pending_entries.length === 0) {
         await fn()
       } else {
-        await withTimeout(event.event_timeout, () => this._createProcessEventTimeoutError(event, pending_entries), fn)
+        await withTimeout(event.event_timeout, () => this._createEventTimeoutError(event, pending_entries), fn)
       }
     } catch (error) {
       if (error instanceof EventHandlerTimeoutError) {
-        this._finalizeTimedOutEvent(event, pending_entries, error)
+        this._finalizeEventTimeout(event, pending_entries, error)
         return
       }
       throw error
     }
   }
 
-  private _markProcessEventCompleted(event: BaseEvent): void {
+  private _markEventCompletedIfNeeded(event: BaseEvent): void {
     if (event.event_status !== 'completed') {
       event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
       event.markCompleted(false)
@@ -874,14 +874,12 @@ export class EventBus {
       await this.locks.withEventLock(
         event,
         () =>
-          this._processEventWithTimeoutHandling(event, pending_entries, () =>
-            withSlowMonitor(event.createSlowEventWarningTimer(), () =>
-              scoped_event.processEvent(pending_entries)
-            )
+          this._runHandlersWithTimeout(event, pending_entries, () =>
+            withSlowMonitor(event.createSlowEventWarningTimer(), () => scoped_event.runHandlers(pending_entries))
           ),
         options
       )
-      this._markProcessEventCompleted(event)
+      this._markEventCompletedIfNeeded(event)
     } finally {
       if (options.pre_acquired_lock) {
         options.pre_acquired_lock.release()
