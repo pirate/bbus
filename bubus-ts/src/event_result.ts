@@ -11,6 +11,7 @@ import type { EventHandlerFunction, EventResultType } from './types.js'
 import { isZodSchema } from './types.js'
 import { runWithAsyncContext } from './async_context.js'
 import { RetryTimeoutError } from './retry.js'
+import { runWithAbortMonitor, withSlowMonitor, withTimeout } from './timing.js'
 
 // More precise than event.event_status, includes separate 'error' state for handlers that throw errors during execution
 export type EventResultStatus = 'pending' | 'started' | 'completed' | 'error'
@@ -261,49 +262,52 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     return Promise.resolve().then(() => runWithAsyncContext(event._event_dispatch_context ?? null, fn))
   }
 
-  private async withTimeout<T>(timeout_seconds: number | null, on_timeout: () => Error, fn: () => Promise<T>): Promise<T> {
-    const task = Promise.resolve().then(fn)
-    if (timeout_seconds === null) {
-      return await task
-    }
-    const timeout_ms = timeout_seconds * 1000
-    return await new Promise<T>((resolve, reject) => {
-      let settled = false
-      const finishResolve = (value: T) => {
-        if (settled) {
-          return
-        }
-        settled = true
-        clearTimeout(timer)
-        resolve(value)
+  private _createHandlerTimeoutError(event: BaseEvent): EventHandlerTimeoutError {
+    return new EventHandlerTimeoutError(
+      `${this.bus.toString()}.on(${event.toString()}, ${this.handler.toString()}) timed out after ${this.handler_timeout}s`,
+      {
+        event_result: this,
+        timeout_seconds: this.handler_timeout,
       }
-      const finishReject = (error: unknown) => {
-        if (settled) {
-          return
-        }
-        settled = true
-        clearTimeout(timer)
-        reject(error)
-      }
-      const timer = setTimeout(() => {
-        if (settled) {
-          return
-        }
-        settled = true
-        reject(on_timeout())
-        void task.catch(() => undefined)
-      }, timeout_ms)
-      task.then(finishResolve).catch(finishReject)
-    })
+    )
   }
 
-  private async withSlowMonitor<T>(slow_timer: ReturnType<typeof setTimeout> | null, fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn()
-    } finally {
-      if (slow_timer) {
-        clearTimeout(slow_timer)
+  private _handleHandlerError(event: BaseEvent, error: unknown): void {
+    const normalized_error =
+      error instanceof RetryTimeoutError
+        ? new EventHandlerTimeoutError(error.message, { event_result: this, timeout_seconds: error.timeout_seconds, cause: error })
+        : error
+    if (normalized_error instanceof EventHandlerTimeoutError) {
+      this.markError(normalized_error)
+      event.cancelPendingDescendants(normalized_error)
+    } else {
+      this.markError(normalized_error)
+    }
+  }
+
+  private _onHandlerExit(slow_handler_warning_timer: ReturnType<typeof setTimeout> | null): void {
+    this._abort = null
+    this._lock = null
+    this.releaseQueueJumpPauses()
+    if (slow_handler_warning_timer) {
+      clearTimeout(slow_handler_warning_timer)
+    }
+  }
+
+  private _finalizeHandlerResult(event: BaseEvent, handler_result: unknown): void {
+    if (event.event_result_type && handler_result !== undefined && isZodSchema(event.event_result_type)) {
+      const parsed = event.event_result_type.safeParse(handler_result)
+      if (parsed.success) {
+        this.markCompleted(parsed.data as EventResultType<TEvent>)
+      } else {
+        const error = new EventHandlerResultSchemaError(
+          `${this.bus.toString()}.on(${event.toString()}, ${this.handler.toString()}) return value ${JSON.stringify(handler_result).slice(0, 20)}... did not match event_result_type: ${parsed.error.message}`,
+          { event_result: this, cause: parsed.error, raw_value: handler_result }
+        )
+        this.markError(error)
       }
+    } else {
+      this.markCompleted(handler_result as EventResultType<TEvent> | undefined)
     }
   }
 
@@ -314,76 +318,39 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     }
 
     const event = this.event._event_original ?? this.event
-    const bus = this.bus
-    const handler_event = bus ? bus.getEventProxyScopedToThisBus(event, this) : event
+    const handler_event = this.bus.getEventProxyScopedToThisBus(event, this)
     if (this._lock) {
       this._lock.exitHandlerRun()
     }
 
-    await bus.locks.withHandlerLock(event, bus.event_handler_concurrency_default, async (lock) => {
+    const slow_handler_warning_timer = this.createSlowHandlerWarningTimer(this.handler_timeout)
+    await this.bus.locks.withHandlerLock(event, this.bus.event_handler_concurrency_default, async (lock) => {
       // if the result is already in an error or completed state, exit early
       if (this.status === 'error' || this.status === 'completed') {
         return
       }
 
       this._lock = lock
-      bus.locks.enterActiveHandlerContext(this)
-      const effective_timeout = this.handler_timeout
-      const slow_handler_warning_timer = this.createSlowHandlerWarningTimer(effective_timeout)
-      const timeout_seconds = effective_timeout
-      const bus_label = bus.toString()
-      const run_handler = () =>
-        this.withHandlerDispatchContext(event, async () => await Promise.resolve(this.handler.handler(handler_event)))
-
-      try {
-        const abort_signal = this.markStarted()
-        const handler_result = await this.withTimeout(
-          timeout_seconds,
-          () =>
-            new EventHandlerTimeoutError(
-              `${bus_label}.on(${event.toString()}, ${this.handler.toString()}) timed out after ${timeout_seconds}s`,
-              {
-                event_result: this,
-                timeout_seconds,
-              }
-            ),
-          async () => await this.withSlowMonitor(slow_handler_warning_timer, async () => await Promise.race([run_handler(), abort_signal]))
-        )
-
-        if (event.event_result_type && handler_result !== undefined && isZodSchema(event.event_result_type)) {
-          const parsed = event.event_result_type.safeParse(handler_result)
-          if (parsed.success) {
-            this.markCompleted(parsed.data as EventResultType<TEvent>)
-          } else {
-            const error = new EventHandlerResultSchemaError(
-              `${bus_label}.on(${event.toString()}, ${this.handler.toString()}) return value ${JSON.stringify(handler_result).slice(0, 20)}... did not match event_result_type: ${parsed.error.message}`,
-              { event_result: this, cause: parsed.error, raw_value: handler_result }
-            )
-            this.markError(error)
-          }
-        } else {
-          this.markCompleted(handler_result as EventResultType<TEvent> | undefined)
+      await this.bus.locks.withActiveHandlerContext(this, async () => {
+        try {
+          const abort_signal = this.markStarted()
+          const handler_result = await withTimeout(
+            this.handler_timeout,
+            () => this._createHandlerTimeoutError(event),
+            () =>
+              withSlowMonitor(slow_handler_warning_timer, () =>
+                this.withHandlerDispatchContext(event, () =>
+                  runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
+                )
+              )
+          )
+          this._finalizeHandlerResult(event, handler_result)
+        } catch (error) {
+          this._handleHandlerError(event, error)
+        } finally {
+          this._onHandlerExit(slow_handler_warning_timer)
         }
-      } catch (error) {
-        const normalized_error =
-          error instanceof RetryTimeoutError
-            ? new EventHandlerTimeoutError(error.message, { event_result: this, timeout_seconds: error.timeout_seconds, cause: error })
-            : error
-        if (normalized_error instanceof EventHandlerTimeoutError) {
-          this.markError(normalized_error)
-          event.cancelPendingDescendants(normalized_error)
-        } else {
-          this.markError(normalized_error)
-        }
-      } finally {
-        this._abort = null
-        this._lock = null
-        bus.locks.exitActiveHandlerContext(this)
-        this.releaseQueueJumpPauses()
-        if (slow_handler_warning_timer) {
-          clearTimeout(slow_handler_warning_timer)
-        }
-      }
+      })
     })
   }
 

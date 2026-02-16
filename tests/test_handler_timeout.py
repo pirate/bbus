@@ -11,6 +11,7 @@ from bubus import (
     EventHandlerCancelledError,
     EventHandlerTimeoutError,
 )
+from bubus.retry import retry
 
 
 # Event definitions
@@ -301,6 +302,86 @@ async def test_event_timeout_is_hard_cap_in_parallel_mode() -> None:
             isinstance(result.error, (EventHandlerAbortedError, EventHandlerTimeoutError))
             for result in event.event_results.values()
         )
+    finally:
+        await bus.stop(clear=True, timeout=0)
+
+
+@pytest.mark.asyncio
+async def test_event_level_timeout_marks_started_parallel_handlers_as_aborted_or_timed_out() -> None:
+    bus = EventBus(name='EventHardCapParallelAbortedOnlyBus', event_handler_concurrency='parallel')
+
+    class HardCapParallelAbortOnlyEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.03
+
+    started_a = asyncio.Event()
+    started_b = asyncio.Event()
+    both_started = asyncio.Event()
+
+    async def slow_a(_event: HardCapParallelAbortOnlyEvent) -> str:
+        started_a.set()
+        if started_b.is_set():
+            both_started.set()
+        await both_started.wait()
+        await asyncio.sleep(0.2)
+        return 'a'
+
+    async def slow_b(_event: HardCapParallelAbortOnlyEvent) -> str:
+        started_b.set()
+        if started_a.is_set():
+            both_started.set()
+        await both_started.wait()
+        await asyncio.sleep(0.2)
+        return 'b'
+
+    bus.on(HardCapParallelAbortOnlyEvent, slow_a)
+    bus.on(HardCapParallelAbortOnlyEvent, slow_b)
+
+    try:
+        event = bus.dispatch(HardCapParallelAbortOnlyEvent())
+        await asyncio.wait_for(asyncio.gather(started_a.wait(), started_b.wait()), timeout=0.2)
+        both_started.set()
+        await event
+        await bus.wait_until_idle()
+
+        assert len(event.event_results) == 2
+        assert all(result.status == 'error' for result in event.event_results.values())
+        assert all(
+            isinstance(result.error, (EventHandlerAbortedError, EventHandlerTimeoutError))
+            for result in event.event_results.values()
+        )
+        assert not any(isinstance(result.error, EventHandlerCancelledError) for result in event.event_results.values())
+    finally:
+        await bus.stop(clear=True, timeout=0)
+
+
+@pytest.mark.asyncio
+async def test_event_timeout_does_not_relabel_preexisting_handler_timeout() -> None:
+    bus = EventBus(name='EventTimeoutPreservesHandlerTimeoutBus', event_handler_concurrency='parallel')
+
+    class MixedTimeoutEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.05
+
+    @retry(max_attempts=1, timeout=0.01)
+    async def handler_with_own_timeout(_event: MixedTimeoutEvent) -> str:
+        await asyncio.sleep(0.05)
+        return 'own-timeout'
+
+    async def long_running_handler(_event: MixedTimeoutEvent) -> str:
+        await asyncio.sleep(0.2)
+        return 'long-running'
+
+    bus.on(MixedTimeoutEvent, handler_with_own_timeout)
+    bus.on(MixedTimeoutEvent, long_running_handler)
+
+    try:
+        event = bus.dispatch(MixedTimeoutEvent())
+        await event
+        await bus.wait_until_idle()
+
+        results = list(event.event_results.values())
+        assert len(results) == 2
+        assert any(isinstance(result.error, EventHandlerTimeoutError) for result in results)
+        assert any(isinstance(result.error, EventHandlerAbortedError) for result in results)
     finally:
         await bus.stop(clear=True, timeout=0)
 

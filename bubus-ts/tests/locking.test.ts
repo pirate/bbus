@@ -11,7 +11,7 @@ Potential failure modes
 A) Event concurrency modes
 - global-serial not enforcing strict FIFO across multiple buses (events interleave).
 - bus-serial allows cross-bus interleaving but still must be FIFO within a bus; breaks under forwarding.
-- parallel accidentally serializes (e.g., semaphore still used) or breaks queue-jump semantics.
+- parallel accidentally serializes (e.g., lock still used) or breaks queue-jump semantics.
 - null not resolving correctly to bus defaults.
 
 B) Handler concurrency modes
@@ -25,7 +25,7 @@ C) Precedence resolution
 
 D) Queue-jump / awaited events
 - event.done() inside handler doesn’t jump the queue across buses.
-- Queue-jump bypasses semaphores incorrectly in contexts where it shouldn’t.
+- Queue-jump bypasses locks incorrectly in contexts where it shouldn’t.
 - Queue-jump fails when event already in-flight.
 
 E) FIFO correctness
@@ -66,7 +66,7 @@ K) Idle / completion
 
 L) Reentrancy / nested awaits
 - Nested awaited child events starve sibling handlers.
-- Awaited child events skip semaphore incorrectly (deadlocks or ordering regressions).
+- Awaited child events skip lock incorrectly (deadlocks or ordering regressions).
 
 M) Edge-cases
 - Multiple handlers for same event type with different options collide.

@@ -390,6 +390,41 @@ export class BaseEvent {
     })
   }
 
+  private _collectPendingResults(
+    original: BaseEvent,
+    pending_entries?: Array<{
+      handler: EventHandler
+      result: EventResult
+    }>
+  ): EventResult[] {
+    if (pending_entries) {
+      return pending_entries.map((entry) => entry.result)
+    }
+    if (!this.bus?.id) {
+      return Array.from(original.event_results.values())
+    }
+    return Array.from(original.event_results.values()).filter((result) => result.eventbus_id === this.bus!.id)
+  }
+
+  private _isFirstModeWinningResult(entry: EventResult): boolean {
+    return entry.status === 'completed' && entry.result !== undefined && !(entry.result instanceof BaseEvent)
+  }
+
+  private _markFirstModeWinnerIfNeeded(
+    original: BaseEvent,
+    entry: EventResult,
+    first_state: { found: boolean }
+  ): void {
+    if (first_state.found) {
+      return
+    }
+    if (!this._isFirstModeWinningResult(entry)) {
+      return
+    }
+    first_state.found = true
+    original.cancelEventHandlersForFirstMode(entry)
+  }
+
   // Run all pending handler results for the current bus context.
   async processEvent(
     pending_entries?: Array<{
@@ -398,36 +433,31 @@ export class BaseEvent {
     }>
   ): Promise<void> {
     const original = this._event_original ?? this
-    const bus_id = this.bus?.id
-    const pending_results =
-      pending_entries?.map((entry) => entry.result) ??
-      Array.from(original.event_results.values()).filter((result) => !bus_id || result.eventbus_id === bus_id)
+    const pending_results = this._collectPendingResults(original, pending_entries)
     if (pending_results.length === 0) {
       return
     }
     if (original.event_handler_completion === 'first') {
-      const is_serial_handler_mode = original.getHandlerLock() !== null
-      if (is_serial_handler_mode) {
+      if (original.getHandlerLock() !== null) {
         for (const entry of pending_results) {
           await entry.runHandler()
-          if (entry.status === 'completed' && entry.result !== undefined && !(entry.result instanceof BaseEvent)) {
-            original.cancelEventHandlersForFirstMode(entry)
-            break
+          if (!this._isFirstModeWinningResult(entry)) {
+            continue
           }
+          original.cancelEventHandlersForFirstMode(entry)
+          break
         }
-      } else {
-        const handler_promises = pending_results.map((entry) => entry.runHandler())
-        let first_found = false
-        const monitored = pending_results.map((entry, i) =>
-          handler_promises[i].then(() => {
-            if (!first_found && entry.status === 'completed' && entry.result !== undefined && !(entry.result instanceof BaseEvent)) {
-              first_found = true
-              original.cancelEventHandlersForFirstMode(entry)
-            }
-          })
-        )
-        await Promise.all(monitored)
+        return
       }
+      const first_state = { found: false }
+      const handler_promises = pending_results.map((entry) => entry.runHandler())
+      const monitored = pending_results.map((entry, index) =>
+        handler_promises[index].then(() => {
+          this._markFirstModeWinnerIfNeeded(original, entry, first_state)
+        })
+      )
+      await Promise.all(monitored)
+      return
     } else {
       const handler_promises = pending_results.map((entry) => entry.runHandler())
       await Promise.all(handler_promises)

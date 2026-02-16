@@ -725,20 +725,20 @@ test('deeply nested awaited children', async () => {
 // BUG: processEventImmediately (queue-jump across buses) passes { bypass_handler_locks: true,
 // bypass_event_locks: true } for ALL buses. This causes:
 //   1. Handlers to run in parallel regardless of configured concurrency
-//   2. Event semaphores on remote buses to be skipped
+//   2. Event locks on remote buses to be skipped
 //
 // The fix requires "yield-and-reacquire":
-//   - Before processing the child, temporarily RELEASE the semaphore the parent
+//   - Before processing the child, temporarily RELEASE the lock the parent
 //     handler holds (the parent is suspended in `await child.done()` and isn't
 //     using it).
 //   - Process the child event NORMALLY — handlers acquire/release the real
-//     semaphore, serializing among themselves as configured.
-//   - After the child completes, RE-ACQUIRE the semaphore for the parent handler
+//     lock, serializing among themselves as configured.
+//   - After the child completes, RE-ACQUIRE the lock for the parent handler
 //     before it resumes.
 //
-// For event semaphores, only bypass on the initiating bus (where the parent holds
-// the semaphore). On other buses, respect their event concurrency — bypass only
-// if they resolve to the SAME semaphore instance (i.e. global-serial).
+// For event locks, only bypass on the initiating bus (where the parent holds
+// the lock). On other buses, respect their event concurrency — bypass only
+// if they resolve to the SAME lock instance (i.e. global-serial).
 //
 // All tests use two buses. The pattern is:
 //   bus_a: origin bus where TriggerEvent handler dispatches a child
@@ -1022,12 +1022,12 @@ test('BUG: queue-jump two-bus mixed: bus_a parallel, bus_b serial', async () => 
 //
 // When the forward bus (bus_b) has bus-serial event concurrency and is already
 // processing an event, a queue-jumped child should WAIT for bus_b's in-flight
-// event to finish. The current code bypasses event semaphores for ALL buses,
+// event to finish. The current code bypasses event locks for ALL buses,
 // causing the child to cut in front of the in-flight event.
 //
-// The fix should only bypass event semaphores on the INITIATING bus (where the
-// parent event holds the semaphore). On other buses, bypass only if they resolve
-// to the SAME semaphore instance (global-serial shares one global semaphore).
+// The fix should only bypass event locks on the INITIATING bus (where the
+// parent event holds the lock). On other buses, bypass only if they resolve
+// to the SAME lock instance (global-serial shares one global lock).
 // =============================================================================
 
 test('BUG: queue-jump should respect bus-serial event concurrency on forward bus', async () => {
@@ -1046,7 +1046,7 @@ test('BUG: queue-jump should respect bus-serial event concurrency on forward bus
 
   const log: string[] = []
 
-  // SlowEvent handler: occupies bus_b's event semaphore for 40ms
+  // SlowEvent handler: occupies bus_b's event lock for 40ms
   bus_b.on(SlowEvent, async () => {
     log.push('slow_start')
     await delay(40)
@@ -1095,7 +1095,7 @@ test('BUG: queue-jump should respect bus-serial event concurrency on forward bus
     `bus_b (bus-serial events): child should wait for slow event to finish. ` + `Got: [${log.join(', ')}]`
   )
 
-  // The child on bus_a should have processed (queue-jumped, bypasses bus_a's event semaphore)
+  // The child on bus_a should have processed (queue-jumped, bypasses bus_a's event lock)
   assert.ok(log.includes('child_a_start'), 'child on bus_a should have run')
   assert.ok(log.includes('child_a_end'), 'child on bus_a should have completed')
 })
@@ -1153,8 +1153,8 @@ test('queue-jump with fully-parallel forward bus starts immediately', async () =
 
 test('queue-jump with parallel events and serial handlers on forward bus still overlaps across events', async () => {
   // When bus_b has parallel event concurrency but serial handler concurrency,
-  // the child event can start processing immediately (event semaphore is parallel),
-  // but its handler must wait for the slow handler to release the handler semaphore.
+  // the child event can start processing immediately (event lock is parallel),
+  // but its handler must wait for the slow handler to release the handler lock.
 
   const TriggerEvent = BaseEvent.extend('QJEvtParHSer_Trigger', {})
   const ChildEvent = BaseEvent.extend('QJEvtParHSer_Child', {})

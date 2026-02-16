@@ -18,7 +18,7 @@ const delay = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
-test('handler timeout marks EventResult as error', async () => {
+test('event timeout aborts in-flight handler result', async () => {
   const bus = new EventBus('TimeoutBus')
 
   bus.on(TimeoutEvent, async () => {
@@ -31,7 +31,36 @@ test('handler timeout marks EventResult as error', async () => {
 
   const result = Array.from(event.event_results.values())[0]
   assert.equal(result.status, 'error')
-  assert.ok(result.error instanceof EventHandlerTimeoutError)
+  assert.ok(result.error instanceof EventHandlerAbortedError)
+})
+
+test('event timeout does not relabel pre-existing handler timeout errors', async () => {
+  const bus = new EventBus('TimeoutPreserveHandlerTimeoutBus', {
+    event_handler_concurrency: 'parallel',
+  })
+  const MixedTimeoutEvent = BaseEvent.extend('MixedTimeoutEvent', {})
+
+  bus.on(
+    MixedTimeoutEvent,
+    retry({ max_attempts: 1, timeout: 0.01 })(async () => {
+      await delay(50)
+      return 'handler-timeout'
+    })
+  )
+
+  bus.on(MixedTimeoutEvent, async () => {
+    await delay(200)
+    return 'event-timeout'
+  })
+
+  const event = bus.dispatch(MixedTimeoutEvent({ event_timeout: 0.05 }))
+  await event.done()
+  await bus.waitUntilIdle()
+
+  const results = Array.from(event.event_results.values())
+  assert.equal(results.length, 2)
+  assert.ok(results.some((result) => result.error instanceof EventHandlerTimeoutError))
+  assert.ok(results.some((result) => result.error instanceof EventHandlerAbortedError))
 })
 
 test('handler completes within timeout', async () => {
@@ -89,9 +118,9 @@ test('event handler errors expose event_result, cause, and timeout metadata', as
   await timeout_event.done()
 
   const timeout_result = Array.from(timeout_event.event_results.values())[0]
-  const timeout_error = timeout_result.error as EventHandlerTimeoutError
+  const timeout_error = timeout_result.error as EventHandlerAbortedError
   assert.ok(timeout_error.cause instanceof Error)
-  assert.equal(timeout_error.cause.name, 'TimeoutError')
+  assert.equal(timeout_error.cause.name, 'EventHandlerTimeoutError')
   assert.equal(timeout_error.event_result, timeout_result)
   assert.equal(timeout_error.timeout_seconds, timeout_event.event_timeout)
   assert.equal(timeout_error.event.event_id, timeout_event.event_id)
@@ -107,14 +136,16 @@ test('event handler errors expose event_result, cause, and timeout metadata', as
   assert.ok(pending_child, 'pending_child should have been emitted')
   const pending_results = Array.from(pending_child!.event_results.values())
   const cancel_parent_result = Array.from(cancel_parent.event_results.values())[0]
-  const cancel_parent_error = cancel_parent_result.error as EventHandlerTimeoutError
+  const cancel_parent_error = cancel_parent_result.error as EventHandlerAbortedError
+  const cancel_parent_timeout = cancel_parent_error.cause
+  assert.ok(cancel_parent_timeout instanceof EventHandlerTimeoutError)
   const pending_error_result = pending_results.find((result) => result.error !== undefined)
   if (
     pending_error_result?.error instanceof EventHandlerCancelledError ||
     pending_error_result?.error instanceof EventHandlerAbortedError
   ) {
     const cancelled_error = pending_error_result.error
-    assert.equal(cancelled_error.cause, cancel_parent_error)
+    assert.equal(cancelled_error.cause, cancel_parent_timeout)
     assert.equal(cancelled_error.event_result, pending_error_result)
     assert.equal(cancelled_error.event.event_id, pending_child!.event_id)
     assert.equal(cancelled_error.timeout_seconds, pending_child!.event_timeout)
@@ -122,7 +153,7 @@ test('event handler errors expose event_result, cause, and timeout metadata', as
     assert.equal(cancelled_error.handler_name, pending_error_result.handler_name)
     assert.equal(cancelled_error.handler_id, pending_error_result.handler_id)
   } else if (pending_error_result?.error instanceof EventHandlerTimeoutError) {
-    assert.equal(pending_error_result.error, cancel_parent_error)
+    assert.equal(pending_error_result.error, cancel_parent_timeout)
   } else {
     assert.equal(pending_child!.event_status, 'completed')
   }
@@ -138,8 +169,10 @@ test('event handler errors expose event_result, cause, and timeout metadata', as
   assert.ok(aborted_result)
   const aborted_error = aborted_result.error as EventHandlerAbortedError
   const abort_parent_result = Array.from(abort_parent.event_results.values())[0]
-  const abort_parent_error = abort_parent_result.error as EventHandlerTimeoutError
-  assert.equal(aborted_error.cause, abort_parent_error)
+  const abort_parent_error = abort_parent_result.error as EventHandlerAbortedError
+  const abort_parent_timeout = abort_parent_error.cause
+  assert.ok(abort_parent_timeout instanceof EventHandlerTimeoutError)
+  assert.equal(aborted_error.cause, abort_parent_timeout)
   assert.equal(aborted_error.event_result, aborted_result)
   assert.equal(aborted_error.event.event_id, aborted_child!.event_id)
   assert.equal(aborted_error.timeout_seconds, aborted_child!.event_timeout)
@@ -148,7 +181,7 @@ test('event handler errors expose event_result, cause, and timeout metadata', as
   assert.equal(aborted_error.handler_id, aborted_result.handler_id)
 })
 
-test('handler timeouts fire across concurrency modes', async () => {
+test('event timeouts abort handlers across concurrency modes', async () => {
   const event_modes = ['global-serial', 'bus-serial', 'parallel'] as const
   const handler_modes = [
     { label: 'serial', concurrency: 'serial', global_lock: false },
@@ -179,10 +212,10 @@ test('handler timeouts fire across concurrency modes', async () => {
       await event.done()
 
       const result = Array.from(event.event_results.values())[0]
-      assert.equal(result.status, 'error', `Expected timeout error for event=${event_mode} handler=${handler_mode.label}`)
+      assert.equal(result.status, 'error', `Expected timeout-driven error for event=${event_mode} handler=${handler_mode.label}`)
       assert.ok(
-        result.error instanceof EventHandlerTimeoutError,
-        `Expected EventHandlerTimeoutError for event=${event_mode} handler=${handler_mode.label}`
+        result.error instanceof EventHandlerAbortedError,
+        `Expected EventHandlerAbortedError for event=${event_mode} handler=${handler_mode.label}`
       )
 
       await bus.waitUntilIdle()
@@ -219,6 +252,63 @@ test('timeout still marks event failed when other handlers finish', async () => 
   assert.equal(event.event_status, 'completed')
   assert.ok(event.event_errors.length > 0)
   assert.ok(results.includes('fast'))
+})
+
+test('event-level timeout marks started parallel handlers as aborted or timed out', async () => {
+  const bus = new EventBus('TimeoutParallelAbortedOnlyBus', {
+    event_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
+  })
+
+  const ParallelAbortOnlyEvent = BaseEvent.extend('ParallelAbortOnlyEvent', {})
+  const deferred = <T>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<T>((resolve_fn, reject_fn) => {
+      resolve = resolve_fn
+      reject = reject_fn
+    })
+    return { promise, resolve, reject }
+  }
+
+  const started_a = deferred<void>()
+  const started_b = deferred<void>()
+  const both_started = deferred<void>()
+  let a_started = false
+  let b_started = false
+
+  bus.on(ParallelAbortOnlyEvent, async () => {
+    a_started = true
+    started_a.resolve()
+    if (b_started) {
+      both_started.resolve()
+    }
+    await both_started.promise
+    await delay(200)
+    return 'a'
+  })
+
+  bus.on(ParallelAbortOnlyEvent, async () => {
+    b_started = true
+    started_b.resolve()
+    if (a_started) {
+      both_started.resolve()
+    }
+    await both_started.promise
+    await delay(200)
+    return 'b'
+  })
+
+  const event = bus.dispatch(ParallelAbortOnlyEvent({ event_timeout: 0.03 }))
+  await Promise.all([started_a.promise, started_b.promise])
+  both_started.resolve()
+  await event.done()
+
+  const results = Array.from(event.event_results.values())
+  assert.equal(results.length, 2)
+  assert.ok(results.every((result) => result.status === 'error'))
+  assert.ok(results.every((result) => result.error instanceof EventHandlerAbortedError || result.error instanceof EventHandlerTimeoutError))
+  assert.ok(!results.some((result) => result.error instanceof EventHandlerCancelledError))
 })
 
 test('slow event warning fires when event exceeds event_slow_timeout', async () => {
@@ -321,7 +411,7 @@ test('slow handler and slow event warnings can both fire', async () => {
   )
 })
 
-test('event-level concurrency overrides do not bypass timeouts', async () => {
+test('event-level concurrency overrides do not bypass timeout aborts', async () => {
   const bus = new EventBus('TimeoutEventOverrideBus', {
     event_concurrency: 'global-serial',
     event_handler_concurrency: 'serial',
@@ -346,7 +436,7 @@ test('event-level concurrency overrides do not bypass timeouts', async () => {
 
   const result = Array.from(event.event_results.values())[0]
   assert.equal(result.status, 'error')
-  assert.ok(result.error instanceof EventHandlerTimeoutError)
+  assert.ok(result.error instanceof EventHandlerAbortedError)
 })
 
 test('retry-based handler locks do not bypass timeouts', async () => {
@@ -378,7 +468,7 @@ test('retry-based handler locks do not bypass timeouts', async () => {
   assert.ok(statuses.includes('error'))
 })
 
-test('forwarded event timeouts apply across buses', async () => {
+test('forwarded event timeout aborts apply across buses', async () => {
   const bus_a = new EventBus('TimeoutForwardA', { event_concurrency: 'bus-serial' })
   const bus_b = new EventBus('TimeoutForwardB', { event_concurrency: 'bus-serial' })
 
@@ -398,10 +488,10 @@ test('forwarded event timeouts apply across buses', async () => {
   const bus_b_result = results.find((result) => result.eventbus_id === bus_b.id)
   assert.ok(bus_b_result)
   assert.equal(bus_b_result?.status, 'error')
-  assert.ok(bus_b_result?.error instanceof EventHandlerTimeoutError)
+  assert.ok(bus_b_result?.error instanceof EventHandlerAbortedError)
 })
 
-test('queue-jump awaited child timeouts still fire across buses', async () => {
+test('queue-jump awaited child timeout aborts still fire across buses', async () => {
   const ParentEvent = BaseEvent.extend('TimeoutParentEvent', {})
   const ChildEvent = BaseEvent.extend('TimeoutChildEvent', {})
 
@@ -431,8 +521,8 @@ test('queue-jump awaited child timeouts still fire across buses', async () => {
 
   assert.ok(child_ref)
   const child_results = Array.from(child_ref!.event_results.values())
-  const timeout_result = child_results.find((result) => result.error instanceof EventHandlerTimeoutError)
-  assert.ok(timeout_result)
+  const aborted_result = child_results.find((result) => result.error instanceof EventHandlerAbortedError)
+  assert.ok(aborted_result)
 })
 
 const STEP1_HANDLER_MODES = [
@@ -507,7 +597,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
 
       const parent_result = Array.from(parent.event_results.values())[0]
       assert.equal(parent_result.status, 'error')
-      assert.ok(parent_result.error instanceof EventHandlerTimeoutError)
+      assert.ok(parent_result.error instanceof EventHandlerAbortedError)
       assert.equal(
         lock.in_use,
         baseline_in_use,
@@ -572,8 +662,8 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
     await bus.waitUntilIdle()
 
     const parent_results = Array.from(parent.event_results.values())
-    const timeout_results = parent_results.filter((result) => result.error instanceof EventHandlerTimeoutError)
-    assert.ok(timeout_results.length >= 1, `expected at least one timeout result in ${handler_mode.label}`)
+    const aborted_results = parent_results.filter((result) => result.error instanceof EventHandlerAbortedError)
+    assert.ok(aborted_results.length >= 1, `expected at least one aborted result in ${handler_mode.label}`)
     assert.equal(lock.in_use, baseline_in_use)
   })
 }
@@ -731,7 +821,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
 
     const parent_result = Array.from(dispatched_parent.event_results.values())[0]
     assert.equal(parent_result.status, 'error')
-    assert.ok(parent_result.error instanceof EventHandlerTimeoutError)
+    assert.ok(parent_result.error instanceof EventHandlerAbortedError)
 
     assert.ok(queued_sibling_ref)
     assert.equal(queued_sibling_runs, 0)
@@ -892,7 +982,7 @@ test('event_timeout null falls back to bus default', async () => {
 
   const result = Array.from(event.event_results.values())[0]
   assert.equal(result.status, 'error')
-  assert.ok(result.error instanceof EventHandlerTimeoutError)
+  assert.ok(result.error instanceof EventHandlerAbortedError)
 })
 
 test('bus default null disables timeouts when event_timeout is null', async () => {
@@ -1003,7 +1093,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 
   const top_result = Array.from(top.event_results.values())[0]
   assert.equal(top_result.status, 'error')
-  assert.ok(top_result.error instanceof EventHandlerTimeoutError)
+  assert.ok(top_result.error instanceof EventHandlerAbortedError)
 
   assert.ok(queued_child)
   const queued_results = Array.from(queued_child!.event_results.values())
@@ -1018,15 +1108,15 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
   assert.ok(awaited_child)
   const awaited_results = Array.from(awaited_child!.event_results.values())
   const awaited_completed = awaited_results.filter((result) => result.status === 'completed')
-  const awaited_timeouts = awaited_results.filter((result) => result.error instanceof EventHandlerTimeoutError)
+  const awaited_aborted = awaited_results.filter((result) => result.error instanceof EventHandlerAbortedError)
   assert.equal(awaited_completed.length, 1)
-  assert.equal(awaited_timeouts.length, 1)
+  assert.equal(awaited_aborted.length, 1)
 
   assert.ok(immediate_grandchild)
   const immediate_results = Array.from(immediate_grandchild!.event_results.values())
   // With serial handler concurrency (no longer bypassed during queue-jump),
   // only the first grandchild handler starts before the awaited child's 30ms timeout fires.
-  // The second handler is still pending (waiting for semaphore) → cancelled.
+  // The second handler is still pending (waiting for lock) → cancelled.
   // The first handler was already started → aborted (EventHandlerAbortedError).
   assert.equal(immediate_grandchild_runs, 1)
   const immediate_aborted = immediate_results.filter((result) => result.error instanceof EventHandlerAbortedError)
@@ -1056,7 +1146,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 //
 // KEY MECHANIC: When a child event is awaited via event.done() inside a handler,
 // it triggers "queue-jumping" via processEventImmediately (cross-bus).
-// Queue-jumped events use yield-and-reacquire: the parent handler's semaphore is
+// Queue-jumped events use yield-and-reacquire: the parent handler's lock is
 // temporarily released so child handlers can acquire it normally. This means
 // child handlers run SERIALLY on a serial handler bus (respecting concurrency limits).
 // Non-awaited child events stay in the pending_event_queue and are blocked by
@@ -1064,7 +1154,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 //
 // TIMEOUT BEHAVIOR: Each handler gets its OWN timeout window starting from when
 // that handler begins execution — NOT from when the event was dispatched.
-// With serial handlers, each timeout starts when the handler acquires the semaphore.
+// With serial handlers, each timeout starts when the handler acquires the lock.
 //
 // CANCELLATION CASCADE: When a handler times out, bus.cancelPendingDescendants()
 // walks the event's children tree and marks any "pending" handler results as
@@ -1092,8 +1182,8 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
 
   // ── GrandchildEvent handlers ──────────────────────────────────────────
   // These run SERIALLY because queue-jumped events respect the serial
-  // handler semaphore (yield-and-reacquire). Each handler gets its own 35ms
-  // timeout window starting from when that handler acquires the semaphore.
+  // handler lock (yield-and-reacquire). Each handler gets its own 35ms
+  // timeout window starting from when that handler acquires the lock.
   //
   // Serial order: a(35ms timeout) → b(sync) → c(35ms timeout) → d(10ms) → e(35ms timeout)
   // Total time for all 5: ~35+0+35+10+35 = ~115ms (within child's 150ms timeout)
@@ -1168,7 +1258,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   }
 
   // ── TopEvent handlers ─────────────────────────────────────────────────
-  // These run SERIALLY (per-event handler semaphore) because TopEvent is
+  // These run SERIALLY (per-event handler lock) because TopEvent is
   // processed by the normal runloop (not queue-jumped). top_handler_fast
   // goes first, completes quickly, then top_handler_main starts.
 
@@ -1213,7 +1303,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   // ASSERTIONS
   // ═══════════════════════════════════════════════════════════════════════
 
-  // ── TopEvent: 2 handler results (1 completed, 1 timed out) ──────────
+  // ── TopEvent: 2 handler results (1 completed, 1 aborted by event timeout) ──────────
   assert.equal(top.event_status, 'completed')
   assert.ok(top.event_errors.length >= 1, 'TopEvent should have at least 1 error')
 
@@ -1228,9 +1318,9 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   const top_main_result = top_results.find((r) => r.handler_name === 'top_handler_main')
   assert.ok(top_main_result, 'top_handler_main result should exist')
   assert.equal(top_main_result!.status, 'error')
-  assert.ok(top_main_result!.error instanceof EventHandlerTimeoutError, 'top_handler_main should have timed out')
+  assert.ok(top_main_result!.error instanceof EventHandlerAbortedError, 'top_handler_main should have been aborted by event timeout')
 
-  // ── ChildEvent: 1 handler result (timed out at 150ms) ────────────────
+  // ── ChildEvent: 1 handler result (aborted by event timeout at ~150ms) ────────────────
   assert.ok(child_ref, 'ChildEvent should have been emitted')
   assert.equal(child_ref!.event_status, 'completed')
 
@@ -1238,7 +1328,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   assert.equal(child_results.length, 1, 'ChildEvent should have 1 handler result')
   assert.equal(child_results[0].handler_name, 'child_handler')
   assert.equal(child_results[0].status, 'error')
-  assert.ok(child_results[0].error instanceof EventHandlerTimeoutError, 'child_handler should have timed out')
+  assert.ok(child_results[0].error instanceof EventHandlerAbortedError, 'child_handler should have been aborted by event timeout')
 
   // ── GrandchildEvent: 5 handler results (event hard-timeout after first handler starts) ──
   assert.ok(grandchild_ref, 'GrandchildEvent should have been emitted')
@@ -1247,15 +1337,15 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   const gc_results = Array.from(grandchild_ref!.event_results.values())
   assert.equal(gc_results.length, 5, 'GrandchildEvent should have 5 handler results')
 
-  const gc_timeouts = gc_results.filter((result) => result.error instanceof EventHandlerTimeoutError)
-  assert.equal(gc_timeouts.length, 1, 'GrandchildEvent should have exactly one primary timeout result')
-  const gc_timeout_handler = gc_timeouts[0]!.handler_name
-  assert.equal(gc_timeout_handler, 'gc_handler_a')
+  const gc_aborted = gc_results.filter((result) => result.error instanceof EventHandlerAbortedError)
+  assert.equal(gc_aborted.length, 1, 'GrandchildEvent should have exactly one started handler aborted by event timeout')
+  const gc_aborted_handler = gc_aborted[0]!.handler_name
+  assert.equal(gc_aborted_handler, 'gc_handler_a')
 
   const gc_cancelled_or_aborted = gc_results.filter(
     (result) => result.error instanceof EventHandlerCancelledError || result.error instanceof EventHandlerAbortedError
   )
-  assert.equal(gc_cancelled_or_aborted.length, 4, 'Remaining grandchild handlers should be cancelled or aborted by hard event timeout')
+  assert.equal(gc_cancelled_or_aborted.length, 5, 'Grandchild handlers should all be cancelled or aborted by hard event timeout')
 
   // ── QueuedGrandchildEvent: CANCELLED by child_handler timeout ───────
   // This event was emitted but never awaited. It sat in pending_event_queue
@@ -1407,20 +1497,19 @@ test('cancellation error chain preserves cause references through hierarchy', as
   await outer.done()
   await bus.waitUntilIdle()
 
-  // Outer handler timed out
+  // Outer handler was aborted by event-level timeout
   const outer_result = Array.from(outer.event_results.values())[0]
   assert.equal(outer_result.status, 'error')
-  assert.ok(outer_result.error instanceof EventHandlerTimeoutError)
-  // Inner handler timed out (its own 40ms timeout, not outer's)
+  assert.ok(outer_result.error instanceof EventHandlerAbortedError)
+  // Inner handler was aborted by its own event-level timeout (40ms), not outer's.
   assert.ok(inner_ref)
   const inner_result = Array.from(inner_ref!.event_results.values())[0]
   assert.equal(inner_result.status, 'error')
-  assert.ok(inner_result.error instanceof EventHandlerTimeoutError)
-  const inner_timeout = inner_result.error as EventHandlerTimeoutError
+  assert.ok(inner_result.error instanceof EventHandlerAbortedError)
+  const inner_abort = inner_result.error as EventHandlerAbortedError
 
-  // Inner's timeout is from InnerEvent's own event_timeout (40ms),
-  // not inherited from outer
-  assert.ok(inner_timeout.message.includes('inner_handler'), 'Inner timeout should name inner_handler')
+  // Inner's abort is from InnerEvent's own event_timeout (40ms), not inherited from outer.
+  assert.ok(inner_abort.message.includes('event timeout'), 'Inner abort should indicate event timeout')
 
   // DeepEvent was cancelled when inner_handler timed out.
   // The cancellation error should reference inner_handler's timeout (not outer's).
@@ -1487,7 +1576,7 @@ test('parent timeout cancels children that have no timeout of their own', async 
   // Parent timed out
   const parent_result = Array.from(parent.event_results.values())[0]
   assert.equal(parent_result.status, 'error')
-  assert.ok(parent_result.error instanceof EventHandlerTimeoutError)
+  assert.ok(parent_result.error instanceof EventHandlerAbortedError)
 
   // Child should exist and be cancelled (it was in the queue, never started)
   assert.ok(child_ref, 'Child event should have been emitted')

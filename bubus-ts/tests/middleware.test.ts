@@ -292,11 +292,11 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
   await serial_timeout_event.done()
   const serial_results = Array.from(serial_timeout_event.event_results.values())
   assert.equal(
-    serial_results.some((result) => result.error instanceof EventHandlerTimeoutError),
+    serial_results.some((result) => result.error instanceof EventHandlerCancelledError),
     true
   )
   assert.equal(
-    serial_results.some((result) => result.error instanceof EventHandlerCancelledError),
+    serial_results.some((result) => result.error instanceof EventHandlerAbortedError || result.error instanceof EventHandlerTimeoutError),
     true
   )
 
@@ -313,13 +313,10 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
   await parallel_timeout_event.done()
   const parallel_results = Array.from(parallel_timeout_event.event_results.values())
   assert.equal(
-    parallel_results.some((result) => result.error instanceof EventHandlerTimeoutError),
+    parallel_results.some((result) => result.error instanceof EventHandlerAbortedError || result.error instanceof EventHandlerTimeoutError),
     true
   )
-  assert.equal(
-    parallel_results.some((result) => result.error instanceof EventHandlerAbortedError),
-    true
-  )
+  assert.equal(parallel_results.some((result) => result.error instanceof EventHandlerCancelledError), false)
 
   serial_bus.destroy()
   parallel_bus.destroy()

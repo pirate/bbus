@@ -1,6 +1,7 @@
 import { BaseEvent, type BaseEventJSON } from './base_event.js'
 import { EventResult } from './event_result.js'
 import { captureAsyncContext } from './async_context.js'
+import { withSlowMonitor, withTimeout } from './timing.js'
 import {
   AsyncLock,
   type EventConcurrencyMode,
@@ -235,53 +236,7 @@ export class EventBus {
     await this.runMiddlewareHook('on_handler_change', [this, handler, registered])
   }
 
-  private async withTimeout<T>(timeout_seconds: number | null, on_timeout: () => Error, fn: () => Promise<T>): Promise<T> {
-    const task = Promise.resolve().then(fn)
-    if (timeout_seconds === null) {
-      return await task
-    }
-    const timeout_ms = timeout_seconds * 1000
-    return await new Promise<T>((resolve, reject) => {
-      let settled = false
-      const finishResolve = (value: T) => {
-        if (settled) {
-          return
-        }
-        settled = true
-        clearTimeout(timer)
-        resolve(value)
-      }
-      const finishReject = (error: unknown) => {
-        if (settled) {
-          return
-        }
-        settled = true
-        clearTimeout(timer)
-        reject(error)
-      }
-      const timer = setTimeout(() => {
-        if (settled) {
-          return
-        }
-        settled = true
-        reject(on_timeout())
-        void task.catch(() => undefined)
-      }, timeout_ms)
-      task.then(finishResolve).catch(finishReject)
-    })
-  }
-
-  private async withSlowMonitor<T>(slow_timer: ReturnType<typeof setTimeout> | null, fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn()
-    } finally {
-      if (slow_timer) {
-        clearTimeout(slow_timer)
-      }
-    }
-  }
-
-  private finalizeTimedOutEvent(
+  private _finalizeTimedOutEvent(
     event: BaseEvent,
     pending_entries: Array<{
       handler: EventHandler
@@ -290,23 +245,19 @@ export class EventBus {
     timeout_error: EventHandlerTimeoutError
   ): void {
     const timeout_seconds = timeout_error.timeout_seconds ?? event.event_timeout ?? null
-    const timeout_result_id = timeout_error.event_result?.id
     event.cancelPendingDescendants(timeout_error)
 
     for (const entry of pending_entries) {
       const result = entry.result
-      if (result.status === 'completed' || result.status === 'error') {
+      if (result.status === 'completed') {
         continue
       }
-      const is_primary_timeout_result = timeout_result_id !== undefined && result.id === timeout_result_id
+      if (result.status === 'error') {
+        continue
+      }
       if (result.status === 'started') {
         result._lock?.exitHandlerRun()
         result.releaseQueueJumpPauses()
-        if (is_primary_timeout_result) {
-          result.markError(timeout_error)
-          result.signalAbort(timeout_error)
-          continue
-        }
         const aborted_error = new EventHandlerAbortedError(`Aborted running handler due to event timeout`, {
           event_result: result,
           timeout_seconds,
@@ -314,10 +265,6 @@ export class EventBus {
         })
         result.markError(aborted_error)
         result.signalAbort(aborted_error)
-        continue
-      }
-      if (is_primary_timeout_result) {
-        result.markError(timeout_error)
         continue
       }
       const cancelled_error = new EventHandlerCancelledError(`Cancelled pending handler due to event timeout`, {
@@ -330,6 +277,59 @@ export class EventBus {
 
     event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
     event.markCompleted()
+  }
+
+  private _createProcessEventTimeoutError(
+    event: BaseEvent,
+    pending_entries: Array<{
+      handler: EventHandler
+      result: EventResult
+    }>
+  ): EventHandlerTimeoutError {
+    const timeout_anchor =
+      pending_entries.find((entry) => entry.result.status === 'started') ??
+      pending_entries.find((entry) => entry.result.status === 'pending') ??
+      pending_entries[0]!
+    return new EventHandlerTimeoutError(
+      `${this.toString()}.on(${event.toString()}, ${timeout_anchor.result.handler.toString()}) timed out after ${event.event_timeout}s`,
+      {
+        event_result: timeout_anchor.result,
+        timeout_seconds: event.event_timeout ?? null,
+      }
+    )
+  }
+
+  private async _processEventWithTimeoutHandling(
+    event: BaseEvent,
+    pending_entries: Array<{
+      handler: EventHandler
+      result: EventResult
+    }>,
+    fn: () => Promise<void>
+  ): Promise<void> {
+    try {
+      if (event.event_timeout === null || pending_entries.length === 0) {
+        await fn()
+      } else {
+        await withTimeout(event.event_timeout, () => this._createProcessEventTimeoutError(event, pending_entries), fn)
+      }
+    } catch (error) {
+      if (error instanceof EventHandlerTimeoutError) {
+        this._finalizeTimedOutEvent(event, pending_entries, error)
+        return
+      }
+      throw error
+    }
+  }
+
+  private _markProcessEventCompleted(event: BaseEvent): void {
+    if (event.event_status !== 'completed') {
+      event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
+      event.markCompleted(false)
+    }
+    if (this.max_history_size !== null && this.max_history_size > 0 && this.event_history.size > this.max_history_size) {
+      this.trimHistory()
+    }
   }
 
   toJSON(): EventBusJSON {
@@ -873,48 +873,15 @@ export class EventBus {
       }
       await this.locks.withEventLock(
         event,
-        async () => {
-          const run_handler_scope = async () => {
-            await this.withSlowMonitor(event.createSlowEventWarningTimer(), async () => {
-              await scoped_event.processEvent(pending_entries)
-            })
-          }
-          const event_timeout = event.event_timeout ?? null
-          if (event_timeout !== null && pending_entries.length > 0) {
-            await this.withTimeout(
-              event_timeout,
-              () => {
-                const timeout_anchor =
-                  pending_entries.find((entry) => entry.result.status === 'started') ??
-                  pending_entries.find((entry) => entry.result.status === 'pending') ??
-                  pending_entries[0]!
-                return new EventHandlerTimeoutError(
-                  `${this.toString()}.on(${event.toString()}, ${timeout_anchor.result.handler.toString()}) timed out after ${event_timeout}s`,
-                  {
-                    event_result: timeout_anchor.result,
-                    timeout_seconds: event_timeout,
-                  }
-                )
-              },
-              run_handler_scope
+        () =>
+          this._processEventWithTimeoutHandling(event, pending_entries, () =>
+            withSlowMonitor(event.createSlowEventWarningTimer(), () =>
+              scoped_event.processEvent(pending_entries)
             )
-          } else {
-            await run_handler_scope()
-          }
-        },
+          ),
         options
       )
-      event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
-      event.markCompleted(false)
-      if (this.max_history_size !== null && this.max_history_size > 0 && this.event_history.size > this.max_history_size) {
-        this.trimHistory()
-      }
-    } catch (error) {
-      if (error instanceof EventHandlerTimeoutError) {
-        this.finalizeTimedOutEvent(event, pending_entries, error)
-      } else {
-        throw error
-      }
+      this._markProcessEventCompleted(event)
     } finally {
       if (options.pre_acquired_lock) {
         options.pre_acquired_lock.release()
