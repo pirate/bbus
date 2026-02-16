@@ -86,6 +86,7 @@ values = await event.event_results_list(raise_if_any=False, raise_if_none=False)
 #   {'debug': True, 'port': 8080},
 #   {'debug': False, 'timeout': 30}
 # ]
+
 merged_config = {key: val for config in values for key, val in config.items()}
 # {'debug': False, 'port': 8080, 'timeout': 30}
 ```
