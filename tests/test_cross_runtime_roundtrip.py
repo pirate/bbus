@@ -305,7 +305,9 @@ def _ts_roundtrip_events(payload: list[dict[str, Any]], tmp_path: Path) -> list[
 
     repo_root = Path(__file__).resolve().parents[1]
     ts_root = repo_root / 'bubus-ts'
-    assert (ts_root / 'src' / 'index.ts').exists(), 'bubus-ts project not found in repository root'
+    assert (ts_root / 'dist' / 'esm' / 'index.js').exists(), (
+        'bubus-ts dist/esm build not found. Run `pnpm --dir bubus-ts run build` before cross-runtime tests.'
+    )
 
     in_path = tmp_path / 'python_events.json'
     out_path = tmp_path / 'ts_events.json'
@@ -313,7 +315,7 @@ def _ts_roundtrip_events(payload: list[dict[str, Any]], tmp_path: Path) -> list[
 
     ts_script = """
 import { readFileSync, writeFileSync } from 'node:fs'
-import { BaseEvent } from './src/index.js'
+import { BaseEvent } from './dist/esm/index.js'
 
 const inputPath = process.env.BUBUS_PY_TS_INPUT_PATH
 const outputPath = process.env.BUBUS_PY_TS_OUTPUT_PATH
@@ -335,7 +337,7 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
     env['BUBUS_PY_TS_OUTPUT_PATH'] = str(out_path)
     try:
         proc = subprocess.run(
-            [node_bin, '--import', 'tsx', '-e', ts_script],
+            [node_bin, '--input-type=module', '-e', ts_script],
             cwd=ts_root,
             env=env,
             capture_output=True,
@@ -343,12 +345,9 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
-        pytest.fail(f'node/tsx event roundtrip timed out after {SUBPROCESS_TIMEOUT_SECONDS}s: {exc}')
+        pytest.fail(f'node/esm event roundtrip timed out after {SUBPROCESS_TIMEOUT_SECONDS}s: {exc}')
 
-    if proc.returncode != 0 and 'Cannot find package' in proc.stderr and "'tsx'" in proc.stderr:
-        pytest.fail('tsx is required in bubus-ts for cross-language roundtrip tests')
-
-    assert proc.returncode == 0, f'node/tsx roundtrip failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
+    assert proc.returncode == 0, f'node/esm roundtrip failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
     return json.loads(out_path.read_text(encoding='utf-8'))
 
 
@@ -358,7 +357,9 @@ def _ts_roundtrip_bus(payload: dict[str, Any], tmp_path: Path) -> dict[str, Any]
 
     repo_root = Path(__file__).resolve().parents[1]
     ts_root = repo_root / 'bubus-ts'
-    assert (ts_root / 'src' / 'index.ts').exists(), 'bubus-ts project not found in repository root'
+    assert (ts_root / 'dist' / 'esm' / 'index.js').exists(), (
+        'bubus-ts dist/esm build not found. Run `pnpm --dir bubus-ts run build` before cross-runtime tests.'
+    )
 
     in_path = tmp_path / 'python_bus.json'
     out_path = tmp_path / 'ts_bus.json'
@@ -366,7 +367,7 @@ def _ts_roundtrip_bus(payload: dict[str, Any], tmp_path: Path) -> dict[str, Any]
 
     ts_script = """
 import { readFileSync, writeFileSync } from 'node:fs'
-import { EventBus } from './src/index.js'
+import { EventBus } from './dist/esm/index.js'
 
 const inputPath = process.env.BUBUS_PY_TS_BUS_INPUT_PATH
 const outputPath = process.env.BUBUS_PY_TS_BUS_OUTPUT_PATH
@@ -388,7 +389,7 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
     env['BUBUS_PY_TS_BUS_OUTPUT_PATH'] = str(out_path)
     try:
         proc = subprocess.run(
-            [node_bin, '--import', 'tsx', '-e', ts_script],
+            [node_bin, '--input-type=module', '-e', ts_script],
             cwd=ts_root,
             env=env,
             capture_output=True,
@@ -396,12 +397,9 @@ writeFileSync(outputPath, JSON.stringify(roundtripped, null, 2), 'utf8')
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
-        pytest.fail(f'node/tsx bus roundtrip timed out after {SUBPROCESS_TIMEOUT_SECONDS}s: {exc}')
+        pytest.fail(f'node/esm bus roundtrip timed out after {SUBPROCESS_TIMEOUT_SECONDS}s: {exc}')
 
-    if proc.returncode != 0 and 'Cannot find package' in proc.stderr and "'tsx'" in proc.stderr:
-        pytest.fail('tsx is required in bubus-ts for cross-language roundtrip tests')
-
-    assert proc.returncode == 0, f'node/tsx bus roundtrip failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
+    assert proc.returncode == 0, f'node/esm bus roundtrip failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
     return json.loads(out_path.read_text(encoding='utf-8'))
 
 
@@ -485,7 +483,7 @@ async def test_python_to_ts_roundtrip_schema_enforcement_after_reload(tmp_path: 
     wrong_event = BaseEvent[Any].model_validate(screenshot_payload)
     assert isinstance(wrong_event.event_result_type, type)
     assert issubclass(wrong_event.event_result_type, BaseModel)
-    await asyncio.wait_for(wrong_bus.dispatch(wrong_event), timeout=EVENT_WAIT_TIMEOUT_SECONDS)
+    await asyncio.wait_for(wrong_bus.emit(wrong_event), timeout=EVENT_WAIT_TIMEOUT_SECONDS)
     wrong_result = next(iter(wrong_event.event_results.values()))
     assert wrong_result.status == 'error'
     assert wrong_result.error is not None
@@ -512,7 +510,7 @@ async def test_python_to_ts_roundtrip_schema_enforcement_after_reload(tmp_path: 
     right_event = BaseEvent[Any].model_validate(screenshot_payload)
     assert isinstance(right_event.event_result_type, type)
     assert issubclass(right_event.event_result_type, BaseModel)
-    await asyncio.wait_for(right_bus.dispatch(right_event), timeout=EVENT_WAIT_TIMEOUT_SECONDS)
+    await asyncio.wait_for(right_bus.emit(right_event), timeout=EVENT_WAIT_TIMEOUT_SECONDS)
     right_result = next(iter(right_event.event_results.values()))
     assert right_result.status == 'completed'
     assert right_result.error is None
@@ -577,7 +575,7 @@ async def test_python_to_ts_to_python_bus_roundtrip_rehydrates_and_resumes(tmp_p
     assert preseeded.result == 'seeded'
     assert preseeded.handler is restored.handlers[handler_one_id]
 
-    trigger = restored.dispatch(PyTsBusResumeEvent(label='e3'))
+    trigger = restored.emit(PyTsBusResumeEvent(label='e3'))
     await asyncio.wait_for(trigger, timeout=EVENT_WAIT_TIMEOUT_SECONDS)
 
     done_one = restored.event_history[event_one.event_id]

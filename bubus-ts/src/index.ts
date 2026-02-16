@@ -1,4 +1,6 @@
 export { BaseEvent, BaseEventSchema } from './base_event.js'
+export { EventHistory } from './event_history.js'
+export type { EventHistoryFindOptions, EventHistoryTrimOptions } from './event_history.js'
 export { EventResult } from './event_result.js'
 export { EventBus } from './event_bus.js'
 export type { EventBusJSON, EventBusOptions } from './event_bus.js'

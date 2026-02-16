@@ -4,7 +4,10 @@ import { EventHandlerCancelledError, EventHandlerTimeoutError } from './event_ha
 
 type LogTreeBus = {
   name: string
-  event_history: Map<string, BaseEvent>
+  event_history: {
+    values(): IterableIterator<BaseEvent>
+    has(event_id: string): boolean
+  }
   toString?: () => string
 }
 

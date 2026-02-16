@@ -51,7 +51,7 @@ class TestWALPersistence:
             events = []
             for i in range(3):
                 event = UserActionEvent(action=f'action_{i}', user_id=f'user_{i}')
-                emitted_event = bus.dispatch(event)
+                emitted_event = bus.emit(event)
                 completed_event = await emitted_event
                 events.append(completed_event)
 
@@ -88,7 +88,7 @@ class TestWALPersistence:
 
         try:
             # Emit an event
-            event = bus.dispatch(UserActionEvent(action='test', user_id='u1'))
+            event = bus.emit(UserActionEvent(action='test', user_id='u1'))
             await event
 
             # Wait for WAL persistence to complete
@@ -116,7 +116,7 @@ class TestWALPersistence:
             bus.on('UserActionEvent', slow_handler)
 
             # Emit event without waiting
-            event = bus.dispatch(UserActionEvent(action='test', user_id='u1'))
+            event = bus.emit(UserActionEvent(action='test', user_id='u1'))
 
             # Check file doesn't exist yet (event not completed)
             assert not wal_path.exists()
@@ -171,7 +171,7 @@ class TestHandlerMiddleware:
         bus.on('UserActionEvent', lambda event: 'ok')
 
         try:
-            completed = await bus.dispatch(UserActionEvent(action='test', user_id='user1'))
+            completed = await bus.emit(UserActionEvent(action='test', user_id='user1'))
             await bus.wait_until_idle()
 
             assert isinstance(bus.middlewares[0], ClassMiddleware)
@@ -204,7 +204,7 @@ class TestHandlerMiddleware:
         bus.on('UserActionEvent', lambda event: 'ok')
 
         try:
-            completed = await bus.dispatch(UserActionEvent(action='test', user_id='user1'))
+            completed = await bus.emit(UserActionEvent(action='test', user_id='user1'))
             await bus.wait_until_idle()
 
             assert completed.event_results
@@ -235,7 +235,7 @@ class TestHandlerMiddleware:
         bus.on('UserActionEvent', failing_handler)
 
         try:
-            event = await bus.dispatch(UserActionEvent(action='fail', user_id='user2'))
+            event = await bus.emit(UserActionEvent(action='fail', user_id='user2'))
             await bus.wait_until_idle()
 
             result = next(iter(event.event_results.values()))
@@ -265,7 +265,7 @@ class TestHandlerMiddleware:
         bus.on(UserActionEvent, failing_handler)
 
         try:
-            event = await bus.dispatch(UserActionEvent(action='fail', user_id='u2'))
+            event = await bus.emit(UserActionEvent(action='fail', user_id='u2'))
             await bus.wait_until_idle()
 
             result = next(iter(event.event_results.values()))
@@ -299,7 +299,7 @@ class TestHandlerMiddleware:
         try:
             for batch_index in range(batch_count):
                 events = [
-                    bus.dispatch(
+                    bus.emit(
                         UserActionEvent(
                             action='deterministic',
                             user_id=f'u-{batch_index}-{event_index}',
@@ -343,7 +343,7 @@ class TestHandlerMiddleware:
         bus.on(TimeoutLifecycleEvent, pending_handler)
 
         try:
-            await bus.dispatch(TimeoutLifecycleEvent())
+            await bus.emit(TimeoutLifecycleEvent())
             await bus.wait_until_idle()
 
             assert observed_event_statuses == ['pending', 'started', 'completed']
@@ -380,7 +380,7 @@ class TestHandlerMiddleware:
         bus.on(UserActionEventErrorEvent, fail_auto)
 
         try:
-            await bus.dispatch(UserActionEvent(action='fail', user_id='u1'))
+            await bus.emit(UserActionEvent(action='fail', user_id='u1'))
             await bus.wait_until_idle()
             assert seen == [('UserActionEventErrorEvent', 'ValueError')]
             assert await bus.find('UserActionEventErrorEventErrorEvent', past=True, future=False) is None
@@ -408,7 +408,7 @@ class TestHandlerMiddleware:
         bus.on(UserActionEventResultEvent, non_none_auto)
 
         try:
-            await bus.dispatch(UserActionEvent(action='ok', user_id='u2'))
+            await bus.emit(UserActionEvent(action='ok', user_id='u2'))
             await bus.wait_until_idle()
             assert seen == [('UserActionEventResultEvent', 123)]
             assert await bus.find('UserActionEventResultEventResultEvent', past=True, future=False) is None
@@ -435,7 +435,7 @@ class TestHandlerMiddleware:
         bus.on(UserActionEventResultEvent, on_auto_result_event)
 
         try:
-            parent = await bus.dispatch(UserActionEvent(action='ok', user_id='u3'))
+            parent = await bus.emit(UserActionEvent(action='ok', user_id='u3'))
             await bus.wait_until_idle()
             assert len(parent.event_results) == 1
             only_result = next(iter(parent.event_results.values()))
@@ -519,14 +519,14 @@ class TestHandlerMiddleware:
             return None
 
         async def root_handler(event: RootEvent) -> None:
-            child = event.event_bus.dispatch(ChildEvent())
+            child = event.event_bus.emit(ChildEvent())
             await child
 
         bus.on(RootEvent, root_handler)
         bus.on(ChildEvent, child_handler)
 
         try:
-            await bus.dispatch(RootEvent())
+            await bus.emit(RootEvent())
             await bus.wait_until_idle()
 
             root_event_span = next(span for span in tracer.spans if span.attrs.get('bubus.event_type') == 'RootEvent')
@@ -562,7 +562,7 @@ class TestSQLiteHistoryMirror:
         bus.on('UserActionEvent', handler)
 
         try:
-            await bus.dispatch(UserActionEvent(action='ping', user_id='u-1'))
+            await bus.emit(UserActionEvent(action='ping', user_id='u-1'))
             await bus.wait_until_idle()
 
             conn = sqlite3.connect(db_path)
@@ -604,7 +604,7 @@ class TestLoggerMiddleware:
         bus.on('UserActionEvent', handler)
 
         try:
-            await bus.dispatch(UserActionEvent(action='log', user_id='user'))
+            await bus.emit(UserActionEvent(action='log', user_id='user'))
             await bus.wait_until_idle()
 
             assert log_path.exists()
@@ -623,7 +623,7 @@ class TestLoggerMiddleware:
         bus.on('UserActionEvent', handler)
 
         try:
-            await bus.dispatch(UserActionEvent(action='log', user_id='user'))
+            await bus.emit(UserActionEvent(action='log', user_id='user'))
             await bus.wait_until_idle()
 
             captured = capsys.readouterr()
@@ -643,7 +643,7 @@ class TestLoggerMiddleware:
         bus.on('UserActionEvent', failing_handler)
 
         try:
-            await bus.dispatch(UserActionEvent(action='boom', user_id='u-2'))
+            await bus.emit(UserActionEvent(action='boom', user_id='u-2'))
             await bus.wait_until_idle()
 
             conn = sqlite3.connect(db_path)
@@ -726,7 +726,7 @@ async def test_middleware_hooks_cover_class_string_and_wildcard_patterns() -> No
             assert record['event_pattern'] == expected_patterns[record['handler_id']]
             assert record['eventbus_id'] == bus.id
 
-        event = await bus.dispatch(MiddlewarePatternEvent(event_timeout=0.2))
+        event = await bus.emit(MiddlewarePatternEvent(event_timeout=0.2))
         await bus.wait_until_idle()
 
         assert str(event.event_status) == 'completed'
@@ -808,7 +808,7 @@ async def test_middleware_hooks_cover_string_and_wildcard_patterns_for_ad_hoc_ba
             assert record['event_pattern'] == expected_patterns[record['handler_id']]
             assert record['eventbus_id'] == bus.id
 
-        event = await bus.dispatch(BaseEvent(event_type=ad_hoc_event_type, event_timeout=0.2))
+        event = await bus.emit(BaseEvent(event_type=ad_hoc_event_type, event_timeout=0.2))
         await bus.wait_until_idle()
 
         assert str(event.event_status) == 'completed'
@@ -887,7 +887,7 @@ async def _run_scenario(
     bus.on('HistoryTestEvent', conditional_handler)
 
     try:
-        await bus.dispatch(HistoryTestEvent(payload='payload', should_fail=should_fail))
+        await bus.emit(HistoryTestEvent(payload='payload', should_fail=should_fail))
         await bus.wait_until_idle()
     finally:
         summary = _summarize_history(bus.event_history)
@@ -937,7 +937,7 @@ def _worker_dispatch(db_path: str, worker_id: int) -> None:
 
         bus.on('HistoryTestEvent', handler)
         try:
-            await bus.dispatch(HistoryTestEvent(payload=f'worker-{worker_id}'))
+            await bus.emit(HistoryTestEvent(payload=f'worker-{worker_id}'))
             await bus.wait_until_idle()
         finally:
             await bus.stop()

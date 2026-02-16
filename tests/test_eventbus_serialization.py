@@ -61,8 +61,8 @@ def test_eventbus_model_dump_json_roundtrip_uses_id_keyed_structures() -> None:
     restored = EventBus.validate(bus.model_dump_json())
     assert restored.id == bus.id
     assert restored.name == bus.name
-    assert restored.max_history_size == bus.max_history_size
-    assert restored.max_history_drop == bus.max_history_drop
+    assert restored.event_history.max_history_size == bus.event_history.max_history_size
+    assert restored.event_history.max_history_drop == bus.event_history.max_history_drop
     assert str(restored.event_concurrency) == str(bus.event_concurrency)
     assert str(restored.event_handler_concurrency) == str(bus.event_handler_concurrency)
     assert str(restored.event_handler_completion) == str(bus.event_handler_completion)

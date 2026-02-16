@@ -31,7 +31,7 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
 
   bus.on(RuntimeEvent, () => 'ok')
 
-  const event = bus.dispatch(RuntimeEvent({}))
+  const event = bus.emit(RuntimeEvent({}))
   await event.done()
 
   const json = event.toJSON() as Record<string, unknown>
@@ -66,7 +66,7 @@ test('BaseEvent reset returns a fresh pending event that can be redispatched', a
   bus_a.on(ResetEvent, (event) => `a:${event.label}`)
   bus_b.on(ResetEvent, (event) => `b:${event.label}`)
 
-  const completed = await bus_a.dispatch(ResetEvent({ label: 'hello' })).done()
+  const completed = await bus_a.emit(ResetEvent({ label: 'hello' })).done()
   const fresh = completed.reset()
 
   assert.notEqual(fresh.event_id, completed.event_id)
@@ -75,7 +75,7 @@ test('BaseEvent reset returns a fresh pending event that can be redispatched', a
   assert.equal(fresh.event_started_at, null)
   assert.equal(fresh.event_completed_at, null)
 
-  const forwarded = await bus_b.dispatch(fresh).done()
+  const forwarded = await bus_b.emit(fresh).done()
   assert.equal(forwarded.event_status, 'completed')
   assert.equal(
     Array.from(forwarded.event_results.values()).some((result) => result.result === 'b:hello'),

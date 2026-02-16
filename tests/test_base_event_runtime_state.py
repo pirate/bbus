@@ -54,7 +54,7 @@ async def test_event_started_at_after_processing():
     bus.on('SampleEvent', test_handler)
 
     # Dispatch event
-    event = await bus.dispatch(SampleEvent(data='processing_test'))
+    event = await bus.emit(SampleEvent(data='processing_test'))
 
     # Check timestamps - should not raise AttributeError
     assert event.event_started_at is not None

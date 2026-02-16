@@ -24,7 +24,7 @@ async def test_on_stores_eventhandler_entry_and_index() -> None:
     assert 'RegistryEvent' in bus.handlers_by_key
     assert entry.id in bus.handlers_by_key['RegistryEvent']
 
-    dispatched = bus.dispatch(BaseEvent(event_type='RegistryEvent'))
+    dispatched = bus.emit(BaseEvent(event_type='RegistryEvent'))
     completed = await dispatched
     assert entry.id in completed.event_results
     assert completed.event_results[entry.id].handler.id == entry.id
@@ -96,7 +96,7 @@ async def test_on_normalizes_sync_handler_to_async_callable() -> None:
     direct_result = await entry.handler_async(RegistryNormalizeEvent())
     assert direct_result == 'normalized'
 
-    dispatched = bus.dispatch(RegistryNormalizeEvent())
+    dispatched = bus.emit(RegistryNormalizeEvent())
     completed = await dispatched
     result = completed.event_results[entry.id]
 

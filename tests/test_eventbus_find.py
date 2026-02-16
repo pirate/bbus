@@ -84,14 +84,14 @@ class TestEventIsChildOf:
             child_event_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.dispatch(ChildEvent())
+                child = await bus.emit(ChildEvent())
                 child_event_ref.append(child)
                 return 'parent_done'
 
             bus.on(ParentEvent, parent_handler)
             bus.on(ChildEvent, lambda e: 'child_done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             child = child_event_ref[0]
@@ -110,11 +110,11 @@ class TestEventIsChildOf:
             grandchild_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                await bus.dispatch(ChildEvent())
+                await bus.emit(ChildEvent())
                 return 'parent_done'
 
             async def child_handler(event: ChildEvent) -> str:
-                grandchild = await bus.dispatch(GrandchildEvent())
+                grandchild = await bus.emit(GrandchildEvent())
                 grandchild_ref.append(grandchild)
                 return 'child_done'
 
@@ -122,7 +122,7 @@ class TestEventIsChildOf:
             bus.on(ChildEvent, child_handler)
             bus.on(GrandchildEvent, lambda e: 'grandchild_done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             grandchild = grandchild_ref[0]
@@ -141,8 +141,8 @@ class TestEventIsChildOf:
             bus.on(ParentEvent, lambda e: 'parent_done')
             bus.on(UnrelatedEvent, lambda e: 'unrelated_done')
 
-            parent = await bus.dispatch(ParentEvent())
-            unrelated = await bus.dispatch(UnrelatedEvent())
+            parent = await bus.emit(ParentEvent())
+            unrelated = await bus.emit(UnrelatedEvent())
 
             assert bus.event_is_child_of(unrelated, parent) is False
 
@@ -156,7 +156,7 @@ class TestEventIsChildOf:
         try:
             bus.on(ParentEvent, lambda e: 'done')
 
-            event = await bus.dispatch(ParentEvent())
+            event = await bus.emit(ParentEvent())
 
             assert bus.event_is_child_of(event, event) is False
 
@@ -171,14 +171,14 @@ class TestEventIsChildOf:
             child_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.dispatch(ChildEvent())
+                child = await bus.emit(ChildEvent())
                 child_ref.append(child)
                 return 'parent_done'
 
             bus.on(ParentEvent, parent_handler)
             bus.on(ChildEvent, lambda e: 'child_done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             child = child_ref[0]
@@ -201,14 +201,14 @@ class TestEventIsParentOf:
             child_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.dispatch(ChildEvent())
+                child = await bus.emit(ChildEvent())
                 child_ref.append(child)
                 return 'parent_done'
 
             bus.on(ParentEvent, parent_handler)
             bus.on(ChildEvent, lambda e: 'child_done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             child = child_ref[0]
@@ -227,11 +227,11 @@ class TestEventIsParentOf:
             grandchild_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                await bus.dispatch(ChildEvent())
+                await bus.emit(ChildEvent())
                 return 'parent_done'
 
             async def child_handler(event: ChildEvent) -> str:
-                grandchild = await bus.dispatch(GrandchildEvent())
+                grandchild = await bus.emit(GrandchildEvent())
                 grandchild_ref.append(grandchild)
                 return 'child_done'
 
@@ -239,7 +239,7 @@ class TestEventIsParentOf:
             bus.on(ChildEvent, child_handler)
             bus.on(GrandchildEvent, lambda e: 'grandchild_done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             grandchild = grandchild_ref[0]
@@ -269,7 +269,7 @@ class TestFindPastOnly:
             find_future_task = asyncio.create_task(bus.find(ParentEvent, past=False, future=1))
             await asyncio.sleep(0)
 
-            dispatched = bus.dispatch(ParentEvent())
+            dispatched = bus.emit(ParentEvent())
             found_future = await find_future_task
             assert found_future is not None
             assert found_future.event_id == dispatched.event_id
@@ -290,7 +290,7 @@ class TestFindPastOnly:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch event first
-            dispatched = await bus.dispatch(ParentEvent())
+            dispatched = await bus.emit(ParentEvent())
 
             # Find it in history (past=True = search all history)
             found = await bus.find(ParentEvent, past=True, future=False)
@@ -308,7 +308,7 @@ class TestFindPastOnly:
 
         try:
             bus_b.on(NumberedEvent, lambda e: 'done')
-            await bus_b.dispatch(NumberedEvent(value=10))
+            await bus_b.emit(NumberedEvent(value=10))
 
             found_on_a = await bus_a.find(NumberedEvent, past=True, future=False)
             found_on_b = await bus_b.find(NumberedEvent, past=True, future=False)
@@ -326,7 +326,7 @@ class TestFindPastOnly:
 
         try:
             bus.on(NumberedEvent, lambda e: 'done')
-            await bus.dispatch(NumberedEvent(value=7))
+            await bus.emit(NumberedEvent(value=7))
 
             found = await bus.find(NumberedEvent, past=True, future=False)
             assert found is not None
@@ -343,13 +343,13 @@ class TestFindPastOnly:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch an event
-            _old_event = await bus.dispatch(ParentEvent())
+            _old_event = await bus.emit(ParentEvent())
 
             # Wait a bit
             await asyncio.sleep(0.15)
 
             # Dispatch another event
-            new_event = await bus.dispatch(ParentEvent())
+            new_event = await bus.emit(ParentEvent())
 
             # With a very short past window, should only find the new event
             found = await bus.find(ParentEvent, past=0.1, future=False)
@@ -372,7 +372,7 @@ class TestFindPastOnly:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch an event
-            await bus.dispatch(ParentEvent())
+            await bus.emit(ParentEvent())
 
             # Wait longer than our window
             await asyncio.sleep(0.15)
@@ -405,8 +405,8 @@ class TestFindPastOnly:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
             # Dispatch two events with different target_ids
-            await bus.dispatch(ScreenshotEvent(target_id='tab1'))
-            event2 = await bus.dispatch(ScreenshotEvent(target_id='tab2'))
+            await bus.emit(ScreenshotEvent(target_id='tab1'))
+            event2 = await bus.emit(ScreenshotEvent(target_id='tab2'))
 
             # Find only the one with target_id='tab2'
             found = await bus.find(
@@ -430,9 +430,9 @@ class TestFindPastOnly:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch multiple events
-            await bus.dispatch(ParentEvent())
+            await bus.emit(ParentEvent())
             await asyncio.sleep(0.01)  # Ensure different timestamps
-            event2 = await bus.dispatch(ParentEvent())
+            event2 = await bus.emit(ParentEvent())
 
             # Should return the most recent
             found = await bus.find(ParentEvent, past=True, future=False)
@@ -456,7 +456,7 @@ class TestFindPastOnly:
 
             bus.on(ParentEvent, slow_handler)
 
-            dispatched = bus.dispatch(ParentEvent())
+            dispatched = bus.emit(ParentEvent())
             await asyncio.sleep(0.02)  # Let handler start.
 
             found_while_running = await bus.find(ParentEvent, past=True, future=False)
@@ -502,7 +502,7 @@ class TestFindPastOnly:
 
             bus.on(ParentEvent, slow_handler)
 
-            in_flight = bus.dispatch(ParentEvent())
+            in_flight = bus.emit(ParentEvent())
             await asyncio.sleep(0.02)
 
             pending_or_started = await bus.find(ParentEvent, past=True, future=False, event_status='started')
@@ -527,8 +527,8 @@ class TestFindPastOnly:
         try:
             bus.on(ParentEvent, lambda e: 'done')
 
-            event_a = await bus.dispatch(ParentEvent(event_timeout=11))
-            await bus.dispatch(ParentEvent(event_timeout=22))
+            event_a = await bus.emit(ParentEvent(event_timeout=11))
+            await bus.emit(ParentEvent(event_timeout=22))
 
             found = await bus.find(
                 ParentEvent,
@@ -558,8 +558,8 @@ class TestFindPastOnly:
         try:
             bus.on(UserActionEvent, lambda e: 'done')
 
-            await bus.dispatch(UserActionEvent(action='logout', user_id='u-2'))
-            expected = await bus.dispatch(UserActionEvent(action='login', user_id='u-1'))
+            await bus.emit(UserActionEvent(action='logout', user_id='u-2'))
+            expected = await bus.emit(UserActionEvent(action='login', user_id='u-1'))
 
             found = await bus.find(UserActionEvent, past=True, future=False, action='login', user_id='u-1')
             assert found is not None
@@ -578,8 +578,8 @@ class TestFindPastOnly:
             bus.on(UserActionEvent, lambda e: 'done')
             bus.on(SystemEvent, lambda e: 'done')
 
-            expected = await bus.dispatch(UserActionEvent(action='login', user_id='u-1'))
-            await bus.dispatch(SystemEvent())
+            expected = await bus.emit(UserActionEvent(action='login', user_id='u-1'))
+            await bus.emit(SystemEvent())
 
             found = await bus.find(
                 '*',
@@ -608,7 +608,7 @@ class TestFindFutureOnly:
             # Start waiting for event
             async def dispatch_after_delay():
                 await asyncio.sleep(0.05)
-                return await bus.dispatch(ParentEvent())
+                return await bus.emit(ParentEvent())
 
             find_task = asyncio.create_task(bus.find(ParentEvent, past=False, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
@@ -644,7 +644,7 @@ class TestFindFutureOnly:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch event first
-            await bus.dispatch(ParentEvent())
+            await bus.emit(ParentEvent())
 
             # Should NOT find it (past=False), and timeout quickly
             found = await bus.find(ParentEvent, past=False, future=0.01)
@@ -667,7 +667,7 @@ class TestFindFutureOnly:
 
             bus.on(ParentEvent, slow_handler)
 
-            in_flight = bus.dispatch(ParentEvent())
+            in_flight = bus.emit(ParentEvent())
             await asyncio.sleep(0.01)
 
             found = await bus.find(ParentEvent, past=False, future=0.05)
@@ -687,7 +687,7 @@ class TestFindFutureOnly:
 
             async def dispatch_after_delay():
                 await asyncio.sleep(0.05)
-                return await bus.dispatch(ParentEvent())
+                return await bus.emit(ParentEvent())
 
             find_task = asyncio.create_task(bus.find('ParentEvent', past=False, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
@@ -718,9 +718,9 @@ class TestFindFutureOnly:
             )
 
             await asyncio.sleep(0.02)
-            await bus.dispatch(SystemEvent())
-            await bus.dispatch(UserActionEvent(action='normal', user_id='u-x'))
-            expected = await bus.dispatch(UserActionEvent(action='special', user_id='u-y'))
+            await bus.emit(SystemEvent())
+            await bus.emit(UserActionEvent(action='normal', user_id='u-x'))
+            expected = await bus.emit(UserActionEvent(action='special', user_id='u-y'))
 
             found = await find_task
             assert found is not None
@@ -742,7 +742,7 @@ class TestFindFutureOnly:
 
             async def dispatch_after_delay():
                 await asyncio.sleep(0.05)
-                return await bus.dispatch(BaseEvent(event_type='DifferentNameFromClass'))
+                return await bus.emit(BaseEvent(event_type='DifferentNameFromClass'))
 
             find_task = asyncio.create_task(bus.find(DifferentNameFromClass, past=False, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
@@ -782,8 +782,8 @@ class TestFindFutureOnly:
             )
 
             await asyncio.sleep(0.02)
-            event_a = await bus.dispatch(ScreenshotEvent(target_id='tab-a'))
-            event_b = await bus.dispatch(ScreenshotEvent(target_id='tab-b'))
+            event_a = await bus.emit(ScreenshotEvent(target_id='tab-a'))
+            event_b = await bus.emit(ScreenshotEvent(target_id='tab-b'))
 
             found_a, found_b = await asyncio.gather(wait_for_a, wait_for_b)
 
@@ -815,7 +815,7 @@ class TestFindFutureOnly:
             find_task = asyncio.create_task(bus.find(ParentEvent, past=False, future=1))
             await asyncio.sleep(0.01)
 
-            dispatched = bus.dispatch(ParentEvent())
+            dispatched = bus.emit(ParentEvent())
             found = await find_task
 
             assert found is not None
@@ -845,7 +845,7 @@ class TestFindFutureOnly:
             )
 
             await asyncio.sleep(0.05)
-            dispatched = await bus.dispatch(ParentEvent())
+            dispatched = await bus.emit(ParentEvent())
 
             found = await find_task
             assert found is not None
@@ -865,7 +865,7 @@ class TestFindNeitherPastNorFuture:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch event
-            await bus.dispatch(ParentEvent())
+            await bus.emit(ParentEvent())
 
             # With both past and future disabled, should return None
             start = datetime.now(UTC)
@@ -890,7 +890,7 @@ class TestFindPastAndFuture:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch event first
-            dispatched = await bus.dispatch(ParentEvent())
+            dispatched = await bus.emit(ParentEvent())
 
             # Should find it immediately from history
             start = datetime.now(UTC)
@@ -913,12 +913,12 @@ class TestFindPastAndFuture:
 
             # Different event type in history
             bus.on(ParentEvent, lambda e: 'done')
-            await bus.dispatch(ParentEvent())
+            await bus.emit(ParentEvent())
 
             # Start waiting for ChildEvent (not in history)
             async def dispatch_after_delay():
                 await asyncio.sleep(0.05)
-                return await bus.dispatch(ChildEvent())
+                return await bus.emit(ChildEvent())
 
             find_task = asyncio.create_task(bus.find(ChildEvent, past=True, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
@@ -939,7 +939,7 @@ class TestFindPastAndFuture:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch an old event
-            await bus.dispatch(ParentEvent())
+            await bus.emit(ParentEvent())
             await asyncio.sleep(0.15)
 
             # With short past window (0.05s), old event won't be found
@@ -963,7 +963,7 @@ class TestFindPastAndFuture:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch an old event
-            dispatched = await bus.dispatch(ParentEvent())
+            dispatched = await bus.emit(ParentEvent())
             await asyncio.sleep(0.15)
 
             # past=True should find the old event (no time window)
@@ -983,13 +983,13 @@ class TestFindPastAndFuture:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch an old event
-            await bus.dispatch(ParentEvent())
+            await bus.emit(ParentEvent())
             await asyncio.sleep(0.15)
 
             # past=0.05 won't find old event, but we dispatch a new one
             async def dispatch_after_delay():
                 await asyncio.sleep(0.05)
-                return await bus.dispatch(ParentEvent())
+                return await bus.emit(ParentEvent())
 
             find_task = asyncio.create_task(bus.find(ParentEvent, past=0.05, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
@@ -1017,8 +1017,8 @@ class TestFindPastAndFuture:
 
             bus.on(NumberedEvent, numbered_handler)
 
-            await bus.dispatch(NumberedEvent(value=1))
-            in_flight = bus.dispatch(NumberedEvent(value=2))
+            await bus.emit(NumberedEvent(value=1))
+            in_flight = bus.emit(NumberedEvent(value=2))
             await asyncio.sleep(0.01)
 
             found = await bus.find(NumberedEvent, past=True, future=True)
@@ -1048,14 +1048,14 @@ class TestFindWithChildOf:
             child_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.dispatch(ChildEvent())
+                child = await bus.emit(ChildEvent())
                 child_ref.append(child)
                 return 'parent_done'
 
             bus.on(ParentEvent, parent_handler)
             bus.on(ChildEvent, lambda e: 'child_done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             # Find child of parent
@@ -1075,8 +1075,8 @@ class TestFindWithChildOf:
             bus.on(ParentEvent, lambda e: 'parent_done')
             bus.on(UnrelatedEvent, lambda e: 'unrelated_done')
 
-            parent = await bus.dispatch(ParentEvent())
-            await bus.dispatch(UnrelatedEvent())
+            parent = await bus.emit(ParentEvent())
+            await bus.emit(UnrelatedEvent())
 
             # Should not find UnrelatedEvent as child of parent
             found = await bus.find(UnrelatedEvent, child_of=parent, past=True, future=False)
@@ -1094,11 +1094,11 @@ class TestFindWithChildOf:
             grandchild_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                await bus.dispatch(ChildEvent())
+                await bus.emit(ChildEvent())
                 return 'parent_done'
 
             async def child_handler(event: ChildEvent) -> str:
-                grandchild = await bus.dispatch(GrandchildEvent())
+                grandchild = await bus.emit(GrandchildEvent())
                 grandchild_ref.append(grandchild)
                 return 'child_done'
 
@@ -1106,7 +1106,7 @@ class TestFindWithChildOf:
             bus.on(ChildEvent, child_handler)
             bus.on(GrandchildEvent, lambda e: 'grandchild_done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             # Find grandchild of parent
@@ -1127,11 +1127,11 @@ class TestFindWithChildOf:
             child_ref: list[BaseEvent] = []
 
             # Forward ParentEvent from main_bus to auth_bus
-            main_bus.on(ParentEvent, auth_bus.dispatch)
+            main_bus.on(ParentEvent, auth_bus.emit)
 
             # auth_bus handles ParentEvent and dispatches a ChildEvent
             async def auth_handler(event: ParentEvent) -> str:
-                child = await auth_bus.dispatch(ChildEvent())
+                child = await auth_bus.emit(ChildEvent())
                 child_ref.append(child)
                 return 'auth_done'
 
@@ -1139,7 +1139,7 @@ class TestFindWithChildOf:
             auth_bus.on(ChildEvent, lambda e: 'child_done')
 
             # Dispatch on main_bus, which forwards to auth_bus
-            parent = await main_bus.dispatch(ParentEvent())
+            parent = await main_bus.emit(ParentEvent())
             await main_bus.wait_until_idle()
             await auth_bus.wait_until_idle()
 
@@ -1161,13 +1161,13 @@ class TestFindWithChildOf:
 
             async def parent_handler(event: ParentEvent) -> str:
                 await asyncio.sleep(0.03)
-                await bus.dispatch(ChildEvent())
+                await bus.emit(ChildEvent())
                 return 'parent_done'
 
             bus.on(ParentEvent, parent_handler)
             bus.on(ChildEvent, lambda e: 'child_done')
 
-            parent = bus.dispatch(ParentEvent())
+            parent = bus.emit(ParentEvent())
 
             found = await bus.find(
                 ChildEvent,
@@ -1200,7 +1200,7 @@ class TestFindLegacyPatternCoverage:
 
             async def dispatch_after_delay():
                 await asyncio.sleep(0.05)
-                return await bus.dispatch(ParentEvent())
+                return await bus.emit(ParentEvent())
 
             find_task = asyncio.create_task(bus.find(ParentEvent, past=False, future=1))
             dispatch_task = asyncio.create_task(dispatch_after_delay())
@@ -1222,9 +1222,9 @@ class TestFindLegacyPatternCoverage:
 
             async def dispatch_events():
                 await asyncio.sleep(0.02)
-                await bus.dispatch(ScreenshotEvent(target_id='wrong'))
+                await bus.emit(ScreenshotEvent(target_id='wrong'))
                 await asyncio.sleep(0.02)
-                return await bus.dispatch(ScreenshotEvent(target_id='correct'))
+                return await bus.emit(ScreenshotEvent(target_id='correct'))
 
             find_task = asyncio.create_task(
                 bus.find(
@@ -1253,9 +1253,9 @@ class TestFindLegacyPatternCoverage:
 
             async def dispatch_events():
                 await asyncio.sleep(0.02)
-                await bus.dispatch(ScreenshotEvent(target_id='excluded'))
+                await bus.emit(ScreenshotEvent(target_id='excluded'))
                 await asyncio.sleep(0.02)
-                return await bus.dispatch(ScreenshotEvent(target_id='included'))
+                return await bus.emit(ScreenshotEvent(target_id='included'))
 
             find_task = asyncio.create_task(
                 bus.find(
@@ -1283,7 +1283,7 @@ class TestFindLegacyPatternCoverage:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch event first
-            dispatched = await bus.dispatch(ParentEvent())
+            dispatched = await bus.emit(ParentEvent())
 
             found = await bus.find(ParentEvent, past=True, future=5)
 
@@ -1301,7 +1301,7 @@ class TestFindLegacyPatternCoverage:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch event first
-            dispatched = await bus.dispatch(ParentEvent())
+            dispatched = await bus.emit(ParentEvent())
 
             found = await bus.find(ParentEvent, past=5.0, future=1)
 
@@ -1319,14 +1319,14 @@ class TestFindLegacyPatternCoverage:
             child_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.dispatch(ChildEvent())
+                child = await bus.emit(ChildEvent())
                 child_ref.append(child)
                 return 'parent_done'
 
             bus.on(ParentEvent, parent_handler)
             bus.on(ChildEvent, lambda e: 'child_done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             found = await bus.find(ChildEvent, child_of=parent, past=True, future=5)
@@ -1355,7 +1355,7 @@ class TestRaceConditionFix:
 
             async def navigate_handler(event: NavigateEvent) -> str:
                 # This synchronously creates the tab event
-                tab = await bus.dispatch(TabCreatedEvent(tab_id='new_tab'))
+                tab = await bus.emit(TabCreatedEvent(tab_id='new_tab'))
                 tab_ref.append(tab)
                 return 'navigate_done'
 
@@ -1363,7 +1363,7 @@ class TestRaceConditionFix:
             bus.on(TabCreatedEvent, lambda e: 'tab_created')
 
             # Dispatch navigation - tab event fires during handler
-            nav_event = await bus.dispatch(NavigateEvent(url='https://example.com'))
+            nav_event = await bus.emit(NavigateEvent(url='https://example.com'))
 
             # By now TabCreatedEvent has already fired
             # Using find(past=True) should catch it
@@ -1382,15 +1382,15 @@ class TestRaceConditionFix:
         try:
 
             async def navigate_handler(event: NavigateEvent) -> str:
-                await bus.dispatch(TabCreatedEvent(tab_id=f'tab_for_{event.url}'))
+                await bus.emit(TabCreatedEvent(tab_id=f'tab_for_{event.url}'))
                 return 'navigate_done'
 
             bus.on(NavigateEvent, navigate_handler)
             bus.on(TabCreatedEvent, lambda e: 'tab_created')
 
             # Two navigations, each creates a tab
-            nav1 = await bus.dispatch(NavigateEvent(url='site1'))
-            nav2 = await bus.dispatch(NavigateEvent(url='site2'))
+            nav1 = await bus.emit(NavigateEvent(url='site1'))
+            nav2 = await bus.emit(NavigateEvent(url='site2'))
 
             # Find tab created by nav1 specifically
             tab1 = await bus.find(TabCreatedEvent, child_of=nav1, past=True, future=False)
@@ -1423,7 +1423,7 @@ class TestNewParameterCombinations:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch event and wait
-            dispatched = await bus.dispatch(ParentEvent())
+            dispatched = await bus.emit(ParentEvent())
             await asyncio.sleep(0.1)
 
             # Should find old event with past=True
@@ -1442,7 +1442,7 @@ class TestNewParameterCombinations:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch event
-            await bus.dispatch(ParentEvent())
+            await bus.emit(ParentEvent())
             await asyncio.sleep(0.1)  # Make it old
 
             # past=0.05 means "events in last 0.05 seconds" = nothing old
@@ -1477,7 +1477,7 @@ class TestNewParameterCombinations:
             bus.on(ParentEvent, lambda e: 'done')
 
             # Dispatch an old event
-            dispatched = await bus.dispatch(ParentEvent())
+            dispatched = await bus.emit(ParentEvent())
             await asyncio.sleep(0.1)
 
             # past=True should find the old event immediately
@@ -1500,9 +1500,9 @@ class TestNewParameterCombinations:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
             # Dispatch events with different target_ids
-            await bus.dispatch(ScreenshotEvent(target_id='tab1'))
+            await bus.emit(ScreenshotEvent(target_id='tab1'))
             await asyncio.sleep(0.15)
-            event2 = await bus.dispatch(ScreenshotEvent(target_id='tab2'))
+            event2 = await bus.emit(ScreenshotEvent(target_id='tab2'))
 
             # Find with both where filter and past window
             found = await bus.find(
@@ -1534,14 +1534,14 @@ class TestNewParameterCombinations:
             child_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.dispatch(ChildEvent())
+                child = await bus.emit(ChildEvent())
                 child_ref.append(child)
                 return 'done'
 
             bus.on(ParentEvent, parent_handler)
             bus.on(ChildEvent, lambda e: 'done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             # Find child with past window - should work since event is fresh
@@ -1565,14 +1565,14 @@ class TestNewParameterCombinations:
             child_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.dispatch(ScreenshotEvent(target_id='child_tab'))
+                child = await bus.emit(ScreenshotEvent(target_id='child_tab'))
                 child_ref.append(child)
                 return 'done'
 
             bus.on(ParentEvent, parent_handler)
             bus.on(ScreenshotEvent, lambda e: 'done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             # Find with all parameters

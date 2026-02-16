@@ -112,8 +112,8 @@ test('global-serial: only one event processes at a time across buses', async () 
   bus_b.on(SerialEvent, handler)
 
   for (let i = 0; i < 3; i += 1) {
-    bus_a.dispatch(SerialEvent({ order: i, source: 'a' }))
-    bus_b.dispatch(SerialEvent({ order: i, source: 'b' }))
+    bus_a.emit(SerialEvent({ order: i, source: 'a' }))
+    bus_b.emit(SerialEvent({ order: i, source: 'b' }))
   }
 
   await bus_a.waitUntilIdle()
@@ -156,14 +156,14 @@ test('global-serial: awaited child jumps ahead of queued events across buses', a
     // Emit through the scoped proxy so parent tracking is set up,
     // then also dispatch to bus_b for cross-bus processing.
     const child = event.bus?.emit(ChildEvent({}))!
-    bus_b.dispatch(child)
+    bus_b.emit(child)
     order.push('child_dispatched')
     await child.done()
     order.push('child_awaited')
     order.push('parent_end')
   })
 
-  const parent = bus_a.dispatch(ParentEvent({}))
+  const parent = bus_a.emit(ParentEvent({}))
   await parent.done()
   await bus_b.waitUntilIdle()
 
@@ -207,8 +207,8 @@ test('global handler lock via retry serializes handlers across buses', async () 
   bus_b.on(HandlerEvent, handler)
 
   for (let i = 0; i < 4; i += 1) {
-    bus_a.dispatch(HandlerEvent({ order: i, source: 'a' }))
-    bus_b.dispatch(HandlerEvent({ order: i, source: 'b' }))
+    bus_a.emit(HandlerEvent({ order: i, source: 'a' }))
+    bus_b.emit(HandlerEvent({ order: i, source: 'b' }))
   }
 
   await bus_a.waitUntilIdle()
@@ -263,8 +263,8 @@ test('bus-serial: events serialize per bus but overlap across buses', async () =
     in_flight_b -= 1
   })
 
-  bus_a.dispatch(SerialEvent({ order: 0, source: 'a' }))
-  bus_b.dispatch(SerialEvent({ order: 0, source: 'b' }))
+  bus_a.emit(SerialEvent({ order: 0, source: 'a' }))
+  bus_b.emit(SerialEvent({ order: 0, source: 'b' }))
 
   await bus_a.waitUntilIdle()
   await bus_b.waitUntilIdle()
@@ -297,8 +297,8 @@ test('bus-serial: FIFO order preserved per bus with interleaving', async () => {
   })
 
   for (let i = 0; i < 4; i += 1) {
-    bus_a.dispatch(SerialEvent({ order: i, source: 'a' }))
-    bus_b.dispatch(SerialEvent({ order: i, source: 'b' }))
+    bus_a.emit(SerialEvent({ order: i, source: 'a' }))
+    bus_b.emit(SerialEvent({ order: i, source: 'b' }))
   }
 
   await bus_a.waitUntilIdle()
@@ -337,9 +337,9 @@ test('bus-serial: awaiting child on one bus does not block other bus queue', asy
     order.push('other_end')
   })
 
-  const parent = bus_a.dispatch(ParentEvent({}))
+  const parent = bus_a.emit(ParentEvent({}))
   await sleep(0)
-  bus_b.dispatch(OtherEvent({}))
+  bus_b.emit(OtherEvent({}))
 
   await parent.done()
   await bus_a.waitUntilIdle()
@@ -372,8 +372,8 @@ test('parallel: events overlap on same bus when event_concurrency is parallel', 
     in_flight -= 1
   })
 
-  bus.dispatch(ParallelEvent({ order: 0 }))
-  bus.dispatch(ParallelEvent({ order: 1 }))
+  bus.emit(ParallelEvent({ order: 0 }))
+  bus.emit(ParallelEvent({ order: 1 }))
 
   await bus.waitUntilIdle()
   assert.ok(max_in_flight >= 2)
@@ -407,7 +407,7 @@ test('parallel: handlers overlap for same event when event_handler_concurrency i
   bus.on(ParallelHandlerEvent, handler_a)
   bus.on(ParallelHandlerEvent, handler_b)
 
-  const event = bus.dispatch(ParallelHandlerEvent({}))
+  const event = bus.emit(ParallelHandlerEvent({}))
   await sleep(0)
   resolve()
   await event.done()
@@ -448,8 +448,8 @@ test('parallel: global handler lock via retry still serializes across buses', as
   bus_a.on(ParallelEvent, handler)
   bus_b.on(ParallelEvent, handler)
 
-  bus_a.dispatch(ParallelEvent({ source: 'a' }))
-  bus_b.dispatch(ParallelEvent({ source: 'b' }))
+  bus_a.emit(ParallelEvent({ source: 'a' }))
+  bus_b.emit(ParallelEvent({ source: 'b' }))
 
   await sleep(0)
   resolve()
@@ -494,7 +494,7 @@ test('retry: instance scope serializes selected handlers per event in parallel m
   bus.on(SerializedEvent, handlers.step2.bind(handlers))
   bus.on(SerializedEvent, handlers.parallel.bind(handlers))
 
-  const event = bus.dispatch(SerializedEvent({}))
+  const event = bus.emit(SerializedEvent({}))
   await event.done()
   await bus.waitUntilIdle()
 
@@ -525,8 +525,8 @@ test('precedence: event event_concurrency overrides bus defaults to parallel', a
     in_flight -= 1
   })
 
-  bus.dispatch(OverrideEvent({ order: 0, event_concurrency: 'parallel' }))
-  bus.dispatch(OverrideEvent({ order: 1, event_concurrency: 'parallel' }))
+  bus.emit(OverrideEvent({ order: 0, event_concurrency: 'parallel' }))
+  bus.emit(OverrideEvent({ order: 1, event_concurrency: 'parallel' }))
 
   await sleep(0)
   resolve()
@@ -556,8 +556,8 @@ test('precedence: event event_concurrency overrides bus defaults to bus-serial',
     in_flight -= 1
   })
 
-  bus.dispatch(OverrideEvent({ order: 0, event_concurrency: 'bus-serial' }))
-  bus.dispatch(OverrideEvent({ order: 1, event_concurrency: 'bus-serial' }))
+  bus.emit(OverrideEvent({ order: 0, event_concurrency: 'bus-serial' }))
+  bus.emit(OverrideEvent({ order: 1, event_concurrency: 'bus-serial' }))
 
   await sleep(0)
   assert.equal(max_in_flight, 1)
@@ -593,8 +593,8 @@ test('global-serial + handler parallel: handlers overlap but events do not acros
   bus_b.on(SerialParallelEvent, handler)
   bus_b.on(SerialParallelEvent, handler)
 
-  bus_a.dispatch(SerialParallelEvent({}))
-  bus_b.dispatch(SerialParallelEvent({}))
+  bus_a.emit(SerialParallelEvent({}))
+  bus_b.emit(SerialParallelEvent({}))
 
   await sleep(0)
   assert.equal(max_in_flight, 2)
@@ -637,8 +637,8 @@ test('event parallel + handler serial: handlers serialize within each event', as
   bus.on(ParallelEvent, handler)
   bus.on(ParallelEvent, handler)
 
-  const event_a = bus.dispatch(ParallelEvent({ order: 0 }))
-  const event_b = bus.dispatch(ParallelEvent({ order: 1 }))
+  const event_a = bus.emit(ParallelEvent({ order: 0 }))
+  const event_b = bus.emit(ParallelEvent({ order: 1 }))
 
   await started_promise
   assert.equal(per_event_max.get(event_a.event_id), 1)
@@ -674,8 +674,8 @@ test('event parallel + handler serial: handlers overlap across buses', async () 
   bus_a.on(ParallelEvent, handler)
   bus_b.on(ParallelEvent, handler)
 
-  bus_a.dispatch(ParallelEvent({ source: 'a' }))
-  bus_b.dispatch(ParallelEvent({ source: 'b' }))
+  bus_a.emit(ParallelEvent({ source: 'a' }))
+  bus_b.emit(ParallelEvent({ source: 'b' }))
 
   await sleep(0)
   assert.ok(max_in_flight >= 2)
@@ -709,8 +709,8 @@ test('retry can enforce global lock even when bus defaults to parallel', async (
   bus_a.on(HandlerEvent, handler)
   bus_b.on(HandlerEvent, handler)
 
-  bus_a.dispatch(HandlerEvent({ source: 'a' }))
-  bus_b.dispatch(HandlerEvent({ source: 'b' }))
+  bus_a.emit(HandlerEvent({ source: 'a' }))
+  bus_b.emit(HandlerEvent({ source: 'b' }))
 
   await sleep(0)
   assert.equal(max_in_flight, 1)
@@ -734,8 +734,8 @@ test('null: event_concurrency null resolves to bus defaults', async () => {
     in_flight -= 1
   })
 
-  bus.dispatch(AutoEvent({ event_concurrency: null }))
-  bus.dispatch(AutoEvent({ event_concurrency: null }))
+  bus.emit(AutoEvent({ event_concurrency: null }))
+  bus.emit(AutoEvent({ event_concurrency: null }))
 
   await bus.waitUntilIdle()
   assert.equal(max_in_flight, 1)
@@ -761,7 +761,7 @@ test('null: event_handler_concurrency null resolves to bus defaults', async () =
   bus.on(AutoHandlerEvent, handler)
   bus.on(AutoHandlerEvent, handler)
 
-  const event = bus.dispatch(AutoHandlerEvent({ event_handler_concurrency: null }))
+  const event = bus.emit(AutoHandlerEvent({ event_handler_concurrency: null }))
   await sleep(0)
   resolve()
   await event.done()
@@ -800,7 +800,7 @@ test('queue-jump: awaited child preempts queued sibling on same bus', async () =
     order.push('parent_end')
   })
 
-  const parent = bus.dispatch(ParentEvent({}))
+  const parent = bus.emit(ParentEvent({}))
   await parent.done()
   await bus.waitUntilIdle()
 
@@ -857,7 +857,7 @@ test('queue-jump: same event handlers on separate buses stay isolated without fo
     order.push('parent_end')
   })
 
-  const parent = bus_a.dispatch(ParentEvent({}))
+  const parent = bus_a.emit(ParentEvent({}))
   await parent.done()
   await Promise.all([bus_a.waitUntilIdle(), bus_b.waitUntilIdle()])
 
@@ -895,7 +895,7 @@ test('queue-jump: awaiting in-flight event does not double-run handlers', async 
     await release_child
   })
 
-  const child = bus.dispatch(InFlightEvent({}))
+  const child = bus.emit(InFlightEvent({}))
   await started
 
   let done_resolved = false
@@ -917,7 +917,7 @@ test('edge-case: event with no handlers completes immediately', async () => {
   const NoHandlerEvent = BaseEvent.extend('NoHandlerEvent', {})
   const bus = new EventBus('NoHandlerBus')
 
-  const event = bus.dispatch(NoHandlerEvent({}))
+  const event = bus.emit(NoHandlerEvent({}))
   await event.done()
   await bus.waitUntilIdle()
 
@@ -936,7 +936,7 @@ test('fifo: forwarded events preserve order on target bus (bus-serial)', async (
 
   bus_a.on(OrderedEvent, async (event) => {
     order_a.push(event.order)
-    bus_b.dispatch(event)
+    bus_b.emit(event)
     await sleep(2)
   })
 
@@ -949,7 +949,7 @@ test('fifo: forwarded events preserve order on target bus (bus-serial)', async (
   })
 
   for (let i = 0; i < 5; i += 1) {
-    bus_a.dispatch(OrderedEvent({ order: i }))
+    bus_a.emit(OrderedEvent({ order: i }))
   }
 
   await Promise.all([bus_a.waitUntilIdle(), bus_b.waitUntilIdle()])
@@ -994,11 +994,11 @@ test('fifo: forwarded events preserve order across chained buses (bus-serial)', 
     await sleep(1)
   })
 
-  bus_a.on('*', bus_b.dispatch)
-  bus_b.on('*', bus_c.dispatch)
+  bus_a.on('*', bus_b.emit)
+  bus_b.on('*', bus_c.emit)
 
   for (let i = 0; i < 6; i += 1) {
-    bus_a.dispatch(OrderedEvent({ order: i }))
+    bus_a.emit(OrderedEvent({ order: i }))
   }
 
   await bus_a.waitUntilIdle()
@@ -1014,8 +1014,8 @@ test('find: past returns most recent completed event (bus-scoped)', async () => 
 
   bus.on(DebounceEvent, async () => {})
 
-  bus.dispatch(DebounceEvent({ value: 1 }))
-  bus.dispatch(DebounceEvent({ value: 2 }))
+  bus.emit(DebounceEvent({ value: 1 }))
+  bus.emit(DebounceEvent({ value: 2 }))
 
   await bus.waitUntilIdle()
 
@@ -1025,7 +1025,7 @@ test('find: past returns most recent completed event (bus-scoped)', async () => 
   assert.equal(found.event_status, 'completed')
   assert.ok(found.bus)
   assert.equal(found.bus.name, 'FindPastBus')
-  assert.equal(typeof found.bus.dispatch, 'function')
+  assert.equal(typeof found.bus.emit, 'function')
 })
 
 test('find: past returns in-flight dispatched event and done waits', async () => {
@@ -1037,7 +1037,7 @@ test('find: past returns in-flight dispatched event and done waits', async () =>
     await promise
   })
 
-  bus.dispatch(DebounceEvent({ value: 1 }))
+  bus.emit(DebounceEvent({ value: 1 }))
 
   const found = await bus.find(DebounceEvent, { past: true, future: false })
   assert.ok(found)
@@ -1058,7 +1058,7 @@ test('find: future waits for next event when none in-flight', async () => {
   bus.on(DebounceEvent, async () => {})
 
   setTimeout(() => {
-    bus.dispatch(DebounceEvent({ value: 99 }))
+    bus.emit(DebounceEvent({ value: 99 }))
   }, 10)
 
   const found = await bus.find(DebounceEvent, { past: false, future: 0.2 })
@@ -1080,10 +1080,10 @@ test('find: most recent wins across completed and in-flight', async () => {
     }
   })
 
-  bus.dispatch(DebounceEvent({ value: 1 }))
+  bus.emit(DebounceEvent({ value: 1 }))
   await bus.waitUntilIdle()
 
-  bus.dispatch(DebounceEvent({ value: 2 }))
+  bus.emit(DebounceEvent({ value: 2 }))
 
   const found = await bus.find(DebounceEvent, { past: true, future: true })
   assert.ok(found)

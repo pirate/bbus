@@ -109,9 +109,9 @@ class _EventBridge {
     this.inbound_bus.on(event_pattern as EventClass<BaseEvent>, handler as EventHandlerCallable<BaseEvent>)
   }
 
-  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+  async emit<T extends BaseEvent>(event: T): Promise<void> {
     if (!this.send_to) {
-      throw new Error(`${this.constructor.name}.dispatch() requires send_to`)
+      throw new Error(`${this.constructor.name}.emit() requires send_to`)
     }
 
     const payload = event.toJSON()
@@ -124,8 +124,8 @@ class _EventBridge {
     await this.sendHttp(this.send_to, payload)
   }
 
-  async emit<T extends BaseEvent>(event: T): Promise<void> {
-    return this.dispatch(event)
+  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+    return this.emit(event)
   }
 
   async start(): Promise<void> {
@@ -194,7 +194,7 @@ class _EventBridge {
 
   private async handleIncomingPayload(payload: unknown): Promise<void> {
     const event = BaseEvent.fromJSON(payload).reset()
-    this.inbound_bus.dispatch(event)
+    this.inbound_bus.emit(event)
   }
 
   private async sendHttp(endpoint: ParsedEndpoint, payload: unknown): Promise<void> {

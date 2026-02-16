@@ -69,7 +69,7 @@ async def test_queue_jump_preserves_parent_child_lineage_and_find_visibility() -
 
     async def on_root(event: QueueJumpRootEvent) -> str:
         execution_order.append('root:start')
-        child = event.event_bus.dispatch(QueueJumpChildEvent())
+        child = event.event_bus.emit(QueueJumpChildEvent())
         await child
         execution_order.append('root:end')
         return 'root-ok'
@@ -90,8 +90,8 @@ async def test_queue_jump_preserves_parent_child_lineage_and_find_visibility() -
     bus.on(QueueJumpSiblingEvent, on_sibling)
 
     try:
-        root = bus.dispatch(QueueJumpRootEvent())
-        sibling = bus.dispatch(QueueJumpSiblingEvent())
+        root = bus.emit(QueueJumpRootEvent())
+        sibling = bus.emit(QueueJumpSiblingEvent())
         await root
         await sibling
         await bus.wait_until_idle()
@@ -151,7 +151,7 @@ async def test_concurrency_intersection_parallel_events_with_serial_handlers() -
     bus.on(ConcurrencyIntersectionEvent, tracked_handler_b)
 
     try:
-        events = [bus.dispatch(ConcurrencyIntersectionEvent(token=index)) for index in range(8)]
+        events = [bus.emit(ConcurrencyIntersectionEvent(token=index)) for index in range(8)]
         await asyncio.gather(*events)
         await bus.wait_until_idle()
 
@@ -183,7 +183,7 @@ async def test_timeout_enforcement_does_not_break_followup_processing_or_queue_s
     bus.on(TimeoutFollowupEvent, followup_handler)
 
     try:
-        timed_out = await bus.dispatch(TimeoutEnforcementEvent())
+        timed_out = await bus.emit(TimeoutEnforcementEvent())
         assert timed_out.event_status == 'completed'
         assert timed_out.event_results
         assert all(result.status == 'error' for result in timed_out.event_results.values())
@@ -192,7 +192,7 @@ async def test_timeout_enforcement_does_not_break_followup_processing_or_queue_s
             for result in timed_out.event_results.values()
         )
 
-        followup = await bus.dispatch(TimeoutFollowupEvent())
+        followup = await bus.emit(TimeoutFollowupEvent())
         followup_result = await followup.event_result(raise_if_any=False, raise_if_none=False)
         assert followup_result == 'followup-ok'
         assert all(result.status == 'completed' for result in followup.event_results.values())
@@ -214,7 +214,7 @@ async def test_zero_history_backpressure_with_find_future_still_resolves_new_eve
     bus.on(ZeroHistoryEvent, handler)
 
     try:
-        first = await bus.dispatch(ZeroHistoryEvent(value='first'))
+        first = await bus.emit(ZeroHistoryEvent(value='first'))
         assert first.event_id not in bus.event_history
 
         past = await bus.find(ZeroHistoryEvent, past=True, future=False)
@@ -225,7 +225,7 @@ async def test_zero_history_backpressure_with_find_future_still_resolves_new_eve
         async def dispatch_later() -> None:
             nonlocal captured_future_id
             await asyncio.sleep(0.02)
-            future_event = bus.dispatch(ZeroHistoryEvent(value='future'))
+            future_event = bus.emit(ZeroHistoryEvent(value='future'))
             captured_future_id = future_event.event_id
 
         future_task = asyncio.create_task(dispatch_later())
@@ -257,7 +257,7 @@ async def test_context_propagates_through_forwarding_and_child_dispatch_with_lin
         captured_parent_request_id = request_id_var.get()
         parent_event_id = event.event_id
 
-        child = event.event_bus.dispatch(ContextChildEvent())
+        child = event.event_bus.emit(ContextChildEvent())
         await child
         return 'parent-ok'
 
@@ -267,13 +267,13 @@ async def test_context_propagates_through_forwarding_and_child_dispatch_with_lin
         child_parent_id = event.event_parent_id
         return 'child-ok'
 
-    bus_a.on('*', bus_b.dispatch)
+    bus_a.on('*', bus_b.emit)
     bus_b.on(ContextParentEvent, on_parent)
     bus_b.on(ContextChildEvent, on_child)
 
     token = request_id_var.set('req-cross-feature-001')
     try:
-        parent = await bus_a.dispatch(ContextParentEvent())
+        parent = await bus_a.emit(ContextParentEvent())
         await bus_b.wait_until_idle()
 
         assert captured_parent_request_id == 'req-cross-feature-001'
@@ -311,10 +311,10 @@ async def test_pending_queue_find_visibility_transitions_to_completed_after_rele
     bus.on(PendingVisibilityEvent, handler)
 
     try:
-        blocking = bus.dispatch(PendingVisibilityEvent(tag='blocking'))
+        blocking = bus.emit(PendingVisibilityEvent(tag='blocking'))
         await started.wait()
 
-        queued = bus.dispatch(PendingVisibilityEvent(tag='queued'))
+        queued = bus.emit(PendingVisibilityEvent(tag='queued'))
         await asyncio.sleep(0.01)
 
         pending = await bus.find(
@@ -357,7 +357,7 @@ async def test_history_backpressure_rejects_overflow_and_preserves_findable_hist
     bus.on(BackpressureEvent, handler)
 
     try:
-        first = await bus.dispatch(BackpressureEvent(value='first'))
+        first = await bus.emit(BackpressureEvent(value='first'))
         assert len(bus.event_history) == 1
         assert first.event_id in bus.event_history
 
@@ -366,7 +366,7 @@ async def test_history_backpressure_rejects_overflow_and_preserves_findable_hist
         assert found_first.event_id == first.event_id
 
         with pytest.raises(RuntimeError):
-            _ = bus.dispatch(BackpressureEvent(value='second'))
+            _ = bus.emit(BackpressureEvent(value='second'))
 
         assert len(bus.event_history) == 1
         assert first.event_id in bus.event_history

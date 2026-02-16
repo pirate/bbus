@@ -4,6 +4,8 @@
 # pyright: reportUnnecessaryIsInstance=false
 
 import asyncio
+import logging
+from contextlib import asynccontextmanager
 from typing import Any, Literal, assert_type
 
 from pydantic import BaseModel
@@ -40,7 +42,7 @@ async def test_pydantic_model_result_casting():
     bus.on('ScreenshotEvent', screenshot_handler)
 
     event = ScreenshotEvent(screenshot_width=1920, screenshot_height=1080)
-    await bus.dispatch(event)
+    await bus.emit(event)
 
     # Get the result
     result = await event.event_result()
@@ -68,14 +70,14 @@ async def test_builtin_type_casting():
 
     # Test string validation
     string_event = StringEvent()
-    await bus.dispatch(string_event)
+    await bus.emit(string_event)
     string_result = await string_event.event_result()
     assert isinstance(string_result, str)
     assert string_result == '42'
 
     # Test int validation
     int_event = IntEvent()
-    await bus.dispatch(int_event)
+    await bus.emit(int_event)
     int_result = await int_event.event_result()
     assert isinstance(int_result, int)
     assert int_result == 123
@@ -92,7 +94,7 @@ async def test_casting_failure_handling():
     bus.on('IntEvent', bad_handler)
 
     event = IntEvent()
-    await bus.dispatch(event)
+    await bus.emit(event)
 
     # The event should complete but the result should be an error
     try:
@@ -124,7 +126,7 @@ async def test_no_casting_when_no_result_type():
     bus.on('NormalEvent', normal_handler)
 
     event = NormalEvent()
-    await bus.dispatch(event)
+    await bus.emit(event)
 
     result = await event.event_result()
 
@@ -145,7 +147,7 @@ async def test_result_type_stored_in_event_result():
     bus.on('StringEvent', handler)
 
     event = StringEvent()
-    await bus.dispatch(event)
+    await bus.emit(event)
 
     # Check that result_type is accessible
     handler_id = list(event.event_results.keys())[0]
@@ -156,6 +158,108 @@ async def test_result_type_stored_in_event_result():
     assert event_result.result == '123'
 
     await bus.stop(clear=True)
+
+
+async def test_typed_accessors_normalize_forwarded_event_results_to_none():
+    """Typed accessors should not surface BaseEvent forwarding returns as typed payloads."""
+    bus = EventBus(name='forwarded_result_normalization_bus')
+
+    class ForwardingTypedEvent(BaseEvent[int]):
+        pass
+
+    def forward_handler(event: ForwardingTypedEvent):
+        return BaseEvent(event_type='ForwardedEventFromHandler')
+
+    bus.on(ForwardingTypedEvent, forward_handler)
+
+    event = await bus.emit(ForwardingTypedEvent())
+
+    def include_all(_: Any) -> bool:
+        return True
+
+    result = await event.event_result(include=include_all, raise_if_any=False, raise_if_none=False)
+    results_list = await event.event_results_list(include=include_all, raise_if_any=False, raise_if_none=False)
+    results_by_handler_id = await event.event_results_by_handler_id(include=include_all, raise_if_any=False, raise_if_none=False)
+
+    assert result is None
+    assert results_list == [None]
+    assert list(results_by_handler_id.values()) == [None]
+
+    await bus.stop(clear=True)
+
+
+async def test_run_handler_marks_started_after_handler_lock_entry():
+    """Result status should remain pending while waiting on the handler lock."""
+    bus = EventBus(name='handler_start_order_bus', event_handler_concurrency='serial')
+
+    class LockOrderEvent(BaseEvent[str]):
+        pass
+
+    async def handler(_event: LockOrderEvent) -> str:
+        return 'ok'
+
+    handler_entry = bus.on(LockOrderEvent, handler)
+    event = LockOrderEvent()
+    release_lock = asyncio.Event()
+    original_with_handler_lock = bus.locks.with_handler_lock
+
+    @asynccontextmanager
+    async def blocked_with_handler_lock(*args: Any, **kwargs: Any):
+        await release_lock.wait()
+        async with original_with_handler_lock(*args, **kwargs):
+            yield
+
+    setattr(bus.locks, 'with_handler_lock', blocked_with_handler_lock)
+
+    run_task = asyncio.create_task(bus.run_handler(event, handler_entry, timeout=event.event_timeout))
+    while handler_entry.id not in event.event_results:
+        await asyncio.sleep(0)
+    event_result = event.event_results[handler_entry.id]
+    assert event_result.status == 'pending'
+
+    release_lock.set()
+    assert await run_task == 'ok'
+    assert event_result.status == 'completed'
+
+    await bus.stop(clear=True)
+
+
+async def test_run_handler_starts_slow_monitor_after_lock_wait(caplog: Any):
+    """Slow handler warning should be based on handler runtime, not lock wait time."""
+    bus = EventBus(name='handler_slow_monitor_start_order_bus', event_handler_slow_timeout=0.01)
+
+    class SlowMonitorOrderEvent(BaseEvent[str]):
+        pass
+
+    async def handler(_event: SlowMonitorOrderEvent) -> str:
+        await asyncio.sleep(0.03)
+        return 'ok'
+
+    handler_entry = bus.on(SlowMonitorOrderEvent, handler)
+    event = SlowMonitorOrderEvent()
+
+    release_lock = asyncio.Event()
+    original_with_handler_lock = bus.locks.with_handler_lock
+
+    @asynccontextmanager
+    async def blocked_with_handler_lock(*args: Any, **kwargs: Any):
+        await release_lock.wait()
+        async with original_with_handler_lock(*args, **kwargs):
+            yield
+
+    caplog.set_level(logging.WARNING, logger='bubus')
+    setattr(bus.locks, 'with_handler_lock', blocked_with_handler_lock)
+    try:
+        run_task = asyncio.create_task(bus.run_handler(event, handler_entry, timeout=event.event_timeout))
+        while handler_entry.id not in event.event_results:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.03)
+        release_lock.set()
+        assert await run_task == 'ok'
+    finally:
+        await bus.stop(clear=True)
+
+    assert any('Slow event handler' in record.message for record in caplog.records)
 
 
 async def test_find_type_inference():
@@ -171,7 +275,7 @@ async def test_find_type_inference():
     # Validate inline isinstance usage works with await find()
     async def dispatch_inline_isinstance():
         await asyncio.sleep(0.01)
-        bus.dispatch(SpecificEvent(request_id='inline-isinstance'))
+        bus.emit(SpecificEvent(request_id='inline-isinstance'))
 
     inline_isinstance_task = asyncio.create_task(dispatch_inline_isinstance())
     assert isinstance(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent)
@@ -180,7 +284,7 @@ async def test_find_type_inference():
     # Validate inline assert_type usage works with await find()
     async def dispatch_inline_assert_type():
         await asyncio.sleep(0.01)
-        bus.dispatch(SpecificEvent(request_id='inline-assert-type'))
+        bus.emit(SpecificEvent(request_id='inline-assert-type'))
 
     inline_type_task = asyncio.create_task(dispatch_inline_assert_type())
     assert_type(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent | None)
@@ -189,7 +293,7 @@ async def test_find_type_inference():
     # Validate assert_type with isinstance expression
     async def dispatch_inline_isinstance_type():
         await asyncio.sleep(0.01)
-        bus.dispatch(SpecificEvent(request_id='inline-isinstance-type'))
+        bus.emit(SpecificEvent(request_id='inline-isinstance-type'))
 
     inline_isinstance_type_task = asyncio.create_task(dispatch_inline_isinstance_type())
     assert_type(isinstance(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent), bool)
@@ -198,7 +302,7 @@ async def test_find_type_inference():
     # Start a task that will dispatch the event
     async def dispatch_later():
         await asyncio.sleep(0.01)
-        bus.dispatch(SpecificEvent(request_id='req456'))
+        bus.emit(SpecificEvent(request_id='req456'))
 
     dispatch_task = asyncio.create_task(dispatch_later())
 
@@ -217,8 +321,8 @@ async def test_find_type_inference():
     # Test with filters - type should still be preserved
     async def dispatch_multiple():
         await asyncio.sleep(0.01)
-        bus.dispatch(SpecificEvent(request_id='wrong'))
-        bus.dispatch(SpecificEvent(request_id='correct'))
+        bus.emit(SpecificEvent(request_id='wrong'))
+        bus.emit(SpecificEvent(request_id='correct'))
 
     dispatch_task2 = asyncio.create_task(dispatch_multiple())
 
@@ -242,7 +346,7 @@ async def test_find_type_inference():
     # Test with string event type - returns BaseEvent[Any]
     async def dispatch_string_event():
         await asyncio.sleep(0.01)
-        bus.dispatch(BaseEvent(event_type='StringEvent'))
+        bus.emit(BaseEvent(event_type='StringEvent'))
 
     dispatch_task3 = asyncio.create_task(dispatch_string_event())
     string_event = await bus.find('StringEvent', past=False, future=1.0)
@@ -266,7 +370,7 @@ async def test_find_past_type_inference():
         pass
 
     # Dispatch an event so it appears in history
-    event = bus.dispatch(QueryEvent())
+    event = bus.emit(QueryEvent())
     await bus.wait_until_idle()
 
     assert isinstance(await bus.find(QueryEvent, past=10, future=False), QueryEvent)
@@ -283,7 +387,7 @@ async def test_find_past_type_inference():
 
 
 async def test_dispatch_type_inference():
-    """Test that EventBus.dispatch() returns the same type as its input."""
+    """Test that EventBus.emit() returns the same type as its input."""
     bus = EventBus(name='type_inference_test_bus')
 
     class CustomResult(BaseModel):
@@ -296,7 +400,7 @@ async def test_dispatch_type_inference():
     original_event = CustomEvent()
 
     # Dispatch should return the same type WITHOUT needing cast()
-    dispatched_event = bus.dispatch(original_event)
+    dispatched_event = bus.emit(original_event)
     assert isinstance(dispatched_event, CustomEvent)
 
     # Type checking - this should work without cast
@@ -312,18 +416,18 @@ async def test_dispatch_type_inference():
 
     bus.on('CustomEvent', handler)
 
-    # Validate inline isinstance usage works with dispatch()
+    # Validate inline isinstance usage works with emit()
     another_event = CustomEvent()
-    assert isinstance(bus.dispatch(another_event), CustomEvent)
+    assert isinstance(bus.emit(another_event), CustomEvent)
 
-    # Validate assert_type captures dispatch() return type when called inline
+    # Validate assert_type captures emit() return type when called inline
     type_event = CustomEvent()
-    dispatched_type_event = bus.dispatch(type_event)
+    dispatched_type_event = bus.emit(type_event)
     assert_type(dispatched_type_event, CustomEvent)
 
-    # Validate assert_type with isinstance expression using dispatch()
+    # Validate assert_type with isinstance expression using emit()
     isinstance_type_event = CustomEvent()
-    assert_type(isinstance(bus.dispatch(isinstance_type_event), CustomEvent), Literal[True])
+    assert_type(isinstance(bus.emit(isinstance_type_event), CustomEvent), Literal[True])
 
     # We should be able to use it without casting
     result = await dispatched_event.event_result()
@@ -336,8 +440,8 @@ async def test_dispatch_type_inference():
     assert dispatched_event.event_type == 'CustomEvent'
 
     # Demonstrate the improvement - no cast needed!
-    # Before: event = cast(CustomEvent, bus.dispatch(CustomEvent()))
-    # After: event = bus.dispatch(CustomEvent())  # Type is preserved!
+    # Before: event = cast(CustomEvent, bus.emit(CustomEvent()))
+    # After: event = bus.emit(CustomEvent())  # Type is preserved!
 
     await another_event.event_result()
     await type_event.event_result()
@@ -640,7 +744,7 @@ async def test_json_schema_nested_object_and_array_runtime_enforcement():
     bus.on('NestedSchemaEvent', valid_handler)
 
     valid_event = BaseEvent[Any].model_validate({'event_type': 'NestedSchemaEvent', 'event_result_type': nested_schema})
-    await bus.dispatch(valid_event)
+    await bus.emit(valid_event)
     valid_result = next(iter(valid_event.event_results.values()))
     assert valid_result.status == 'completed'
     assert valid_result.error is None
@@ -654,7 +758,7 @@ async def test_json_schema_nested_object_and_array_runtime_enforcement():
 
     bus.on('NestedSchemaEvent', invalid_handler)
     invalid_event = BaseEvent[Any].model_validate({'event_type': 'NestedSchemaEvent', 'event_result_type': nested_schema})
-    await bus.dispatch(invalid_event)
+    await bus.emit(invalid_event)
     invalid_result = next(iter(invalid_event.event_results.values()))
     assert invalid_result.status == 'error'
     assert invalid_result.error is not None
@@ -760,7 +864,7 @@ async def test_module_level_runtime_enforcement():
     bus.on('RuntimeEvent', correct_handler)
 
     event1 = RuntimeEvent()
-    await bus.dispatch(event1)
+    await bus.emit(event1)
     result1 = await event1.event_result()
 
     # Should be cast to ModuleLevelResult
@@ -774,7 +878,7 @@ async def test_module_level_runtime_enforcement():
     bus.on('RuntimeEvent', incorrect_handler)
 
     event2 = RuntimeEvent()
-    await bus.dispatch(event2)
+    await bus.emit(event2)
 
     # Should get an error due to validation failure
     handler_id = list(event2.event_results.keys())[0]
@@ -896,7 +1000,7 @@ async def test_simple_typed_result_model_roundtrip_and_status() -> None:
     handler_entry = bus.on(SimpleTypedEvent, handler)
 
     try:
-        completed_event = await bus.dispatch(SimpleTypedEvent())
+        completed_event = await bus.emit(SimpleTypedEvent())
         assert completed_event.event_status == 'completed'
         assert handler_entry.id in completed_event.event_results
 

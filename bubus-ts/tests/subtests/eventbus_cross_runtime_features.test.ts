@@ -36,7 +36,7 @@ test('queue-jump preserves parent/child lineage and find visibility', async () =
 
   bus.on(QueueJumpRootEvent, async (event) => {
     execution_order.push('root:start')
-    const child = event.bus!.dispatch(QueueJumpChildEvent({}))
+    const child = event.bus!.emit(QueueJumpChildEvent({}))
     await child.done()
     execution_order.push('root:end')
     return 'root-ok'
@@ -54,8 +54,8 @@ test('queue-jump preserves parent/child lineage and find visibility', async () =
     return 'sibling-ok'
   })
 
-  const root = bus.dispatch(QueueJumpRootEvent({}))
-  const sibling = bus.dispatch(QueueJumpSiblingEvent({}))
+  const root = bus.emit(QueueJumpRootEvent({}))
+  const sibling = bus.emit(QueueJumpSiblingEvent({}))
   await root.done()
   await sibling.done()
   await bus.waitUntilIdle()
@@ -110,7 +110,7 @@ test('concurrency intersection: parallel events with serial handlers stays seria
   bus.on(ConcurrencyIntersectionEvent, tracked_handler)
   bus.on(ConcurrencyIntersectionEvent, tracked_handler)
 
-  const events = Array.from({ length: 8 }, () => bus.dispatch(ConcurrencyIntersectionEvent({})))
+  const events = Array.from({ length: 8 }, () => bus.emit(ConcurrencyIntersectionEvent({})))
   await Promise.all(events.map((event) => event.done()))
   await bus.waitUntilIdle()
 
@@ -143,14 +143,14 @@ test('timeout enforcement preserves follow-up processing and queue state', async
 
   bus.on(TimeoutFollowupEvent, async () => 'followup-ok')
 
-  const timed_out = await bus.dispatch(TimeoutEnforcementEvent({})).done()
+  const timed_out = await bus.emit(TimeoutEnforcementEvent({})).done()
   assert.equal(timed_out.event_status, 'completed')
   assert.equal(
     Array.from(timed_out.event_results.values()).every((result) => result.status === 'error'),
     true
   )
 
-  const followup = await bus.dispatch(TimeoutFollowupEvent({})).done()
+  const followup = await bus.emit(TimeoutFollowupEvent({})).done()
   assert.equal(
     Array.from(followup.event_results.values()).every((result) => result.status === 'completed'),
     true
@@ -171,7 +171,7 @@ test('zero-history backpressure with find future still resolves new events', asy
 
   bus.on(ZeroHistoryEvent, async (event) => `ok:${(event as BaseEvent & { value?: string }).value ?? '<missing>'}`)
 
-  const first = await bus.dispatch(ZeroHistoryEvent({ value: 'first' } as Record<string, unknown>)).done()
+  const first = await bus.emit(ZeroHistoryEvent({ value: 'first' } as Record<string, unknown>)).done()
   assert.equal(bus.event_history.has(first.event_id), false)
 
   const past = await bus.find(ZeroHistoryEvent, { past: true, future: false })
@@ -180,7 +180,7 @@ test('zero-history backpressure with find future still resolves new events', asy
   let captured_future_id: string | null = null
   const later = (async () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
-    const future_event = bus.dispatch(ZeroHistoryEvent({ value: 'future' } as Record<string, unknown>))
+    const future_event = bus.emit(ZeroHistoryEvent({ value: 'future' } as Record<string, unknown>))
     captured_future_id = future_event.event_id
   })()
 
@@ -213,14 +213,14 @@ test('context propagates through forwarding and child dispatch with lineage inta
   let parent_event_id: string | null = null
   let child_parent_id: string | null = null
 
-  bus_a.on('*', bus_b.dispatch)
+  bus_a.on('*', bus_b.emit)
 
   bus_b.on(ContextParentEvent, async (event) => {
     const store = storage.getStore() as ContextStore | undefined
     captured_parent_request_id = store?.request_id ?? null
     parent_event_id = event.event_id
 
-    const child = event.bus!.dispatch(ContextChildEvent({}))
+    const child = event.bus!.emit(ContextChildEvent({}))
     await child.done()
     return 'parent-ok'
   })
@@ -232,7 +232,7 @@ test('context propagates through forwarding and child dispatch with lineage inta
     return 'child-ok'
   })
 
-  const parent = await storage.run({ request_id: 'req-cross-feature-001' }, async () => bus_a.dispatch(ContextParentEvent({})).done())
+  const parent = await storage.run({ request_id: 'req-cross-feature-001' }, async () => bus_a.emit(ContextParentEvent({})).done())
   await bus_b.waitUntilIdle()
 
   assert.equal(captured_parent_request_id, 'req-cross-feature-001')
@@ -278,10 +278,10 @@ test('pending queue find visibility transitions to completed after release', asy
     })
   })
 
-  const blocking = bus.dispatch(PendingVisibilityEvent({ tag: 'blocking' } as Record<string, unknown>))
+  const blocking = bus.emit(PendingVisibilityEvent({ tag: 'blocking' } as Record<string, unknown>))
   await blocking_handler_started
 
-  const queued = bus.dispatch(PendingVisibilityEvent({ tag: 'queued' } as Record<string, unknown>))
+  const queued = bus.emit(PendingVisibilityEvent({ tag: 'queued' } as Record<string, unknown>))
   await new Promise((resolve) => setTimeout(resolve, 10))
 
   const pending = await bus.find(PendingVisibilityEvent, (event) => (event as BaseEvent & { tag?: string }).tag === 'queued', {
@@ -320,7 +320,7 @@ test('history backpressure rejects overflow and preserves findable history', asy
 
   bus.on(BackpressureEvent, async (event) => `ok:${(event as BaseEvent & { value?: string }).value ?? '<missing>'}`)
 
-  const first = await bus.dispatch(BackpressureEvent({ value: 'first' } as Record<string, unknown>)).done()
+  const first = await bus.emit(BackpressureEvent({ value: 'first' } as Record<string, unknown>)).done()
   assert.equal(bus.event_history.size, 1)
   assert.equal(bus.event_history.has(first.event_id), true)
 
@@ -333,7 +333,7 @@ test('history backpressure rejects overflow and preserves findable history', asy
 
   await assert.rejects(
     async () => {
-      await bus.dispatch(BackpressureEvent({ value: 'second' } as Record<string, unknown>)).done()
+      await bus.emit(BackpressureEvent({ value: 'second' } as Record<string, unknown>)).done()
     },
     (error: unknown) => error instanceof Error && error.message.includes('history limit reached')
   )

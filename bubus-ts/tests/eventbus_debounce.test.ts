@@ -14,7 +14,7 @@ const SyncEvent = BaseEvent.extend('SyncEvent', {})
 test('simple debounce uses recent history or dispatches new', async () => {
   const bus = new EventBus('DebounceBus')
 
-  const parent_event = bus.dispatch(ParentEvent({}))
+  const parent_event = bus.emit(ParentEvent({}))
   await parent_event.done()
 
   const child_event = parent_event.bus?.emit(ScreenshotEvent({ target_id: 'tab-1' }))
@@ -26,7 +26,7 @@ test('simple debounce uses recent history or dispatches new', async () => {
       past: 10,
       future: false,
       child_of: parent_event,
-    })) ?? bus.dispatch(ScreenshotEvent({ target_id: 'fallback' }))
+    })) ?? bus.emit(ScreenshotEvent({ target_id: 'fallback' }))
   await reused_event.done()
 
   assert.equal(reused_event.event_id, child_event.event_id)
@@ -39,10 +39,10 @@ test('advanced debounce prefers history, then waits for future, then dispatches'
   const pending_event = bus.find(SyncEvent, { past: false, future: 0.5 })
 
   setTimeout(() => {
-    bus.dispatch(SyncEvent({}))
+    bus.emit(SyncEvent({}))
   }, 50)
 
-  const resolved_event = (await bus.find(SyncEvent, { past: true, future: false })) ?? (await pending_event) ?? bus.dispatch(SyncEvent({}))
+  const resolved_event = (await bus.find(SyncEvent, { past: true, future: false })) ?? (await pending_event) ?? bus.emit(SyncEvent({}))
   await resolved_event.done()
 
   assert.ok(resolved_event)
@@ -52,7 +52,7 @@ test('advanced debounce prefers history, then waits for future, then dispatches'
 test('debounce returns existing fresh event', async () => {
   const bus = new EventBus('DebounceFreshBus')
 
-  const original = await bus.dispatch(ScreenshotEvent({ target_id: 'tab1' })).done()
+  const original = await bus.emit(ScreenshotEvent({ target_id: 'tab1' })).done()
 
   const is_fresh = (event: typeof original): boolean => {
     const completed_at = event.event_completed_at ? Date.parse(event.event_completed_at) : 0
@@ -61,7 +61,7 @@ test('debounce returns existing fresh event', async () => {
 
   const result =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1' && is_fresh(event), { past: true, future: false })) ??
-    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
+    bus.emit(ScreenshotEvent({ target_id: 'tab1' }))
   await result.done()
 
   assert.equal(result.event_id, original.event_id)
@@ -72,7 +72,7 @@ test('debounce dispatches new when no match', async () => {
 
   const result =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1', { past: true, future: false })) ??
-    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
+    bus.emit(ScreenshotEvent({ target_id: 'tab1' }))
   await result.done()
 
   assert.ok(result)
@@ -83,11 +83,11 @@ test('debounce dispatches new when no match', async () => {
 test('debounce dispatches new when existing is stale', async () => {
   const bus = new EventBus('DebounceStaleBus')
 
-  await bus.dispatch(ScreenshotEvent({ target_id: 'tab1' })).done()
+  await bus.emit(ScreenshotEvent({ target_id: 'tab1' })).done()
 
   const result =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1' && false, { past: true, future: false })) ??
-    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
+    bus.emit(ScreenshotEvent({ target_id: 'tab1' }))
   await result.done()
 
   assert.ok(result)
@@ -100,15 +100,15 @@ test('debounce or-chain handles sequential lookups without blocking', async () =
 
   const result1 =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1', { past: true, future: false })) ??
-    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
+    bus.emit(ScreenshotEvent({ target_id: 'tab1' }))
 
   const result2 =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1', { past: true, future: false })) ??
-    bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
+    bus.emit(ScreenshotEvent({ target_id: 'tab1' }))
 
   const result3 =
     (await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab2', { past: true, future: false })) ??
-    bus.dispatch(ScreenshotEvent({ target_id: 'tab2' }))
+    bus.emit(ScreenshotEvent({ target_id: 'tab2' }))
   await Promise.all([result1.done(), result2.done(), result3.done()])
 
   assert.equal(result1.event_id, result2.event_id)

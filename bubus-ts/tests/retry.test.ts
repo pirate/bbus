@@ -379,7 +379,7 @@ test('retry: works as event bus handler wrapper (inline HOF)', async () => {
     })
   )
 
-  const event = bus.dispatch(TestEvent({}))
+  const event = bus.emit(TestEvent({}))
   await event.done()
 
   assert.equal(calls, 3)
@@ -401,7 +401,7 @@ test('retry: bus handler with retry_on_errors only retries matching errors (inli
     })
   )
 
-  const event = bus.dispatch(TestEvent({}))
+  const event = bus.emit(TestEvent({}))
   await event.done()
 
   // Should have failed immediately without retrying
@@ -883,7 +883,7 @@ test('retry: @retry() decorated method works with bus.on via bind', async () => 
   const handler = new Handler()
   bus.on(TestEvent, handler.onTest.bind(handler))
 
-  const event = bus.dispatch(TestEvent({}))
+  const event = bus.emit(TestEvent({}))
   await event.done()
   assert.equal(handler.calls, 3)
   const result = Array.from(event.event_results.values())[0]
@@ -974,7 +974,7 @@ test('retry: @retry(scope=class) + bus.on via .bind — serializes across instan
   await delay(2)
   new SomeService(bus)
 
-  const event = bus.dispatch(SomeEvent({}))
+  const event = bus.emit(SomeEvent({}))
   await event.done()
 
   // class scope + limit=1: only 1 handler should run at a time across both instances
@@ -1012,7 +1012,7 @@ test('retry: @retry(scope=instance) + bus.on via .bind — isolates per instance
   await delay(2)
   new SomeService(bus)
 
-  const event = bus.dispatch(SomeEvent({}))
+  const event = bus.emit(SomeEvent({}))
   await event.done()
 
   // instance scope: 2 different instances can run in parallel
@@ -1053,7 +1053,7 @@ test('retry: @retry(scope=global) + bus.on via .bind — all calls share one sem
   await delay(2)
   new SomeService(bus)
 
-  const event = bus.dispatch(SomeEvent({}))
+  const event = bus.emit(SomeEvent({}))
   await event.done()
 
   // global scope: all calls serialized
@@ -1091,7 +1091,7 @@ test('retry: HOF retry()(fn).bind(instance) — instance scope works when bind i
   bus.on(SomeEvent, handler.bind(some_instance_a))
   bus.on(SomeEvent, handler.bind(some_instance_b))
 
-  const event = bus.dispatch(SomeEvent({}))
+  const event = bus.emit(SomeEvent({}))
   await event.done()
 
   // Two different instances → separate semaphores → can run in parallel

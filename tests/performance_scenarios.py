@@ -140,16 +140,16 @@ async def _wait_for_runtime_settle(hooks: PerfInput) -> None:
 
 
 async def _trim_bus_history_to_one_event(bus: EventBus, trim_event_type: type[BaseEvent[Any]]) -> None:
-    prev_size = bus.max_history_size
-    prev_drop = bus.max_history_drop
-    bus.max_history_size = TRIM_TARGET
-    bus.max_history_drop = True
-    ev = bus.dispatch(trim_event_type())
+    prev_size = bus.event_history.max_history_size
+    prev_drop = bus.event_history.max_history_drop
+    bus.event_history.max_history_size = TRIM_TARGET
+    bus.event_history.max_history_drop = True
+    ev = bus.emit(trim_event_type())
     await ev
     await bus.wait_until_idle()
     assert len(bus.event_history) <= TRIM_TARGET, f'trim-to-1 failed for {bus}: {len(bus.event_history)}/{TRIM_TARGET}'
-    bus.max_history_size = prev_size
-    bus.max_history_drop = prev_drop
+    bus.event_history.max_history_size = prev_size
+    bus.event_history.max_history_drop = prev_drop
 
 
 async def _dispatch_naive(
@@ -162,7 +162,7 @@ async def _dispatch_naive(
 
     for event in events:
         try:
-            queued_event = bus.dispatch(event)
+            queued_event = bus.emit(event)
             queued.append(queued_event)
             if on_dispatched is not None:
                 on_dispatched(queued_event)
@@ -273,7 +273,7 @@ async def run_perf_50k_events(input: PerfInput) -> dict[str, Any]:
             value = (i % 97) + 1
             expected_checksum += value + batch_id
             try:
-                queued_event = bus.dispatch(PerfSimpleEvent(batch_id=batch_id, value=value))
+                queued_event = bus.emit(PerfSimpleEvent(batch_id=batch_id, value=value))
                 queued_batch.append(queued_event)
                 if len(sampled_early_event_ids) < 64:
                     sampled_early_event_ids.append(queued_event.event_id)
@@ -480,7 +480,7 @@ async def run_perf_single_event_many_fixed_handlers(input: PerfInput) -> dict[st
 
     error: str | None = None
     try:
-        event = bus.dispatch(PerfFixedHandlersEvent(base_value=base_value))
+        event = bus.emit(PerfFixedHandlersEvent(base_value=base_value))
         await event
         await bus.wait_until_idle()
     except Exception as exc:
@@ -560,7 +560,7 @@ async def run_perf_on_off_churn(input: PerfInput) -> dict[str, Any]:
         handler_entry = bus.on(PerfRequestEvent, one_off_handler)
 
         try:
-            ev = bus.dispatch(PerfRequestEvent(value=value))
+            ev = bus.emit(PerfRequestEvent(value=value))
             await ev
         except Exception as exc:
             error = f'{type(exc).__name__}: {exc}'
@@ -644,7 +644,7 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
         nonlocal child_handled, checksum
         child_handled += 1
         checksum += (event.value * 2) + event.iteration
-        gc_event = event.event_bus.dispatch(WCGrandchild(iteration=event.iteration, value=event.value + 1))
+        gc_event = event.event_bus.emit(WCGrandchild(iteration=event.iteration, value=event.value + 1))
         if event.event_timeout is not None:
             await hooks.sleep(0)
         await gc_event
@@ -671,7 +671,7 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
                 nonlocal parent_handled_a, checksum
                 parent_handled_a += 1
                 checksum += event.value + 11
-                child = event.event_bus.dispatch(
+                child = event.event_bus.emit(
                     WCChild(
                         iteration=event.iteration,
                         value=event.value,
@@ -679,7 +679,7 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
                         event_timeout=WORST_CASE_IMMEDIATE_TIMEOUT_SECONDS if should_timeout else None,
                     )
                 )
-                bus_c.dispatch(child)
+                bus_c.emit(child)
                 try:
                     await child
                 except Exception:
@@ -687,8 +687,8 @@ async def run_perf_worst_case(input: PerfInput) -> dict[str, Any]:
 
             ephemeral_entry = bus_a.on(WCParent, ephemeral_handler)
             parent = WCParent(iteration=iteration, value=value)
-            ev_a = bus_a.dispatch(parent)
-            bus_b.dispatch(parent)
+            ev_a = bus_a.emit(parent)
+            bus_b.emit(parent)
             await ev_a
             bus_a.off(WCParent, ephemeral_entry.id)
 

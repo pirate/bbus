@@ -81,7 +81,7 @@ export class SQLiteEventBridge {
     this.inbound_bus.on(event_pattern as EventClass<BaseEvent>, handler as EventHandlerCallable<BaseEvent>)
   }
 
-  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+  async emit<T extends BaseEvent>(event: T): Promise<void> {
     this.ensureStarted()
     if (!this.running) {
       await this.start()
@@ -114,8 +114,8 @@ export class SQLiteEventBridge {
     this.db.prepare(upsert_sql).run(...values)
   }
 
-  async emit<T extends BaseEvent>(event: T): Promise<void> {
-    return this.dispatch(event)
+  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+    return this.emit(event)
   }
 
   async start(): Promise<void> {
@@ -237,7 +237,7 @@ export class SQLiteEventBridge {
 
   private async dispatchInboundPayload(payload: unknown): Promise<void> {
     const event = BaseEvent.fromJSON(payload).reset()
-    this.inbound_bus.dispatch(event)
+    this.inbound_bus.emit(event)
   }
 
   private refreshColumnCache(): void {

@@ -45,12 +45,12 @@ async def test_event_bus_property_single_bus():
         assert event.event_bus.name == 'TestBus'
 
         # Should be able to dispatch child events using the property
-        dispatched_child = await event.event_bus.dispatch(ChildEvent())
+        dispatched_child = await event.event_bus.emit(ChildEvent())
 
     bus.on(MainEvent, handler)
 
     # Dispatch event and wait for completion
-    await bus.dispatch(MainEvent())
+    await bus.emit(MainEvent())
 
     assert handler_called
     assert dispatched_child is not None
@@ -85,11 +85,11 @@ async def test_event_bus_property_multiple_buses():
     bus2.on(MainEvent, handler2)
 
     # Dispatch to bus1
-    await bus1.dispatch(MainEvent(message='bus1'))
+    await bus1.emit(MainEvent(message='bus1'))
     assert handler1_called
 
     # Dispatch to bus2
-    await bus2.dispatch(MainEvent(message='bus2'))
+    await bus2.emit(MainEvent(message='bus2'))
     assert handler2_called
 
     await bus1.stop()
@@ -102,7 +102,7 @@ async def test_event_bus_property_with_forwarding():
     bus2 = EventBus(name='Bus2')
 
     # Forward all events from bus1 to bus2
-    bus1.on('*', bus2.dispatch)
+    bus1.on('*', bus2.emit)
 
     handler_bus = None
     handler_complete = asyncio.Event()
@@ -116,7 +116,7 @@ async def test_event_bus_property_with_forwarding():
     bus2.on(MainEvent, handler)
 
     # Dispatch to bus1, which forwards to bus2
-    event = bus1.dispatch(MainEvent())
+    event = bus1.emit(MainEvent())
 
     # Wait for handler to complete
     await handler_complete.wait()
@@ -145,7 +145,7 @@ async def test_event_bus_property_outside_handler():
         _ = event.event_bus
 
     # Even after dispatching, accessing outside handler should fail
-    dispatched_event = await bus.dispatch(event)
+    dispatched_event = await bus.emit(event)
 
     with pytest.raises(AttributeError, match='event_bus property can only be accessed from within an event handler'):
         _ = dispatched_event.event_bus
@@ -170,11 +170,11 @@ async def test_event_bus_property_nested_handlers():
             inner_bus_name = child_event.event_bus.name
 
         bus.on(ChildEvent, inner_handler)
-        await event.event_bus.dispatch(child)
+        await event.event_bus.emit(child)
 
     bus.on(MainEvent, outer_handler)
 
-    await bus.dispatch(MainEvent())
+    await bus.emit(MainEvent())
 
     assert inner_bus_name == 'MainBus'
 
@@ -197,7 +197,7 @@ async def test_event_bus_property_no_active_bus():
             event = e
 
         bus.on(MainEvent, handler)
-        await bus.dispatch(MainEvent())
+        await bus.emit(MainEvent())
         await bus.stop()
         # Bus goes out of scope here and may be garbage collected
 
@@ -226,7 +226,7 @@ async def test_event_bus_property_no_active_bus():
             error_raised = True
 
     new_bus.on(MainEvent, new_handler)
-    await new_bus.dispatch(MainEvent())
+    await new_bus.emit(MainEvent())
 
     # Should have raised an error since the original bus is gone
     assert error_raised
@@ -252,7 +252,7 @@ async def test_event_bus_property_child_dispatch():
 
         # Dispatch a child event using event.event_bus
         nonlocal child_event_ref
-        child_event_ref = event.event_bus.dispatch(ChildEvent(data='from_parent'))
+        child_event_ref = event.event_bus.emit(ChildEvent(data='from_parent'))
 
         # The child event should start processing immediately within our handler
         # (due to the deadlock prevention in BaseEvent.__await__)
@@ -270,7 +270,7 @@ async def test_event_bus_property_child_dispatch():
 
         # Dispatch a grandchild event
         nonlocal grandchild_event_ref
-        grandchild_event_ref = event.event_bus.dispatch(GrandchildEvent(info='from_child'))
+        grandchild_event_ref = event.event_bus.emit(GrandchildEvent(info='from_child'))
 
         # Wait for grandchild to complete
         await grandchild_event_ref
@@ -293,7 +293,7 @@ async def test_event_bus_property_child_dispatch():
     bus.on(GrandchildEvent, grandchild_handler)
 
     # Dispatch the parent event
-    parent_event = await bus.dispatch(MainEvent(message='start'))
+    parent_event = await bus.emit(MainEvent(message='start'))
 
     # Verify execution order - child events should complete before parent
     assert execution_order == ['parent_start', 'child_start', 'grandchild_start', 'grandchild_end', 'child_end', 'parent_end']
@@ -318,7 +318,7 @@ async def test_event_bus_property_multi_bus_child_dispatch():
     bus2 = EventBus(name='Bus2')
 
     # Forward all events from bus1 to bus2
-    bus1.on('*', bus2.dispatch)
+    bus1.on('*', bus2.emit)
 
     child_dispatch_bus = None
     child_handler_bus = None
@@ -331,7 +331,7 @@ async def test_event_bus_property_multi_bus_child_dispatch():
         # Dispatch child using event.event_bus (should dispatch to bus2)
         nonlocal child_dispatch_bus
         child_dispatch_bus = event.event_bus
-        await event.event_bus.dispatch(ChildEvent(data='from_bus2_handler'))
+        await event.event_bus.emit(ChildEvent(data='from_bus2_handler'))
 
     async def child_handler(event: ChildEvent):
         # Child handler should see bus2 as well
@@ -345,7 +345,7 @@ async def test_event_bus_property_multi_bus_child_dispatch():
     bus2.on(ChildEvent, child_handler)
 
     # Dispatch to bus1, which forwards to bus2
-    parent_event = bus1.dispatch(MainEvent(message='start'))
+    parent_event = bus1.emit(MainEvent(message='start'))
 
     # Wait for handlers to complete
     await asyncio.wait_for(handlers_complete.wait(), timeout=5.0)

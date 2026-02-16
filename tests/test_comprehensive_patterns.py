@@ -44,7 +44,7 @@ async def test_comprehensive_patterns():
         return 'forwarded bus result'
 
     bus2.on('*', child_bus2_event_handler)  # register a handler on bus2
-    bus1.on('*', bus2.dispatch)  # forward all events from bus1 -> bus2
+    bus1.on('*', bus2.emit)  # forward all events from bus1 -> bus2
 
     async def parent_bus1_handler(event: ParentEvent) -> str:
         # Only process the parent ParentEvent
@@ -56,13 +56,13 @@ async def test_comprehensive_patterns():
 
         # Pattern 1: Async dispatch - handlers run after parent completes
         print('\n1. Testing async dispatch...')
-        child_event_async = bus1.dispatch(QueuedChildEvent())
+        child_event_async = bus1.emit(QueuedChildEvent())
         print(f'   child_event_async.event_status = {child_event_async.event_status}')
         assert child_event_async.event_status != 'completed'
 
         # Pattern 2: Sync dispatch with await - handlers run immediately
         print('\n2. Testing sync dispatch (await)...')
-        child_event_sync = await bus1.dispatch(ImmediateChildEvent())
+        child_event_sync = await bus1.emit(ImmediateChildEvent())
         print(f'   child_event_sync.event_status = {child_event_sync.event_status}')
         assert child_event_sync.event_status == 'completed'
 
@@ -71,7 +71,7 @@ async def test_comprehensive_patterns():
         print(f'   child_event_sync.event_results: {child_event_sync.event_results}')
         event_results = await child_event_sync.event_results_list(raise_if_none=False)
         print(f'   Results: {event_results}')
-        # The forwarding handler (bus.dispatch) returns the event object itself
+        # The forwarding handler (bus.emit) returns the event object itself
         # We need to check if the child event was processed on bus2
         # Check that the event was forwarded by looking at:
         # 1. The event path includes bus2
@@ -82,8 +82,7 @@ async def test_comprehensive_patterns():
             print(f'     - {result.handler_name} (bus: {result.eventbus_name})')
         # The event was forwarded from bus1 and processed by bus2.
         assert any(
-            result.eventbus_name == 'bus1' and 'dispatch' in result.handler_name
-            for result in child_event_sync.event_results.values()
+            result.eventbus_name == 'bus1' and 'emit' in result.handler_name for result in child_event_sync.event_results.values()
         )
         assert any(
             result.eventbus_name == 'bus2' and 'child_bus2_event_handler' in result.handler_name
@@ -109,7 +108,7 @@ async def test_comprehensive_patterns():
 
     # Dispatch parent event and wait for completion
     print('\nDispatching parent event...')
-    parent_event = await bus1.dispatch(ParentEvent())
+    parent_event = await bus1.emit(ParentEvent())
 
     # Wait for all buses to finish processing
     await bus1.wait_until_idle()
@@ -201,12 +200,12 @@ async def test_await_forwarded_event_waits_for_target_bus_handlers():
         target_finished.set()
         return 'target_done'
 
-    bus_src.on('*', bus_dst.dispatch)
+    bus_src.on('*', bus_dst.emit)
     bus_dst.on(ForwardedEvent, target_handler)
 
     try:
         t0 = asyncio.get_running_loop().time()
-        event = await bus_src.dispatch(ForwardedEvent())
+        event = await bus_src.emit(ForwardedEvent())
         elapsed = asyncio.get_running_loop().time() - t0
 
         assert target_started.is_set()
@@ -244,11 +243,11 @@ async def test_race_condition_stress():
 
         # Async dispatches
         for _ in range(3):
-            children.append(bus1.dispatch(QueuedChildEvent()))
+            children.append(bus1.emit(QueuedChildEvent()))
 
         # Sync dispatches
         for _ in range(3):
-            child = await bus1.dispatch(ImmediateChildEvent())
+            child = await bus1.emit(ImmediateChildEvent())
             assert child.event_status == 'completed'
             children.append(child)
 
@@ -260,7 +259,7 @@ async def test_race_condition_stress():
         pass
 
     # Setup forwarding
-    bus1.on('*', bus2.dispatch)
+    bus1.on('*', bus2.emit)
     bus1.on(QueuedChildEvent, child_handler)
     bus1.on(ImmediateChildEvent, child_handler)
     bus2.on(QueuedChildEvent, child_handler)
@@ -272,7 +271,7 @@ async def test_race_condition_stress():
     for run in range(5):
         results.clear()
 
-        await bus1.dispatch(BaseEvent())
+        await bus1.emit(BaseEvent())
         await bus1.wait_until_idle()
         await bus2.wait_until_idle()
 
@@ -323,7 +322,7 @@ async def test_awaited_child_jumps_queue_no_overshoot():
     async def event1_handler(event: Event1) -> str:
         execution_order.append('Event1_start')
         # Dispatch and await child - this should jump the queue
-        child = bus.dispatch(ChildEvent())
+        child = bus.emit(ChildEvent())
         execution_order.append('Child_dispatched')
         await child
         execution_order.append('Child_await_returned')
@@ -352,9 +351,9 @@ async def test_awaited_child_jumps_queue_no_overshoot():
 
     try:
         # Dispatch all three events (they go into the queue)
-        event1 = bus.dispatch(Event1())
-        event2 = bus.dispatch(Event2())
-        event3 = bus.dispatch(Event3())
+        event1 = bus.emit(Event1())
+        event2 = bus.emit(Event2())
+        event3 = bus.emit(Event3())
 
         # Verify events are queued
         await asyncio.sleep(0)  # Let dispatch settle
@@ -471,13 +470,13 @@ async def test_dispatch_multiple_await_one_skips_others():
         execution_order.append('Event1_start')
 
         # Dispatch three children but only await the middle one
-        child_a = bus.dispatch(ChildA())
+        child_a = bus.emit(ChildA())
         execution_order.append('ChildA_dispatched')
 
-        child_b = bus.dispatch(ChildB())
+        child_b = bus.emit(ChildB())
         execution_order.append('ChildB_dispatched')
 
-        child_c = bus.dispatch(ChildC())
+        child_c = bus.emit(ChildC())
         execution_order.append('ChildC_dispatched')
 
         # Only await ChildB - it should jump the queue
@@ -521,9 +520,9 @@ async def test_dispatch_multiple_await_one_skips_others():
 
     try:
         # Dispatch E1, E2, E3
-        event1 = bus.dispatch(Event1())
-        event2 = bus.dispatch(Event2())
-        event3 = bus.dispatch(Event3())
+        event1 = bus.emit(Event1())
+        event2 = bus.emit(Event2())
+        event3 = bus.emit(Event3())
 
         # Await E1
         await event1
@@ -614,7 +613,7 @@ async def test_multi_bus_forwarding_with_queued_events():
     async def event1_handler(event: Event1) -> str:
         execution_order.append('Bus1_Event1_start')
         # Dispatch child to bus1 and await
-        child = bus1.dispatch(ChildEvent())
+        child = bus1.emit(ChildEvent())
         execution_order.append('Child_dispatched_to_Bus1')
         await child
         execution_order.append('Child_await_returned')
@@ -651,10 +650,10 @@ async def test_multi_bus_forwarding_with_queued_events():
 
     try:
         # Queue events on both buses
-        event1 = bus1.dispatch(Event1())
-        event2 = bus1.dispatch(Event2())
-        event3 = bus2.dispatch(Event3())
-        event4 = bus2.dispatch(Event4())
+        event1 = bus1.emit(Event1())
+        event2 = bus1.emit(Event2())
+        event3 = bus2.emit(Event3())
+        event4 = bus2.emit(Event4())
 
         await asyncio.sleep(0)  # Let dispatch settle
 
@@ -731,11 +730,11 @@ async def test_await_already_completed_event():
 
     try:
         # Dispatch and await E1 first
-        event1 = await bus.dispatch(Event1())
+        event1 = await bus.emit(Event1())
         assert event1.event_status == 'completed'
 
         # Now dispatch E2
-        event2 = bus.dispatch(Event2())
+        event2 = bus.emit(Event2())
 
         # Await E1 again - should be a no-op since it's already completed
         await event1  # Should return immediately
@@ -783,7 +782,7 @@ async def test_multiple_awaits_same_event():
         execution_order.append('Event1_start')
 
         # Dispatch child
-        child = bus.dispatch(ChildEvent())
+        child = bus.emit(ChildEvent())
         child_ref = child
 
         # Create multiple concurrent awaits on the same child
@@ -818,8 +817,8 @@ async def test_multiple_awaits_same_event():
     bus.on(ChildEvent, child_handler)
 
     try:
-        event1 = bus.dispatch(Event1())
-        event2 = bus.dispatch(Event2())
+        event1 = bus.emit(Event1())
+        event2 = bus.emit(Event2())
 
         await event1
 
@@ -880,14 +879,14 @@ async def test_deeply_nested_awaited_children():
 
     async def event1_handler(event: Event1) -> str:
         execution_order.append('Event1_start')
-        child1 = bus.dispatch(Child1())
+        child1 = bus.emit(Child1())
         await child1
         execution_order.append('Event1_end')
         return 'event1_done'
 
     async def child1_handler(event: Child1) -> str:
         execution_order.append('Child1_start')
-        child2 = bus.dispatch(Child2())
+        child2 = bus.emit(Child2())
         await child2
         execution_order.append('Child1_end')
         return 'child1_done'
@@ -908,8 +907,8 @@ async def test_deeply_nested_awaited_children():
     bus.on(Event2, event2_handler)
 
     try:
-        event1 = bus.dispatch(Event1())
-        event2 = bus.dispatch(Event2())
+        event1 = bus.emit(Event1())
+        event2 = bus.emit(Event2())
 
         await event1
 

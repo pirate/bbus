@@ -69,9 +69,9 @@ const measureHeapDeltaAfterGc = async (hooks, baselineHeapUsed) => {
 }
 
 const trimBusHistoryToOneEvent = async (hooks, bus, TrimEvent) => {
-  bus.max_history_size = TRIM_TARGET
-  bus.max_history_drop = true
-  let trimEvent = bus.dispatch(TrimEvent({}))
+  bus.event_history.max_history_size = TRIM_TARGET
+  bus.event_history.max_history_drop = true
+  let trimEvent = bus.emit(TrimEvent({}))
   await trimEvent.done()
   trimEvent = null
   await bus.waitUntilIdle()
@@ -101,7 +101,7 @@ const runCleanupBurst = async ({ hooks, EventBus, CleanupEvent, TrimEvent, buses
       // Store completion promises (not event proxies) to avoid retaining bus-bound proxies across GC checks.
       pending.push(
         bus
-          .dispatch(CleanupEvent({}))
+          .emit(CleanupEvent({}))
           .done()
           .then(() => undefined)
       )
@@ -129,7 +129,7 @@ const runWarmup = async (input) => {
   for (let i = 0; i < 2048; i += 256) {
     const pending = []
     for (let j = 0; j < 256; j += 1) {
-      pending.push(bus.dispatch(WarmEvent({})))
+      pending.push(bus.emit(WarmEvent({})))
     }
     await Promise.all(pending.map((event) => event.done()))
     await bus.waitUntilIdle()
@@ -275,7 +275,7 @@ export const runPerf50kEvents = async (input) => {
     const pending = []
     const thisBatch = Math.min(batchSize, totalEvents - dispatched)
     for (let i = 0; i < thisBatch; i += 1) {
-      const dispatchedEvent = bus.dispatch(SimpleEvent({}))
+      const dispatchedEvent = bus.emit(SimpleEvent({}))
       pending.push(dispatchedEvent)
       if (sampledEarlyEvents.length < 64) {
         const original = dispatchedEvent._event_original ?? dispatchedEvent
@@ -308,8 +308,8 @@ export const runPerf50kEvents = async (input) => {
   assert(processedCount === totalEvents, `50k events processed ${processedCount}/${totalEvents}`)
   assert(totalMs < hooks.limits.singleRunMs, `50k events took ${Math.round(totalMs)}ms (limit ${hooks.limits.singleRunMs}ms)`)
   assert(
-    bus.event_history.size <= bus.max_history_size,
-    `50k events history exceeded limit: ${bus.event_history.size}/${bus.max_history_size}`
+    bus.event_history.size <= bus.event_history.max_history_size,
+    `50k events history exceeded limit: ${bus.event_history.size}/${bus.event_history.max_history_size}`
   )
 
   assert(sampledEarlyEvents.length > 0, 'expected sampled early events to be captured')
@@ -376,7 +376,7 @@ export const runPerfEphemeralBuses = async (input) => {
 
     const pending = []
     for (let i = 0; i < eventsPerBus; i += 1) {
-      pending.push(bus.dispatch(SimpleEvent({})))
+      pending.push(bus.emit(SimpleEvent({})))
     }
 
     await Promise.all(pending.map((event) => event.done()))
@@ -446,7 +446,7 @@ export const runPerfSingleEventManyFixedHandlers = async (input) => {
   const memory = createMemoryTracker(hooks)
   const t0 = hooks.now()
 
-  const event = bus.dispatch(FixedHandlersEvent({}))
+  const event = bus.emit(FixedHandlersEvent({}))
   await event.done()
   await bus.waitUntilIdle()
 
@@ -506,7 +506,7 @@ export const runPerfOnOffChurn = async (input) => {
     }
     bus.on(RequestEvent, oneOffHandler)
 
-    const ev = bus.dispatch(RequestEvent({}))
+    const ev = bus.emit(RequestEvent({}))
     await ev.done()
 
     bus.off(RequestEvent, oneOffHandler)
@@ -577,7 +577,7 @@ export const runPerfWorstCase = async (input) => {
   busC.on(ChildEvent, async (event) => {
     childHandled += 1
     const gc = event.bus.emit(GrandchildEvent({}))
-    busC.dispatch(gc)
+    busC.emit(gc)
     if (event.event_timeout !== null) {
       // Yield once so near-zero timeout paths execute without adding a large fixed delay.
       await hooks.sleep(0)
@@ -603,7 +603,7 @@ export const runPerfWorstCase = async (input) => {
           event_timeout: shouldTimeout ? WORST_CASE_IMMEDIATE_TIMEOUT_SECONDS : null,
         })
       )
-      busC.dispatch(child)
+      busC.emit(child)
       try {
         await child.done()
       } catch {
@@ -613,8 +613,8 @@ export const runPerfWorstCase = async (input) => {
 
     busA.on(ParentEvent, ephemeralHandler)
     const parent = ParentEvent({})
-    const evA = busA.dispatch(parent)
-    busB.dispatch(parent)
+    const evA = busA.emit(parent)
+    busB.emit(parent)
     await evA.done()
     busA.off(ParentEvent, ephemeralHandler)
 

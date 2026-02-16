@@ -6,6 +6,8 @@ import { z } from 'zod'
 import { BaseEvent, EventBus } from '../src/index.js'
 
 const PingEvent = BaseEvent.extend('PingEvent', { value: z.number() })
+const ProxyDispatchRootEvent = BaseEvent.extend('ProxyDispatchRootEvent', {})
+const ProxyDispatchChildEvent = BaseEvent.extend('ProxyDispatchChildEvent', {})
 
 test('events forward between buses without duplication', async () => {
   const bus_a = new EventBus('BusA')
@@ -28,10 +30,10 @@ test('events forward between buses without duplication', async () => {
     seen_c.push(event.event_id)
   })
 
-  bus_a.on('*', bus_b.dispatch)
-  bus_b.on('*', bus_c.dispatch)
+  bus_a.on('*', bus_b.emit)
+  bus_b.on('*', bus_c.emit)
 
-  const event = bus_a.dispatch(PingEvent({ value: 1 }))
+  const event = bus_a.emit(PingEvent({ value: 1 }))
 
   await bus_a.waitUntilIdle()
   await bus_b.waitUntilIdle()
@@ -63,9 +65,9 @@ test('forwarding disambiguates buses that share the same name', async () => {
     seen_b.push(event.event_id)
   })
 
-  bus_a.on('*', bus_b.dispatch)
+  bus_a.on('*', bus_b.emit)
 
-  const event = bus_a.dispatch(PingEvent({ value: 99 }))
+  const event = bus_a.emit(PingEvent({ value: 99 }))
 
   await bus_a.waitUntilIdle()
   await bus_b.waitUntilIdle()
@@ -104,10 +106,10 @@ test('await event.done waits for handlers on forwarded buses', async () => {
     completion_log.push('C')
   })
 
-  bus_a.on('*', bus_b.dispatch)
-  bus_b.on('*', bus_c.dispatch)
+  bus_a.on('*', bus_b.emit)
+  bus_b.on('*', bus_c.emit)
 
-  const event = bus_a.dispatch(PingEvent({ value: 2 }))
+  const event = bus_a.emit(PingEvent({ value: 2 }))
 
   await event.done()
 
@@ -135,11 +137,11 @@ test('circular forwarding A->B->C->A does not loop', async () => {
   })
 
   // Create a full cycle: Peer1 -> Peer2 -> Peer3 -> Peer1
-  peer1.on('*', peer2.dispatch)
-  peer2.on('*', peer3.dispatch)
-  peer3.on('*', peer1.dispatch) // completes the circle
+  peer1.on('*', peer2.emit)
+  peer2.on('*', peer3.emit)
+  peer3.on('*', peer1.emit) // completes the circle
 
-  const event = peer1.dispatch(PingEvent({ value: 42 }))
+  const event = peer1.emit(PingEvent({ value: 42 }))
 
   await peer1.waitUntilIdle()
   await peer2.waitUntilIdle()
@@ -163,7 +165,7 @@ test('circular forwarding A->B->C->A does not loop', async () => {
   events_at_peer2.length = 0
   events_at_peer3.length = 0
 
-  const event2 = peer2.dispatch(PingEvent({ value: 99 }))
+  const event2 = peer2.emit(PingEvent({ value: 99 }))
 
   await peer1.waitUntilIdle()
   await peer2.waitUntilIdle()
@@ -202,16 +204,50 @@ test('await event.done waits when forwarding handler is async-delayed', async ()
 
   bus_a.on('*', async (event) => {
     await delay(30)
-    bus_b.dispatch(event)
+    bus_b.emit(event)
   })
 
-  const event = bus_a.dispatch(PingEvent({ value: 3 }))
+  const event = bus_a.emit(PingEvent({ value: 3 }))
   await event.done()
 
   assert.equal(bus_a_done, true)
   assert.equal(bus_b_done, true)
   assert.equal(event.event_pending_bus_count, 0)
   assert.deepEqual(event.event_path, [bus_a.label, bus_b.label])
+})
+
+test('proxy dispatch auto-links child events like emit', async () => {
+  const bus = new EventBus('ProxyDispatchAutoLinkBus')
+
+  bus.on(ProxyDispatchRootEvent, (event) => {
+    event.bus?.emit(ProxyDispatchChildEvent({}))
+    return 'root'
+  })
+  bus.on(ProxyDispatchChildEvent, () => 'child')
+
+  const root = bus.emit(ProxyDispatchRootEvent({}))
+  await Promise.all([bus.waitUntilIdle(), root.done()])
+
+  const child = root.event_children[0]
+  assert.ok(child)
+  assert.equal(child.event_parent_id, root.event_id)
+  assert.equal(root.event_children.length, 1)
+  assert.equal(root.event_children[0]?.event_id, child.event_id)
+})
+
+test('proxy dispatch of same event does not self-parent or self-link child', async () => {
+  const bus = new EventBus('ProxyDispatchSameEventBus')
+
+  bus.on(ProxyDispatchRootEvent, (event) => {
+    event.bus?.emit(event)
+    return 'root'
+  })
+
+  const root = bus.emit(ProxyDispatchRootEvent({}))
+  await Promise.all([bus.waitUntilIdle(), root.done()])
+
+  assert.equal(root.event_parent_id, null)
+  assert.equal(root.event_children.length, 0)
 })
 
 // Consolidated from tests/fifo.test.ts
@@ -240,7 +276,7 @@ test('events are processed in FIFO order', async () => {
   })
 
   for (let i = 0; i < 10; i += 1) {
-    bus.dispatch(OrderEvent({ order: i }))
+    bus.emit(OrderEvent({ order: i }))
   }
 
   await bus.waitUntilIdle()

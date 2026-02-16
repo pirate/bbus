@@ -194,7 +194,7 @@ class TestNameConflictGC:
             bus = EventBus(name=f'GCNoStopBus_{index}')
             bus.on(GcHistoryEvent, lambda e: 'ok')
             for _ in range(40):
-                await bus.dispatch(GcHistoryEvent())
+                await bus.emit(GcHistoryEvent())
             await bus.wait_until_idle()
             return weakref.ref(bus)
 
@@ -245,7 +245,7 @@ class TestNameConflictGC:
             bus = EventBus(name=f'GCImplicitNoStop_{index}')
             bus.on(GcImplicitEvent, lambda e: 'ok')
             for _ in range(30):
-                await bus.dispatch(GcImplicitEvent())
+                await bus.emit(GcImplicitEvent())
             await bus.wait_until_idle()
             return weakref.ref(bus)
 

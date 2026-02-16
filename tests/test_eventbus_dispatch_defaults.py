@@ -28,8 +28,8 @@ async def test_event_concurrency_remains_unset_on_dispatch_and_resolves_during_p
 
     bus.on(PropagationEvent, handler)
     try:
-        implicit = bus.dispatch(PropagationEvent())
-        explicit_none = bus.dispatch(PropagationEvent(event_concurrency=None))
+        implicit = bus.emit(PropagationEvent())
+        explicit_none = bus.emit(PropagationEvent(event_concurrency=None))
 
         assert implicit.event_concurrency is None
         assert explicit_none.event_concurrency is None
@@ -48,7 +48,7 @@ async def test_event_concurrency_class_override_beats_bus_default() -> None:
 
     bus.on(ConcurrencyOverrideEvent, handler)
     try:
-        event = bus.dispatch(ConcurrencyOverrideEvent())
+        event = bus.emit(ConcurrencyOverrideEvent())
         assert event.event_concurrency == 'global-serial'
         await event
     finally:
@@ -67,8 +67,8 @@ async def test_handler_defaults_remain_unset_on_dispatch_and_resolve_during_proc
 
     bus.on(PropagationEvent, handler)
     try:
-        implicit = bus.dispatch(PropagationEvent())
-        explicit_none = bus.dispatch(
+        implicit = bus.emit(PropagationEvent())
+        explicit_none = bus.emit(
             PropagationEvent(
                 event_handler_concurrency=None,
                 event_handler_completion=None,
@@ -98,7 +98,7 @@ async def test_handler_class_override_beats_bus_default() -> None:
 
     bus.on(HandlerOverrideEvent, handler)
     try:
-        event = bus.dispatch(HandlerOverrideEvent())
+        event = bus.emit(HandlerOverrideEvent())
         assert event.event_handler_concurrency == 'serial'
         assert event.event_handler_completion == 'all'
         await event

@@ -29,7 +29,7 @@ async def test_result_schema_mismatch_uses_event_handler_result_schema_error() -
     bus.on(IntTaxonomyEvent, wrong_type)
 
     try:
-        event = await bus.dispatch(IntTaxonomyEvent())
+        event = await bus.emit(IntTaxonomyEvent())
         await bus.wait_until_idle()
         result = next(iter(event.event_results.values()))
         assert result.status == 'error'
@@ -52,7 +52,7 @@ async def test_handler_timeout_uses_event_handler_timeout_error() -> None:
     bus.on(TimeoutEvent, slow_handler)
 
     try:
-        event = await bus.dispatch(TimeoutEvent())
+        event = await bus.emit(TimeoutEvent())
         await bus.wait_until_idle()
         result = next(iter(event.event_results.values()))
         assert result.status == 'error'
@@ -80,7 +80,7 @@ async def test_first_mode_pending_non_winner_uses_cancelled_error_class() -> Non
     bus.on(TaxonomyEvent, never_runs)
 
     try:
-        event = await bus.dispatch(TaxonomyEvent())
+        event = await bus.emit(TaxonomyEvent())
         await bus.wait_until_idle()
 
         loser_result = next(result for result in event.event_results.values() if result.handler_name.endswith('never_runs'))
@@ -112,7 +112,7 @@ async def test_parallel_first_started_loser_uses_aborted_error_class() -> None:
     bus.on(TaxonomyEvent, fast_winner)
 
     try:
-        event = await bus.dispatch(TaxonomyEvent())
+        event = await bus.emit(TaxonomyEvent())
         await bus.wait_until_idle()
 
         slow_result = next(result for result in event.event_results.values() if result.handler_name.endswith('slow_loser'))

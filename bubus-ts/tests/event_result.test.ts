@@ -23,7 +23,7 @@ test('event results capture handler return values', async () => {
 
   bus.on(StringResultEvent, () => 'ok')
 
-  const event = bus.dispatch(StringResultEvent({}))
+  const event = bus.emit(StringResultEvent({}))
   await event.done()
 
   assert.equal(event.event_results.size, 1)
@@ -37,7 +37,7 @@ test('event_result_type validates handler results', async () => {
 
   bus.on(ObjectResultEvent, () => ({ value: 'hello', count: 2 }))
 
-  const event = bus.dispatch(ObjectResultEvent({}))
+  const event = bus.emit(ObjectResultEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]
@@ -50,7 +50,7 @@ test('event_result_type allows undefined handler return values', async () => {
 
   bus.on(ObjectResultEvent, () => {})
 
-  const event = bus.dispatch(ObjectResultEvent({}))
+  const event = bus.emit(ObjectResultEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]
@@ -63,7 +63,7 @@ test('invalid result marks handler error', async () => {
 
   bus.on(ObjectResultEvent, () => JSON.parse('{"value":"bad","count":"nope"}'))
 
-  const event = bus.dispatch(ObjectResultEvent({}))
+  const event = bus.emit(ObjectResultEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]
@@ -76,7 +76,7 @@ test('event with no result schema stores raw values', async () => {
 
   bus.on(NoResultSchemaEvent, () => ({ raw: true }))
 
-  const event = bus.dispatch(NoResultSchemaEvent({}))
+  const event = bus.emit(NoResultSchemaEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]
@@ -89,7 +89,7 @@ test('event result JSON omits result_type and derives from parent event', async 
 
   bus.on(StringResultEvent, () => 'ok')
 
-  const event = bus.dispatch(StringResultEvent({}))
+  const event = bus.emit(StringResultEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]
@@ -171,4 +171,110 @@ test('runHandler does not create a slow monitor timer for already-settled result
 
   assert.equal(timer_created, false)
   bus.destroy()
+})
+
+test('runHandler starts slow monitor timer only after handler is marked started', async () => {
+  const TimerOrderEvent = BaseEvent.extend('RunHandlerTimerOrderEvent', {})
+  const bus = new EventBus('RunHandlerTimerOrderBus')
+  const handler = bus.on(TimerOrderEvent, async () => 'ok')
+
+  const event = TimerOrderEvent({})
+  event.bus = bus
+
+  const result = new EventResult({ event, handler })
+  let status_seen_during_timer_creation: string | null = null
+  result.createSlowHandlerWarningTimer = () => {
+    status_seen_during_timer_creation = result.status
+    return null
+  }
+
+  await result.runHandler(null)
+
+  assert.equal(status_seen_during_timer_creation, 'started')
+  bus.destroy()
+})
+
+test('handler result stays pending while waiting for withHandlerLock entry', async () => {
+  const LockWaitEvent = BaseEvent.extend('RunHandlerLockWaitEvent', {})
+  const bus = new EventBus('RunHandlerLockWaitBus', { event_handler_concurrency: 'serial' })
+
+  bus.on(LockWaitEvent, async () => 'ok')
+
+  let release_lock!: () => void
+  const release_lock_promise = new Promise<void>((resolve) => {
+    release_lock = resolve
+  })
+  const original_with_handler_lock = bus.locks.withHandlerLock.bind(bus.locks)
+  bus.locks.withHandlerLock = async (event, default_handler_concurrency, fn) => {
+    await release_lock_promise
+    return await original_with_handler_lock(event, default_handler_concurrency, fn)
+  }
+
+  const event = bus.emit(LockWaitEvent({}))
+  const start = Date.now()
+  while (event.event_results.size === 0) {
+    if (Date.now() - start > 1_000) {
+      throw new Error('Timed out waiting for pending handler result')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+
+  const result = Array.from(event.event_results.values())[0]
+  assert.equal(result.status, 'pending')
+
+  release_lock()
+  await event.done()
+  assert.equal(result.status, 'completed')
+  bus.destroy()
+})
+
+test('slow handler warning is based on handler runtime after lock wait', async () => {
+  const SlowAfterLockWaitEvent = BaseEvent.extend('RunHandlerSlowAfterLockWaitEvent', {})
+  const bus = new EventBus('RunHandlerSlowAfterLockWaitBus', {
+    event_handler_concurrency: 'serial',
+    event_handler_slow_timeout: 0.01,
+  })
+  const warnings: string[] = []
+  const original_warn = console.warn
+  console.warn = (message?: unknown, ...args: unknown[]) => {
+    warnings.push(String(message))
+    if (args.length > 0) {
+      warnings.push(args.map(String).join(' '))
+    }
+  }
+  try {
+    bus.on(SlowAfterLockWaitEvent, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      return 'ok'
+    })
+
+    let release_lock!: () => void
+    const release_lock_promise = new Promise<void>((resolve) => {
+      release_lock = resolve
+    })
+    const original_with_handler_lock = bus.locks.withHandlerLock.bind(bus.locks)
+    bus.locks.withHandlerLock = async (event, default_handler_concurrency, fn) => {
+      await release_lock_promise
+      return await original_with_handler_lock(event, default_handler_concurrency, fn)
+    }
+
+    const event = bus.emit(SlowAfterLockWaitEvent({}))
+    const start = Date.now()
+    while (event.event_results.size === 0) {
+      if (Date.now() - start > 1_000) {
+        throw new Error('Timed out waiting for pending handler result')
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    assert.equal(Array.from(event.event_results.values())[0].status, 'pending')
+
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    release_lock()
+    await event.done()
+
+    assert.equal(warnings.some((message) => message.toLowerCase().includes('slow event handler')), true)
+  } finally {
+    console.warn = original_warn
+    bus.destroy()
+  }
 })

@@ -57,9 +57,9 @@ async def test_forwarded_event_does_not_leave_stale_active_ids():
     peer3.on('*', local_handler)
 
     # Circular forwarding: peer1 -> peer2 -> peer3 -> peer1
-    peer1.on('*', peer2.dispatch)
-    peer2.on('*', peer3.dispatch)
-    peer3.on('*', peer1.dispatch)
+    peer1.on('*', peer2.emit)
+    peer2.on('*', peer3.emit)
+    peer3.on('*', peer1.emit)
 
     async def wait_all_idle(timeout: float = 5.0) -> None:
         for bus in buses:
@@ -68,11 +68,11 @@ async def test_forwarded_event_does_not_leave_stale_active_ids():
     try:
         # Warm-up propagation (this setup made the original bug deterministic on
         # the immediately-following dispatch from peer2).
-        peer1.dispatch(RelayEvent())
+        peer1.emit(RelayEvent())
         await asyncio.sleep(0.2)
         await wait_all_idle()
 
-        second = peer2.dispatch(RelayEvent())
+        second = peer2.emit(RelayEvent())
         await asyncio.sleep(0.2)
         try:
             await wait_all_idle()
@@ -103,10 +103,10 @@ async def test_forwarding_same_event_does_not_set_self_parent_id():
 
     origin.on(SelfParentForwardEvent, on_origin)
     target.on(SelfParentForwardEvent, on_target)
-    origin.on('*', target.dispatch)
+    origin.on('*', target.emit)
 
     try:
-        event = origin.dispatch(SelfParentForwardEvent())
+        event = origin.emit(SelfParentForwardEvent())
         await event
         await asyncio.gather(origin.wait_until_idle(), target.wait_until_idle())
 
@@ -138,7 +138,7 @@ async def test_forwarded_event_uses_processing_bus_defaults_unless_overridden():
     async def trigger(event: ForwardedDefaultsTriggerEvent) -> None:
         assert event.event_bus is not None
         inherited = event.event_bus.emit(ForwardedDefaultsChildEvent(mode='inherited', event_timeout=None))
-        bus_b.dispatch(inherited)
+        bus_b.emit(inherited)
         await inherited
 
         overridden = event.event_bus.emit(
@@ -148,7 +148,7 @@ async def test_forwarded_event_uses_processing_bus_defaults_unless_overridden():
                 event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL,
             )
         )
-        bus_b.dispatch(overridden)
+        bus_b.emit(overridden)
         await overridden
 
     bus_b.on(ForwardedDefaultsChildEvent, handler_1)
@@ -156,7 +156,7 @@ async def test_forwarded_event_uses_processing_bus_defaults_unless_overridden():
     bus_a.on(ForwardedDefaultsTriggerEvent, trigger)
 
     try:
-        top = bus_a.dispatch(ForwardedDefaultsTriggerEvent())
+        top = bus_a.emit(ForwardedDefaultsTriggerEvent())
         await top
         await asyncio.gather(bus_a.wait_until_idle(), bus_b.wait_until_idle())
 

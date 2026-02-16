@@ -48,7 +48,7 @@ async def _assert_pipeline_types(bus: EventBus, event: TypeContractEvent) -> Non
     handler_entry = _build_contract_handler(bus)
     _assert_pending_result_types(event, bus, handler_entry)
 
-    dispatched_event = bus.dispatch(event)
+    dispatched_event = bus.emit(event)
     assert_type(dispatched_event, TypeContractEvent)
 
     emitted_event = bus.emit(event)

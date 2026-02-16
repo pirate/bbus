@@ -74,7 +74,7 @@ async def dispatch_and_measure(
     start = time.perf_counter()
     for _ in range(total_events):
         t0 = time.perf_counter()
-        event = bus.dispatch(event_factory())
+        event = bus.emit(event_factory())
         dispatch_latencies_ms.append((time.perf_counter() - t0) * 1000)
         pending.append((event, time.perf_counter()))
         if len(pending) >= batch_size:
@@ -122,7 +122,7 @@ async def run_mode_throughput_benchmark(
     start = time.time()
     try:
         for _ in range(total_events):
-            pending.append(bus.dispatch(SimpleEvent()))
+            pending.append(bus.emit(SimpleEvent()))
             if len(pending) >= batch_size:
                 await asyncio.gather(*pending)
                 pending.clear()
@@ -171,7 +171,7 @@ async def run_io_fanout_benchmark(
     start = time.time()
     try:
         for _ in range(total_events):
-            pending.append(bus.dispatch(SimpleEvent()))
+            pending.append(bus.emit(SimpleEvent()))
             if len(pending) >= batch_size:
                 await asyncio.gather(*pending)
                 pending.clear()
@@ -320,7 +320,7 @@ async def run_contention_round(
         pending: list[tuple[BaseEvent[Any], float]] = []
         for _ in range(events_per_bus):
             t0 = time.perf_counter()
-            event = bus.dispatch(SimpleEvent())
+            event = bus.emit(SimpleEvent())
             dispatch_latencies_ms.append((time.perf_counter() - t0) * 1000)
             pending.append((event, time.perf_counter()))
             if len(pending) >= batch_size:
@@ -369,7 +369,7 @@ async def test_20k_events_with_memory_control():
     bus = EventBus(name='ManyEvents', middlewares=[], max_history_drop=True)
 
     print('EventBus settings:')
-    print(f'  max_history_size: {bus.max_history_size}')
+    print(f'  max_history_size: {bus.event_history.max_history_size}')
     print(f'  queue maxsize: {bus.pending_event_queue.maxsize if bus.pending_event_queue else "not created"}')
     print('Starting event dispatch...')
 
@@ -392,7 +392,7 @@ async def test_20k_events_with_memory_control():
     pending_events: list[BaseEvent[Any]] = []
 
     while dispatched < total_events:
-        event = bus.dispatch(SimpleEvent())
+        event = bus.emit(SimpleEvent())
         pending_events.append(event)
         dispatched += 1
         if dispatched <= 5:
@@ -444,7 +444,7 @@ async def test_20k_events_with_memory_control():
     # Safely get event history size without iterating
     try:
         history_size = len(bus.event_history)
-        print(f'Event history size: {history_size} (capped at {bus.max_history_size})')
+        print(f'Event history size: {history_size} (capped at {bus.event_history.max_history_size})')
     except Exception as e:
         print(f'ERROR getting event history size: {type(e).__name__}: {e}')
 
@@ -460,9 +460,9 @@ async def test_20k_events_with_memory_control():
 
     # Check event history is properly limited
     print('DEBUG: About to check history size assertions...')
-    assert bus.max_history_size is not None
-    assert len(bus.event_history) <= bus.max_history_size, (
-        f'Event history has {len(bus.event_history)} events, should be <= {bus.max_history_size}'
+    assert bus.event_history.max_history_size is not None
+    assert len(bus.event_history) <= bus.event_history.max_history_size, (
+        f'Event history has {len(bus.event_history)} events, should be <= {bus.event_history.max_history_size}'
     )
 
     # Explicitly clean up the bus to prevent hanging
@@ -498,7 +498,7 @@ async def test_hard_limit_enforcement():
 
         for _ in range(200):
             try:
-                bus.dispatch(SimpleEvent())
+                bus.emit(SimpleEvent())
                 events_dispatched += 1
             except RuntimeError as e:
                 if 'history limit reached' in str(e):
@@ -510,8 +510,8 @@ async def test_hard_limit_enforcement():
         print(f'Hit history-limit error {errors} times')
 
         # Should reject once limit is reached
-        assert bus.max_history_size is not None
-        assert events_dispatched <= bus.max_history_size
+        assert bus.event_history.max_history_size is not None
+        assert events_dispatched <= bus.event_history.max_history_size
         assert errors > 0
 
     finally:
@@ -528,7 +528,7 @@ async def test_cleanup_prioritizes_pending():
         # Process some events to completion
         completed_events: list[BaseEvent[Any]] = []
         for _ in range(5):
-            event = bus.dispatch(BaseEvent(event_type='QuickEvent'))
+            event = bus.emit(BaseEvent(event_type='QuickEvent'))
             completed_events.append(event)
 
         await asyncio.gather(*completed_events)
@@ -542,7 +542,7 @@ async def test_cleanup_prioritizes_pending():
 
         pending_events: list[BaseEvent[Any]] = []
         for _ in range(10):
-            event = bus.dispatch(BaseEvent(event_type='SlowEvent'))
+            event = bus.emit(BaseEvent(event_type='SlowEvent'))
             pending_events.append(event)
 
         # Give them time to start
@@ -555,12 +555,14 @@ async def test_cleanup_prioritizes_pending():
             history_types[status] = history_types.get(status, 0) + 1
 
         print('\nHistory after cleanup:')
-        print(f'  Total: {len(bus.event_history)} (max: {bus.max_history_size})')
+        print(f'  Total: {len(bus.event_history)} (max: {bus.event_history.max_history_size})')
         print(f'  By status: {history_types}')
 
         # Should have removed completed events to make room for pending
-        assert bus.max_history_size is not None
-        assert len(bus.event_history) <= bus.max_history_size * 1.2  # allow for some overhead to avoid frequent gc pausing
+        assert bus.event_history.max_history_size is not None
+        assert (
+            len(bus.event_history) <= bus.event_history.max_history_size * 1.2
+        )  # allow for some overhead to avoid frequent gc pausing
         assert history_types.get('pending', 0) + history_types.get('started', 0) >= 5
 
     finally:
@@ -598,16 +600,20 @@ async def test_ephemeral_buses_with_forwarding_churn():
 
         bus_a.on(SimpleEvent, handler_a)
         bus_b.on(SimpleEvent, handler_b)
-        bus_a.on('*', bus_b.dispatch)
+        bus_a.on('*', bus_b.emit)
 
         try:
-            pending = [bus_a.dispatch(SimpleEvent()) for _ in range(events_per_pair)]
+            pending = [bus_a.emit(SimpleEvent()) for _ in range(events_per_pair)]
             await asyncio.gather(*pending)
             await bus_a.wait_until_idle()
             await bus_b.wait_until_idle()
 
-            assert bus_a.max_history_size is None or len(bus_a.event_history) <= bus_a.max_history_size
-            assert bus_b.max_history_size is None or len(bus_b.event_history) <= bus_b.max_history_size
+            assert (
+                bus_a.event_history.max_history_size is None or len(bus_a.event_history) <= bus_a.event_history.max_history_size
+            )
+            assert (
+                bus_b.event_history.max_history_size is None or len(bus_b.event_history) <= bus_b.event_history.max_history_size
+            )
         finally:
             await bus_a.stop(timeout=0, clear=True)
             await bus_b.stop(timeout=0, clear=True)
@@ -660,8 +666,8 @@ async def test_forwarding_queue_jump_timeout_mix_stays_stable():
         parent_handled += 1
 
         child_timeout = 0.001 if event.iteration % 7 == 0 else 0.05
-        child = bus_a.dispatch(MixedChildEvent(iteration=event.iteration, event_timeout=child_timeout))
-        bus_b.dispatch(child)
+        child = bus_a.emit(MixedChildEvent(iteration=event.iteration, event_timeout=child_timeout))
+        bus_b.emit(child)
         child_events.append(child)
         await child
         return 'parent_done'
@@ -673,7 +679,7 @@ async def test_forwarding_queue_jump_timeout_mix_stays_stable():
     try:
         with suppress_bubus_warning_logs():
             for i in range(total_iterations):
-                await bus_a.dispatch(MixedParentEvent(iteration=i))
+                await bus_a.emit(MixedParentEvent(iteration=i))
             await bus_a.wait_until_idle()
             await bus_b.wait_until_idle()
     finally:
@@ -713,7 +719,7 @@ async def test_history_bound_is_strict_after_idle():
 
     try:
         for _ in range(200):
-            await bus.dispatch(SimpleEvent())
+            await bus.emit(SimpleEvent())
 
         await bus.wait_until_idle()
         assert len(bus.event_history) <= 25
@@ -788,7 +794,7 @@ async def test_forwarding_throughput_floor_across_modes(event_handler_concurrenc
         nonlocal handled
         handled += 1
 
-    source_bus.on('*', target_bus.dispatch)
+    source_bus.on('*', target_bus.emit)
     target_bus.on(SimpleEvent, sink_handler)
 
     total_events = 3_000
@@ -797,7 +803,7 @@ async def test_forwarding_throughput_floor_across_modes(event_handler_concurrenc
     start = time.time()
     try:
         for _ in range(total_events):
-            pending.append(source_bus.dispatch(SimpleEvent()))
+            pending.append(source_bus.emit(SimpleEvent()))
             if len(pending) >= batch_size:
                 await asyncio.gather(*pending)
                 pending.clear()
@@ -933,7 +939,7 @@ async def test_queue_jump_perf_matrix_by_mode(event_handler_concurrency: Literal
     async def parent_handler(event: QueueJumpParentEvent) -> None:
         nonlocal parent_count
         parent_count += 1
-        child = bus.dispatch(QueueJumpChildEvent(iteration=event.iteration))
+        child = bus.emit(QueueJumpChildEvent(iteration=event.iteration))
         await child
 
     bus.on(QueueJumpParentEvent, parent_handler)
@@ -1005,7 +1011,7 @@ async def test_forwarding_chain_perf_matrix_by_mode(event_handler_concurrency: L
     async def forward_to_middle(event: BaseEvent[Any]) -> None:
         while True:
             try:
-                middle_bus.dispatch(event)
+                middle_bus.emit(event)
                 return
             except asyncio.QueueFull:
                 await asyncio.sleep(0)
@@ -1017,7 +1023,7 @@ async def test_forwarding_chain_perf_matrix_by_mode(event_handler_concurrency: L
     async def forward_to_sink(event: BaseEvent[Any]) -> None:
         while True:
             try:
-                sink_bus.dispatch(event)
+                sink_bus.emit(event)
                 return
             except asyncio.QueueFull:
                 await asyncio.sleep(0)
@@ -1293,8 +1299,8 @@ async def test_max_history_none_forwarding_chain_stress_matrix(event_handler_con
         nonlocal sink_count
         sink_count += 1
 
-    source_bus.on('*', middle_bus.dispatch)
-    middle_bus.on('*', sink_bus.dispatch)
+    source_bus.on('*', middle_bus.emit)
+    middle_bus.on('*', sink_bus.emit)
     sink_bus.on(SimpleEvent, sink_handler)
 
     gc.collect()
@@ -1343,7 +1349,7 @@ async def test_perf_debug_hot_path_breakdown() -> None:
         (event_bus_module.EventBus, event_bus_module.EventBus.get_handlers_for_event),
         (event_bus_module.EventBus, event_bus_module.EventBus.process_event),
         (event_bus_module.EventBus, event_bus_module.EventBus.run_handler),
-        (event_bus_module.EventBus, event_bus_module.EventBus.cleanup_event_history),
+        (event_bus_module.EventHistory, event_bus_module.EventHistory.trim_event_history),
         (base_event_module.BaseEvent, base_event_module.BaseEvent.event_create_pending_handler_results),
     ]
     for owner, method_ref in instrumented:
@@ -1374,11 +1380,11 @@ async def test_perf_debug_hot_path_breakdown() -> None:
         await asyncio.sleep(0)
 
     async def parent_handler(event: DebugParentEvent) -> None:
-        child = bus_a.dispatch(DebugChildEvent(idx=event.idx))
-        bus_b.dispatch(child)
+        child = bus_a.emit(DebugChildEvent(idx=event.idx))
+        bus_b.emit(child)
         await child
 
-    bus_a.on('*', bus_b.dispatch)
+    bus_a.on('*', bus_b.emit)
     bus_b.on(SimpleEvent, forwarded_simple_handler)
     bus_a.on(DebugParentEvent, parent_handler)
     bus_b.on(DebugChildEvent, child_handler)

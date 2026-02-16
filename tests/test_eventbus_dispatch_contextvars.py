@@ -5,7 +5,7 @@ This addresses GitHub issue #20: ContextVar values set before dispatch should
 be accessible inside event handlers.
 
 The key insight is that context must be captured at DISPATCH time (when the
-user calls bus.dispatch()), not at PROCESSING time (when the event is pulled
+user calls bus.emit()), not at PROCESSING time (when the event is pulled
 from the queue and handlers are executed).
 """
 
@@ -64,7 +64,7 @@ class TestContextPropagation:
             user_id_var.set('user-abc')
 
             # Dispatch and await
-            event = await bus.dispatch(SimpleEvent())
+            event = await bus.emit(SimpleEvent())
 
             # Handler should have seen the context values
             assert captured_values['request_id'] == 'req-12345', f"Expected 'req-12345', got '{captured_values['request_id']}'"
@@ -89,7 +89,7 @@ class TestContextPropagation:
             captured_parent['trace_id'] = trace_id_var.get()
 
             # Dispatch child event
-            child = await bus.dispatch(ChildEvent())
+            child = await bus.emit(ChildEvent())
             return 'parent_done'
 
         async def child_handler(event: ChildEvent) -> str:
@@ -105,7 +105,7 @@ class TestContextPropagation:
             request_id_var.set('req-nested-123')
             trace_id_var.set('trace-xyz')
 
-            await bus.dispatch(SimpleEvent())
+            await bus.emit(SimpleEvent())
 
             # Both handlers should see the context
             assert captured_parent['request_id'] == 'req-nested-123'
@@ -138,14 +138,14 @@ class TestContextPropagation:
             # Dispatch two events with different contexts
             async def dispatch_with_context(req_id: str):
                 request_id_var.set(req_id)
-                await bus.dispatch(SimpleEvent())
+                await bus.emit(SimpleEvent())
 
             # Run both dispatches
             request_id_var.set('req-A')
-            event_a = bus.dispatch(SimpleEvent())
+            event_a = bus.emit(SimpleEvent())
 
             request_id_var.set('req-B')
-            event_b = bus.dispatch(SimpleEvent())
+            event_b = bus.emit(SimpleEvent())
 
             await event_a
             await event_b
@@ -181,7 +181,7 @@ class TestContextPropagation:
 
         try:
             request_id_var.set('req-parallel')
-            await bus.dispatch(SimpleEvent())
+            await bus.emit(SimpleEvent())
 
             assert 'h1:req-parallel' in captured_values, f"Handler1 didn't see context: {captured_values}"
             assert 'h2:req-parallel' in captured_values, f"Handler2 didn't see context: {captured_values}"
@@ -207,12 +207,12 @@ class TestContextPropagation:
             return 'bus2_done'
 
         bus1.on(SimpleEvent, bus1_handler)
-        bus1.on('*', bus2.dispatch)  # Forward all events to bus2
+        bus1.on('*', bus2.emit)  # Forward all events to bus2
         bus2.on(SimpleEvent, bus2_handler)
 
         try:
             request_id_var.set('req-forwarded')
-            await bus1.dispatch(SimpleEvent())
+            await bus1.emit(SimpleEvent())
             await bus2.wait_until_idle()
 
             assert captured_bus1['request_id'] == 'req-forwarded', f"Bus1 handler didn't see context: {captured_bus1}"
@@ -237,7 +237,7 @@ class TestContextPropagation:
             request_id_var.set('parent-value')
 
             # Dispatch child which will modify the context
-            await bus.dispatch(ChildEvent())
+            await bus.emit(ChildEvent())
 
             # Parent's context should be unchanged
             parent_value_after_child = request_id_var.get()
@@ -252,7 +252,7 @@ class TestContextPropagation:
         bus.on(ChildEvent, child_handler)
 
         try:
-            await bus.dispatch(SimpleEvent())
+            await bus.emit(SimpleEvent())
 
             # Parent should still see its own value, not child's modification
             assert parent_value_after_child == 'parent-value', (
@@ -278,7 +278,7 @@ class TestContextPropagation:
             parent_event_id = event.event_id
 
             # Child event should automatically get parent_id set
-            child = await bus.dispatch(ChildEvent())
+            child = await bus.emit(ChildEvent())
             return 'parent_done'
 
         async def child_handler(event: ChildEvent) -> str:
@@ -293,7 +293,7 @@ class TestContextPropagation:
             # Set user context (to ensure we're testing the merge scenario)
             request_id_var.set('req-parent-tracking')
 
-            await bus.dispatch(SimpleEvent())
+            await bus.emit(SimpleEvent())
 
             # Verify parent ID tracking works
             assert parent_event_id is not None, 'Parent event ID was not captured'
@@ -319,7 +319,7 @@ class TestContextPropagation:
             results['parent_event_id'] = event.event_id
 
             # Dispatch child - should get both user context AND parent tracking
-            child = await bus.dispatch(ChildEvent())
+            child = await bus.emit(ChildEvent())
             return 'parent_done'
 
         async def child_handler(event: ChildEvent) -> str:
@@ -334,7 +334,7 @@ class TestContextPropagation:
             # Set user context
             request_id_var.set('req-combined-test')
 
-            await bus.dispatch(SimpleEvent())
+            await bus.emit(SimpleEvent())
 
             # User context should propagate
             assert results['parent_request_id'] == 'req-combined-test', (
@@ -374,7 +374,7 @@ class TestContextPropagation:
                     'parent_id': event.event_parent_id,
                 }
             )
-            await bus.dispatch(Level2Event())
+            await bus.emit(Level2Event())
             return 'level1_done'
 
         async def level2_handler(event: Level2Event) -> str:
@@ -386,7 +386,7 @@ class TestContextPropagation:
                     'parent_id': event.event_parent_id,
                 }
             )
-            await bus.dispatch(Level3Event())
+            await bus.emit(Level3Event())
             return 'level2_done'
 
         async def level3_handler(event: Level3Event) -> str:
@@ -407,7 +407,7 @@ class TestContextPropagation:
         try:
             request_id_var.set('req-deep-nesting')
 
-            await bus.dispatch(SimpleEvent())
+            await bus.emit(SimpleEvent())
 
             # All levels should see the user context
             assert len(results) == 3, f'Expected 3 levels, got {len(results)}'

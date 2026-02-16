@@ -41,8 +41,8 @@ test('handler registration via string, class, and wildcard', async () => {
   bus.on(SystemEventModel, system_handler)
   bus.on('*', universal_handler)
 
-  bus.dispatch(UserActionEvent({ action: 'login', user_id: 'u1' }))
-  bus.dispatch(SystemEventModel({ event_name: 'startup' }))
+  bus.emit(UserActionEvent({ action: 'login', user_id: 'u1' }))
+  bus.emit(SystemEventModel({ event_name: 'startup' }))
   await bus.waitUntilIdle()
 
   assert.deepEqual(results.specific, ['login'])
@@ -62,7 +62,7 @@ test('handlers can be sync or async', async () => {
   const handler_count = Array.from(bus.handlers.values()).filter((entry) => entry.event_pattern === 'TestEvent').length
   assert.equal(handler_count, 2)
 
-  const event = bus.dispatch(BaseEvent.extend('TestEvent', {})({}))
+  const event = bus.emit(BaseEvent.extend('TestEvent', {})({}))
   await event.done()
 
   const results = Array.from(event.event_results.values()).map((result) => result.result)
@@ -86,7 +86,7 @@ test('class matcher falls back to class name and matches generic BaseEvent event
     seen.push(`wildcard:${event.event_type}`)
   })
 
-  await bus.dispatch(new BaseEvent({ event_type: 'DifferentNameFromClass' })).done()
+  await bus.emit(new BaseEvent({ event_type: 'DifferentNameFromClass' })).done()
 
   assert.deepEqual(seen, ['class:DifferentNameFromClass', 'string:DifferentNameFromClass', 'wildcard:DifferentNameFromClass'])
   assert.equal(bus.handlers_by_key.get('DifferentNameFromClass')?.length, 2)
@@ -137,7 +137,7 @@ test('instance, class, and static method handlers', async () => {
   bus.on('UserActionEvent', EventProcessor.static_method_handler)
 
   const event = UserActionEvent({ action: 'test_methods', user_id: 'u123' })
-  const completed_event = bus.dispatch(event)
+  const completed_event = bus.emit(event)
   await completed_event.done()
 
   assert.equal(results.length, 5)

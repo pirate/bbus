@@ -1,4 +1,5 @@
 import { BaseEvent, type BaseEventJSON } from './base_event.js'
+import { EventHistory } from './event_history.js'
 import { EventResult } from './event_result.js'
 import { captureAsyncContext } from './async_context.js'
 import { withSlowMonitor, withTimeout } from './timing.js'
@@ -129,7 +130,7 @@ export class GlobalBusRegistry {
 
   findEventById(event_id: string): BaseEvent | null {
     for (const bus of this) {
-      const event = bus.event_history.get(event_id)
+      const event = bus.event_history.getEvent(event_id)
       if (event) {
         return event
       }
@@ -149,8 +150,6 @@ export class EventBus {
   name: string // name of the event bus, recommended to include the word "Bus" in the name for clarity in logs
 
   // configuration options
-  max_history_size: number | null // max events kept in history; null=unlimited, 0=drop completed immediately (retain only in-flight)
-  max_history_drop: boolean // when false and history is full, dispatch rejects instead of trimming old entries
   event_timeout: number | null
   event_concurrency: EventConcurrencyMode
   event_handler_concurrency_default: EventHandlerConcurrencyMode
@@ -164,10 +163,10 @@ export class EventBus {
   // public runtime state
   handlers: Map<string, EventHandler> // map of handler uuidv5 ids to EventHandler objects
   handlers_by_key: Map<string, string[]> // map of normalized event_pattern to ordered handler ids
-  event_history: Map<string, BaseEvent> // map of event uuidv7 ids to processed BaseEvent objects
+  event_history: EventHistory<BaseEvent> // map of event uuidv7 ids to processed BaseEvent objects
 
   // internal runtime state
-  pending_event_queue: BaseEvent[] // queue of events that have been dispatched to the bus but not yet processed
+  pending_event_queue: BaseEvent[] // queue of events that have been emitted to the bus but not yet processed
   in_flight_event_ids: Set<string> // set of event ids that are currently being processed by the bus
   runloop_running: boolean
   locks: LockManager
@@ -194,8 +193,6 @@ export class EventBus {
     this.name = name
 
     // set configuration options
-    this.max_history_size = options.max_history_size === undefined ? 100 : options.max_history_size
-    this.max_history_drop = options.max_history_drop ?? false
     this.event_concurrency = options.event_concurrency ?? 'bus-serial'
     this.event_handler_concurrency_default = options.event_handler_concurrency ?? 'serial'
     this.event_handler_completion_default = options.event_handler_completion ?? 'all'
@@ -209,7 +206,10 @@ export class EventBus {
     this.handlers = new Map()
     this.handlers_by_key = new Map()
     this.find_waiters = new Set()
-    this.event_history = new Map()
+    this.event_history = new EventHistory({
+      max_history_size: options.max_history_size === undefined ? 100 : options.max_history_size,
+      max_history_drop: options.max_history_drop ?? false,
+    })
     this.pending_event_queue = []
     this.in_flight_event_ids = new Set()
     this.locks = new LockManager(this)
@@ -359,8 +359,18 @@ export class EventBus {
       event.event_pending_bus_count = Math.max(0, event.event_pending_bus_count - 1)
       event.markCompleted(false)
     }
-    if (this.max_history_size !== null && this.max_history_size > 0 && this.event_history.size > this.max_history_size) {
-      this.trimHistory()
+    if (
+      this.event_history.max_history_size !== null &&
+      this.event_history.max_history_size > 0 &&
+      this.event_history.size > this.event_history.max_history_size
+    ) {
+      this.event_history.trimEventHistory({
+        isEventComplete: (candidate_event) => candidate_event.event_status === 'completed',
+        onDropEvent: (candidate_event) => candidate_event._gc(),
+        ownerLabel: this.toString(),
+        max_history_size: this.event_history.max_history_size,
+        max_history_drop: this.event_history.max_history_drop,
+      })
     }
   }
 
@@ -392,8 +402,8 @@ export class EventBus {
     return {
       id: this.id,
       name: this.name,
-      max_history_size: this.max_history_size,
-      max_history_drop: this.max_history_drop,
+      max_history_size: this.event_history.max_history_size,
+      max_history_drop: this.event_history.max_history_drop,
       event_concurrency: this.event_concurrency,
       event_timeout: this.event_timeout,
       event_slow_timeout: this.event_slow_timeout,
@@ -672,10 +682,10 @@ export class EventBus {
     }
   }
 
-  dispatch<T extends BaseEvent>(event: T): T {
+  emit<T extends BaseEvent>(event: T): T {
     const original_event = event._event_original ?? event // if event is a bus-scoped proxy already, get the original underlying event object
     if (!original_event.bus) {
-      // if we are the first bus to dispatch this event, set the bus property on the original event object
+      // if we are the first bus to emit this event, set the bus property on the original event object
       original_event.bus = this
     }
     if (!Array.isArray(original_event.event_path)) {
@@ -683,8 +693,8 @@ export class EventBus {
     }
     if (original_event.eventGetDispatchContext() === undefined) {
       // when used in fastify/nextjs/other contexts with tracing based on AsyncLocalStorage in node
-      // we want to capture the context at the dispatch site and use it when running handlers
-      // because events may be handled async in a separate context than the dispatch site
+      // we want to capture the context at the emit site and use it when running handlers
+      // because events may be handled async in a separate context than the emit site
       original_event.eventSetDispatchContext(captureAsyncContext())
     }
     if (original_event.event_path.includes(this.label) || this.hasProcessedEvent(original_event)) {
@@ -703,18 +713,24 @@ export class EventBus {
     }
 
     if (
-      this.max_history_size !== null &&
-      this.max_history_size > 0 &&
-      !this.max_history_drop &&
-      this.event_history.size >= this.max_history_size
+      this.event_history.max_history_size !== null &&
+      this.event_history.max_history_size > 0 &&
+      !this.event_history.max_history_drop &&
+      this.event_history.size >= this.event_history.max_history_size
     ) {
       throw new Error(
-        `${this.toString()}.dispatch(${original_event.event_type}) rejected: history limit reached (${this.event_history.size}/${this.max_history_size}); set bus.max_history_drop=true to drop old history instead.`
+        `${this.toString()}.emit(${original_event.event_type}) rejected: history limit reached (${this.event_history.size}/${this.event_history.max_history_size}); set event_history.max_history_drop=true to drop old history instead.`
       )
     }
 
-    this.event_history.set(original_event.event_id, original_event)
-    this.trimHistory()
+    this.event_history.addEvent(original_event)
+    this.event_history.trimEventHistory({
+      isEventComplete: (candidate_event) => candidate_event.event_status === 'completed',
+      onDropEvent: (candidate_event) => candidate_event._gc(),
+      ownerLabel: this.toString(),
+      max_history_size: this.event_history.max_history_size,
+      max_history_drop: this.event_history.max_history_drop,
+    })
     this.notifyFindListeners(original_event)
 
     original_event.event_pending_bus_count += 1
@@ -727,9 +743,9 @@ export class EventBus {
     return this.getEventProxyScopedToThisBus(original_event) as T
   }
 
-  // alias for dispatch
-  emit<T extends BaseEvent>(event: T): T {
-    return this.dispatch(event)
+  // alias for emit
+  dispatch<T extends BaseEvent>(event: T): T {
+    return this.emit(event)
   }
 
   // find a recent event or wait for a future event that matches some criteria
@@ -744,67 +760,32 @@ export class EventBus {
   ): Promise<T | null> {
     const where = typeof where_or_options === 'function' ? where_or_options : () => true
     const options = typeof where_or_options === 'function' ? maybe_options : where_or_options
-
-    const past = options.past === undefined && options.future === undefined ? true : (options.past ?? true)
-    const future = options.past === undefined && options.future === undefined ? false : (options.future ?? true)
-    const child_of = options.child_of ?? null
-    const event_field_filters = Object.entries(options).filter(
-      ([key, value]) => key !== 'past' && key !== 'future' && key !== 'child_of' && value !== undefined
-    )
-
-    if (past === false && future === false) {
+    const match = await this.event_history.find(event_pattern as EventPattern<T> | '*', where, {
+      ...options,
+      eventIsChildOf: (event, ancestor) => this.eventIsChildOf(event, ancestor),
+      waitForFutureMatch: (normalized_event_pattern, matches, future) =>
+        this._waitForFutureMatch(normalized_event_pattern, matches, future),
+    })
+    if (!match) {
       return null
     }
+    return this.getEventProxyScopedToThisBus(match) as T
+  }
 
-    const matches = (event: BaseEvent): boolean => {
-      if (!this.eventMatchesKey(event, event_pattern)) {
-        return false
-      }
-      if (!where(event as T)) {
-        return false
-      }
-      if (child_of && !this.eventIsChildOf(event, child_of)) {
-        return false
-      }
-      for (const [event_pattern, expected] of event_field_filters) {
-        if ((event as unknown as Record<string, unknown>)[event_pattern] !== expected) {
-          return false
-        }
-      }
-      return true
-    }
-
-    // find a dispatched event in history that matches the criteria
-    if (past !== false) {
-      const now_ms = performance.timeOrigin + performance.now()
-      const cutoff_ms = past === true ? null : now_ms - Math.max(0, Number(past)) * 1000
-
-      const history_values = Array.from(this.event_history.values())
-      for (let i = history_values.length - 1; i >= 0; i -= 1) {
-        const event = history_values[i]
-        if (!matches(event)) {
-          continue
-        }
-        if (cutoff_ms !== null && Date.parse(event.event_created_at) < cutoff_ms) {
-          continue
-        }
-        return this.getEventProxyScopedToThisBus(event) as T
-      }
-    }
-
-    // if we are only looking for past events, return null when no match is found
+  private async _waitForFutureMatch(
+    event_pattern: string | '*',
+    matches: (event: BaseEvent) => boolean,
+    future: boolean | number
+  ): Promise<BaseEvent | null> {
     if (future === false) {
       return null
     }
-
-    // if we are looking for future events, return a promise that resolves when a match is found
-    return new Promise<T | null>((resolve) => {
+    return await new Promise<BaseEvent | null>((resolve) => {
       const waiter: EphemeralFindEventHandler = {
         event_pattern,
         matches,
-        resolve: (event) => resolve(this.getEventProxyScopedToThisBus(event) as T),
+        resolve: (event) => resolve(event),
       }
-
       if (future !== true) {
         const timeout_ms = Math.max(0, Number(future)) * 1000
         waiter.timeout_id = setTimeout(() => {
@@ -812,7 +793,6 @@ export class EventBus {
           resolve(null)
         }, timeout_ms)
       }
-
       this.find_waiters.add(waiter)
     })
   }
@@ -1001,7 +981,7 @@ export class EventBus {
     return event
   }
 
-  // Processes a queue-jumped event across all buses that have it dispatched.
+  // Processes a queue-jumped event across all buses that have it emitted.
   // Called from processEventImmediately after the parent handler's lock has been yielded.
   private async processEventImmediatelyAcrossBuses(event: BaseEvent): Promise<void> {
     // Use event_path ordering to pick candidate buses and filter out buses that
@@ -1153,19 +1133,19 @@ export class EventBus {
           return process_event_immediately
         }
         if (prop === 'dispatch' || prop === 'emit') {
-          const dispatch_child_event = <TChild extends BaseEvent>(child_event: TChild): TChild => {
+          const emit_child_event = <TChild extends BaseEvent>(child_event: TChild): TChild => {
             const original_child = child_event._event_original ?? child_event
             if (handler_result) {
               handler_result.linkEmittedChildEvent(original_child)
-            } else if (!original_child.event_parent_id) {
-              // fallback for non-handler scoped dispatch
+            } else if (!original_child.event_parent_id && original_child.event_id !== parent_event_id) {
+              // fallback for non-handler scoped emit/dispatch
               original_child.event_parent_id = parent_event_id
             }
             const dispatcher = Reflect.get(target, prop, receiver) as EventBus['dispatch']
             const dispatched = dispatcher.call(target, original_child)
             return target.getEventProxyScopedToThisBus(dispatched as TChild, handler_result)
           }
-          return dispatch_child_event
+          return emit_child_event
         }
         return Reflect.get(target, prop, receiver)
       },
@@ -1273,61 +1253,4 @@ export class EventBus {
     throw new Error('bus.on(match_pattern, ...) must be a string event type, "*", or a BaseEvent class, got: ' + preview)
   }
 
-  private trimHistory(): void {
-    if (this.max_history_size === null) {
-      return
-    }
-    if (this.max_history_size === 0) {
-      // Keep pending/in-flight events visible on the bus, but drop completed
-      // events immediately so "history" behaves as ephemeral state only.
-      for (const [event_id, event] of this.event_history) {
-        if (event.event_status === 'completed') {
-          this.event_history.delete(event_id)
-        }
-      }
-      return
-    }
-    if (!this.max_history_drop) {
-      return
-    }
-    if (this.event_history.size <= this.max_history_size) {
-      return
-    }
-
-    let remaining_overage = this.event_history.size - this.max_history_size
-
-    // First pass: remove completed events (oldest first, Map iterates in insertion order)
-    for (const [event_id, event] of this.event_history) {
-      if (remaining_overage <= 0) {
-        break
-      }
-      if (event.event_status !== 'completed') {
-        continue
-      }
-      this.event_history.delete(event_id)
-      event._gc()
-      remaining_overage -= 1
-    }
-
-    // Second pass: force-remove oldest events regardless of status
-    let dropped_pending_events = 0
-    if (remaining_overage > 0) {
-      for (const [event_id, event] of this.event_history) {
-        if (remaining_overage <= 0) {
-          break
-        }
-        if (event.event_status !== 'completed') {
-          dropped_pending_events += 1
-        }
-        this.event_history.delete(event_id)
-        event._gc()
-        remaining_overage -= 1
-      }
-      if (dropped_pending_events > 0) {
-        console.error(
-          `[bubus] ⚠️ Bus ${this.toString()} has exceeded its limit of ${this.max_history_size} inflight events and has started dropping oldest pending events! Increase bus.max_history_size or reduce the event volume.`
-        )
-      }
-    }
-  }
 }

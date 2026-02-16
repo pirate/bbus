@@ -16,8 +16,8 @@ test('event_concurrency remains unset on dispatch and resolves during processing
   const bus = new EventBus('EventConcurrencyDefaultBus', { event_concurrency: 'parallel' })
   bus.on(PropagationEvent, async () => 'ok')
 
-  const implicit = bus.dispatch(PropagationEvent({}))
-  const explicit_null = bus.dispatch(PropagationEvent({ event_concurrency: null }))
+  const implicit = bus.emit(PropagationEvent({}))
+  const explicit_null = bus.emit(PropagationEvent({ event_concurrency: null }))
 
   assert.equal(implicit.event_concurrency ?? null, null)
   assert.equal(explicit_null.event_concurrency ?? null, null)
@@ -30,7 +30,7 @@ test('event_concurrency class override beats bus default', async () => {
   const bus = new EventBus('EventConcurrencyOverrideBus', { event_concurrency: 'parallel' })
   bus.on(ConcurrencyOverrideEvent, async () => 'ok')
 
-  const event = bus.dispatch(ConcurrencyOverrideEvent({}))
+  const event = bus.emit(ConcurrencyOverrideEvent({}))
   assert.equal(event.event_concurrency, 'global-serial')
   await event.done()
 })
@@ -42,8 +42,8 @@ test('handler defaults remain unset on dispatch and resolve during processing', 
   })
   bus.on(PropagationEvent, async () => 'ok')
 
-  const implicit = bus.dispatch(PropagationEvent({}))
-  const explicit_null = bus.dispatch(
+  const implicit = bus.emit(PropagationEvent({}))
+  const explicit_null = bus.emit(
     PropagationEvent({
       event_handler_concurrency: null,
       event_handler_completion: null,
@@ -66,7 +66,7 @@ test('handler class override beats bus defaults', async () => {
   })
   bus.on(HandlerOverrideEvent, async () => 'ok')
 
-  const event = bus.dispatch(HandlerOverrideEvent({}))
+  const event = bus.emit(HandlerOverrideEvent({}))
   assert.equal(event.event_handler_concurrency, 'serial')
   assert.equal(event.event_handler_completion, 'all')
   await event.done()

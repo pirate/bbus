@@ -18,7 +18,7 @@ class SyncEvent(BaseEvent[str]):
 
 
 class TestDebouncingPattern:
-    """Tests for the debouncing pattern: find() or dispatch()."""
+    """Tests for the debouncing pattern: find() or emit()."""
 
     async def test_simple_debounce_with_child_of_reuses_recent_event(self):
         bus = EventBus()
@@ -27,14 +27,14 @@ class TestDebouncingPattern:
             child_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.dispatch(ScreenshotEvent(target_id='tab-1'))
+                child = await bus.emit(ScreenshotEvent(target_id='tab-1'))
                 child_ref.append(child)
                 return 'parent_done'
 
             bus.on(ParentEvent, parent_handler)
             bus.on(ScreenshotEvent, lambda e: 'screenshot_done')
 
-            parent = await bus.dispatch(ParentEvent())
+            parent = await bus.emit(ParentEvent())
             await bus.wait_until_idle()
 
             reused = await (
@@ -44,7 +44,7 @@ class TestDebouncingPattern:
                     past=10,
                     future=False,
                 )
-                or bus.dispatch(ScreenshotEvent(target_id='fallback'))
+                or bus.emit(ScreenshotEvent(target_id='fallback'))
             )
 
             assert reused.event_id == child_ref[0].event_id
@@ -58,7 +58,7 @@ class TestDebouncingPattern:
         try:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
-            original = await bus.dispatch(ScreenshotEvent(target_id='tab1'))
+            original = await bus.emit(ScreenshotEvent(target_id='tab1'))
 
             is_fresh = lambda e: (datetime.now(UTC) - e.event_completed_at).seconds < 5
             result = await (
@@ -68,7 +68,7 @@ class TestDebouncingPattern:
                     past=True,
                     future=False,
                 )
-                or bus.dispatch(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id='tab1'))
             )
 
             assert result.event_id == original.event_id
@@ -84,12 +84,12 @@ class TestDebouncingPattern:
 
             async def dispatch_later() -> None:
                 await asyncio.sleep(0.05)
-                await bus.dispatch(SyncEvent())
+                await bus.emit(SyncEvent())
 
             dispatch_task = asyncio.create_task(dispatch_later())
 
             resolved_event = await (
-                (await bus.find(SyncEvent, past=True, future=False)) or (await pending_event) or bus.dispatch(SyncEvent())
+                (await bus.find(SyncEvent, past=True, future=False)) or (await pending_event) or bus.emit(SyncEvent())
             )
 
             await dispatch_task
@@ -111,7 +111,7 @@ class TestDebouncingPattern:
                     past=True,
                     future=False,
                 )
-                or bus.dispatch(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id='tab1'))
             )
 
             assert result is not None
@@ -127,7 +127,7 @@ class TestDebouncingPattern:
         try:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
-            await bus.dispatch(ScreenshotEvent(target_id='tab1'))
+            await bus.emit(ScreenshotEvent(target_id='tab1'))
 
             result = await (
                 await bus.find(
@@ -136,7 +136,7 @@ class TestDebouncingPattern:
                     past=True,
                     future=False,
                 )
-                or bus.dispatch(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id='tab1'))
             )
 
             assert result is not None
@@ -184,7 +184,7 @@ class TestDebouncingPattern:
         try:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
-            original = await bus.dispatch(ScreenshotEvent(target_id='tab1'))
+            original = await bus.emit(ScreenshotEvent(target_id='tab1'))
 
             start = datetime.now(UTC)
             result = await (
@@ -194,7 +194,7 @@ class TestDebouncingPattern:
                     past=True,
                     future=False,
                 )
-                or bus.dispatch(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id='tab1'))
             )
             elapsed = (datetime.now(UTC) - start).total_seconds()
 
@@ -218,7 +218,7 @@ class TestDebouncingPattern:
                     past=True,
                     future=False,
                 )
-                or bus.dispatch(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id='tab1'))
             )
             elapsed = (datetime.now(UTC) - start).total_seconds()
 
@@ -244,7 +244,7 @@ class TestDebouncingPattern:
                     past=True,
                     future=False,
                 )
-                or bus.dispatch(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id='tab1'))
             )
 
             result2 = await (
@@ -254,7 +254,7 @@ class TestDebouncingPattern:
                     past=True,
                     future=False,
                 )
-                or bus.dispatch(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id='tab1'))
             )
 
             result3 = await (
@@ -264,7 +264,7 @@ class TestDebouncingPattern:
                     past=True,
                     future=False,
                 )
-                or bus.dispatch(ScreenshotEvent(target_id='tab2'))
+                or bus.emit(ScreenshotEvent(target_id='tab2'))
             )
 
             elapsed = (datetime.now(UTC) - start).total_seconds()

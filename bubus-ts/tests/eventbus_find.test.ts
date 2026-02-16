@@ -26,10 +26,10 @@ const delay = (ms: number): Promise<void> =>
 test('find past returns most recent dispatched event', async () => {
   const bus = new EventBus('FindPastBus')
 
-  const first_event = bus.dispatch(ParentEvent({}))
+  const first_event = bus.emit(ParentEvent({}))
   await first_event.done()
   await delay(20)
-  const second_event = bus.dispatch(ParentEvent({}))
+  const second_event = bus.emit(ParentEvent({}))
   await second_event.done()
 
   const found_event = await bus.find(ParentEvent, { past: true, future: false })
@@ -53,7 +53,7 @@ test('find past history lookup is bus-scoped', async () => {
   const bus_b = new EventBus('FindScopeB')
 
   bus_b.on(ParentEvent, () => 'done')
-  const event_on_b = bus_b.dispatch(ParentEvent({}))
+  const event_on_b = bus_b.emit(ParentEvent({}))
   await event_on_b.done()
 
   const found_on_a = await bus_a.find(ParentEvent, { past: true, future: false })
@@ -67,7 +67,7 @@ test('find past history lookup is bus-scoped', async () => {
 test('find past result retains origin bus label in event_path', async () => {
   const bus = new EventBus('FindOriginBus')
 
-  const dispatched = bus.dispatch(ParentEvent({}))
+  const dispatched = bus.emit(ParentEvent({}))
   await dispatched.done()
 
   const found_event = await bus.find(ParentEvent, { past: true, future: false })
@@ -78,10 +78,10 @@ test('find past result retains origin bus label in event_path', async () => {
 test('find past window filters by time', async () => {
   const bus = new EventBus('FindWindowBus')
 
-  const old_event = bus.dispatch(ParentEvent({}))
+  const old_event = bus.emit(ParentEvent({}))
   await old_event.done()
   await delay(120)
-  const new_event = bus.dispatch(ParentEvent({}))
+  const new_event = bus.emit(ParentEvent({}))
   await new_event.done()
 
   const found_event = await bus.find(ParentEvent, { past: 0.1, future: false })
@@ -92,7 +92,7 @@ test('find past window filters by time', async () => {
 test('find past returns null when all events are too old', async () => {
   const bus = new EventBus('FindTooOldBus')
 
-  const old_event = bus.dispatch(ParentEvent({}))
+  const old_event = bus.emit(ParentEvent({}))
   await old_event.done()
   await delay(120)
 
@@ -106,7 +106,7 @@ test('find future waits for event', async () => {
   const find_promise = bus.find(ParentEvent, { past: false, future: 0.5 })
 
   setTimeout(() => {
-    bus.dispatch(ParentEvent({}))
+    bus.emit(ParentEvent({}))
   }, 50)
 
   const found_event = await find_promise
@@ -119,7 +119,7 @@ test('max_history_size=0 disables past history search but future find still reso
   bus.on(ParentEvent, () => 'ok')
 
   const find_future = bus.find(ParentEvent, { past: false, future: 0.5 })
-  const dispatched = bus.dispatch(ParentEvent({}))
+  const dispatched = bus.emit(ParentEvent({}))
 
   const found_future = await find_future
   assert.ok(found_future)
@@ -138,7 +138,7 @@ test('find future works with string event keys', async () => {
   const find_promise = bus.find('ParentEvent', { past: false, future: 0.5 })
 
   setTimeout(() => {
-    bus.dispatch(ParentEvent({}))
+    bus.emit(ParentEvent({}))
   }, 30)
 
   const found_event = await find_promise
@@ -156,7 +156,7 @@ test('find class pattern matches generic BaseEvent event_type for future lookups
   const find_promise = bus.find(DifferentNameFromClass, { past: false, future: 1 })
 
   setTimeout(() => {
-    void bus.dispatch(new BaseEvent({ event_type: 'DifferentNameFromClass' }))
+    void bus.emit(new BaseEvent({ event_type: 'DifferentNameFromClass' }))
   }, 30)
 
   const found_event = await find_promise
@@ -167,7 +167,7 @@ test('find class pattern matches generic BaseEvent event_type for future lookups
 test('find future ignores past events', async () => {
   const bus = new EventBus('FindFutureIgnoresPastBus')
 
-  const prior = bus.dispatch(ParentEvent({}))
+  const prior = bus.emit(ParentEvent({}))
   await prior.done()
 
   const found_event = await bus.find(ParentEvent, { past: false, future: 0.05 })
@@ -181,7 +181,7 @@ test('find future ignores already-dispatched in-flight events when past=false', 
     await delay(80)
   })
 
-  const inflight = bus.dispatch(ParentEvent({}))
+  const inflight = bus.emit(ParentEvent({}))
   await delay(5)
 
   const found_event = await bus.find(ParentEvent, { past: false, future: 0.05 })
@@ -217,7 +217,7 @@ test('find defaults to past=true future=false when both are undefined', async ()
   assert.equal(missing, null)
   assert.ok(elapsed_ms < 100)
 
-  const dispatched = bus.dispatch(ParentEvent({}))
+  const dispatched = bus.emit(ParentEvent({}))
   const found = await bus.find(ParentEvent)
   assert.ok(found)
   assert.equal(found.event_id, dispatched.event_id)
@@ -226,7 +226,7 @@ test('find defaults to past=true future=false when both are undefined', async ()
 test('find past+future returns past event immediately', async () => {
   const bus = new EventBus('FindPastFutureBus')
 
-  const dispatched = bus.dispatch(ParentEvent({}))
+  const dispatched = bus.emit(ParentEvent({}))
   await dispatched.done()
 
   const start = Date.now()
@@ -244,7 +244,7 @@ test('find past+future waits for future when no past match', async () => {
   const find_promise = bus.find(ChildEvent, { past: true, future: 0.3 })
 
   setTimeout(() => {
-    bus.dispatch(ChildEvent({}))
+    bus.emit(ChildEvent({}))
   }, 50)
 
   const found_event = await find_promise
@@ -255,7 +255,7 @@ test('find past+future waits for future when no past match', async () => {
 test('find past/future windows are independent', async () => {
   const bus = new EventBus('FindWindowIndependentBus')
 
-  const old_event = bus.dispatch(ParentEvent({}))
+  const old_event = bus.emit(ParentEvent({}))
   await old_event.done()
   await delay(120)
 
@@ -270,7 +270,7 @@ test('find past/future windows are independent', async () => {
 test('find past true future float returns old event immediately', async () => {
   const bus = new EventBus('FindPastTrueFutureFloatBus')
 
-  const dispatched = bus.dispatch(ParentEvent({}))
+  const dispatched = bus.emit(ParentEvent({}))
   await dispatched.done()
   await delay(120)
 
@@ -282,14 +282,14 @@ test('find past true future float returns old event immediately', async () => {
 test('find past float future waits for new event', async () => {
   const bus = new EventBus('FindPastFloatFutureWaitBus')
 
-  const old_event = bus.dispatch(ParentEvent({}))
+  const old_event = bus.emit(ParentEvent({}))
   await old_event.done()
   await delay(120)
 
   const find_promise = bus.find(ParentEvent, { past: 0.05, future: 0.2 })
 
   setTimeout(() => {
-    bus.dispatch(ParentEvent({}))
+    bus.emit(ParentEvent({}))
   }, 50)
 
   const found_event = await find_promise
@@ -300,7 +300,7 @@ test('find past float future waits for new event', async () => {
 test('find past true future true returns past event immediately', async () => {
   const bus = new EventBus('FindPastTrueFutureTrueBus')
 
-  const dispatched = bus.dispatch(ParentEvent({}))
+  const dispatched = bus.emit(ParentEvent({}))
   await dispatched.done()
 
   const start = Date.now()
@@ -315,8 +315,8 @@ test('find past true future true returns past event immediately', async () => {
 test('find respects where filter', async () => {
   const bus = new EventBus('FindWhereBus')
 
-  const event_a = bus.dispatch(ScreenshotEvent({ target_id: 'tab-a' }))
-  const event_b = bus.dispatch(ScreenshotEvent({ target_id: 'tab-b' }))
+  const event_a = bus.emit(ScreenshotEvent({ target_id: 'tab-a' }))
+  const event_b = bus.emit(ScreenshotEvent({ target_id: 'tab-b' }))
   await event_a.done()
   await event_b.done()
 
@@ -330,7 +330,7 @@ test('find supports metadata filters like event_status', async () => {
   const bus = new EventBus('FindEventStatusFilterBus')
   const release_pause = bus.locks.requestRunloopPause()
 
-  const pending_event = bus.dispatch(ParentEvent({}))
+  const pending_event = bus.emit(ParentEvent({}))
 
   const found_pending = await bus.find(ParentEvent, { past: true, future: false, event_status: 'pending' })
   assert.ok(found_pending)
@@ -347,8 +347,8 @@ test('find supports metadata filters like event_status', async () => {
 test('find supports metadata equality filters like event_id and event_timeout', async () => {
   const bus = new EventBus('FindEventFieldFilterBus')
 
-  const event_a = bus.dispatch(ParentEvent({ event_timeout: 11 }))
-  const event_b = bus.dispatch(ParentEvent({ event_timeout: 22 }))
+  const event_a = bus.emit(ParentEvent({ event_timeout: 11 }))
+  const event_b = bus.emit(ParentEvent({ event_timeout: 22 }))
   await event_a.done()
   await event_b.done()
 
@@ -373,8 +373,8 @@ test('find supports metadata equality filters like event_id and event_timeout', 
 test('find supports non-event data field equality filters', async () => {
   const bus = new EventBus('FindDataFieldFilterBus')
 
-  const event_a = bus.dispatch(UserActionEvent({ action: 'logout', user_id: 'u-2' }))
-  const event_b = bus.dispatch(UserActionEvent({ action: 'login', user_id: 'u-1' }))
+  const event_a = bus.emit(UserActionEvent({ action: 'logout', user_id: 'u-2' }))
+  const event_b = bus.emit(UserActionEvent({ action: 'login', user_id: 'u-1' }))
   await event_a.done()
   await event_b.done()
 
@@ -401,8 +401,8 @@ test('find where filter works with future waiting', async () => {
   const find_promise = bus.find(UserActionEvent, (event) => event.user_id === 'user123', { past: false, future: 0.3 })
 
   setTimeout(() => {
-    bus.dispatch(UserActionEvent({ action: 'logout', user_id: 'user456' }))
-    bus.dispatch(UserActionEvent({ action: 'login', user_id: 'user123' }))
+    bus.emit(UserActionEvent({ action: 'logout', user_id: 'user456' }))
+    bus.emit(UserActionEvent({ action: 'login', user_id: 'user123' }))
   }, 50)
 
   const found_event = await find_promise
@@ -413,8 +413,8 @@ test('find where filter works with future waiting', async () => {
 test('find wildcard "*" with where filter matches across event types in history', async () => {
   const bus = new EventBus('FindWildcardPastBus')
 
-  const user_event = bus.dispatch(UserActionEvent({ action: 'login', user_id: 'u-1' }))
-  const system_event = bus.dispatch(SystemEvent({}))
+  const user_event = bus.emit(UserActionEvent({ action: 'login', user_id: 'u-1' }))
+  const system_event = bus.emit(SystemEvent({}))
   await user_event.done()
   await system_event.done()
 
@@ -439,9 +439,9 @@ test('find wildcard "*" with where filter works for future waiting', async () =>
   )
 
   setTimeout(() => {
-    bus.dispatch(SystemEvent({}))
-    bus.dispatch(UserActionEvent({ action: 'normal', user_id: 'u-x' }))
-    bus.dispatch(UserActionEvent({ action: 'special', user_id: 'u-y' }))
+    bus.emit(SystemEvent({}))
+    bus.emit(UserActionEvent({ action: 'normal', user_id: 'u-x' }))
+    bus.emit(UserActionEvent({ action: 'special', user_id: 'u-y' }))
   }, 40)
 
   const found_event = await find_promise
@@ -458,9 +458,9 @@ test('find with multiple concurrent waiters resolves correct events', async () =
   const find_system = bus.find('SystemEvent', { past: false, future: 0.5 })
 
   setTimeout(() => {
-    bus.dispatch(UserActionEvent({ action: 'normal', user_id: 'u1' }))
-    bus.dispatch(SystemEvent({}))
-    bus.dispatch(UserActionEvent({ action: 'special', user_id: 'u2' }))
+    bus.emit(UserActionEvent({ action: 'normal', user_id: 'u1' }))
+    bus.emit(SystemEvent({}))
+    bus.emit(UserActionEvent({ action: 'special', user_id: 'u2' }))
   }, 50)
 
   const [normal, system, special] = await Promise.all([find_normal, find_system, find_special])
@@ -480,7 +480,7 @@ test('find child_of returns child event', async () => {
     event.bus?.emit(ChildEvent({}))
   })
 
-  const parent_event = bus.dispatch(ParentEvent({}))
+  const parent_event = bus.emit(ParentEvent({}))
   await bus.waitUntilIdle()
 
   const child_event = await bus.find(ChildEvent, {
@@ -496,8 +496,8 @@ test('find child_of returns child event', async () => {
 test('find child_of returns null for non-child', async () => {
   const bus = new EventBus('FindNonChildBus')
 
-  const parent_event = bus.dispatch(ParentEvent({}))
-  const unrelated_event = bus.dispatch(UnrelatedEvent({}))
+  const parent_event = bus.emit(ParentEvent({}))
+  const unrelated_event = bus.emit(UnrelatedEvent({}))
   await parent_event.done()
   await unrelated_event.done()
 
@@ -522,7 +522,7 @@ test('find child_of returns grandchild event', async () => {
     await event.bus?.emit(GrandchildEvent({})).done()
   })
 
-  const parent_event = bus.dispatch(ParentEvent({}))
+  const parent_event = bus.emit(ParentEvent({}))
   await parent_event.done()
   await bus.waitUntilIdle()
 
@@ -542,7 +542,7 @@ test('find child_of works across forwarded buses', async () => {
 
   let child_event_id: string | null = null
 
-  main_bus.on(ParentEvent, auth_bus.dispatch)
+  main_bus.on(ParentEvent, auth_bus.emit)
   auth_bus.on(ParentEvent, async (event) => {
     const event_bus = event.bus
     assert.ok(event_bus)
@@ -552,7 +552,7 @@ test('find child_of works across forwarded buses', async () => {
     child_event_id = child.event_id
   })
 
-  const parent_event = main_bus.dispatch(ParentEvent({}))
+  const parent_event = main_bus.emit(ParentEvent({}))
   await parent_event.done()
   await main_bus.waitUntilIdle()
   await auth_bus.waitUntilIdle()
@@ -575,8 +575,8 @@ test('find child_of filters to correct parent among siblings', async () => {
   })
   bus.on(TabCreatedEvent, () => {})
 
-  const nav_1 = bus.dispatch(NavigateEvent({ url: 'site1' }))
-  const nav_2 = bus.dispatch(NavigateEvent({ url: 'site2' }))
+  const nav_1 = bus.emit(NavigateEvent({ url: 'site1' }))
+  const nav_2 = bus.emit(NavigateEvent({ url: 'site2' }))
   await nav_1.done()
   await nav_2.done()
 
@@ -605,7 +605,7 @@ test('find future with child_of waits for matching child', async () => {
     await event.bus?.emit(ChildEvent({})).done()
   })
 
-  const parent_event = bus.dispatch(ParentEvent({}))
+  const parent_event = bus.emit(ParentEvent({}))
 
   const find_promise = bus.find(ChildEvent, {
     child_of: parent_event,
@@ -621,10 +621,10 @@ test('find future with child_of waits for matching child', async () => {
 test('find with past float and where filter', async () => {
   const bus = new EventBus('FindWherePastFloatBus')
 
-  const old_event = bus.dispatch(ScreenshotEvent({ target_id: 'tab1' }))
+  const old_event = bus.emit(ScreenshotEvent({ target_id: 'tab1' }))
   await old_event.done()
   await delay(120)
-  const new_event = bus.dispatch(ScreenshotEvent({ target_id: 'tab2' }))
+  const new_event = bus.emit(ScreenshotEvent({ target_id: 'tab2' }))
   await new_event.done()
 
   const found_tab2 = await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab2', { past: 0.1, future: false })
@@ -645,7 +645,7 @@ test('find with child_of and past float', async () => {
     child_event_id = child?.event_id ?? null
   })
 
-  const parent_event = bus.dispatch(ParentEvent({}))
+  const parent_event = bus.emit(ParentEvent({}))
   await parent_event.done()
   await bus.waitUntilIdle()
 
@@ -668,7 +668,7 @@ test('find with all parameters combined', async () => {
     child_event_id = child?.event_id ?? null
   })
 
-  const parent_event = bus.dispatch(ParentEvent({}))
+  const parent_event = bus.emit(ParentEvent({}))
   await parent_event.done()
   await bus.waitUntilIdle()
 
@@ -689,7 +689,7 @@ test('find past includes in-progress dispatched events', async () => {
     await delay(80)
   })
 
-  const dispatched = bus.dispatch(ParentEvent({}))
+  const dispatched = bus.emit(ParentEvent({}))
   await delay(10)
 
   const found = await bus.find(ParentEvent, { past: true, future: false })
@@ -711,7 +711,7 @@ test('find future resolves on dispatch before completion', async () => {
   const find_promise = bus.find(ParentEvent, { past: false, future: 0.5 })
 
   setTimeout(() => {
-    bus.dispatch(ParentEvent({}))
+    bus.emit(ParentEvent({}))
   }, 20)
 
   const found_event = await find_promise
@@ -733,7 +733,7 @@ test('find catches child event that fired during parent handler', async () => {
   })
   bus.on(TabCreatedEvent, () => {})
 
-  const nav_event = bus.dispatch(NavigateEvent({ url: 'https://example.com' }))
+  const nav_event = bus.emit(NavigateEvent({ url: 'https://example.com' }))
   await nav_event.done()
 
   const found_tab = await bus.find(TabCreatedEvent, {
@@ -752,7 +752,7 @@ test('find returns promise that can be awaited later', async () => {
   const find_promise = bus.find(ParentEvent, { past: false, future: 0.5 })
   assert.ok(find_promise instanceof Promise)
 
-  bus.dispatch(ParentEvent({}))
+  bus.emit(ParentEvent({}))
   const found_event = await find_promise
   assert.ok(found_event)
 })

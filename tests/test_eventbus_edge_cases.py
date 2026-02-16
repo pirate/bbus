@@ -28,7 +28,7 @@ async def test_event_reset_creates_fresh_pending_event_for_cross_bus_dispatch():
     bus_a.on(ResetCoverageEvent, lambda event: seen_a.append(event.label))
     bus_b.on(ResetCoverageEvent, lambda event: seen_b.append(event.label))
 
-    completed = await bus_a.dispatch(ResetCoverageEvent(label='hello'))
+    completed = await bus_a.emit(ResetCoverageEvent(label='hello'))
     assert completed.event_status == EventStatus.COMPLETED
     assert len(completed.event_results) == 1
 
@@ -38,7 +38,7 @@ async def test_event_reset_creates_fresh_pending_event_for_cross_bus_dispatch():
     assert fresh.event_completed_at is None
     assert fresh.event_results == {}
 
-    forwarded = await bus_b.dispatch(fresh)
+    forwarded = await bus_b.emit(fresh)
     assert forwarded.event_status == EventStatus.COMPLETED
     assert seen_a == ['hello']
     assert seen_b == ['hello']
@@ -60,7 +60,7 @@ async def test_wait_until_idle_timeout_path_recovers_after_inflight_handler_fini
         await release_handler.wait()
 
     bus.on(IdleTimeoutCoverageEvent, slow_handler)
-    pending = bus.dispatch(IdleTimeoutCoverageEvent())
+    pending = bus.emit(IdleTimeoutCoverageEvent())
     await handler_started.wait()
 
     start = time.perf_counter()
@@ -86,7 +86,7 @@ async def test_stop_timeout_zero_clears_running_bus_and_releases_name():
         await asyncio.sleep(0.2)
 
     bus.on(StopCoverageEvent, slow_handler)
-    _pending = bus.dispatch(StopCoverageEvent())
+    _pending = bus.emit(StopCoverageEvent())
     await asyncio.sleep(0)
 
     start = time.perf_counter()
@@ -99,5 +99,5 @@ async def test_stop_timeout_zero_clears_running_bus_and_releases_name():
 
     replacement = EventBus(name=bus_name)
     replacement.on(StopCoverageEvent, lambda event: None)
-    await replacement.dispatch(StopCoverageEvent())
+    await replacement.emit(StopCoverageEvent())
     await replacement.stop(timeout=0, clear=True)

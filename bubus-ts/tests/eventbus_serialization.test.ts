@@ -29,7 +29,7 @@ test('EventBus toJSON/fromJSON roundtrip uses id-keyed structures', async () => 
   })
 
   const release_pause = bus.locks.requestRunloopPause()
-  const pending_event = bus.dispatch(SerializableEvent({ event_timeout: 11 }))
+  const pending_event = bus.emit(SerializableEvent({ event_timeout: 11 }))
   await Promise.resolve()
 
   const json = bus.toJSON()
@@ -46,8 +46,8 @@ test('EventBus toJSON/fromJSON roundtrip uses id-keyed structures', async () => 
   const restored = EventBus.fromJSON(json)
   assert.equal(restored.id, '018f8e40-1234-7000-8000-000000001234')
   assert.equal(restored.name, 'SerializableBus')
-  assert.equal(restored.max_history_size, 500)
-  assert.equal(restored.max_history_drop, false)
+  assert.equal(restored.event_history.max_history_size, 500)
+  assert.equal(restored.event_history.max_history_drop, false)
   assert.equal(restored.event_concurrency, 'parallel')
   assert.equal(restored.event_handler_concurrency_default, 'parallel')
   assert.equal(restored.event_handler_completion_default, 'first')
@@ -73,7 +73,7 @@ test('EventBus.fromJSON recreates missing handler entries from event_result meta
   const SerializableEvent = BaseEvent.extend('MissingHandlerHydrationEvent', {})
 
   bus.on(SerializableEvent, () => 'ok')
-  const event = bus.dispatch(SerializableEvent({}))
+  const event = bus.emit(SerializableEvent({}))
   await event.done()
 
   const handler_id = Array.from(event.event_results.values())[0].handler_id
@@ -102,7 +102,7 @@ test('EventBus toJSON promotes pending events into event_history snapshot', asyn
   })
 
   const release_pause = bus.locks.requestRunloopPause()
-  const pending = bus.dispatch(PendingEvent({}))
+  const pending = bus.emit(PendingEvent({}))
   await Promise.resolve()
 
   const json = bus.toJSON()

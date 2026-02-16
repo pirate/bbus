@@ -134,6 +134,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - uses: astral-sh/setup-uv@v6
+        if: matrix.task.kind == 'test' && matrix.task.name == 'cross_runtime_roundtrip'
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install Python deps for cross-runtime roundtrip tests
+        if: matrix.task.kind == 'test' && matrix.task.name == 'cross_runtime_roundtrip'
+        run: |
+          cd ..
+          uv sync --dev --all-extras
+
       - name: Verify bridge optional Node deps
         if: matrix.task.kind == 'test' && matrix.task.name == 'bridges'
         run: |

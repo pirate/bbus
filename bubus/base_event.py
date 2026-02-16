@@ -585,6 +585,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         eventbus: 'EventBus',
         timeout: float | None,
         handler_slow_timeout: float | None = None,
+        notify_event_started: bool = False,
         format_exception_for_log: Callable[[BaseException], str] | None = None,
     ) -> T_EventResultType | 'BaseEvent[Any]' | None:
         """Execute one handler inside the unified runtime scope stack.
@@ -604,12 +605,20 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
 
         self.timeout = timeout
         self.result_type = event.event_result_type
-        self.update(status='started')
 
         dispatch_context = event.event_get_dispatch_context()
-        slow_handler_monitor = self._create_slow_handler_warning_timer(event, eventbus, handler_slow_timeout)
+        slow_handler_monitor: Callable[[], Coroutine[Any, Any, None]] | None = None
         try:
             async with eventbus.locks.with_handler_lock(eventbus, event, self):
+                if self.status in ('error', 'completed'):
+                    return self.result
+                self.update(status='started')
+                event.event_mark_started(self.started_at)
+                await eventbus.on_event_result_change(event, self, EventStatus.STARTED)
+                if notify_event_started:
+                    await eventbus.on_event_change(event, EventStatus.STARTED)
+
+                slow_handler_monitor = self._create_slow_handler_warning_timer(event, eventbus, handler_slow_timeout)
                 async with self.with_timeout(event):
                     async with with_slow_monitor(
                         slow_handler_monitor,
@@ -761,7 +770,7 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     _lock_for_event_handler: 'ReentrantLock | None' = PrivateAttr(default=None)
 
     # Dispatch-time context for ContextVar propagation to handlers
-    # Captured when dispatch() is called, used when executing handlers via ctx.run()
+    # Captured when emit() is called, used when executing handlers via ctx.run()
     _event_dispatch_context: contextvars.Context | None = PrivateAttr(default=None)
 
     def __hash__(self) -> int:
@@ -1508,9 +1517,11 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     def _coerce_typed_result_value(
         value: Any,
     ) -> T_EventResultType | None:
-        # Handlers may legitimately return BaseEvent instances (for example when
-        # forwarding via bus.emit/bus.dispatch). Accessors decide via `include=`
-        # whether to filter those out; coercion should not reject them.
+        # Handlers may return BaseEvent instances when forwarding via
+        # bus.emit. Typed accessors expose only typed payload values,
+        # so forwarded events are normalized to None.
+        if isinstance(value, BaseEvent):
+            return None
         return value
 
     def event_mark_complete_if_all_handlers_completed(self, current_bus: 'EventBus | None' = None) -> None:

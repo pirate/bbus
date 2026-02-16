@@ -77,7 +77,7 @@ async def run_generator(args: argparse.Namespace) -> None:
             depth = random.randint(1, max(1, args.max_depth))
             await emit_followups(event, depth)
         if random.random() < args.audit_rate:
-            bus.dispatch(
+            bus.emit(
                 AuditTrailEvent(
                     source_event_id=event.event_id,
                     handler_name='random_handler',
@@ -91,7 +91,7 @@ async def run_generator(args: argparse.Namespace) -> None:
     async def analytics_handler(event: RandomTestEvent) -> None:
         await asyncio.sleep(random.uniform(0.2, 0.5))
         if random.random() < args.audit_rate:
-            bus.dispatch(
+            bus.emit(
                 AuditTrailEvent(
                     source_event_id=event.event_id,
                     handler_name='analytics_handler',
@@ -132,7 +132,7 @@ async def run_generator(args: argparse.Namespace) -> None:
                     route_hint=f'route-{task_id}-{random.randint(1, 3)}',
                     event_result_type=str,
                 )
-                bus.dispatch(event)
+                bus.emit(event)
                 emitted += 1
                 if args.events and emitted >= args.events:
                     break
@@ -149,7 +149,7 @@ async def run_generator(args: argparse.Namespace) -> None:
                 depth=depth,
                 event_result_type=str,
             )
-            bus.dispatch(follow_up)
+            bus.emit(follow_up)
         if remaining_depth > 1 and random.random() < 0.6:
             await asyncio.sleep(random.uniform(0.2, 0.4))
             await emit_followups(parent_event, remaining_depth - 1)

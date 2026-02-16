@@ -158,8 +158,6 @@ class EventBus:
     event_handler_completion: EventHandlerCompletionMode = EventHandlerCompletionMode.ALL
     event_handler_slow_timeout: float | None = 30.0
     event_handler_detect_file_paths: bool = True
-    max_history_size: int | None = 100
-    max_history_drop: bool = False
 
     # Runtime State
     id: UUIDStr = '00000000-0000-0000-0000-000000000000'
@@ -175,7 +173,6 @@ class EventBus:
     _on_idle: asyncio.Event | None = None
     in_flight_event_ids: set[str]
     processing_event_ids: set[str]
-    _warned_about_dropping_uncompleted_events: bool
     _duplicate_handler_name_check_limit: int = 256
     _pending_handler_changes: list[tuple[EventHandler, bool]]
     find_waiters: set[_FindWaiter]
@@ -231,7 +228,7 @@ class EventBus:
             )
 
         self.pending_event_queue = None
-        self.event_history = EventHistory()
+        self.event_history = EventHistory(max_history_size=max_history_size, max_history_drop=max_history_drop)
         self.handlers = {}
         self.handlers_by_key = defaultdict(list)
         self._lock_for_event_bus_serial = ReentrantLock()
@@ -273,13 +270,8 @@ class EventBus:
         self.middlewares = self._normalize_middlewares(middlewares)
         self.in_flight_event_ids = set()
         self.processing_event_ids = set()
-        self._warned_about_dropping_uncompleted_events = False
         self._pending_handler_changes = []
         self.find_waiters = set()
-
-        # Memory leak prevention settings
-        self.max_history_size = max_history_size
-        self.max_history_drop = max_history_drop
 
         # Register this instance
         EventBus.all_instances.add(self)
@@ -505,8 +497,8 @@ class EventBus:
         return {
             'id': self.id,
             'name': self.name,
-            'max_history_size': self.max_history_size,
-            'max_history_drop': self.max_history_drop,
+            'max_history_size': self.event_history.max_history_size,
+            'max_history_drop': self.event_history.max_history_drop,
             'event_concurrency': str(self.event_concurrency),
             'event_timeout': self.event_timeout,
             'event_slow_timeout': self.event_slow_timeout,
@@ -728,6 +720,37 @@ class EventBus:
             if not waiter.future.done():
                 waiter.future.set_result(event)
 
+    async def _wait_for_future_match(
+        self,
+        event_key: str,
+        matches: Callable[[BaseEvent[Any]], bool],
+        future: bool | float,
+    ) -> BaseEvent[Any] | None:
+        if future is False:
+            return None
+        event_match_future: asyncio.Future[BaseEvent[Any] | None] = asyncio.get_running_loop().create_future()
+        waiter = _FindWaiter(event_key=event_key, matches=matches, future=event_match_future)
+        if future is not True:
+            timeout_seconds = float(future)
+
+            def _on_wait_timeout() -> None:
+                self.find_waiters.discard(waiter)
+                if waiter.timeout_handle is not None:
+                    waiter.timeout_handle.cancel()
+                    waiter.timeout_handle = None
+                if not event_match_future.done():
+                    event_match_future.set_result(None)
+
+            waiter.timeout_handle = asyncio.get_running_loop().call_later(timeout_seconds, _on_wait_timeout)
+        self.find_waiters.add(waiter)
+        try:
+            return await event_match_future
+        finally:
+            self.find_waiters.discard(waiter)
+            if waiter.timeout_handle is not None:
+                waiter.timeout_handle.cancel()
+                waiter.timeout_handle = None
+
     async def on_bus_handlers_change(self, handler: EventHandler, registered: bool) -> None:
         if not self.middlewares:
             return
@@ -840,12 +863,7 @@ class EventBus:
 
     @staticmethod
     def _is_event_complete_fast(event: BaseEvent[Any]) -> bool:
-        signal = event._event_completed_signal  # pyright: ignore[reportPrivateUsage]
-        if signal is not None:
-            return signal.is_set()
-        if event._event_is_complete_flag:  # pyright: ignore[reportPrivateUsage]
-            return True
-        return event.event_completed_at is not None
+        return EventHistory.is_event_complete_fast(event)
 
     def _has_inflight_events_fast(self) -> bool:
         return bool(
@@ -858,10 +876,10 @@ class EventBus:
         for bus in list(EventBus.all_instances):
             if bus:
                 bus.in_flight_event_ids.discard(event_id)
-                if bus.max_history_size == 0:
+                if bus.event_history.max_history_size == 0:
                     # max_history_size=0 means "keep only in-flight events".
                     # As soon as an event is completed, drop it from history.
-                    bus.event_history.pop(event_id, None)
+                    bus.event_history.remove_event(event_id)
 
     @property
     def events_pending(self) -> list[BaseEvent[Any]]:
@@ -1110,16 +1128,20 @@ class EventBus:
         # So pressure is handled by policy:
         #   - max_history_drop=True  -> absorb and trim oldest history entries
         #   - max_history_drop=False -> reject new emits at max_history_size
-        if self.max_history_size is not None and self.max_history_size > 0 and not self.max_history_drop:
-            if len(self.event_history) >= self.max_history_size:
+        if (
+            self.event_history.max_history_size is not None
+            and self.event_history.max_history_size > 0
+            and not self.event_history.max_history_drop
+        ):
+            if len(self.event_history) >= self.event_history.max_history_size:
                 # Before rejecting, opportunistically evict already-completed history entries.
                 # This preserves max_history_drop=False semantics (never dropping in-flight events)
                 # while avoiding needless backpressure when only completed entries are occupying the cap.
-                self.cleanup_event_history()
-            if len(self.event_history) >= self.max_history_size:
+                self.event_history.trim_event_history(owner_label=str(self))
+            if len(self.event_history) >= self.event_history.max_history_size:
                 raise RuntimeError(
-                    f'{self} history limit reached ({len(self.event_history)}/{self.max_history_size}); '
-                    'set max_history_drop=True to drop old history instead of rejecting new events'
+                    f'{self} history limit reached ({len(self.event_history)}/{self.event_history.max_history_size}); '
+                    'set event_history.max_history_drop=True to drop old history instead of rejecting new events'
                 )
 
         # Auto-start if needed
@@ -1164,10 +1186,14 @@ class EventBus:
 
         # Amortize cleanup work by trimming only after a soft overage; this keeps
         # hot emit fast under large naive floods while still bounding memory.
-        if self.max_history_size is not None and self.max_history_size > 0 and self.max_history_drop:
-            soft_limit = max(self.max_history_size, int(self.max_history_size * 1.2))
+        if (
+            self.event_history.max_history_size is not None
+            and self.event_history.max_history_size > 0
+            and self.event_history.max_history_drop
+        ):
+            soft_limit = max(self.event_history.max_history_size, int(self.event_history.max_history_size * 1.2))
             if len(self.event_history) > soft_limit:
-                self.cleanup_event_history()
+                self.event_history.trim_event_history(owner_label=str(self))
 
         return event
 
@@ -1271,83 +1297,16 @@ class EventBus:
         Returns:
             Matching event or None if not found/timeout
         """
-        resolved_past_input = True if past is None else past
-        if isinstance(resolved_past_input, timedelta):
-            resolved_past: bool | float = max(0.0, resolved_past_input.total_seconds())
-        elif isinstance(resolved_past_input, bool):
-            resolved_past = resolved_past_input
-        else:
-            resolved_past = max(0.0, float(resolved_past_input))
-
-        resolved_future_input = False if future is None else future
-        if isinstance(resolved_future_input, bool):
-            resolved_future: bool | float = resolved_future_input
-        else:
-            resolved_future = max(0.0, float(resolved_future_input))
-
-        if resolved_past is False and resolved_future is False:
-            return None
-
-        event_key = self._normalize_event_pattern(event_type)
-        where_predicate: Callable[[BaseEvent[Any]], bool]
-        if where is None:
-            where_predicate = lambda _: True
-        else:
-            where_predicate = where
-
-        def matches(event: BaseEvent[Any]) -> bool:
-            if event_key != '*' and event.event_type != event_key:
-                return False
-            if child_of is not None and not self.event_is_child_of(event, child_of):
-                return False
-            event_values = event.model_dump(mode='python')
-            for field_name, expected_value in event_fields.items():
-                if field_name not in event_values:
-                    return False
-                if event_values[field_name] != expected_value:
-                    return False
-            if not where_predicate(event):
-                return False
-            return True
-
-        if resolved_past is not False:
-            cutoff: datetime | None = None
-            if resolved_past is not True:
-                cutoff = datetime.now(UTC) - timedelta(seconds=float(resolved_past))
-
-            events = list(self.event_history.values())
-            for event in reversed(events):
-                if cutoff is not None and event.event_created_at < cutoff:
-                    continue
-                if matches(event):
-                    return event
-
-        if resolved_future is False:
-            return None
-
-        event_match_future: asyncio.Future[BaseEvent[Any] | None] = asyncio.get_running_loop().create_future()
-        waiter = _FindWaiter(event_key=event_key, matches=matches, future=event_match_future)
-        if resolved_future is not True:
-            timeout_seconds = float(resolved_future)
-
-            def _on_wait_timeout() -> None:
-                self.find_waiters.discard(waiter)
-                if waiter.timeout_handle is not None:
-                    waiter.timeout_handle.cancel()
-                    waiter.timeout_handle = None
-                if not event_match_future.done():
-                    event_match_future.set_result(None)
-
-            waiter.timeout_handle = asyncio.get_running_loop().call_later(timeout_seconds, _on_wait_timeout)
-        self.find_waiters.add(waiter)
-
-        try:
-            return await event_match_future
-        finally:
-            self.find_waiters.discard(waiter)
-            if waiter.timeout_handle is not None:
-                waiter.timeout_handle.cancel()
-                waiter.timeout_handle = None
+        return await self.event_history.find(
+            event_type,
+            where=where,
+            child_of=child_of,
+            past=past,
+            future=future,
+            event_is_child_of=self.event_is_child_of,
+            wait_for_future_match=self._wait_for_future_match,
+            **event_fields,
+        )
 
     def event_is_child_of(self, event: BaseEvent[Any], ancestor: BaseEvent[Any]) -> bool:
         """
@@ -1953,14 +1912,14 @@ class EventBus:
 
             current = parent_event
 
-    def _cleanup_event_history_if_needed(self) -> None:
+    def _trim_event_history_if_needed(self) -> None:
         if (
-            self.max_history_size is not None
-            and self.max_history_size > 0
-            and self.max_history_drop
-            and len(self.event_history) > self.max_history_size
+            self.event_history.max_history_size is not None
+            and self.event_history.max_history_size > 0
+            and self.event_history.max_history_drop
+            and len(self.event_history) > self.event_history.max_history_size
         ):
-            self.cleanup_event_history()
+            self.event_history.trim_event_history(owner_label=str(self))
 
     async def process_event(self, event: BaseEvent[Any], timeout: float | None = None) -> None:
         """
@@ -2032,7 +1991,7 @@ class EventBus:
 
         await self._mark_event_complete_if_ready(event)
         await self._propagate_parent_completion(event)
-        self._cleanup_event_history_if_needed()
+        self._trim_event_history_if_needed()
 
     def get_handlers_for_event(self, event: BaseEvent[Any]) -> dict[PythonIdStr, EventHandler]:
         """Get all handlers that should process the given event, filtering out those that would create loops"""
@@ -2138,18 +2097,13 @@ class EventBus:
         first_handler_id = next(iter(event.event_results), None)
         event_result = event.event_results[handler_id]
 
-        event_result.update(status='started', timeout=resolved_timeout)
-        event.event_mark_started(event_result.started_at)
-        await self.on_event_result_change(event, event_result, EventStatus.STARTED)
-        if first_handler_id == handler_id:
-            await self.on_event_change(event, EventStatus.STARTED)
-
         try:
             result_value = await event_result.run_handler(
                 event,
                 eventbus=self,
                 timeout=resolved_timeout,
                 handler_slow_timeout=resolved_slow_timeout,
+                notify_event_started=(first_handler_id == handler_id),
                 format_exception_for_log=log_filtered_traceback,
             )
 
@@ -2278,117 +2232,7 @@ class EventBus:
         Returns:
             Number of events removed from history
         """
-        if self.max_history_size is None:
-            return 0
-        if self.max_history_size == 0:
-            return self.cleanup_event_history()
-        if len(self.event_history) <= self.max_history_size:
-            return 0
-
-        # event_history preserves insertion order, so oldest emitted events are first.
-        # Avoid per-cleanup O(n log n) sorting by timestamp in this hot-path helper.
-        total_events = len(self.event_history)
-        remove_count = total_events - self.max_history_size
-        event_ids_to_remove = list(self.event_history.keys())[:remove_count]
-
-        for event_id in event_ids_to_remove:
-            del self.event_history[event_id]
-
-        if event_ids_to_remove:
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('🧹 %s Cleaned up %d excess events from history', self, len(event_ids_to_remove))
-
-        return len(event_ids_to_remove)
-
-    def cleanup_event_history(self) -> int:
-        """
-        Clean up event history to maintain max_history_size limit.
-        Prioritizes keeping pending/started events over completed ones.
-
-        Returns:
-            Total number of events removed from history
-        """
-        if self.max_history_size is None:
-            return 0
-        if self.max_history_size == 0:
-            completed_event_ids = [
-                event_id for event_id, event in self.event_history.items() if self._is_event_complete_fast(event)
-            ]
-            for event_id in completed_event_ids:
-                del self.event_history[event_id]
-            return len(completed_event_ids)
-        if len(self.event_history) <= self.max_history_size:
-            return 0
-
-        events_to_remove_count = len(self.event_history) - self.max_history_size
-
-        # Fast path: if the oldest overage window is already all completed,
-        # remove directly without scanning the full history.
-        oldest_completed_ids: list[str] = []
-        for event_id, event in self.event_history.items():
-            if len(oldest_completed_ids) >= events_to_remove_count:
-                break
-            if not self._is_event_complete_fast(event):
-                oldest_completed_ids.clear()
-                break
-            oldest_completed_ids.append(event_id)
-
-        if len(oldest_completed_ids) == events_to_remove_count and events_to_remove_count > 0:
-            for event_id in oldest_completed_ids:
-                del self.event_history[event_id]
-            return len(oldest_completed_ids)
-
-        # Separate events by status
-        pending_events: list[tuple[str, BaseEvent[Any]]] = []
-        started_events: list[tuple[str, BaseEvent[Any]]] = []
-        completed_events: list[tuple[str, BaseEvent[Any]]] = []
-
-        for event_id, event in self.event_history.items():
-            if self._is_event_complete_fast(event):
-                completed_events.append((event_id, event))
-            elif event.event_status == EventStatus.STARTED:
-                started_events.append((event_id, event))
-            else:
-                pending_events.append((event_id, event))
-
-        events_to_remove: list[str] = []
-
-        # First remove completed events (oldest first)
-        if completed_events and events_to_remove_count > 0:
-            remove_from_completed = min(len(completed_events), events_to_remove_count)
-            events_to_remove.extend([event_id for event_id, _ in completed_events[:remove_from_completed]])
-            events_to_remove_count -= remove_from_completed
-
-        # If still need to remove more, remove oldest started events
-        if events_to_remove_count > 0 and started_events:
-            remove_from_started = min(len(started_events), events_to_remove_count)
-            events_to_remove.extend([event_id for event_id, _ in started_events[:remove_from_started]])
-            events_to_remove_count -= remove_from_started
-
-        # If still need to remove more, remove oldest pending events
-        if events_to_remove_count > 0 and pending_events:
-            events_to_remove.extend([event_id for event_id, _ in pending_events[:events_to_remove_count]])
-
-        # Remove the events
-        for event_id in events_to_remove:
-            del self.event_history[event_id]
-
-        if events_to_remove:
-            completed_event_ids = {event_id for event_id, _ in completed_events}
-            dropped_uncompleted = sum(1 for event_id in events_to_remove if event_id not in completed_event_ids)
-            logger.debug(
-                f'🧹 {self} Cleaned up {len(events_to_remove)} events from history (kept {len(self.event_history)}/{self.max_history_size})'
-            )
-            if dropped_uncompleted > 0 and not self._warned_about_dropping_uncompleted_events:
-                self._warned_about_dropping_uncompleted_events = True
-                logger.warning(
-                    '[bubus] ⚠️ Bus %s has exceeded max_history_size=%s and is dropping oldest history entries '
-                    '(even uncompleted events). Increase max_history_size or set max_history_drop=False to reject.',
-                    self,
-                    self.max_history_size,
-                )
-
-        return len(events_to_remove)
+        return self.event_history.cleanup_excess_events()
 
     def log_tree(self) -> str:
         """Print a nice pretty formatted tree view of all events in the history including their results and child events recursively"""

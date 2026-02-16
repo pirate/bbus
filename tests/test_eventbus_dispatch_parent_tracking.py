@@ -46,7 +46,7 @@ class TestParentEventTracking:
         async def parent_handler(event: ParentEvent) -> str:
             # Handler that dispatches a child event
             child = ChildEvent(data=f'child_of_{event.message}')
-            eventbus.dispatch(child)
+            eventbus.emit(child)
             event_children.append(child)
             return 'parent_handled'
 
@@ -54,7 +54,7 @@ class TestParentEventTracking:
 
         # Dispatch parent event
         parent = ParentEvent(message='test_parent')
-        parent_result = eventbus.dispatch(parent)
+        parent_result = eventbus.emit(parent)
 
         # Wait for processing
         await eventbus.wait_until_idle()
@@ -78,13 +78,13 @@ class TestParentEventTracking:
         async def parent_handler(event: BaseEvent[str]) -> str:
             events_by_level['parent'] = event
             child = ChildEvent(data='child_data')
-            eventbus.dispatch(child)
+            eventbus.emit(child)
             return 'parent'
 
         async def child_handler(event: BaseEvent[str]) -> str:
             events_by_level['child'] = event
             grandchild = GrandchildEvent(value=42)
-            eventbus.dispatch(grandchild)
+            eventbus.emit(grandchild)
             return 'child'
 
         async def grandchild_handler(event: BaseEvent[str]) -> str:
@@ -98,7 +98,7 @@ class TestParentEventTracking:
 
         # Start the chain
         parent = ParentEvent(message='root')
-        eventbus.dispatch(parent)
+        eventbus.emit(parent)
 
         # Wait for all processing
         await eventbus.wait_until_idle()
@@ -121,7 +121,7 @@ class TestParentEventTracking:
             # Dispatch multiple children
             for i in range(3):
                 child = ChildEvent(data=f'child_{i}')
-                eventbus.dispatch(child)
+                eventbus.emit(child)
                 event_children.append(child)
             return 'spawned_children'
 
@@ -129,7 +129,7 @@ class TestParentEventTracking:
 
         # Dispatch parent
         parent = ParentEvent(message='multi_child_parent')
-        eventbus.dispatch(parent)
+        eventbus.emit(parent)
 
         await eventbus.wait_until_idle()
 
@@ -145,14 +145,14 @@ class TestParentEventTracking:
         async def handler1(event: BaseEvent[str]) -> str:
             await asyncio.sleep(0.01)  # Simulate work
             child = ChildEvent(data='from_h1')
-            eventbus.dispatch(child)
+            eventbus.emit(child)
             events_from_handlers['h1'].append(child)
             return 'h1'
 
         async def handler2(event: BaseEvent[str]) -> str:
             await asyncio.sleep(0.02)  # Different timing
             child = ChildEvent(data='from_h2')
-            eventbus.dispatch(child)
+            eventbus.emit(child)
             events_from_handlers['h2'].append(child)
             return 'h2'
 
@@ -162,7 +162,7 @@ class TestParentEventTracking:
 
         # Dispatch parent
         parent = ParentEvent(message='parallel_test')
-        eventbus.dispatch(parent)
+        eventbus.emit(parent)
 
         await eventbus.wait_until_idle()
 
@@ -181,14 +181,14 @@ class TestParentEventTracking:
             # Create child with explicit event_parent_id
             explicit_parent_id = '018f8e40-1234-7000-8000-000000001234'
             child = ChildEvent(data='explicit', event_parent_id=explicit_parent_id)
-            eventbus.dispatch(child)
+            eventbus.emit(child)
             captured_child = child
             return 'dispatched'
 
         eventbus.on('ParentEvent', parent_handler)
 
         parent = ParentEvent(message='test')
-        eventbus.dispatch(parent)
+        eventbus.emit(parent)
 
         await eventbus.wait_until_idle()
 
@@ -207,7 +207,7 @@ class TestParentEventTracking:
         async def bus1_handler(event: BaseEvent[Any]) -> str:
             # Dispatch child to bus2
             child = ChildEvent(data='cross_bus_child')
-            bus2.dispatch(child)
+            bus2.emit(child)
             captured_events.append(('bus1', event, child))
             return 'bus1_handled'
 
@@ -221,7 +221,7 @@ class TestParentEventTracking:
         try:
             # Dispatch parent to bus1
             parent = ParentEvent(message='cross_bus_test')
-            bus1.dispatch(parent)
+            bus1.emit(parent)
 
             await bus1.wait_until_idle()
             await bus2.wait_until_idle()
@@ -245,14 +245,14 @@ class TestParentEventTracking:
         def sync_parent_handler(event: BaseEvent[str]) -> str:
             # Sync handler that dispatches child
             child = ChildEvent(data='from_sync')
-            eventbus.dispatch(child)
+            eventbus.emit(child)
             event_children.append(child)
             return 'sync_handled'
 
         eventbus.on('ParentEvent', sync_parent_handler)
 
         parent = ParentEvent(message='sync_test')
-        eventbus.dispatch(parent)
+        eventbus.emit(parent)
 
         await eventbus.wait_until_idle()
 
@@ -267,7 +267,7 @@ class TestParentEventTracking:
         async def failing_handler(event: BaseEvent[str]) -> str:
             # Dispatch child before failing
             child = ChildEvent(data='before_error')
-            eventbus.dispatch(child)
+            eventbus.emit(child)
             event_children.append(child)
             raise ValueError(
                 'Handler error - expected to fail - testing that parent event tracking works even when handlers error'
@@ -276,7 +276,7 @@ class TestParentEventTracking:
         async def success_handler(event: BaseEvent[str]) -> str:
             # This should still run
             child = ChildEvent(data='after_error')
-            eventbus.dispatch(child)
+            eventbus.emit(child)
             event_children.append(child)
             return 'success'
 
@@ -284,7 +284,7 @@ class TestParentEventTracking:
         eventbus.on('ParentEvent', success_handler)
 
         parent = ParentEvent(message='error_test')
-        eventbus.dispatch(parent)
+        eventbus.emit(parent)
 
         await eventbus.wait_until_idle()
 
@@ -300,7 +300,7 @@ class TestParentEventTracking:
             # Dispatch multiple child events
             for i in range(3):
                 child = ChildEvent(data=f'child_{i}')
-                eventbus.dispatch(child)
+                eventbus.emit(child)
             return 'parent_done'
 
         async def child_handler(event: ChildEvent) -> str:
@@ -312,7 +312,7 @@ class TestParentEventTracking:
 
         # Dispatch parent event
         parent = ParentEvent(message='test_children_tracking')
-        parent_event = eventbus.dispatch(parent)
+        parent_event = eventbus.emit(parent)
 
         # Wait for all events to be processed
         await eventbus.wait_until_idle()
@@ -332,12 +332,12 @@ class TestParentEventTracking:
 
         async def parent_handler(event: ParentEvent) -> str:
             child = ChildEvent(data='level1')
-            eventbus.dispatch(child)
+            eventbus.emit(child)
             return 'parent'
 
         async def child_handler(event: ChildEvent) -> str:
             grandchild = GrandchildEvent(value=42)
-            eventbus.dispatch(grandchild)
+            eventbus.emit(grandchild)
             return 'child'
 
         async def grandchild_handler(event: GrandchildEvent) -> str:
@@ -348,7 +348,7 @@ class TestParentEventTracking:
         eventbus.on('GrandchildEvent', grandchild_handler)
 
         parent = ParentEvent(message='nested_test')
-        parent_event = eventbus.dispatch(parent)
+        parent_event = eventbus.emit(parent)
         await eventbus.wait_until_idle()
         await parent_event
 
@@ -368,15 +368,15 @@ class TestParentEventTracking:
 
         async def handler1(event: ParentEvent) -> str:
             child1 = ChildEvent(data='from_handler1')
-            eventbus.dispatch(child1)
+            eventbus.emit(child1)
             return 'h1'
 
         async def handler2(event: ParentEvent) -> str:
             # Dispatch 2 children from this handler
             child2 = ChildEvent(data='from_handler2_a')
             child3 = ChildEvent(data='from_handler2_b')
-            eventbus.dispatch(child2)
-            eventbus.dispatch(child3)
+            eventbus.emit(child2)
+            eventbus.emit(child3)
             return 'h2'
 
         async def child_handler(event: ChildEvent) -> str:
@@ -387,7 +387,7 @@ class TestParentEventTracking:
         eventbus.on('ChildEvent', child_handler)
 
         parent = ParentEvent(message='multi_handler_test')
-        parent_event = eventbus.dispatch(parent)
+        parent_event = eventbus.emit(parent)
         await eventbus.wait_until_idle()
         await parent_event
 
@@ -408,7 +408,7 @@ class TestParentEventTracking:
         eventbus.on('ParentEvent', handler)
 
         parent = ParentEvent(message='no_children_test')
-        parent_event = eventbus.dispatch(parent)
+        parent_event = eventbus.emit(parent)
         await eventbus.wait_until_idle()
         await parent_event
 
@@ -421,10 +421,10 @@ class TestParentEventTracking:
 
         try:
             # Forward all events from bus1 to bus2
-            eventbus.on('*', bus2.dispatch)
+            eventbus.on('*', bus2.emit)
 
             parent = ParentEvent(message='forward_test')
-            parent_event = eventbus.dispatch(parent)
+            parent_event = eventbus.emit(parent)
             await eventbus.wait_until_idle()
             await bus2.wait_until_idle()
             await parent_event
@@ -442,8 +442,8 @@ class TestParentEventTracking:
         async def parent_handler(event: ParentEvent) -> str:
             child1 = ChildEvent(data='child1')
             child2 = ChildEvent(data='child2')
-            eventbus.dispatch(child1)
-            eventbus.dispatch(child2)
+            eventbus.emit(child1)
+            eventbus.emit(child2)
             completion_order.append('parent_handler')
             return 'parent'
 
@@ -456,7 +456,7 @@ class TestParentEventTracking:
         eventbus.on('ChildEvent', child_handler)
 
         parent = ParentEvent(message='completion_test')
-        parent_event = eventbus.dispatch(parent)
+        parent_event = eventbus.emit(parent)
 
         # Check completion status during processing
         # At this point, parent handler hasn't run yet, so no children exist

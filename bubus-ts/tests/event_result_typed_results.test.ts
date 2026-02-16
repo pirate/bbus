@@ -56,7 +56,7 @@ test('typed result schema validates and parses handler result', async () => {
 
   bus.on(TypedResultEvent, () => ({ value: 'hello', count: 42 }))
 
-  const event = bus.dispatch(TypedResultEvent({}))
+  const event = bus.emit(TypedResultEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]
@@ -70,8 +70,8 @@ test('built-in result schemas validate handler results', async () => {
   bus.on(StringResultEvent, () => '42')
   bus.on(NumberResultEvent, () => 123)
 
-  const string_event = bus.dispatch(StringResultEvent({}))
-  const number_event = bus.dispatch(NumberResultEvent({}))
+  const string_event = bus.emit(StringResultEvent({}))
+  const number_event = bus.emit(NumberResultEvent({}))
   await string_event.done()
   await number_event.done()
 
@@ -93,11 +93,11 @@ test('event_result_type supports constructor shorthands and enforces them', asyn
   bus.on(ConstructorArrayResultEvent, () => [1, 'two', false])
   bus.on(ConstructorObjectResultEvent, () => ({ id: 1, ok: true }))
 
-  const string_event = bus.dispatch(ConstructorStringResultEvent({}))
-  const number_event = bus.dispatch(ConstructorNumberResultEvent({}))
-  const boolean_event = bus.dispatch(ConstructorBooleanResultEvent({}))
-  const array_event = bus.dispatch(ConstructorArrayResultEvent({}))
-  const object_event = bus.dispatch(ConstructorObjectResultEvent({}))
+  const string_event = bus.emit(ConstructorStringResultEvent({}))
+  const number_event = bus.emit(ConstructorNumberResultEvent({}))
+  const boolean_event = bus.emit(ConstructorBooleanResultEvent({}))
+  const array_event = bus.emit(ConstructorArrayResultEvent({}))
+  const object_event = bus.emit(ConstructorObjectResultEvent({}))
 
   await Promise.all([string_event.done(), number_event.done(), boolean_event.done(), array_event.done(), object_event.done()])
 
@@ -117,7 +117,7 @@ test('event_result_type supports constructor shorthands and enforces them', asyn
     event_result_type: Number,
   })
   bus.on(invalid_number_event, () => JSON.parse('"not-a-number"'))
-  const invalid = bus.dispatch(invalid_number_event({}))
+  const invalid = bus.emit(invalid_number_event({}))
   await invalid.done()
   assert.equal(Array.from(invalid.event_results.values())[0]?.status, 'error')
 })
@@ -127,7 +127,7 @@ test('invalid handler result marks error when schema is defined', async () => {
 
   bus.on(NumberResultEvent, () => JSON.parse('"not-a-number"'))
 
-  const event = bus.dispatch(NumberResultEvent({}))
+  const event = bus.emit(NumberResultEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]
@@ -141,7 +141,7 @@ test('no schema leaves raw handler result untouched', async () => {
 
   bus.on(NoSchemaEvent, () => ({ raw: true }))
 
-  const event = bus.dispatch(NoSchemaEvent({}))
+  const event = bus.emit(NoSchemaEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]
@@ -157,7 +157,7 @@ test('complex result schema validates nested data', async () => {
     metadata: { a: 1, b: 2 },
   }))
 
-  const event = bus.dispatch(ComplexResultEvent({}))
+  const event = bus.emit(ComplexResultEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]
@@ -180,7 +180,7 @@ test('fromJSON converts event_result_type into zod schema', async () => {
 
   bus.on(TypedResultEvent, () => ({ value: 'from-json', count: 7 }))
 
-  const dispatched = bus.dispatch(restored)
+  const dispatched = bus.emit(restored)
   await dispatched.done()
 
   const result = Array.from(dispatched.event_results.values())[0]
@@ -202,7 +202,7 @@ test('fromJSON reconstructs primitive JSON schema', async () => {
   assert.equal(typeof (restored.event_result_type as { safeParse?: unknown }).safeParse, 'function')
 
   bus.on('PrimitiveResultEvent', () => true)
-  const dispatched = bus.dispatch(restored)
+  const dispatched = bus.emit(restored)
   await dispatched.done()
 
   const result = Array.from(dispatched.event_results.values())[0]
@@ -251,7 +251,7 @@ test('roundtrip preserves complex result schema types', async () => {
     meta: { tags: ['a', 'b'], rating: 4 },
   }))
 
-  const dispatched = bus.dispatch(roundtripped)
+  const dispatched = bus.emit(roundtripped)
   await dispatched.done()
 
   const result = Array.from(dispatched.event_results.values())[0]

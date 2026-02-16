@@ -249,7 +249,7 @@ class AutoErrorEventMiddleware(EventBusMiddleware):
         if status != EventStatus.COMPLETED or event_result.error is None or event.event_type.endswith(_SYNTHETIC_EVENT_SUFFIXES):
             return
         try:
-            eventbus.dispatch(
+            eventbus.emit(
                 AutoErrorEvent(
                     event_type=f'{event.event_type}ErrorEvent',
                     error=event_result.error,
@@ -280,7 +280,7 @@ class AutoReturnEventMiddleware(EventBusMiddleware):
         ):
             return
         try:
-            eventbus.dispatch(AutoReturnEvent(event_type=f'{event.event_type}ResultEvent', data=result_value))
+            eventbus.emit(AutoReturnEvent(event_type=f'{event.event_type}ResultEvent', data=result_value))
         except Exception as exc:  # pragma: no cover
             logger.exception('❌ %s Failed to emit auto result event for %s: %s', eventbus, event.event_id, exc)
 
@@ -292,9 +292,9 @@ class AutoHandlerChangeEventMiddleware(EventBusMiddleware):
         try:
             handler_snapshot = handler.model_copy(deep=False)
             if registered:
-                eventbus.dispatch(BusHandlerRegisteredEvent(handler=handler_snapshot))
+                eventbus.emit(BusHandlerRegisteredEvent(handler=handler_snapshot))
             else:
-                eventbus.dispatch(BusHandlerUnregisteredEvent(handler=handler_snapshot))
+                eventbus.emit(BusHandlerUnregisteredEvent(handler=handler_snapshot))
         except Exception as exc:  # pragma: no cover
             logger.exception(
                 '❌ %s Failed to emit auto handler change event for handler %s: %s(%r)',

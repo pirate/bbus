@@ -72,8 +72,8 @@ async def test_event_concurrency_global_serial_allows_only_one_inflight_across_b
 
     try:
         for i in range(3):
-            bus_a.dispatch(GlobalSerialEvent(order=i, source='a'))
-            bus_b.dispatch(GlobalSerialEvent(order=i, source='b'))
+            bus_a.emit(GlobalSerialEvent(order=i, source='a'))
+            bus_b.emit(GlobalSerialEvent(order=i, source='b'))
 
         await asyncio.gather(bus_a.wait_until_idle(), bus_b.wait_until_idle())
 
@@ -126,8 +126,8 @@ async def test_event_concurrency_bus_serial_serializes_per_bus_but_overlaps_acro
     bus_b.on(PerBusSerialEvent, on_b)
 
     try:
-        bus_a.dispatch(PerBusSerialEvent(order=0, source='a'))
-        bus_b.dispatch(PerBusSerialEvent(order=0, source='b'))
+        bus_a.emit(PerBusSerialEvent(order=0, source='a'))
+        bus_b.emit(PerBusSerialEvent(order=0, source='b'))
         await asyncio.gather(bus_a.wait_until_idle(), bus_b.wait_until_idle())
 
         assert max_in_flight_a == 1
@@ -160,8 +160,8 @@ async def test_event_concurrency_parallel_allows_same_bus_events_to_overlap() ->
     bus.on(ParallelEvent, handler)
 
     try:
-        first = bus.dispatch(ParallelEvent(order=0))
-        second = bus.dispatch(ParallelEvent(order=1))
+        first = bus.emit(ParallelEvent(order=0))
+        second = bus.emit(ParallelEvent(order=1))
         await asyncio.wait_for(overlap_seen.wait(), timeout=1.0)
         release.set()
         await asyncio.gather(first, second)
@@ -202,7 +202,7 @@ async def test_event_handler_concurrency_parallel_runs_handlers_for_same_event_c
     bus.on(ParallelHandlerEvent, handler_b)
 
     try:
-        event = bus.dispatch(ParallelHandlerEvent())
+        event = bus.emit(ParallelHandlerEvent())
         await asyncio.wait_for(overlap_seen.wait(), timeout=1.0)
         release.set()
         await event
@@ -233,8 +233,8 @@ async def test_event_concurrency_override_parallel_beats_bus_serial_default() ->
     bus.on(OverrideParallelEvent, handler)
 
     try:
-        first = bus.dispatch(OverrideParallelEvent(order=0, event_concurrency=EventConcurrencyMode.PARALLEL))
-        second = bus.dispatch(OverrideParallelEvent(order=1, event_concurrency=EventConcurrencyMode.PARALLEL))
+        first = bus.emit(OverrideParallelEvent(order=0, event_concurrency=EventConcurrencyMode.PARALLEL))
+        second = bus.emit(OverrideParallelEvent(order=1, event_concurrency=EventConcurrencyMode.PARALLEL))
         await asyncio.wait_for(overlap_seen.wait(), timeout=1.0)
         release.set()
         await asyncio.gather(first, second)
@@ -262,8 +262,8 @@ async def test_event_concurrency_override_bus_serial_beats_bus_parallel_default(
     bus.on(OverrideSerialEvent, handler)
 
     try:
-        first = bus.dispatch(OverrideSerialEvent(order=0, event_concurrency=EventConcurrencyMode.BUS_SERIAL))
-        second = bus.dispatch(OverrideSerialEvent(order=1, event_concurrency=EventConcurrencyMode.BUS_SERIAL))
+        first = bus.emit(OverrideSerialEvent(order=0, event_concurrency=EventConcurrencyMode.BUS_SERIAL))
+        second = bus.emit(OverrideSerialEvent(order=1, event_concurrency=EventConcurrencyMode.BUS_SERIAL))
         await asyncio.sleep(0.02)
         assert max_in_flight == 1
 
@@ -281,7 +281,7 @@ async def test_queue_jump_awaited_child_preempts_queued_sibling_on_same_bus() ->
 
     async def on_parent(event: ParentEvent) -> None:
         order.append('parent_start')
-        child = event.event_bus.dispatch(ChildEvent())
+        child = event.event_bus.emit(ChildEvent())
         await child
         order.append('parent_end')
 
@@ -298,8 +298,8 @@ async def test_queue_jump_awaited_child_preempts_queued_sibling_on_same_bus() ->
     bus.on(SiblingEvent, on_sibling)
 
     try:
-        parent = bus.dispatch(ParentEvent())
-        sibling = bus.dispatch(SiblingEvent())
+        parent = bus.emit(ParentEvent())
+        sibling = bus.emit(SiblingEvent())
         await asyncio.gather(parent, sibling)
         await bus.wait_until_idle()
 
@@ -329,8 +329,8 @@ async def test_retry_global_handler_lock_serializes_handlers_across_buses() -> N
 
     try:
         for i in range(4):
-            bus_a.dispatch(HandlerLockEvent(order=i, source='a'))
-            bus_b.dispatch(HandlerLockEvent(order=i, source='b'))
+            bus_a.emit(HandlerLockEvent(order=i, source='a'))
+            bus_b.emit(HandlerLockEvent(order=i, source='b'))
 
         await asyncio.gather(bus_a.wait_until_idle(), bus_b.wait_until_idle())
         assert max_in_flight == 1

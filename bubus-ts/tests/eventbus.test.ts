@@ -16,8 +16,8 @@ test('EventBus initializes with correct defaults', async () => {
   const bus = new EventBus('DefaultsBus')
 
   assert.equal(bus.name, 'DefaultsBus')
-  assert.equal(bus.max_history_size, 100)
-  assert.equal(bus.max_history_drop, false)
+  assert.equal(bus.event_history.max_history_size, 100)
+  assert.equal(bus.event_history.max_history_drop, false)
   assert.equal(bus.event_concurrency, 'bus-serial')
   assert.equal(bus.event_handler_concurrency_default, 'serial')
   assert.equal(bus.event_handler_completion_default, 'all')
@@ -40,7 +40,7 @@ test('waitUntilIdle(timeout) returns after timeout when work is still in-flight'
     await handler_gate
   })
 
-  bus.dispatch(WaitForIdleTimeoutEvent({}))
+  bus.emit(WaitForIdleTimeoutEvent({}))
 
   const start_ms = performance.now()
   await bus.waitUntilIdle(0.05)
@@ -66,8 +66,8 @@ test('EventBus applies custom options', () => {
     event_timeout: 30,
   })
 
-  assert.equal(bus.max_history_size, 500)
-  assert.equal(bus.max_history_drop, false)
+  assert.equal(bus.event_history.max_history_size, 500)
+  assert.equal(bus.event_history.max_history_drop, false)
   assert.equal(bus.event_concurrency, 'parallel')
   assert.equal(bus.event_handler_concurrency_default, 'serial')
   assert.equal(bus.event_handler_completion_default, 'first')
@@ -76,7 +76,7 @@ test('EventBus applies custom options', () => {
 
 test('EventBus with null max_history_size means unlimited', () => {
   const bus = new EventBus('UnlimitedBus', { max_history_size: null })
-  assert.equal(bus.max_history_size, null)
+  assert.equal(bus.event_history.max_history_size, null)
 })
 
 test('EventBus with null event_timeout disables timeouts', () => {
@@ -141,7 +141,7 @@ test('EventBus locks methods are callable and preserve lock resolution behavior'
   const another_lock = another_serial_event.eventGetHandlerLock(bus.event_handler_concurrency_default)
   assert.notEqual(handler_lock, another_lock)
 
-  bus.dispatch(GateEvent({}))
+  bus.emit(GateEvent({}))
   bus.locks.notifyIdleListeners()
   await bus.locks.waitForIdle()
 })
@@ -157,7 +157,7 @@ test('BaseEvent lifecycle methods are callable and preserve lifecycle behavior',
   await standalone.waitForCompletion()
 
   const bus = new EventBus('LifecycleMethodInvocationBus')
-  const dispatched = bus.dispatch(LifecycleEvent({}))
+  const dispatched = bus.emit(LifecycleEvent({}))
   await dispatched.waitForCompletion()
   assert.equal(dispatched.event_status, 'completed')
 })
@@ -170,7 +170,7 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
 
   bus.on(RuntimeEvent, () => 'ok')
 
-  const event = bus.dispatch(RuntimeEvent({}))
+  const event = bus.emit(RuntimeEvent({}))
   await event.done()
 
   const json = event.toJSON() as Record<string, unknown>
@@ -292,7 +292,7 @@ test('fromJSON reconstructs integer and null schemas for runtime validation', as
     event_result_type: { type: 'integer' },
   })
   bus.on('RawIntegerEvent', () => 123)
-  await bus.dispatch(int_event).done()
+  await bus.emit(int_event).done()
   const int_result = Array.from(int_event.event_results.values())[0]
   assert.equal(int_result.status, 'completed')
 
@@ -304,7 +304,7 @@ test('fromJSON reconstructs integer and null schemas for runtime validation', as
     event_result_type: { type: 'integer' },
   })
   bus.on('RawIntegerEventBad', () => 1.5)
-  await bus.dispatch(int_bad_event).done()
+  await bus.emit(int_bad_event).done()
   const int_bad_result = Array.from(int_bad_event.event_results.values())[0]
   assert.equal(int_bad_result.status, 'error')
 
@@ -316,7 +316,7 @@ test('fromJSON reconstructs integer and null schemas for runtime validation', as
     event_result_type: { type: 'null' },
   })
   bus.on('RawNullEvent', () => null)
-  await bus.dispatch(null_event).done()
+  await bus.emit(null_event).done()
   const null_result = Array.from(null_event.event_results.values())[0]
   assert.equal(null_result.status, 'completed')
 
@@ -342,7 +342,7 @@ test('fromJSON reconstructs nested object/array result schemas', async () => {
     event_result_type: raw_nested_schema,
   })
   bus.on('RawNestedSchemaEvent', () => ({ items: [1, 2, 3], meta: { ok: true } }))
-  await bus.dispatch(valid_event).done()
+  await bus.emit(valid_event).done()
   const valid_result = Array.from(valid_event.event_results.values())[0]
   assert.equal(valid_result.status, 'completed')
 
@@ -354,7 +354,7 @@ test('fromJSON reconstructs nested object/array result schemas', async () => {
     event_result_type: raw_nested_schema,
   })
   bus.on('RawNestedSchemaEventBad', () => ({ items: ['bad'], meta: { ok: 'yes' } }))
-  await bus.dispatch(invalid_event).done()
+  await bus.emit(invalid_event).done()
   const invalid_result = Array.from(invalid_event.event_results.values())[0]
   assert.equal(invalid_result.status, 'error')
 
@@ -367,7 +367,7 @@ test('dispatch returns pending event with correct initial state', async () => {
   const bus = new EventBus('LifecycleBus', { max_history_size: 100 })
   const TestEvent = BaseEvent.extend('TestEvent', { data: z.string() })
 
-  const event = bus.dispatch(TestEvent({ data: 'hello' }))
+  const event = bus.emit(TestEvent({ data: 'hello' }))
 
   // Immediate state after dispatch (before any microtask runs)
   assert.equal(event.event_type, 'TestEvent')
@@ -392,7 +392,7 @@ test('event transitions through pending -> started -> completed', async () => {
     return 'done'
   })
 
-  const event = bus.dispatch(TestEvent({}))
+  const event = bus.emit(TestEvent({}))
   const original = event._event_original ?? event
 
   await event.done()
@@ -407,7 +407,7 @@ test('event with no handlers completes immediately', async () => {
   const bus = new EventBus('NoHandlerBus', { max_history_size: 100 })
   const OrphanEvent = BaseEvent.extend('OrphanEvent', {})
 
-  const event = bus.dispatch(OrphanEvent({}))
+  const event = bus.emit(OrphanEvent({}))
   await event.done()
 
   const original = event._event_original ?? event
@@ -422,8 +422,8 @@ test('dispatched events appear in event_history', async () => {
   const EventA = BaseEvent.extend('EventA', {})
   const EventB = BaseEvent.extend('EventB', {})
 
-  bus.dispatch(EventA({}))
-  bus.dispatch(EventB({}))
+  bus.emit(EventA({}))
+  bus.emit(EventB({}))
   await bus.waitUntilIdle()
 
   assert.equal(bus.event_history.size, 2)
@@ -447,7 +447,7 @@ test('history is trimmed to max_history_size, completed events removed first', a
 
   // Dispatch 10 events; they'll process and complete in FIFO order
   for (let i = 0; i < 10; i++) {
-    bus.dispatch(TrimEvent({ seq: i }))
+    bus.emit(TrimEvent({ seq: i }))
   }
   await bus.waitUntilIdle()
 
@@ -468,7 +468,7 @@ test('unlimited history (max_history_size: null) keeps all events', async () => 
   bus.on(PingEvent, () => 'pong')
 
   for (let i = 0; i < 150; i++) {
-    bus.dispatch(PingEvent({}))
+    bus.emit(PingEvent({}))
   }
   await bus.waitUntilIdle()
 
@@ -486,11 +486,11 @@ test('max_history_drop=false rejects new dispatch when history is full', async (
 
   bus.on(NoDropEvent, () => 'ok')
 
-  await bus.dispatch(NoDropEvent({ seq: 1 })).done()
-  await bus.dispatch(NoDropEvent({ seq: 2 })).done()
+  await bus.emit(NoDropEvent({ seq: 1 })).done()
+  await bus.emit(NoDropEvent({ seq: 2 })).done()
 
   assert.equal(bus.event_history.size, 2)
-  assert.throws(() => bus.dispatch(NoDropEvent({ seq: 3 })), /history limit reached \(2\/2\); set bus\.max_history_drop=true/)
+  assert.throws(() => bus.emit(NoDropEvent({ seq: 3 })), /history limit reached \(2\/2\); set event_history\.max_history_drop=true/)
   assert.equal(bus.event_history.size, 2)
   assert.equal(bus.pending_event_queue.length, 0)
 })
@@ -510,7 +510,7 @@ test('max_history_size=0 with max_history_drop=false still allows unbounded queu
 
   const events: BaseEvent[] = []
   for (let i = 0; i < 25; i++) {
-    events.push(bus.dispatch(BurstEvent({})))
+    events.push(bus.emit(BurstEvent({})))
   }
 
   await delay(10)
@@ -538,8 +538,8 @@ test('max_history_size=0 keeps in-flight events and drops them on completion', a
     await unblock
   })
 
-  const first = bus.dispatch(SlowEvent({}))
-  const second = bus.dispatch(SlowEvent({}))
+  const first = bus.emit(SlowEvent({}))
+  const second = bus.emit(SlowEvent({}))
 
   await delay(10)
   assert.ok(bus.event_history.has(first.event_id))
@@ -575,7 +575,7 @@ test('handler registration by string matches extend() name', async () => {
     received.push('string_handler')
   })
 
-  bus.dispatch(NamedEvent({}))
+  bus.emit(NamedEvent({}))
   await bus.waitUntilIdle()
 
   assert.equal(received.length, 1)
@@ -592,8 +592,8 @@ test('wildcard handler receives all events', async () => {
     types.push(event.event_type)
   })
 
-  bus.dispatch(EventA({}))
-  bus.dispatch(EventB({}))
+  bus.emit(EventA({}))
+  bus.emit(EventB({}))
   await bus.waitUntilIdle()
 
   assert.deepEqual(types, ['EventA', 'EventB'])
@@ -609,7 +609,7 @@ test('handler error is captured without crashing the bus', async () => {
     throw new Error('handler blew up')
   })
 
-  const event = bus.dispatch(ErrorEvent({}))
+  const event = bus.emit(ErrorEvent({}))
   await event.done()
 
   const original = event._event_original ?? event
@@ -645,7 +645,7 @@ test('one handler error does not prevent other handlers from running', async () 
     return 'result_3'
   })
 
-  const event = bus.dispatch(MultiEvent({}))
+  const event = bus.emit(MultiEvent({}))
   await event.done()
 
   const original = event._event_original ?? event
@@ -677,7 +677,7 @@ test('many events dispatched concurrently all complete', async () => {
 
   const events: BaseEvent[] = []
   for (let i = 0; i < 100; i++) {
-    events.push(bus.dispatch(BatchEvent({ idx: i })))
+    events.push(bus.emit(BatchEvent({ idx: i })))
   }
 
   // Wait for all to complete
@@ -704,7 +704,7 @@ test('dispatch leaves event_timeout unset and processing uses bus timeout defaul
     await delay(30)
   })
 
-  const event = bus.dispatch(TEvent({}))
+  const event = bus.emit(TEvent({}))
   const original = event._event_original ?? event
 
   assert.equal(original.event_timeout, null)
@@ -720,7 +720,7 @@ test('event with explicit timeout is not overridden by bus default', async () =>
   })
   const TEvent = BaseEvent.extend('TEvent', {})
 
-  const event = bus.dispatch(TEvent({ event_timeout: 10 }))
+  const event = bus.emit(TEvent({ event_timeout: 10 }))
   const original = event._event_original ?? event
 
   assert.equal(original.event_timeout, 10)
@@ -748,9 +748,9 @@ test('circular forwarding does not cause infinite loop', async () => {
   const bus_c = new EventBus('CircC', { max_history_size: 100 })
 
   // A -> B -> C -> A (circular)
-  bus_a.on('*', bus_b.dispatch)
-  bus_b.on('*', bus_c.dispatch)
-  bus_c.on('*', bus_a.dispatch)
+  bus_a.on('*', bus_b.emit)
+  bus_b.on('*', bus_c.emit)
+  bus_c.on('*', bus_a.emit)
 
   const CircEvent = BaseEvent.extend('CircEvent', {})
   const handler_calls: string[] = []
@@ -769,7 +769,7 @@ test('circular forwarding does not cause infinite loop', async () => {
     return 'c'
   })
 
-  const event = bus_a.dispatch(CircEvent({}))
+  const event = bus_a.emit(CircEvent({}))
   await event.done()
   await bus_a.waitUntilIdle()
   await bus_b.waitUntilIdle()
@@ -839,7 +839,7 @@ test('unreferenced buses with event history are garbage collected without destro
     const bus = new EventBus(`GC-NoDestroy-${index}`, { max_history_size: 200 })
     bus.on(GcEvent, () => {})
     for (let i = 0; i < 200; i += 1) {
-      const event = bus.dispatch(GcEvent({}))
+      const event = bus.emit(GcEvent({}))
       await event.done()
     }
     await bus.waitUntilIdle()
@@ -879,7 +879,7 @@ test('reset creates a fresh pending event for cross-bus dispatch', async () => {
   bus_a.on(ResetEvent, (event) => `a:${event.label}`)
   bus_b.on(ResetEvent, (event) => `b:${event.label}`)
 
-  const completed = await bus_a.dispatch(ResetEvent({ label: 'hello' })).done()
+  const completed = await bus_a.emit(ResetEvent({ label: 'hello' })).done()
   const fresh = completed.reset()
 
   assert.notEqual(fresh.event_id, completed.event_id)
@@ -888,7 +888,7 @@ test('reset creates a fresh pending event for cross-bus dispatch', async () => {
   assert.equal(fresh.event_started_at, null)
   assert.equal(fresh.event_completed_at, null)
 
-  const forwarded = await bus_b.dispatch(fresh).done()
+  const forwarded = await bus_b.emit(fresh).done()
   assert.equal(forwarded.event_status, 'completed')
   assert.equal(
     Array.from(forwarded.event_results.values()).some((result) => result.result === 'b:hello'),
@@ -918,7 +918,7 @@ test('scoped handler event reports bus and _event_original via in-operator', asy
     has_original = '_event_original' in event
   })
 
-  await bus.dispatch(ProxyEvent({})).done()
+  await bus.emit(ProxyEvent({})).done()
 
   assert.equal(has_bus, true)
   assert.equal(has_original, true)
@@ -938,11 +938,11 @@ test('max_history_size=0 prunes previously completed events on later dispatch', 
   const bus = new EventBus('ZeroHistoryCoverageBus', { max_history_size: 1 })
   bus.on(HistEvent, () => undefined)
 
-  const first = await bus.dispatch(HistEvent({ label: 'first' })).done()
+  const first = await bus.emit(HistEvent({ label: 'first' })).done()
   assert.equal(bus.event_history.has(first.event_id), true)
 
-  bus.max_history_size = 0
-  const second = await bus.dispatch(HistEvent({ label: 'second' })).done()
+  bus.event_history.max_history_size = 0
+  const second = await bus.emit(HistEvent({ label: 'second' })).done()
   assert.equal(bus.event_history.has(first.event_id), false)
   assert.equal(bus.event_history.has(second.event_id), false)
   assert.equal(bus.event_history.size, 0)

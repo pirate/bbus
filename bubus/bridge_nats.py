@@ -33,7 +33,7 @@ class NATSEventBridge:
         self._ensure_started()
         self._inbound_bus.on(event_pattern, handler)
 
-    async def dispatch(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
+    async def emit(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
         self._ensure_started()
         if self._nc is None:
             await self.start()
@@ -46,8 +46,8 @@ class NATSEventBridge:
             return None
         return event
 
-    async def emit(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
-        return await self.dispatch(event)
+    async def dispatch(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
+        return await self.emit(event)
 
     async def start(self) -> None:
         current_task = asyncio.current_task()
@@ -121,7 +121,7 @@ class NATSEventBridge:
 
     async def _dispatch_inbound_payload(self, payload: Any) -> None:
         event = BaseEvent[Any].model_validate(payload).event_reset()
-        self._inbound_bus.dispatch(event)
+        self._inbound_bus.emit(event)
 
     @staticmethod
     def _load_nats() -> Any:

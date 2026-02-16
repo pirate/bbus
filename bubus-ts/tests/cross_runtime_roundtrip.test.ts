@@ -339,7 +339,13 @@ const withTimeout = async <T>(promise: Promise<T>, timeout_ms: number, label: st
     )
   })
 
-const resolvePython = (): string | null => {
+type PythonRunner = {
+  command: string
+  args_prefix: string[]
+  label: string
+}
+
+const resolvePython = (): PythonRunner | null => {
   const candidates = [
     process.env.BUBUS_PYTHON_BIN,
     resolve(repo_root, '.venv', 'bin', 'python'),
@@ -354,20 +360,50 @@ const resolvePython = (): string | null => {
     }
     const probe = runCommand(candidate, ['--version'])
     if (probe.status === 0) {
-      return candidate
+      return { command: candidate, args_prefix: [], label: candidate }
     }
   }
+
+  const uv_probe = runCommand('uv', ['--version'])
+  if (uv_probe.status === 0) {
+    const uv_python_probe = runCommand('uv', ['run', 'python', '--version'])
+    if (uv_python_probe.status === 0) {
+      return { command: 'uv', args_prefix: ['run', 'python'], label: 'uv run python' }
+    }
+  }
+
   return null
 }
 
-const assertPythonCanImportBubus = (python_bin: string): void => {
-  const probe = runCommand(python_bin, ['-c', 'import pydantic; import bubus'])
+const runPythonCommand = (
+  python_runner: PythonRunner,
+  args: string[],
+  extra_env: Record<string, string> = {}
+): ReturnType<typeof spawnSync> =>
+  spawnSync(python_runner.command, [...python_runner.args_prefix, ...args], {
+    cwd: repo_root,
+    env: {
+      ...process.env,
+      ...extra_env,
+    },
+    encoding: 'utf8',
+    timeout: PROCESS_TIMEOUT_MS,
+    maxBuffer: 10 * 1024 * 1024,
+  })
+
+const assertPythonCanImportBubus = (python_runner: PythonRunner): void => {
+  const probe = runPythonCommand(python_runner, ['-c', 'import pydantic; import bubus'])
   if (probe.status !== 0) {
-    throw new Error(`python environment cannot import bubus/pydantic:\nstdout:\n${probe.stdout ?? ''}\nstderr:\n${probe.stderr ?? ''}`)
+    throw new Error(
+      `python environment (${python_runner.label}) cannot import bubus/pydantic:\nstdout:\n${probe.stdout ?? ''}\nstderr:\n${probe.stderr ?? ''}`
+    )
   }
 }
 
-const runPythonRoundtrip = (python_bin: string, payload: Array<Record<string, unknown>>): Array<Record<string, unknown>> => {
+const runPythonRoundtrip = (
+  python_runner: PythonRunner,
+  payload: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> => {
   const temp_dir = mkdtempSync(join(tmpdir(), 'bubus-ts-to-python-'))
   const input_path = join(temp_dir, 'ts_events.json')
   const output_path = join(temp_dir, 'python_events.json')
@@ -400,16 +436,9 @@ with open(output_path, 'w', encoding='utf-8') as f:
 
   try {
     writeFileSync(input_path, JSON.stringify(payload, null, 2), 'utf8')
-    const proc = spawnSync(python_bin, ['-c', python_script], {
-      cwd: repo_root,
-      env: {
-        ...process.env,
-        BUBUS_TS_PY_INPUT_PATH: input_path,
-        BUBUS_TS_PY_OUTPUT_PATH: output_path,
-      },
-      encoding: 'utf8',
-      timeout: PROCESS_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
+    const proc = runPythonCommand(python_runner, ['-c', python_script], {
+      BUBUS_TS_PY_INPUT_PATH: input_path,
+      BUBUS_TS_PY_OUTPUT_PATH: output_path,
     })
 
     assertProcessSucceeded(proc, 'python roundtrip')
@@ -421,7 +450,7 @@ with open(output_path, 'w', encoding='utf-8') as f:
   }
 }
 
-const runPythonBusRoundtrip = (python_bin: string, payload: Record<string, unknown>): Record<string, unknown> => {
+const runPythonBusRoundtrip = (python_runner: PythonRunner, payload: Record<string, unknown>): Record<string, unknown> => {
   const temp_dir = mkdtempSync(join(tmpdir(), 'bubus-ts-bus-to-python-'))
   const input_path = join(temp_dir, 'ts_bus.json')
   const output_path = join(temp_dir, 'python_bus.json')
@@ -451,16 +480,9 @@ with open(output_path, 'w', encoding='utf-8') as f:
 
   try {
     writeFileSync(input_path, JSON.stringify(payload, null, 2), 'utf8')
-    const proc = spawnSync(python_bin, ['-c', python_script], {
-      cwd: repo_root,
-      env: {
-        ...process.env,
-        BUBUS_TS_PY_BUS_INPUT_PATH: input_path,
-        BUBUS_TS_PY_BUS_OUTPUT_PATH: output_path,
-      },
-      encoding: 'utf8',
-      timeout: PROCESS_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
+    const proc = runPythonCommand(python_runner, ['-c', python_script], {
+      BUBUS_TS_PY_BUS_INPUT_PATH: input_path,
+      BUBUS_TS_PY_BUS_OUTPUT_PATH: output_path,
     })
 
     assertProcessSucceeded(proc, 'python bus roundtrip')
@@ -472,9 +494,9 @@ with open(output_path, 'w', encoding='utf-8') as f:
 }
 
 test('ts_to_python_roundtrip preserves event fields and result type semantics', async () => {
-  const python_bin = resolvePython()
-  assert.ok(python_bin, 'python is required for ts<->python roundtrip tests')
-  assertPythonCanImportBubus(python_bin)
+  const python_runner = resolvePython()
+  assert.ok(python_runner, 'python is required for ts<->python roundtrip tests')
+  assertPythonCanImportBubus(python_runner)
 
   const roundtrip_cases = buildRoundtripCases()
   const events = roundtrip_cases.map((entry) => entry.event)
@@ -486,7 +508,7 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
     assert.equal(typeof event_dump.event_result_type, 'object')
   }
 
-  const python_roundtripped = runPythonRoundtrip(python_bin, ts_dumped)
+  const python_roundtripped = runPythonRoundtrip(python_runner, ts_dumped)
   assert.equal(python_roundtripped.length, ts_dumped.length)
 
   for (let i = 0; i < ts_dumped.length; i += 1) {
@@ -550,7 +572,7 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
   }))
   const wrong_event = BaseEvent.fromJSON(screenshot_payload)
   assert.equal(typeof (wrong_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
-  const wrong_dispatched = wrong_bus.dispatch(wrong_event)
+  const wrong_dispatched = wrong_bus.emit(wrong_event)
   await withTimeout(wrong_dispatched.done(), EVENT_WAIT_TIMEOUT_MS, 'wrong-shape event completion')
   const wrong_result = Array.from(wrong_dispatched.event_results.values())[0]
   assert.equal(wrong_result.status, 'error')
@@ -572,7 +594,7 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
   }))
   const right_event = BaseEvent.fromJSON(screenshot_payload)
   assert.equal(typeof (right_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
-  const right_dispatched = right_bus.dispatch(right_event)
+  const right_dispatched = right_bus.emit(right_event)
   await withTimeout(right_dispatched.done(), EVENT_WAIT_TIMEOUT_MS, 'right-shape event completion')
   const right_result = Array.from(right_dispatched.event_results.values())[0]
   assert.equal(right_result.status, 'completed')
@@ -593,9 +615,9 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
 })
 
 test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', async () => {
-  const python_bin = resolvePython()
-  assert.ok(python_bin, 'python is required for ts<->python roundtrip tests')
-  assertPythonCanImportBubus(python_bin)
+  const python_runner = resolvePython()
+  assert.ok(python_runner, 'python is required for ts<->python roundtrip tests')
+  assertPythonCanImportBubus(python_runner)
 
   const ResumeEvent = BaseEvent.extend('TsPyBusResumeEvent', {
     label: z.string(),
@@ -627,7 +649,7 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   source_bus.pending_event_queue = [event_one, event_two]
 
   const source_dump = source_bus.toJSON()
-  const py_roundtripped = runPythonBusRoundtrip(python_bin, source_dump)
+  const py_roundtripped = runPythonBusRoundtrip(python_runner, source_dump)
   const restored = EventBus.fromJSON(py_roundtripped)
   const restored_dump = restored.toJSON()
 
@@ -651,7 +673,7 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   assert.equal(preseeded!.result, 'seeded')
   assert.equal(preseeded!.handler, restored.handlers.get(preseeded!.handler_id))
 
-  const trigger = restored.dispatch(ResumeEvent({ label: 'e3' }))
+  const trigger = restored.emit(ResumeEvent({ label: 'e3' }))
   await withTimeout(trigger.done(), EVENT_WAIT_TIMEOUT_MS, 'bus resume completion')
 
   const done_one = restored.event_history.get(event_one.event_id)

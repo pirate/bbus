@@ -34,7 +34,7 @@ test('context propagates to handler', async () => {
   })
 
   await storage.run({ request_id: 'req-12345', user_id: 'user-abc' }, async () => {
-    const event = bus.dispatch(SimpleEvent({}))
+    const event = bus.emit(SimpleEvent({}))
     await event.done()
   })
 
@@ -53,7 +53,7 @@ test('context propagates through nested handlers', async () => {
     captured_parent.request_id = store?.request_id
     captured_parent.trace_id = store?.trace_id
 
-    const child = event.bus?.dispatch(ChildEvent({}))
+    const child = event.bus?.emit(ChildEvent({}))
     if (child) {
       await child.done()
     }
@@ -66,7 +66,7 @@ test('context propagates through nested handlers', async () => {
   })
 
   await storage.run({ request_id: 'req-nested-123', trace_id: 'trace-xyz' }, async () => {
-    const event = bus.dispatch(SimpleEvent({}))
+    const event = bus.emit(SimpleEvent({}))
     await event.done()
   })
 
@@ -86,8 +86,8 @@ test('context isolation between dispatches', async () => {
     captured_values.push(store?.request_id ?? '<unset>')
   })
 
-  const event_a = storage.run({ request_id: 'req-A' }, () => bus.dispatch(SimpleEvent({})))
-  const event_b = storage.run({ request_id: 'req-B' }, () => bus.dispatch(SimpleEvent({})))
+  const event_a = storage.run({ request_id: 'req-A' }, () => bus.emit(SimpleEvent({})))
+  const event_b = storage.run({ request_id: 'req-B' }, () => bus.emit(SimpleEvent({})))
 
   await event_a.done()
   await event_b.done()
@@ -112,7 +112,7 @@ test('context propagates to multiple handlers', async () => {
   })
 
   await storage.run({ request_id: 'req-parallel' }, async () => {
-    const event = bus.dispatch(SimpleEvent({}))
+    const event = bus.emit(SimpleEvent({}))
     await event.done()
   })
 
@@ -137,10 +137,10 @@ test('context propagates through event forwarding', async () => {
     captured_bus_b.request_id = store?.request_id
   })
 
-  bus_a.on('*', bus_b.dispatch)
+  bus_a.on('*', bus_b.emit)
 
   await storage.run({ request_id: 'req-forwarded' }, async () => {
-    const event = bus_a.dispatch(SimpleEvent({}))
+    const event = bus_a.emit(SimpleEvent({}))
     await event.done()
     await bus_b.waitUntilIdle()
   })
@@ -159,7 +159,7 @@ test('handler can modify context without affecting parent', async () => {
       throw new Error('AsyncLocalStorage.enterWith is required for this test')
     }
     storage.enterWith({ request_id: 'parent-value' })
-    const child = event.bus?.dispatch(ChildEvent({}))
+    const child = event.bus?.emit(ChildEvent({}))
     if (child) {
       await child.done()
     }
@@ -175,7 +175,7 @@ test('handler can modify context without affecting parent', async () => {
   })
 
   await storage.run({}, async () => {
-    const event = bus.dispatch(SimpleEvent({}))
+    const event = bus.emit(SimpleEvent({}))
     await event.done()
   })
 
@@ -190,7 +190,7 @@ test('event parent_id tracking still works with context propagation', async () =
 
   bus.on(SimpleEvent, async (event) => {
     parent_event_id = event.event_id
-    const child = event.bus?.dispatch(ChildEvent({}))
+    const child = event.bus?.emit(ChildEvent({}))
     if (child) {
       await child.done()
     }
@@ -201,7 +201,7 @@ test('event parent_id tracking still works with context propagation', async () =
   })
 
   await storage.run({ request_id: 'req-parent-tracking' }, async () => {
-    const event = bus.dispatch(SimpleEvent({}))
+    const event = bus.emit(SimpleEvent({}))
     await event.done()
   })
 
@@ -219,7 +219,7 @@ test('dispatch context and parent_id both work together', async () => {
     const store = storage.getStore() as ContextStore | undefined
     results.parent_request_id = store?.request_id
     results.parent_event_id = event.event_id
-    const child = event.bus?.dispatch(ChildEvent({}))
+    const child = event.bus?.emit(ChildEvent({}))
     if (child) {
       await child.done()
     }
@@ -232,7 +232,7 @@ test('dispatch context and parent_id both work together', async () => {
   })
 
   await storage.run({ request_id: 'req-combined-test' }, async () => {
-    const event = bus.dispatch(SimpleEvent({}))
+    const event = bus.emit(SimpleEvent({}))
     await event.done()
   })
 
@@ -262,7 +262,7 @@ test('deeply nested context and parent tracking', async () => {
       event_id: event.event_id,
       parent_id: event.event_parent_id,
     })
-    const child = event.bus?.dispatch(Level2Event({}))
+    const child = event.bus?.emit(Level2Event({}))
     if (child) {
       await child.done()
     }
@@ -276,7 +276,7 @@ test('deeply nested context and parent tracking', async () => {
       event_id: event.event_id,
       parent_id: event.event_parent_id,
     })
-    const child = event.bus?.dispatch(Level3Event({}))
+    const child = event.bus?.emit(Level3Event({}))
     if (child) {
       await child.done()
     }
@@ -293,7 +293,7 @@ test('deeply nested context and parent tracking', async () => {
   })
 
   await storage.run({ request_id: 'req-deep-nesting' }, async () => {
-    const event = bus.dispatch(SimpleEvent({}))
+    const event = bus.emit(SimpleEvent({}))
     await event.done()
   })
 

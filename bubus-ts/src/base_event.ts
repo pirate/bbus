@@ -149,7 +149,7 @@ export class BaseEvent {
   static schema = BaseEventSchema // zod schema for the event data fields, used to parse and validate event data when creating a new event
 
   // internal runtime state
-  bus?: EventBus // shortcut to the bus that dispatched this event, for event.bus.dispatch(event) auto-child tracking via proxy wrapping
+  bus?: EventBus // shortcut to the bus that dispatched this event, for event.bus.emit(event) auto-child tracking via proxy wrapping
   _event_original?: BaseEvent // underlying event object that was dispatched, if this is a bus-scoped proxy wrapping it
   _event_dispatch_context?: unknown | null // captured AsyncLocalStorage context at dispatch site, used to restore that context when running handlers
 
@@ -745,7 +745,7 @@ export class BaseEvent {
   }
 
   // clearer alias for done() to indicate that the event will be processed immediately
-  // await bus.dispatch(event).immediate() is less ambiguous than await event.done()
+  // await bus.emit(event).immediate() is less ambiguous than await event.done()
   immediate(): Promise<this> {
     return this.done()
   }
@@ -869,7 +869,7 @@ export class BaseEvent {
     }
     const original = this._event_original ?? this
     for (const bus of this.bus.all_instances) {
-      if (bus.max_history_size !== 0) {
+      if (bus.event_history.max_history_size !== 0) {
         continue
       }
       bus.removeEventFromHistory(original.event_id)
@@ -937,7 +937,7 @@ export class BaseEvent {
   }
 
   // Break internal reference chains so a completed event can be GC'd when
-  // evicted from event_history. Called by EventBus.trimHistory().
+  // Evicted from event_history. Called by EventHistory.trimEventHistory().
   _gc(): void {
     this._event_completed_signal = null
     this.eventSetDispatchContext(null)

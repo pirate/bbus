@@ -105,7 +105,7 @@ export class PostgresEventBridge {
     this.inbound_bus.on(event_pattern as EventClass<BaseEvent>, handler as EventHandlerCallable<BaseEvent>)
   }
 
-  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+  async emit<T extends BaseEvent>(event: T): Promise<void> {
     this.ensureStarted()
     if (!this.client) await this.start()
 
@@ -134,8 +134,8 @@ export class PostgresEventBridge {
     await this.client.query('SELECT pg_notify($1, $2)', [this.channel, JSON.stringify(String(event.event_id))])
   }
 
-  async emit<T extends BaseEvent>(event: T): Promise<void> {
-    return this.dispatch(event)
+  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+    return this.emit(event)
   }
 
   async start(): Promise<void> {
@@ -230,7 +230,7 @@ export class PostgresEventBridge {
 
   private async dispatchInboundPayload(payload: unknown): Promise<void> {
     const event = BaseEvent.fromJSON(payload).reset()
-    this.inbound_bus.dispatch(event)
+    this.inbound_bus.emit(event)
   }
 
   private async ensureTableExists(): Promise<void> {

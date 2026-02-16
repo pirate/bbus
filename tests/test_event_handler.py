@@ -44,7 +44,7 @@ async def test_event_handler_completion_bus_default_first_serial() -> None:
     bus.on(CompletionEvent, second_handler)
 
     try:
-        event = bus.dispatch(CompletionEvent())
+        event = bus.emit(CompletionEvent())
         assert event.event_handler_completion is None
 
         await event
@@ -82,7 +82,7 @@ async def test_event_handler_completion_explicit_override_beats_bus_default() ->
     bus.on(CompletionEvent, second_handler)
 
     try:
-        event = bus.dispatch(CompletionEvent(event_handler_completion=EventHandlerCompletionMode.ALL))
+        event = bus.emit(CompletionEvent(event_handler_completion=EventHandlerCompletionMode.ALL))
         assert event.event_handler_completion == EventHandlerCompletionMode.ALL
         await event
         assert second_handler_called is True
@@ -117,7 +117,7 @@ async def test_event_parallel_first_races_and_cancels_non_winners() -> None:
     bus.on(CompletionEvent, slow_handler_pending_or_started)
 
     try:
-        event = bus.dispatch(
+        event = bus.emit(
             CompletionEvent(
                 event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL,
                 event_handler_completion=EventHandlerCompletionMode.FIRST,
@@ -170,7 +170,7 @@ async def test_event_first_shortcut_sets_mode_and_cancels_parallel_losers() -> N
     bus.on(CompletionEvent, slow_handler)
 
     try:
-        event = bus.dispatch(CompletionEvent())
+        event = bus.emit(CompletionEvent())
         assert event.event_handler_completion is None
 
         first_value = await event.first()
@@ -206,7 +206,7 @@ async def test_event_first_preserves_falsy_results() -> None:
     bus.on(IntCompletionEvent, second_handler)
 
     try:
-        event = bus.dispatch(IntCompletionEvent())
+        event = bus.emit(IntCompletionEvent())
         result = await event.first()
         assert result == 0
         assert second_handler_called is False
@@ -234,7 +234,7 @@ async def test_event_first_preserves_false_and_empty_string_results() -> None:
     bool_bus.on(BoolCompletionEvent, bool_second_handler)
 
     try:
-        bool_event = bool_bus.dispatch(BoolCompletionEvent())
+        bool_event = bool_bus.emit(BoolCompletionEvent())
         bool_result = await bool_event.first()
         assert bool_result is False
         assert bool_second_handler_called is False
@@ -260,7 +260,7 @@ async def test_event_first_preserves_false_and_empty_string_results() -> None:
     str_bus.on(StrCompletionEvent, str_second_handler)
 
     try:
-        str_event = str_bus.dispatch(StrCompletionEvent())
+        str_event = str_bus.emit(StrCompletionEvent())
         str_result = await str_event.first()
         assert str_result == ''
         assert str_second_handler_called is False
@@ -292,7 +292,7 @@ async def test_event_first_skips_none_result_and_uses_next_winner() -> None:
     bus.on(CompletionEvent, third_handler)
 
     try:
-        event = bus.dispatch(CompletionEvent())
+        event = bus.emit(CompletionEvent())
         result = await event.first()
         assert result == 'winner'
         assert third_handler_called is False
@@ -331,7 +331,7 @@ async def test_event_first_skips_baseevent_result_and_uses_next_winner() -> None
     bus.on(CompletionEvent, third_handler)
 
     try:
-        event = bus.dispatch(CompletionEvent())
+        event = bus.emit(CompletionEvent())
         result = await event.first()
         assert result == 'winner'
         assert third_handler_called is False
@@ -384,7 +384,7 @@ async def test_event_first_returns_none_when_all_handlers_fail() -> None:
     bus.on(CompletionEvent, fail_slow)
 
     try:
-        event = bus.dispatch(CompletionEvent())
+        event = bus.emit(CompletionEvent())
         result = await event.first()
         assert result is None
     finally:
@@ -410,7 +410,7 @@ async def test_event_handler_concurrency_bus_default_remains_unset_on_dispatch()
     bus.on(ConcurrencyEvent, one_handler)
 
     try:
-        event = bus.dispatch(ConcurrencyEvent())
+        event = bus.emit(ConcurrencyEvent())
         assert event.event_handler_concurrency is None
         await event
     finally:
@@ -445,8 +445,8 @@ async def test_event_handler_concurrency_per_event_override_controls_execution_m
     bus.on(ConcurrencyEvent, handler_b)
 
     try:
-        serial_event = bus.dispatch(ConcurrencyEvent(event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL))
-        parallel_event = bus.dispatch(ConcurrencyEvent(event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL))
+        serial_event = bus.emit(ConcurrencyEvent(event_handler_concurrency=EventHandlerConcurrencyMode.SERIAL))
+        parallel_event = bus.emit(ConcurrencyEvent(event_handler_concurrency=EventHandlerConcurrencyMode.PARALLEL))
         assert serial_event.event_handler_concurrency == EventHandlerConcurrencyMode.SERIAL
         assert parallel_event.event_handler_concurrency == EventHandlerConcurrencyMode.PARALLEL
 

@@ -84,7 +84,7 @@ class MainClass0:
         await asyncio.sleep(1)
 
         # Dispatch and wait for ChildEvent
-        child_event = self.bus.dispatch(ChildEvent())
+        child_event = self.bus.emit(ChildEvent())
         try:
             await child_event  # This will timeout after 10s
         except Exception as e:
@@ -111,7 +111,7 @@ class MainClass0:
     async def on_ChildEvent(self, event: ChildEvent) -> str:
         """Takes 10 seconds - will timeout, dispatches GrandchildEvent"""
         # Dispatch GrandchildEvent immediately
-        grandchild_event = self.bus.dispatch(GrandchildEvent())
+        grandchild_event = self.bus.emit(GrandchildEvent())
 
         # Wait for GrandchildEvent to complete
         # This will take 9s (MainClass0) + 0s (AboutBlank) + partial HandlerClass1 time
@@ -165,7 +165,7 @@ async def test_nested_timeout_scenario_from_issue():
     bus.on('GrandchildEvent', handlerclass4.on_GrandchildEvent)
 
     # Dispatch the root event
-    navigate_event = bus.dispatch(TopmostEvent())
+    navigate_event = bus.emit(TopmostEvent())
 
     # Wait for it to complete (will fail due to timeout)
     # with pytest.raises((RuntimeError, TimeoutError)) as exc_info:
@@ -211,7 +211,7 @@ async def test_handler_timeout_marks_error_and_other_handlers_still_complete():
     bus.on(TimeoutFocusedEvent, fast_handler)
 
     try:
-        event = await bus.dispatch(TimeoutFocusedEvent())
+        event = await bus.emit(TimeoutFocusedEvent())
         await bus.wait_until_idle()
 
         slow_result = next((r for r in event.event_results.values() if r.handler_name.endswith('slow_handler')), None)
@@ -252,7 +252,7 @@ async def test_event_timeout_is_hard_cap_across_serial_handlers():
     bus.on(HardCapEvent, pending_handler)
 
     try:
-        event = await bus.dispatch(HardCapEvent())
+        event = await bus.emit(HardCapEvent())
         await bus.wait_until_idle()
 
         first_result = next(result for result in event.event_results.values() if result.handler_name.endswith('first_handler'))
@@ -290,7 +290,7 @@ async def test_event_timeout_is_hard_cap_in_parallel_mode() -> None:
     bus.on(HardCapParallelEvent, slow_b)
 
     try:
-        event = await bus.dispatch(HardCapParallelEvent())
+        event = await bus.emit(HardCapParallelEvent())
         await bus.wait_until_idle()
 
         assert len(event.event_results) == 2
@@ -338,7 +338,7 @@ async def test_event_level_timeout_marks_started_parallel_handlers_as_aborted_or
     bus.on(HardCapParallelAbortOnlyEvent, slow_b)
 
     try:
-        event = bus.dispatch(HardCapParallelAbortOnlyEvent())
+        event = bus.emit(HardCapParallelAbortOnlyEvent())
         await asyncio.wait_for(asyncio.gather(started_a.wait(), started_b.wait()), timeout=0.2)
         both_started.set()
         await event
@@ -375,7 +375,7 @@ async def test_event_timeout_does_not_relabel_preexisting_handler_timeout() -> N
     bus.on(MixedTimeoutEvent, long_running_handler)
 
     try:
-        event = bus.dispatch(MixedTimeoutEvent())
+        event = bus.emit(MixedTimeoutEvent())
         await event
         await bus.wait_until_idle()
 
@@ -404,8 +404,8 @@ async def test_multi_bus_timeout_is_recorded_on_target_bus():
 
     try:
         event = MultiBusTimeoutEvent()
-        bus_a.dispatch(event)
-        bus_b.dispatch(event)
+        bus_a.emit(event)
+        bus_b.emit(event)
         await bus_b.wait_until_idle()
 
         bus_b_result = next((r for r in event.event_results.values() if r.eventbus_name == bus_b.name), None)
@@ -442,7 +442,7 @@ async def test_followup_event_runs_after_parent_timeout_in_queue_jump_path():
         return 'child_done'
 
     async def parent_handler(event: ParentEvent) -> str:
-        child = bus.dispatch(ChildEvent())
+        child = bus.emit(ChildEvent())
         await child
         await asyncio.sleep(0.05)  # Exceeds parent timeout
         return 'parent_done'
@@ -457,14 +457,14 @@ async def test_followup_event_runs_after_parent_timeout_in_queue_jump_path():
     bus.on(TailEvent, tail_handler)
 
     try:
-        parent = await bus.dispatch(ParentEvent())
+        parent = await bus.emit(ParentEvent())
         await bus.wait_until_idle()
 
         parent_result = next(iter(parent.event_results.values()))
         assert parent_result.status == 'error'
         assert isinstance(parent_result.error, EventHandlerAbortedError)
 
-        tail = bus.dispatch(TailEvent())
+        tail = bus.emit(TailEvent())
         completed_tail = await asyncio.wait_for(tail, timeout=1.0)
         assert completed_tail.event_status == 'completed'
         assert tail_runs == 1
@@ -498,7 +498,7 @@ async def test_forwarded_timeout_path_does_not_stall_followup_events():
 
     async def parent_handler(event: ParentEvent) -> str:
         nonlocal child_ref
-        child = bus_a.dispatch(ChildEvent())
+        child = bus_a.emit(ChildEvent())
         child_ref = child
         await child
         return 'parent_done'
@@ -519,12 +519,12 @@ async def test_forwarded_timeout_path_does_not_stall_followup_events():
 
     bus_a.on(ParentEvent, parent_handler)
     bus_a.on(TailEvent, tail_handler_a)
-    bus_a.on('*', bus_b.dispatch)
+    bus_a.on('*', bus_b.emit)
     bus_b.on(ChildEvent, slow_child_handler)
     bus_b.on(TailEvent, tail_handler_b)
 
     try:
-        parent = await bus_a.dispatch(ParentEvent())
+        parent = await bus_a.emit(ParentEvent())
         await bus_a.wait_until_idle()
         await bus_b.wait_until_idle()
 
@@ -538,7 +538,7 @@ async def test_forwarded_timeout_path_does_not_stall_followup_events():
         ), child_ref.event_results
 
         # Lock/queue state should remain healthy after timeout.
-        tail = bus_a.dispatch(TailEvent())
+        tail = bus_a.emit(TailEvent())
         completed_tail = await asyncio.wait_for(tail, timeout=1.0)
         await bus_a.wait_until_idle()
         await bus_b.wait_until_idle()
@@ -573,7 +573,7 @@ async def test_processing_time_timeout_defaults_do_not_mutate_event_fields() -> 
     bus.on(TimeoutDefaultsEvent, handler)
 
     try:
-        event = bus.dispatch(TimeoutDefaultsEvent())
+        event = bus.emit(TimeoutDefaultsEvent())
         assert event.event_timeout is None
         assert event.event_handler_timeout is None
         assert event.event_handler_slow_timeout is None
@@ -603,7 +603,7 @@ async def test_handler_timeout_resolution_matches_ts_precedence() -> None:
     overridden_entry.handler_timeout = 0.12
 
     try:
-        event = await bus.dispatch(TimeoutDefaultsEvent(event_timeout=0.2, event_handler_timeout=0.05))
+        event = await bus.emit(TimeoutDefaultsEvent(event_timeout=0.2, event_handler_timeout=0.05))
 
         default_result = next(
             result for result in event.event_results.values() if result.handler_name.endswith('default_handler')
@@ -615,7 +615,7 @@ async def test_handler_timeout_resolution_matches_ts_precedence() -> None:
         assert default_result.timeout is not None and abs(default_result.timeout - 0.05) < 1e-9
         assert overridden_result.timeout is not None and abs(overridden_result.timeout - 0.12) < 1e-9
 
-        tighter_event_timeout = await bus.dispatch(TimeoutDefaultsEvent(event_timeout=0.08, event_handler_timeout=0.2))
+        tighter_event_timeout = await bus.emit(TimeoutDefaultsEvent(event_timeout=0.08, event_handler_timeout=0.2))
         tighter_default = next(
             result for result in tighter_event_timeout.event_results.values() if result.handler_name.endswith('default_handler')
         )
@@ -662,7 +662,7 @@ async def test_handler_slow_warning_uses_event_handler_slow_timeout(caplog: pyte
     bus.on(TimeoutDefaultsEvent, slow_handler)
 
     try:
-        await bus.dispatch(TimeoutDefaultsEvent())
+        await bus.emit(TimeoutDefaultsEvent())
         assert any('Slow event handler:' in record.message for record in caplog.records)
     finally:
         await bus.stop()
@@ -685,7 +685,7 @@ async def test_event_slow_warning_uses_event_slow_timeout(caplog: pytest.LogCapt
     bus.on(TimeoutDefaultsEvent, slow_event_handler)
 
     try:
-        await bus.dispatch(TimeoutDefaultsEvent())
+        await bus.emit(TimeoutDefaultsEvent())
         assert any('Slow event processing:' in record.message for record in caplog.records)
     finally:
         await bus.stop()

@@ -78,7 +78,7 @@ class TestEventBusBasics:
         assert bus._runloop_task is None
         assert len(bus.event_history) == 0
         assert len(bus.handlers_by_key.get('*', [])) == 0  # No default logger anymore
-        assert bus.max_history_drop is False
+        assert bus.event_history.max_history_drop is False
 
     def test_eventbus_accepts_custom_id(self):
         """EventBus constructor accepts id=... to set bus UUID."""
@@ -97,7 +97,7 @@ class TestEventBusBasics:
         assert bus._runloop_task is None
 
         # Auto-start by emitting an event
-        bus.dispatch(UserActionEvent(action='test', user_id='user123'))
+        bus.emit(UserActionEvent(action='test', user_id='user123'))
         await bus.wait_until_idle()
 
         # Should be running after auto-start
@@ -118,7 +118,7 @@ class TestEventBusBasics:
         bus.on(UserActionEvent, handler)
 
         try:
-            await bus.dispatch(UserActionEvent(action='test', user_id='u1'))
+            await bus.emit(UserActionEvent(action='test', user_id='u1'))
             await bus.wait_until_idle()
 
             assert bus._on_idle is not None
@@ -140,7 +140,7 @@ class TestEventEnqueueing:
         """Test event emission in async and sync contexts, and result() pattern"""
         # Test async emission
         event = UserActionEvent(action='login', user_id='user123', event_timeout=1)
-        queued = eventbus.dispatch(event)
+        queued = eventbus.emit(event)
 
         # Check immediate result
         assert isinstance(queued, UserActionEvent)
@@ -170,7 +170,7 @@ class TestEventEnqueueing:
         event = SystemEventModel(event_name='startup', severity='info')
 
         with pytest.raises(RuntimeError) as e:
-            bus.dispatch(event)
+            bus.emit(event)
 
         assert 'no event loop is running' in str(e.value)
         assert len(bus.event_history) == 0
@@ -211,7 +211,7 @@ class TestEventEnqueueing:
 
         try:
             for _ in range(150):
-                events.append(bus.dispatch(BaseEvent(event_type='SlowEvent')))
+                events.append(bus.emit(BaseEvent(event_type='SlowEvent')))
 
             await asyncio.gather(*events)
             await bus.wait_until_idle()
@@ -233,9 +233,9 @@ class TestEventEnqueueing:
         bus.on('SlowEvent', slow_handler)
 
         try:
-            first = bus.dispatch(BaseEvent(event_type='SlowEvent'))
+            first = bus.emit(BaseEvent(event_type='SlowEvent'))
             await asyncio.wait_for(first_handler_started.wait(), timeout=1.0)
-            second = bus.dispatch(BaseEvent(event_type='SlowEvent'))
+            second = bus.emit(BaseEvent(event_type='SlowEvent'))
 
             assert first.event_id in bus.event_history
             assert second.event_id in bus.event_history
@@ -277,8 +277,8 @@ class TestHandlerRegistration:
         eventbus.on('*', universal_handler)
 
         # Emit events
-        eventbus.dispatch(UserActionEvent(action='login', user_id='u1'))
-        eventbus.dispatch(SystemEventModel(event_name='startup'))
+        eventbus.emit(UserActionEvent(action='login', user_id='u1'))
+        eventbus.emit(SystemEventModel(event_name='startup'))
         await eventbus.wait_until_idle()
 
         # Verify all handlers were called correctly
@@ -307,7 +307,7 @@ class TestHandlerRegistration:
         eventbus.on('DifferentNameFromClass', string_handler)
         eventbus.on('*', wildcard_handler)
 
-        eventbus.dispatch(BaseEvent(event_type='DifferentNameFromClass'))
+        eventbus.emit(BaseEvent(event_type='DifferentNameFromClass'))
         await eventbus.wait_until_idle()
 
         assert seen == [
@@ -341,7 +341,7 @@ class TestHandlerRegistration:
 
         # Emit event and wait
         start = time.time()
-        event = await eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
+        event = await eventbus.emit(UserActionEvent(action='test', user_id='u1'))
         duration = time.time() - start
 
         # Check handlers ran in parallel (should take ~0.1s, not 0.2s)
@@ -423,7 +423,7 @@ class TestHandlerRegistration:
 
         # Dispatch event
         event = UserActionEvent(action='test_methods', user_id='u123')
-        completed_event = await eventbus.dispatch(event)
+        completed_event = await eventbus.emit(event)
 
         # Verify all handlers were called
         assert len(results) == 5
@@ -489,12 +489,12 @@ class TestEventForwarding:
         bus_c.on(LoopEvent, handler_c)
 
         # Create a forwarding cycle A -> B -> C -> A, which should be broken automatically.
-        bus_a.on('*', bus_b.dispatch)
-        bus_b.on('*', bus_c.dispatch)
-        bus_c.on('*', bus_a.dispatch)
+        bus_a.on('*', bus_b.emit)
+        bus_b.on('*', bus_c.emit)
+        bus_c.on('*', bus_a.emit)
 
         try:
-            event = await bus_a.dispatch(LoopEvent())
+            event = await bus_a.emit(LoopEvent())
 
             await bus_a.wait_until_idle()
             await bus_b.wait_until_idle()
@@ -531,7 +531,7 @@ class TestFIFOOrdering:
 
         # Emit 20 events rapidly
         for i in range(20):
-            eventbus.dispatch(UserActionEvent(action=f'test_{i}', user_id='u1', metadata={'order': i}))
+            eventbus.emit(UserActionEvent(action=f'test_{i}', user_id='u1', metadata={'order': i}))
 
         await eventbus.wait_until_idle()
 
@@ -561,7 +561,7 @@ class TestErrorHandling:
         eventbus.on('UserActionEvent', working_handler)
 
         # Emit and wait for result
-        event = await eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
+        event = await eventbus.emit(UserActionEvent(action='test', user_id='u1'))
 
         # Verify error capture and isolation
         failing_result = next((r for r in event.event_results.values() if r.handler_name.endswith('failing_handler')), None)
@@ -585,7 +585,7 @@ class TestErrorHandling:
         eventbus.on('UserActionEvent', failing_handler_one)
         eventbus.on('UserActionEvent', failing_handler_two)
 
-        event = await eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
+        event = await eventbus.emit(UserActionEvent(action='test', user_id='u1'))
 
         with pytest.raises(ExceptionGroup) as exc_info:
             await event.event_result()
@@ -602,7 +602,7 @@ class TestErrorHandling:
 
         eventbus.on('UserActionEvent', failing_handler)
 
-        event = await eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
+        event = await eventbus.emit(UserActionEvent(action='test', user_id='u1'))
 
         with pytest.raises(ValueError, match='single failure'):
             await event.event_result()
@@ -620,7 +620,7 @@ class TestBatchOperations:
         ]
 
         # Enqueue batch
-        emitted_events = [eventbus.dispatch(event) for event in events]
+        emitted_events = [eventbus.emit(event) for event in events]
         results = await asyncio.gather(*emitted_events)
 
         # Check all processed
@@ -638,7 +638,7 @@ class TestWriteAheadLog:
         events = []
         for i in range(5):
             event = UserActionEvent(action=f'action_{i}', user_id='u1')
-            events.append(eventbus.dispatch(event))
+            events.append(eventbus.emit(event))
 
         await eventbus.wait_until_idle()
 
@@ -673,7 +673,7 @@ class TestEventCompletion:
         eventbus.on('UserActionEvent', slow_handler)
 
         # Enqueue without waiting
-        event = eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
+        event = eventbus.emit(UserActionEvent(action='test', user_id='u1'))
         completion_order.append('enqueue_done')
 
         # Wait for completion
@@ -701,7 +701,7 @@ class TestEdgeCases:
 
         # Enqueue events but don't wait
         for i in range(5):
-            bus.dispatch(UserActionEvent(action=f'action_{i}', user_id='u1'))
+            bus.emit(UserActionEvent(action=f'action_{i}', user_id='u1'))
 
         # Stop immediately
         await bus.stop()
@@ -721,7 +721,7 @@ class TestEdgeCases:
 
         event = SystemEventModel(event_name='complex', details=complex_data)
 
-        result = await eventbus.dispatch(event)
+        result = await eventbus.emit(event)
 
         # Check data preserved
         assert result.details['nested']['list'][2]['inner'] == 'value'
@@ -740,7 +740,7 @@ class TestEdgeCases:
             for i in range(batch_start, batch_end):
                 event = UserActionEvent(action=f'concurrent_{i}', user_id='u1')
                 # Emit returns the event syncresultsonously, but we need to wait for completion
-                emitted_event = eventbus.dispatch(event)
+                emitted_event = eventbus.emit(event)
                 batch_tasks.append(emitted_event)
 
             # Wait for this batch to complete before starting the next
@@ -776,7 +776,7 @@ class TestEdgeCases:
         num_events = 20
         for i in range(num_events):
             event = UserActionEvent(action=f'mixed_{i}', user_id='u1', metadata={'order': i})
-            eventbus.dispatch(event)
+            eventbus.emit(event)
 
         # Wait for all events to process
         await eventbus.wait_until_idle()
@@ -803,7 +803,7 @@ class TestEventTypeOverride:
         )
 
         # Enqueue it
-        result = eventbus.dispatch(event)
+        result = eventbus.emit(event)
 
         # Check type is preserved - should be class name
         assert result.event_type == 'CreateAgentTaskEvent'
@@ -822,7 +822,7 @@ class TestEventTypeOverride:
         assert task_event.event_version == '0.0.1'
 
         # Check identity fields are preserved after emit
-        result = eventbus.dispatch(task_event)
+        result = eventbus.emit(task_event)
         assert result.event_type == task_event.event_type
         assert result.event_version == task_event.event_version
 
@@ -842,7 +842,7 @@ class TestEventTypeOverride:
         runtime_override = VersionedEvent(data='x', event_version='9.9.9')
         assert runtime_override.event_version == '9.9.9'
 
-        dispatched = eventbus.dispatch(VersionedEvent(data='queued'))
+        dispatched = eventbus.emit(VersionedEvent(data='queued'))
         assert dispatched.event_version == '1.2.3'
 
         restored = BaseEvent.model_validate(dispatched.model_dump(mode='json'))
@@ -874,8 +874,8 @@ class TestEventTypeOverride:
         eventbus.on('UserActionEvent', handler)
         eventbus.on('InlineTestEvent', handler)
 
-        await eventbus.dispatch(event)
-        await eventbus.dispatch(inline_event)
+        await eventbus.emit(event)
+        await eventbus.emit(inline_event)
         await eventbus.wait_until_idle()
 
         assert len(received) == 2
@@ -902,7 +902,7 @@ class TestEventTypeOverride:
         eventbus.on('CustomEventType', handler)
         eventbus.on('OverrideEvent', handler)  # This won't match
 
-        await eventbus.dispatch(event)
+        await eventbus.emit(event)
         await eventbus.wait_until_idle()
 
         assert len(received) == 1
@@ -943,14 +943,14 @@ class TestEventBusHierarchy:
 
         # Subscribe buses to each other: parent <- child <- subchild
         # Child forwards events to parent
-        child_bus.on('*', parent_bus.dispatch)
+        child_bus.on('*', parent_bus.emit)
         # Subchild forwards events to child
-        subchild_bus.on('*', child_bus.dispatch)
+        subchild_bus.on('*', child_bus.emit)
 
         try:
             # Emit event from the bottom of hierarchy
             event = UserActionEvent(action='bubble_test', user_id='test_user')
-            emitted = subchild_bus.dispatch(event)
+            emitted = subchild_bus.emit(event)
 
             # Wait for event to bubble up
             await subchild_bus.wait_until_idle()
@@ -977,7 +977,7 @@ class TestEventBusHierarchy:
             events_at_subchild.clear()
 
             middle_event = SystemEventModel(event_name='middle_test')
-            child_bus.dispatch(middle_event)
+            child_bus.emit(middle_event)
 
             await child_bus.wait_until_idle()
             await parent_bus.wait_until_idle()
@@ -1023,9 +1023,9 @@ class TestEventBusHierarchy:
         peer3.on('*', peer3_handler)
 
         # Create circular subscription: peer1 -> peer2 -> peer3 -> peer1
-        peer1.on('*', peer2.dispatch)
-        peer2.on('*', peer3.dispatch)
-        peer3.on('*', peer1.dispatch)  # This completes the circle
+        peer1.on('*', peer2.emit)
+        peer2.on('*', peer3.emit)
+        peer3.on('*', peer1.emit)  # This completes the circle
 
         def dump_bus_state() -> str:
             buses = [peer1, peer2, peer3]
@@ -1046,7 +1046,7 @@ class TestEventBusHierarchy:
         try:
             # Emit event from peer1
             event = UserActionEvent(action='circular_test', user_id='test_user')
-            emitted = peer1.dispatch(event)
+            emitted = peer1.emit(event)
 
             # Wait for all processing to complete
             await asyncio.sleep(0.2)  # Give time for any potential loops
@@ -1079,7 +1079,7 @@ class TestEventBusHierarchy:
             events_at_peer3.clear()
 
             event2 = SystemEventModel(event_name='circular_test_2')
-            peer2.dispatch(event2)
+            peer2.emit(event2)
 
             await asyncio.sleep(0.2)
             try:
@@ -1116,7 +1116,7 @@ class TestFindMethod:
         await asyncio.sleep(0.01)
 
         # Dispatch the event
-        dispatched = eventbus.dispatch(UserActionEvent(action='login', user_id='user123'))
+        dispatched = eventbus.emit(UserActionEvent(action='login', user_id='user123'))
 
         # Wait for find to resolve
         received = await find_task
@@ -1130,8 +1130,8 @@ class TestFindMethod:
     async def test_find_future_with_predicate(self, eventbus):
         """Test future find with where predicate filtering."""
         # Dispatch some events that don't match
-        eventbus.dispatch(UserActionEvent(action='logout', user_id='user456'))
-        eventbus.dispatch(UserActionEvent(action='login', user_id='user789'))
+        eventbus.emit(UserActionEvent(action='logout', user_id='user456'))
+        eventbus.emit(UserActionEvent(action='login', user_id='user789'))
 
         find_task = asyncio.create_task(
             eventbus.find('UserActionEvent', where=lambda e: e.user_id == 'user123', past=False, future=1.0)
@@ -1141,9 +1141,9 @@ class TestFindMethod:
         await asyncio.sleep(0.01)
 
         # Dispatch more events
-        eventbus.dispatch(UserActionEvent(action='update', user_id='user456'))
-        target_event = eventbus.dispatch(UserActionEvent(action='login', user_id='user123'))
-        eventbus.dispatch(UserActionEvent(action='delete', user_id='user789'))
+        eventbus.emit(UserActionEvent(action='update', user_id='user456'))
+        target_event = eventbus.emit(UserActionEvent(action='login', user_id='user123'))
+        eventbus.emit(UserActionEvent(action='delete', user_id='user789'))
 
         # Wait for the matching event
         received = await find_task
@@ -1164,8 +1164,8 @@ class TestFindMethod:
         await asyncio.sleep(0.01)
 
         # Dispatch different event types
-        eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
-        target = eventbus.dispatch(SystemEventModel(event_name='startup', severity='info'))
+        eventbus.emit(UserActionEvent(action='test', user_id='u1'))
+        target = eventbus.emit(SystemEventModel(event_name='startup', severity='info'))
 
         # Should receive the SystemEventModel
         received = await find_task
@@ -1186,9 +1186,9 @@ class TestFindMethod:
         await asyncio.sleep(0.1)  # Give more time for handlers to register
 
         # Dispatch events
-        e1 = eventbus.dispatch(UserActionEvent(action='normal', user_id='u1'))
-        e2 = eventbus.dispatch(SystemEventModel(event_name='test'))
-        e3 = eventbus.dispatch(UserActionEvent(action='special', user_id='u2'))
+        e1 = eventbus.emit(UserActionEvent(action='normal', user_id='u1'))
+        e2 = eventbus.emit(SystemEventModel(event_name='test'))
+        e3 = eventbus.emit(UserActionEvent(action='special', user_id='u2'))
 
         # Wait for all events to be processed
         await eventbus.wait_until_idle()
@@ -1210,7 +1210,7 @@ class TestFindMethod:
 
         find_task = asyncio.create_task(eventbus.find('TestEvent2', past=False, future=1.0))
         await asyncio.sleep(0.01)
-        eventbus.dispatch(BaseEvent(event_type='TestEvent2'))
+        eventbus.emit(BaseEvent(event_type='TestEvent2'))
         await find_task
         assert len(eventbus.find_waiters) == initial_waiters
 
@@ -1233,7 +1233,7 @@ class TestFindMethod:
         await asyncio.sleep(0.01)
 
         # Dispatch event
-        eventbus.dispatch(BaseEvent(event_type='SlowEvent'))
+        eventbus.emit(BaseEvent(event_type='SlowEvent'))
 
         # Wait for find
         received = await find_task
@@ -1258,8 +1258,8 @@ class TestFindPastMethod:
 
     async def test_find_past_returns_most_recent(self, eventbus):
         # Dispatch two events and ensure the newest is returned
-        eventbus.dispatch(UserActionEvent(action='first', user_id='u1'))
-        latest = eventbus.dispatch(UserActionEvent(action='second', user_id='u2'))
+        eventbus.emit(UserActionEvent(action='first', user_id='u1'))
+        latest = eventbus.emit(UserActionEvent(action='second', user_id='u2'))
         await eventbus.wait_until_idle()
 
         match = await eventbus.find('UserActionEvent', past=10, future=False)
@@ -1267,7 +1267,7 @@ class TestFindPastMethod:
         assert match.event_id == latest.event_id
 
     async def test_find_past_respects_time_window(self, eventbus):
-        event = eventbus.dispatch(UserActionEvent(action='old', user_id='u1'))
+        event = eventbus.emit(UserActionEvent(action='old', user_id='u1'))
         await eventbus.wait_until_idle()
         event.event_created_at -= timedelta(seconds=30)
 
@@ -1283,7 +1283,7 @@ class TestFindPastMethod:
 
         eventbus.on('UserActionEvent', slow_handler)
 
-        pending_event = eventbus.dispatch(UserActionEvent(action='slow', user_id='u1'))
+        pending_event = eventbus.emit(UserActionEvent(action='slow', user_id='u1'))
 
         # While handler is running, past find can still match in-flight events
         in_flight = await eventbus.find('UserActionEvent', past=10, future=False)
@@ -1306,14 +1306,14 @@ class TestDebouncePatterns:
 
     async def test_debounce_prefers_recent_history(self, eventbus):
         # First event completes
-        initial = await eventbus.dispatch(self.DebounceEvent(user_id=123))
+        initial = await eventbus.emit(self.DebounceEvent(user_id=123))
         await eventbus.wait_until_idle()
 
         # Compose the debounce pattern: find(past) -> find(future) -> dispatch
         resolved = (
             await eventbus.find(self.DebounceEvent, past=10, future=False)
             or await eventbus.find(self.DebounceEvent, past=False, future=0.05)
-            or await eventbus.dispatch(self.DebounceEvent(user_id=123))
+            or await eventbus.emit(self.DebounceEvent(user_id=123))
         )
 
         assert resolved is not None
@@ -1326,7 +1326,7 @@ class TestDebouncePatterns:
         resolved = (
             await eventbus.find(self.DebounceEvent, past=1, future=False)
             or await eventbus.find(self.DebounceEvent, past=False, future=0.05)
-            or await eventbus.dispatch(self.DebounceEvent(user_id=999))
+            or await eventbus.emit(self.DebounceEvent(user_id=999))
         )
 
         assert resolved is not None
@@ -1341,14 +1341,14 @@ class TestDebouncePatterns:
     async def test_debounce_uses_future_match_before_dispatch_fallback(self, eventbus):
         async def dispatch_after_delay() -> BaseEvent:
             await asyncio.sleep(0.02)
-            return eventbus.dispatch(self.DebounceEvent(user_id=555))
+            return eventbus.emit(self.DebounceEvent(user_id=555))
 
         dispatch_task = asyncio.create_task(dispatch_after_delay())
 
         resolved = (
             await eventbus.find(self.DebounceEvent, past=1, future=False)
             or await eventbus.find(self.DebounceEvent, past=False, future=0.1)
-            or await eventbus.dispatch(self.DebounceEvent(user_id=999))
+            or await eventbus.emit(self.DebounceEvent(user_id=999))
         )
 
         dispatched = await dispatch_task
@@ -1378,10 +1378,10 @@ class TestDebouncePatterns:
         await asyncio.sleep(0.01)
 
         # Dispatch events
-        eventbus.dispatch(UserActionEvent(action='first', user_id='u1'))
-        eventbus.dispatch(UserActionEvent(action='second', user_id='u2'))
-        eventbus.dispatch(UserActionEvent(action='target', user_id='u3'))  # Won't match yet
-        eventbus.dispatch(UserActionEvent(action='target', user_id='u4'))  # This should match
+        eventbus.emit(UserActionEvent(action='first', user_id='u1'))
+        eventbus.emit(UserActionEvent(action='second', user_id='u2'))
+        eventbus.emit(UserActionEvent(action='target', user_id='u3'))  # Won't match yet
+        eventbus.emit(UserActionEvent(action='target', user_id='u4'))  # This should match
 
         received = await find_task
 
@@ -1401,7 +1401,7 @@ class TestEventResults:
 
         eventbus.on('UserActionEvent', test_handler)
 
-        result = eventbus.dispatch(UserActionEvent(action='test', user_id='u1'))
+        result = eventbus.emit(UserActionEvent(action='test', user_id='u1'))
         assert isinstance(result, BaseEvent)
 
         # Wait for completion
@@ -1414,7 +1414,7 @@ class TestEventResults:
         assert all_results['result'] == 'test_result'
 
         # Test with no specific handlers
-        result_no_handlers = eventbus.dispatch(BaseEvent(event_type='NoHandlersEvent'))
+        result_no_handlers = eventbus.emit(BaseEvent(event_type='NoHandlersEvent'))
         await result_no_handlers
         # Should have no handlers
         assert len(result_no_handlers.event_results) == 0
@@ -1440,7 +1440,7 @@ class TestEventResults:
         eventbus.on('TestEvent', handler3)
 
         # Test indexing
-        event = await eventbus.dispatch(BaseEvent(event_type='TestEvent'))
+        event = await eventbus.emit(BaseEvent(event_type='TestEvent'))
 
         # Get results by handler name
         handler1_result = next((r for r in event.event_results.values() if r.handler_name.endswith('handler1')), None)
@@ -1464,7 +1464,7 @@ class TestEventResults:
         eventbus.on('TestEvent', early_handler)
         eventbus.on('TestEvent', late_handler)
 
-        result = await eventbus.dispatch(BaseEvent(event_type='TestEvent'))
+        result = await eventbus.emit(BaseEvent(event_type='TestEvent'))
 
         # Check both handlers ran
         assert len(result.event_results) == 2
@@ -1475,7 +1475,7 @@ class TestEventResults:
 
         # With empty handlers
         eventbus.handlers_by_key['EmptyEvent'] = []
-        results_empty = eventbus.dispatch(BaseEvent(event_type='EmptyEvent'))
+        results_empty = eventbus.emit(BaseEvent(event_type='EmptyEvent'))
         await results_empty
         # Should have no handlers
         assert len(results_empty.event_results) == 0
@@ -1500,7 +1500,7 @@ class TestEventResults:
             eventbus.on('TestEvent', process_data2)
         eventbus.on('TestEvent', unique_handler)
 
-        event = await eventbus.dispatch(BaseEvent(event_type='TestEvent'))
+        event = await eventbus.emit(BaseEvent(event_type='TestEvent'))
 
         # Check results - with duplicate names, both handlers run
         process_results = [r for r in event.event_results.values() if r.handler_name.endswith('process_data')]
@@ -1527,7 +1527,7 @@ class TestEventResults:
             eventbus.on('TestEvent', handler1)
             eventbus.on('TestEvent', handler2)
 
-        event = await eventbus.dispatch(BaseEvent(event_type='TestEvent'))
+        event = await eventbus.emit(BaseEvent(event_type='TestEvent'))
 
         # Get results by handler ID using the method that exists
         results = await event.event_results_by_handler_id()
@@ -1550,7 +1550,7 @@ class TestEventResults:
         eventbus.on('GetConfig', config_base)
         eventbus.on('GetConfig', config_override)
 
-        event = await eventbus.dispatch(BaseEvent(event_type='GetConfig'))
+        event = await eventbus.emit(BaseEvent(event_type='GetConfig'))
         merged = await event.event_results_flat_dict(raise_if_conflicts=False)
 
         # Later handlers override earlier ones
@@ -1566,7 +1566,7 @@ class TestEventResults:
             return 'not a dict'
 
         eventbus.on('BadConfig', bad_handler)
-        event_bad = await eventbus.dispatch(BaseEvent(event_type='BadConfig'))
+        event_bad = await eventbus.emit(BaseEvent(event_type='BadConfig'))
 
         # Non-dict results should be skipped, not raise error
         merged_bad = await event_bad.event_results_flat_dict()
@@ -1584,7 +1584,7 @@ class TestEventResults:
         eventbus.on('ConflictEvent', handler_one)
         eventbus.on('ConflictEvent', handler_two)
 
-        event = await eventbus.dispatch(BaseEvent(event_type='ConflictEvent'))
+        event = await eventbus.emit(BaseEvent(event_type='ConflictEvent'))
 
         with pytest.raises(ValueError) as exc_info:
             await event.event_results_flat_dict()
@@ -1607,7 +1607,7 @@ class TestEventResults:
         eventbus.on('GetErrors', errors2)
         eventbus.on('GetErrors', errors3)
 
-        event = await eventbus.dispatch(BaseEvent(event_type='GetErrors'))
+        event = await eventbus.emit(BaseEvent(event_type='GetErrors'))
         all_errors = await event.event_results_flat_list()
 
         # Check that all errors are collected (order may vary due to handler execution)
@@ -1618,7 +1618,7 @@ class TestEventResults:
             return 'single'
 
         eventbus.on('GetSingle', single_value)
-        event_single = await eventbus.dispatch(BaseEvent(event_type='GetSingle'))
+        event_single = await eventbus.emit(BaseEvent(event_type='GetSingle'))
 
         result = await event_single.event_results_flat_list(raise_if_none=False)
         assert 'single' not in result  # Single values should be skipped, as they are not lists
@@ -1636,7 +1636,7 @@ class TestEventResults:
         eventbus.on('TestEvent', handler_a)
         eventbus.on('TestEvent', handler_b)
 
-        event = await eventbus.dispatch(BaseEvent(event_type='TestEvent'))
+        event = await eventbus.emit(BaseEvent(event_type='TestEvent'))
 
         # Access results by handler name
         handler_a_result = next((r for r in event.event_results.values() if r.handler_name.endswith('handler_a')), None)
@@ -1652,7 +1652,7 @@ class TestEventResults:
             return 'my_result'
 
         eventbus.on('TestEvent', my_handler)
-        event = await eventbus.dispatch(BaseEvent(event_type='TestEvent'))
+        event = await eventbus.emit(BaseEvent(event_type='TestEvent'))
 
         # Access result by handler name
         my_handler_result = next((r for r in event.event_results.values() if r.handler_name.endswith('my_handler')), None)
@@ -1692,12 +1692,12 @@ class TestEventBusForwarding:
         bus3.on('TestEvent', bus3_handler)
 
         # Set up forwarding chain
-        bus1.on('*', bus2.dispatch)
-        bus2.on('*', bus3.dispatch)
+        bus1.on('*', bus2.emit)
+        bus2.on('*', bus3.emit)
 
         try:
             # Dispatch from bus1
-            event = bus1.dispatch(BaseEvent(event_type='TestEvent'))
+            event = bus1.emit(BaseEvent(event_type='TestEvent'))
 
             # Wait for all buses to complete processing
             await bus1.wait_until_idle()
@@ -1743,10 +1743,10 @@ class TestEventBusForwarding:
         bus2.on('DataEvent', plugin_handler2)
 
         # Forward from bus1 to bus2
-        bus1.on('*', bus2.dispatch)
+        bus1.on('*', bus2.emit)
 
         try:
-            event = bus1.dispatch(BaseEvent(event_type='DataEvent'))
+            event = bus1.emit(BaseEvent(event_type='DataEvent'))
 
             # Wait for processing
             await bus1.wait_until_idle()
@@ -1819,12 +1819,12 @@ class TestComplexIntegration:
         data_bus.on('ValidationRequest', data_process)
 
         # Set up forwarding
-        app_bus.on('*', auth_bus.dispatch)
-        auth_bus.on('*', data_bus.dispatch)
+        app_bus.on('*', auth_bus.emit)
+        auth_bus.on('*', data_bus.emit)
 
         try:
             # Dispatch event
-            event = app_bus.dispatch(BaseEvent(event_type='ValidationRequest'))
+            event = app_bus.emit(BaseEvent(event_type='ValidationRequest'))
 
             # Wait for all processing
             await app_bus.wait_until_idle()
@@ -1894,7 +1894,7 @@ class TestComplexIntegration:
 
         try:
             # Dispatch event
-            event = bus.dispatch(DictResultEvent())
+            event = bus.emit(DictResultEvent())
             await bus.wait_until_idle()
             event = await event
 
@@ -1957,7 +1957,7 @@ class TestComplexIntegration:
 
         try:
             # Dispatch event
-            event = bus.dispatch(ListResultEvent())
+            event = bus.emit(ListResultEvent())
             await bus.wait_until_idle()
             event = await event
 

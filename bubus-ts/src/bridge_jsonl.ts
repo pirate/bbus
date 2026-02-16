@@ -51,7 +51,7 @@ export class JSONLEventBridge {
     this.inbound_bus.on(event_pattern as EventClass<BaseEvent>, handler as EventHandlerCallable<BaseEvent>)
   }
 
-  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+  async emit<T extends BaseEvent>(event: T): Promise<void> {
     this.ensureStarted()
     const fs = await this.loadFs()
     await fs.promises.mkdir(this.dirname(this.path), { recursive: true })
@@ -59,8 +59,8 @@ export class JSONLEventBridge {
     await fs.promises.appendFile(this.path, payload, 'utf8')
   }
 
-  async emit<T extends BaseEvent>(event: T): Promise<void> {
-    return this.dispatch(event)
+  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+    return this.emit(event)
   }
 
   async start(): Promise<void> {
@@ -126,7 +126,7 @@ export class JSONLEventBridge {
 
   private async dispatchInboundPayload(payload: unknown): Promise<void> {
     const event = BaseEvent.fromJSON(payload).reset()
-    this.inbound_bus.dispatch(event)
+    this.inbound_bus.emit(event)
   }
 
   private async readAppended(offset: number): Promise<{ chunk: string; next_offset: number }> {

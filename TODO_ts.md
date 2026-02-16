@@ -56,7 +56,7 @@ These wrappers should compose, and keep the current semaphore/queue-jump behavio
 Use these concrete call paths to keep changes behavior-safe while refactoring:
 
 1. Dispatch + context capture:
-- `EventBus.dispatch(...)` captures async context via `captureAsyncContext()`.
+- `EventBus.emit(...)` captures async context via `captureAsyncContext()`.
 - Queue insert + runloop kick happen here; this is the correct `event: pending` emission anchor.
 
 2. Runloop + event processing:
@@ -80,7 +80,7 @@ Use these concrete call paths to keep changes behavior-safe while refactoring:
 
 ### Compact Line-Anchored Call Graph
 
-- `EventBus.dispatch(...)` enqueue/context capture: `bubus-ts/src/event_bus.ts:450`, `bubus-ts/src/event_bus.ts:459`.
+- `EventBus.emit(...)` enqueue/context capture: `bubus-ts/src/event_bus.ts:450`, `bubus-ts/src/event_bus.ts:459`.
 - `EventBus.runloop(...)` dequeue/event semaphore path: `bubus-ts/src/event_bus.ts:865`.
 - `EventBus.processEvent(...)` bus-local orchestration seam: `bubus-ts/src/event_bus.ts:687`.
 - `BaseEvent.createPendingHandlerResults(...)` pending result materialization: `bubus-ts/src/base_event.ts:373`.
@@ -169,7 +169,7 @@ Files:
 
 Changes:
 1. Event hooks:
-- `pending`: emit from `dispatch()` after enqueue, before runloop kick.
+- `pending`: emit from `emit()` after enqueue, before runloop kick.
 - `started`: emit when event transitions pending -> started.
 - `completed`: emit when event transitions to completed.
 

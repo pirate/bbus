@@ -26,7 +26,7 @@ test('handler error is captured and does not prevent other handlers from running
   bus.on(TestEvent, failing_handler)
   bus.on(TestEvent, working_handler)
 
-  const event = bus.dispatch(TestEvent({}))
+  const event = bus.emit(TestEvent({}))
   await event.done()
 
   // Both handlers should have run and produced results
@@ -66,7 +66,7 @@ test('event.event_errors collects handler errors', async () => {
   bus.on(TestEvent, handler_b)
   bus.on(TestEvent, handler_c)
 
-  const event = bus.dispatch(TestEvent({}))
+  const event = bus.emit(TestEvent({}))
   await event.done()
 
   // Two errors should be collected
@@ -83,7 +83,7 @@ test('handler error does not prevent event completion', async () => {
     throw new Error('handler failed')
   })
 
-  const event = bus.dispatch(TestEvent({}))
+  const event = bus.emit(TestEvent({}))
   await event.done()
 
   // Event should still complete even though handler errored
@@ -105,8 +105,8 @@ test('error in one event does not affect subsequent queued events', async () => 
     return 'event2 ok'
   })
 
-  const event_1 = bus.dispatch(Event1({}))
-  const event_2 = bus.dispatch(Event2({}))
+  const event_1 = bus.emit(Event1({}))
+  const event_2 = bus.emit(Event2({}))
 
   await bus.waitUntilIdle()
 
@@ -132,7 +132,7 @@ test('async handler rejection is captured as error', async () => {
 
   bus.on(TestEvent, async_failing_handler)
 
-  const event = bus.dispatch(TestEvent({}))
+  const event = bus.emit(TestEvent({}))
   await event.done()
 
   assert.equal(event.event_status, 'completed')
@@ -150,7 +150,7 @@ test('error in forwarded event handler does not block source bus', async () => {
   const ForwardEvent = BaseEvent.extend('ForwardEvent', {})
 
   // Forward from A to B
-  bus_a.on('*', bus_b.dispatch)
+  bus_a.on('*', bus_b.emit)
 
   // Handler on bus_b throws
   bus_b.on(ForwardEvent, () => {
@@ -162,19 +162,19 @@ test('error in forwarded event handler does not block source bus', async () => {
     return 'bus_a ok'
   })
 
-  const event = bus_a.dispatch(ForwardEvent({}))
+  const event = bus_a.emit(ForwardEvent({}))
   await event.done()
 
   assert.equal(event.event_status, 'completed')
 
   // bus_a's handler succeeded
-  const bus_a_result = Array.from(event.event_results.values()).find((r) => r.eventbus_id === bus_a.id && r.handler_name !== 'dispatch')
+  const bus_a_result = Array.from(event.event_results.values()).find((r) => r.eventbus_id === bus_a.id && r.handler_name !== 'emit')
   assert.ok(bus_a_result)
   assert.equal(bus_a_result.status, 'completed')
   assert.equal(bus_a_result.result, 'bus_a ok')
 
   // bus_b's handler errored
-  const bus_b_result = Array.from(event.event_results.values()).find((r) => r.eventbus_id === bus_b.id && r.handler_name !== 'dispatch')
+  const bus_b_result = Array.from(event.event_results.values()).find((r) => r.eventbus_id === bus_b.id && r.handler_name !== 'emit')
   assert.ok(bus_b_result)
   assert.equal(bus_b_result.status, 'error')
 
@@ -186,7 +186,7 @@ test('event with no handlers completes without errors', async () => {
   const bus = new EventBus('NoHandlerBus')
   const OrphanEvent = BaseEvent.extend('OrphanEvent', {})
 
-  const event = bus.dispatch(OrphanEvent({}))
+  const event = bus.emit(OrphanEvent({}))
   await event.done()
 
   assert.equal(event.event_status, 'completed')
@@ -203,7 +203,7 @@ test('error handler result fields are populated correctly', async () => {
 
   bus.on(TestEvent, my_handler)
 
-  const event = bus.dispatch(TestEvent({}))
+  const event = bus.emit(TestEvent({}))
   await event.done()
 
   const result = Array.from(event.event_results.values())[0]

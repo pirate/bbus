@@ -123,9 +123,9 @@ class EventBridge:
         self._ensure_listener_started()
         self._inbound_bus.on(event_pattern, handler)
 
-    async def dispatch(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
+    async def emit(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
         if self.send_to is None:
-            raise RuntimeError(f'{self.__class__.__name__}.dispatch() requires send_to=...')
+            raise RuntimeError(f'{self.__class__.__name__}.emit() requires send_to=...')
 
         payload = event.model_dump(mode='json')
 
@@ -138,8 +138,8 @@ class EventBridge:
             return None
         return event
 
-    async def emit(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
-        return await self.dispatch(event)
+    async def dispatch(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
+        return await self.emit(event)
 
     async def start(self) -> None:
         if self.listen_on is None or self._server is not None:
@@ -277,7 +277,7 @@ class EventBridge:
     async def _handle_incoming_bytes(self, payload: bytes) -> None:
         message = json.loads(payload.decode('utf-8'))
         event = BaseEvent[Any].model_validate(message).event_reset()
-        self._inbound_bus.dispatch(event)
+        self._inbound_bus.emit(event)
 
     async def _send_unix(self, endpoint: _Endpoint, payload: dict[str, Any]) -> None:
         socket_path = endpoint.path or ''

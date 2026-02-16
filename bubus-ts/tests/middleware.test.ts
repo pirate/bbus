@@ -120,7 +120,7 @@ test('middleware hooks execute sequentially in registration order', async () => 
   const Event = BaseEvent.extend('MiddlewareOrderEvent', {})
 
   bus.on(Event, () => 'ok')
-  await bus.dispatch(Event({ event_timeout: 0.2 })).done()
+  await bus.emit(Event({ event_timeout: 0.2 })).done()
   await flushHooks()
 
   const pairs: Array<[string, string]> = [
@@ -148,11 +148,11 @@ test('middleware hooks are per-bus on forwarded events', async () => {
   const Event = BaseEvent.extend('MiddlewareForwardEvent', {})
 
   const handler_a = bus_a.on(Event, async (event) => {
-    bus_b.dispatch(event)
+    bus_b.emit(event)
   })
   const handler_b = bus_b.on(Event, async () => 'ok')
 
-  await bus_a.dispatch(Event({ event_timeout: 0.2 })).done()
+  await bus_a.emit(Event({ event_timeout: 0.2 })).done()
   await flushHooks()
 
   assert.equal(
@@ -177,7 +177,7 @@ test('middleware emits event lifecycle hooks for no-handler events', async () =>
   const bus = new EventBus('MiddlewareNoHandlerBus', { middlewares: [middleware] })
   const Event = BaseEvent.extend('MiddlewareNoHandlerEvent', {})
 
-  await bus.dispatch(Event({ event_timeout: 0.2 })).done()
+  await bus.emit(Event({ event_timeout: 0.2 })).done()
   await flushHooks()
 
   const event_statuses = middleware.records
@@ -220,7 +220,7 @@ test('middleware event lifecycle ordering is deterministic per event', async () 
   const batch_count = 5
   const events_per_batch = 50
   for (let batch_index = 0; batch_index < batch_count; batch_index += 1) {
-    const events = Array.from({ length: events_per_batch }, (_unused, _event_index) => bus.dispatch(Event({ event_timeout: 0.2 })))
+    const events = Array.from({ length: events_per_batch }, (_unused, _event_index) => bus.emit(Event({ event_timeout: 0.2 })))
     await Promise.all(events.map((event) => event.done()))
     await flushHooks()
 
@@ -247,7 +247,7 @@ test('middleware result hooks never reverse from completed to started', async ()
     return 'slow-2'
   })
 
-  await bus.dispatch(Event({ event_timeout: 0.01 })).done()
+  await bus.emit(Event({ event_timeout: 0.01 })).done()
   await flushHooks()
 
   const statuses_by_handler = new Map<string, string[]>()
@@ -282,7 +282,7 @@ test('hard event timeout finalizes immediately without waiting for in-flight han
   })
 
   const started_at = Date.now()
-  const event = bus.dispatch(Event({ event_timeout: 0.01 }))
+  const event = bus.emit(Event({ event_timeout: 0.01 }))
   await event.done()
   const elapsed_ms = Date.now() - started_at
 
@@ -321,7 +321,7 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
   })
 
   serial_bus.on(SchemaEvent, async () => JSON.parse('"not-a-number"'))
-  const schema_event = serial_bus.dispatch(SchemaEvent({ event_timeout: 0.2 }))
+  const schema_event = serial_bus.emit(SchemaEvent({ event_timeout: 0.2 }))
   await schema_event.done()
   const schema_result = Array.from(schema_event.event_results.values())[0]
   assert.ok(schema_result.error instanceof EventHandlerResultSchemaError)
@@ -335,7 +335,7 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
     await delay(100)
     return 'slow-2'
   })
-  const serial_timeout_event = serial_bus.dispatch(SerialTimeoutEvent({ event_timeout: 0.01 }))
+  const serial_timeout_event = serial_bus.emit(SerialTimeoutEvent({ event_timeout: 0.01 }))
   await serial_timeout_event.done()
   const serial_results = Array.from(serial_timeout_event.event_results.values())
   assert.equal(
@@ -356,7 +356,7 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
     await delay(100)
     return 'slow-2'
   })
-  const parallel_timeout_event = parallel_bus.dispatch(ParallelTimeoutEvent({ event_timeout: 0.01 }))
+  const parallel_timeout_event = parallel_bus.emit(ParallelTimeoutEvent({ event_timeout: 0.01 }))
   await parallel_timeout_event.done()
   const parallel_results = Array.from(parallel_timeout_event.event_results.values())
   assert.equal(
@@ -440,7 +440,7 @@ test('middleware hooks cover class/string/wildcard handler patterns', async () =
     assert.equal(record.eventbus_id, bus.id)
   }
 
-  const event = bus.dispatch(PatternEvent({ event_timeout: 0.2 }))
+  const event = bus.emit(PatternEvent({ event_timeout: 0.2 }))
   await event.done()
   await bus.waitUntilIdle()
   await flushHooks()
@@ -542,7 +542,7 @@ test('middleware hooks cover ad-hoc BaseEvent string + wildcard patterns', async
     assert.equal(record.eventbus_id, bus.id)
   }
 
-  const event = bus.dispatch(new BaseEvent({ event_type: ad_hoc_event_type, event_timeout: 0.2 }))
+  const event = bus.emit(new BaseEvent({ event_type: ad_hoc_event_type, event_timeout: 0.2 }))
   await event.done()
   await bus.waitUntilIdle()
   await flushHooks()

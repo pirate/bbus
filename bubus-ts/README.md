@@ -10,7 +10,7 @@ Bubus is an in-memory event bus library for async Python and TS (node/bun/deno/b
 
 It's designed for quickly building resilient, predictable, complex event-driven apps.
 
-It "just works" with an intuitive, but powerful event JSON format + dispatch API that's consistent across both languages and scales consistently from one event to millions (~0.2ms/event):
+It "just works" with an intuitive, but powerful event JSON format + emit API that's consistent across both languages and scales consistently from one event to millions (~0.2ms/event):
 
 ```python
 bus.on(SomeEvent, some_function)
@@ -121,7 +121,7 @@ new EventBus(name?: string, options?: {
 | --------------------------------- | ------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                              | `string`                                                | `uuidv7()`     | Override bus UUID (mostly for serialization/tests).                                                                                                                       |
 | `max_history_size`                | `number \| null`                                        | `100`          | Max events kept in `event_history`; `null` = unbounded; `0` = keep only in-flight events and drop completed events immediately.                                           |
-| `max_history_drop`                | `boolean`                                               | `false`        | If `true`, when history is full drop oldest history entries (including uncompleted if needed). If `false`, reject new dispatches when history reaches `max_history_size`. |
+| `max_history_drop`                | `boolean`                                               | `false`        | If `true`, when history is full drop oldest history entries (including uncompleted if needed). If `false`, reject new emits when history reaches `max_history_size`. |
 | `event_concurrency`               | `'global-serial' \| 'bus-serial' \| 'parallel' \| null` | `'bus-serial'` | Event-level scheduling policy.                                                                                                                                            |
 | `event_handler_concurrency`       | `'serial' \| 'parallel' \| null`                        | `'serial'`     | Per-event handler scheduling policy.                                                                                                                                      |
 | `event_handler_completion`        | `'all' \| 'first'`                                      | `'all'`        | Event completion mode if event does not override it.                                                                                                                      |
@@ -184,25 +184,22 @@ Use when tearing down subscriptions (tests, plugin unload, hot-reload).
 - Pass handler id (`string`) or `EventHandler` object to remove by id.
 - use `bus.off('*')` to remove _all_ registered handlers from the bus
 
-#### `dispatch()` / `emit()`
+#### `emit()`
 
 ```ts
-dispatch<T extends BaseEvent>(event: T): T
 emit<T extends BaseEvent>(event: T): T
 ```
-
-`emit()` is just an alias of `dispatch()`.
 
 Behavior notes:
 
 - Per-event config fields stay on the event as provided; when unset (`null`/`undefined`), each bus resolves its own defaults at processing time.
 - If same event ends up forwarded through multiple buses, it is loop-protected using `event_path`.
-- Dispatch is synchronous and returns immediately with the same event object (`event.event_status` is initially `'pending'`).
+- Emit is synchronous and returns immediately with the same event object (`event.event_status` is initially `'pending'`).
 
 Normal lifecycle:
 
 1. Create event instance (`const event = MyEvent({...})`).
-2. Dispatch (`const queued = bus.emit(event)`).
+2. Emit (`const queued = bus.emit(event)`).
 3. Await with `await queued.done()` (immediate/queue-jump semantics) or `await queued.waitForCompletion()` (bus queue order).
 4. Inspect `queued.event_results`, `queued.event_result`, `queued.event_errors`, etc. if you need to access handler return values
 
@@ -233,7 +230,7 @@ type FindOptions = {
 }
 ```
 
-`bus.find()` returns the first matching event (in dispatch timestamp order).
+`bus.find()` returns the first matching event (in emit timestamp order).
 To find multiple matching events, iterate through `bus.event_history.filter((event) => ...some condition...)` manually.
 
 `where` behavior:
@@ -249,7 +246,7 @@ const matching_event = bus.find('*', (event) => event.some_field == 123)
 
 - `true`: search all history.
 - `false`: skip searching past event history.
-- `number`: search events dispatched within last `N` seconds.
+- `number`: search events emitted within last `N` seconds.
 
 `future` behavior:
 
@@ -259,7 +256,7 @@ const matching_event = bus.find('*', (event) => event.some_field == 123)
 
 Lifecycle use:
 
-- Use for idempotency / de-dupe before dispatch (`past: ...`).
+- Use for idempotency / de-dupe before emit (`past: ...`).
 - Use for synchronization/waiting (`future: ...`).
 - Combine both to "check recent then wait".
 - Add `child_of` to constrain by parent/ancestor event chain.
@@ -269,14 +266,14 @@ Lifecycle use:
 Debouncing expensive events with `find()`:
 
 ```ts
-const some_expensive_event = (await bus.find(ExpensiveEvent, { past: 15, future: 5 })) ?? bus.dispatch(ExpensiveEvent({}))
+const some_expensive_event = (await bus.find(ExpensiveEvent, { past: 15, future: 5 })) ?? bus.emit(ExpensiveEvent({}))
 await some_expensive_event.done()
 ```
 
 Important semantics:
 
-- Past lookup matches any dispatched events, not just completed events.
-- Past/future matches resolve as soon as event is dispatched. If you need the completed event, await `event.done()` or pass `{event_status: 'completed'}` to filter only for completed events.
+- Past lookup matches any emitted events, not just completed events.
+- Past/future matches resolve as soon as event is emitted. If you need the completed event, await `event.done()` or pass `{event_status: 'completed'}` to filter only for completed events.
 - If both `past` and `future` are omitted, defaults are `past: true, future: false`.
 - If both `past` and `future` are `false`, it returns `null` immediately.
 - Detailed behavior matrix is covered in `bubus-ts/tests/eventbus_find.test.ts`.
@@ -446,10 +443,10 @@ first(): Promise<EventResultType<this> | undefined>
 reset(): this
 ```
 
-- Returns a fresh event copy with runtime state reset to pending so it can be dispatched again safely.
+- Returns a fresh event copy with runtime state reset to pending so it can be emitted again safely.
 - Original event object is unchanged.
 - Generates a new UUIDv7 `event_id` for the returned copy.
-- Clears runtime completion state (`event_results`, status/timestamps, dispatch context, done signal, local bus binding).
+- Clears runtime completion state (`event_results`, status/timestamps, captured async context, done signal, local bus binding).
 
 #### `toString()` / `toJSON()` / `fromJSON()`
 
@@ -580,11 +577,11 @@ EventHandler.fromJSON(data: unknown, handler?: EventHandlerCallable): EventHandl
 #### Bus-level config options (`new EventBus(name, {...options...})`)
 
 - `max_history_size?: number | null` (default: `100`)
-  - Max events kept in history. `null` = unlimited. `bus.find(...)` uses this log to query recently dispatched events
+  - Max events kept in history. `null` = unlimited. `bus.find(...)` uses this log to query recently emitted events
   - `0` keeps only pending/in-flight events; each event is removed from history immediately after completion.
 - `max_history_drop?: boolean` (default: `false`)
   - If `true`, drop oldest history entries when history is full (including uncompleted entries if needed).
-  - If `false`, reject new dispatches when history is full.
+  - If `false`, reject new emits when history is full.
 - `event_concurrency?: 'global-serial' | 'bus-serial' | 'parallel' | null` (default: `'bus-serial'`)
   - Event-level scheduling policy (`global-serial`: FIFO across all buses, `bus-serial`: FIFO per bus, `parallel`: concurrent events per bus).
 - `event_handler_concurrency?: 'serial' | 'parallel' | null` (default: `'serial'`)
@@ -653,9 +650,9 @@ Use `@retry` for per-handler execution timeout/retry/backoff/semaphore control. 
 
 ### Runtime lifecycle (bus -> event -> handler)
 
-Dispatch flow:
+Emit flow:
 
-1. `dispatch()` normalizes to original event and captures async context when available.
+1. `emit()` normalizes to original event and captures async context when available.
 2. Bus appends itself to `event_path` and records runtime ownership for this processing pass.
 3. Event enters `event_history`, `pending_event_queue`, and runloop starts.
 4. Runloop dequeues and calls `processEvent()`.
@@ -672,7 +669,7 @@ Locking model:
 
 ### Queue-jumping (`await event.done()` inside handlers)
 
-Want to dispatch and await an event like a function call? simply `await event.done()`.
+Want to emit and await an event like a function call? simply `await event.done()`.
 When called inside a handler, the awaited event is processed immediately (queue-jump behavior) before normal queued work continues.
 
 ### `@retry` Decorator
@@ -684,7 +681,7 @@ When called inside a handler, the awaited event is processed immediately (queue-
 Retry and timeout belong on handlers, not emit sites:
 
 - Handlers fail; events are messages.
-- Handler-level retries preserve replay semantics (one event dispatch, internal retry attempts).
+- Handler-level retries preserve replay semantics (one event emit, internal retry attempts).
 - Bus concurrency and retry concerns are orthogonal and compose cleanly.
 
 #### Recommended pattern: `@retry()` on class methods
@@ -764,7 +761,7 @@ Use bus/event timeouts for outer deadlines and `retry({ timeout })` for per-hand
 
 #### Discouraged: retrying emit sites
 
-Avoid wrapping `emit()/done()` in `retry()` unless you intentionally want multiple event dispatches (a new event for every retry).  
+Avoid wrapping `emit()/done()` in `retry()` unless you intentionally want multiple event emits (a new event for every retry).  
 Keep retries on handlers so that your logs represent the original high-level intent, with a single event per call even if handling it took multiple tries.  
 Emitting a new event for each retry is only recommended if you are using the logs for debugging more than for replayability / time-travel.
 
@@ -786,7 +783,7 @@ Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
 const bridge = new RedisEventBridge('redis://redis@localhost:6379')
 
 bus.on('*', bridge.emit) // listen for all events on bus and send them to redis channel
-bridge.on('*', bus.emit) // listen for new events in redis channel and dispatch them to our bus
+bridge.on('*', bus.emit) // listen for new events in redis channel and emit them on our bus
 ```
 
 - `new SocketEventBridge('/tmp/bubus_events.sock')`
@@ -815,7 +812,7 @@ bridge.on('*', bus.emit) // listen for new events in redis channel and dispatch 
 ### Browser support notes
 
 - The package output is ESM (`./dist/esm`) which is supported by all browsers [released after 2018](https://caniuse.com/?search=ESM)
-- `AsyncLocalStorage` is preserved at dispatch and used during handling when availabe (Node/Bun), otel/tracing context will work normally in those environments
+- `AsyncLocalStorage` is preserved at emit and used during handling when availabe (Node/Bun), otel/tracing context will work normally in those environments
 
 ### Performance comparison (local run, per-event)
 

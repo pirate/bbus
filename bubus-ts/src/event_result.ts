@@ -155,6 +155,9 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   linkEmittedChildEvent(child_event: BaseEvent): void {
     const original_child = child_event._event_original ?? child_event
     const parent_event = this.event._event_original ?? this.event
+    if (original_child.event_id === parent_event.event_id) {
+      return
+    }
     if (!original_child.event_parent_id) {
       original_child.event_parent_id = parent_event.event_id
     }
@@ -331,12 +334,12 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       return
     }
 
-    slow_handler_warning_timer = this.createSlowHandlerWarningTimer(this.handler_timeout)
     this._lock = handler_lock
     await this.bus.locks.withHandlerExecutionContext(this, async () => {
       await runWithAsyncContext(event.eventGetDispatchContext() ?? null, async () => {
         try {
           const abort_signal = this.markStarted()
+          slow_handler_warning_timer = this.createSlowHandlerWarningTimer(this.handler_timeout)
           const handler_result = await withTimeout(
             this.handler_timeout,
             () => this._createHandlerTimeoutError(event),

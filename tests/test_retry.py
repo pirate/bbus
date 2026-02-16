@@ -676,7 +676,7 @@ class TestRetryWithEventBus:
         # Dispatch an event
         # start_time = time.time()  # Unused variable
         event = TestEvent(message='Hello retry!')
-        completed_event = await bus.dispatch(event)
+        completed_event = await bus.emit(event)
 
         # Wait for completion
         await bus.wait_until_idle(timeout=5)
@@ -754,7 +754,7 @@ class TestRetryWithEventBus:
 
         # Dispatch event (all 4 handlers will try to process it)
         event = WorkEvent(work_id=1)
-        await bus.dispatch(event)
+        await bus.emit(event)
 
         # Wait for completion
         await bus.wait_until_idle(timeout=3)
@@ -807,7 +807,7 @@ class TestRetryWithEventBus:
 
         # Dispatch event
         event = TimeoutEvent(test_id='timeout-test')
-        await bus.dispatch(event)
+        await bus.emit(event)
 
         # Wait for completion
         await bus.wait_until_idle(timeout=2)
@@ -862,7 +862,7 @@ class TestRetryWithEventBus:
 
         # Dispatch event
         event = RetryTestEvent(attempt_limit=3)
-        await bus.dispatch(event)
+        await bus.emit(event)
 
         # Wait for completion
         await bus.wait_until_idle(timeout=2)
