@@ -75,6 +75,9 @@ def _normalize_roundtrip_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if normalized.get('event_status') in ('pending', 'started'):
         normalized['event_status'] = 'pending'
         normalized['event_started_at'] = None
+        normalized['event_started_ts'] = None
+        normalized['event_completed_at'] = None
+        normalized['event_completed_ts'] = None
     return normalized
 
 

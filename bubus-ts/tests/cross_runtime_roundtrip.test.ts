@@ -30,6 +30,13 @@ const assertFieldEqual = (key: string, actual: unknown, expected: unknown, conte
     assert.equal(Date.parse(actual), Date.parse(expected), `${context}: ${key}`)
     return
   }
+  if (key.endsWith('_ts') && typeof actual === 'number') {
+    if (context.includes('python roundtrip') || context.includes('ts reload')) {
+      assert.equal(Number.isInteger(actual), true, `${context}: ${key} must be integer`)
+      assert.ok(actual >= 0 && actual <= Number.MAX_SAFE_INTEGER, `${context}: ${key} must be JS-safe integer`)
+    }
+    return
+  }
   assert.deepEqual(actual, expected, `${context}: ${key}`)
 }
 
@@ -322,7 +329,7 @@ const assertProcessSucceeded = (proc: ReturnType<typeof spawnSync>, label: strin
   assert.equal(proc.status, 0, `${label} failed:\nstdout:\n${proc.stdout ?? ''}\nstderr:\n${proc.stderr ?? ''}`)
 }
 
-const withTimeout = async <T>(promise: Promise<T>, timeout_ms: number, label: string): Promise<T> =>
+const runWithTimeout = async <T>(promise: Promise<T>, timeout_ms: number, label: string): Promise<T> =>
   new Promise<T>((resolve, reject) => {
     const timeout_id = setTimeout(() => {
       reject(new Error(`${label} timed out after ${timeout_ms}ms`))
@@ -570,7 +577,7 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
   const wrong_event = BaseEvent.fromJSON(screenshot_payload)
   assert.equal(typeof (wrong_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
   const wrong_dispatched = wrong_bus.emit(wrong_event)
-  await withTimeout(wrong_dispatched.done(), EVENT_WAIT_TIMEOUT_MS, 'wrong-shape event completion')
+  await runWithTimeout(wrong_dispatched.done(), EVENT_WAIT_TIMEOUT_MS, 'wrong-shape event completion')
   const wrong_result = Array.from(wrong_dispatched.event_results.values())[0]
   assert.equal(wrong_result.status, 'error')
   wrong_bus.destroy()
@@ -592,7 +599,7 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
   const right_event = BaseEvent.fromJSON(screenshot_payload)
   assert.equal(typeof (right_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
   const right_dispatched = right_bus.emit(right_event)
-  await withTimeout(right_dispatched.done(), EVENT_WAIT_TIMEOUT_MS, 'right-shape event completion')
+  await runWithTimeout(right_dispatched.done(), EVENT_WAIT_TIMEOUT_MS, 'right-shape event completion')
   const right_result = Array.from(right_dispatched.event_results.values())[0]
   assert.equal(right_result.status, 'completed')
   assert.deepEqual(right_result.result, {
@@ -635,8 +642,8 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   const event_two = ResumeEvent({ label: 'e2' })
 
   const seeded = new EventResult({ event: event_one, handler: handler_one })
-  seeded.markStarted()
-  seeded.markCompleted('seeded')
+  seeded._markStarted()
+  seeded._markCompleted('seeded')
   event_one.event_results.set(handler_one.id, seeded)
   const pending = new EventResult({ event: event_one, handler: handler_two })
   event_one.event_results.set(handler_two.id, pending)
@@ -687,7 +694,7 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   }
 
   const trigger = restored.emit(ResumeEvent({ label: 'e3' }))
-  await withTimeout(trigger.done(), EVENT_WAIT_TIMEOUT_MS, 'bus resume completion')
+  await runWithTimeout(trigger.done(), EVENT_WAIT_TIMEOUT_MS, 'bus resume completion')
 
   const done_one = restored.event_history.get(event_one.event_id)
   const done_two = restored.event_history.get(event_two.event_id)

@@ -508,8 +508,8 @@ test('queue-jump awaited child timeout aborts still fire across buses', async ()
   bus_a.on(ParentEvent, async (event) => {
     // Use scoped bus emit to set parent tracking (event_parent_id, event_emitted_by_handler_id),
     // then also dispatch on bus_b for cross-bus handler execution.
-    // Without parent tracking, processEventImmediately can't detect the queue-jump context
-    // and falls back to waitForCompletion(), which deadlocks with global-serial.
+    // Without parent tracking, _processEventImmediately can't detect the queue-jump context
+    // and falls back to _waitForCompletion(), which deadlocks with global-serial.
     const child = event.bus?.emit(ChildEvent({ event_timeout: 0.01 }))!
     bus_b.emit(child)
     child_ref = child
@@ -530,8 +530,8 @@ const STEP1_HANDLER_MODES = [
   { label: 'serial-global', global_lock: true },
 ] as const
 
-const getHandlerLock = (bus: EventBus, event: BaseEvent) => {
-  const lock = event.eventGetHandlerLock(bus.event_handler_concurrency_default)
+const get_handler_lock = (bus: EventBus, event: BaseEvent) => {
+  const lock = event._getHandlerLock(bus.event_handler_concurrency)
   if (!lock) {
     throw new Error('expected handler lock')
   }
@@ -549,7 +549,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
     })
 
     const parent = ParentEvent({ event_timeout: 0.01 })
-    const lock = getHandlerLock(bus, parent)
+    const lock = get_handler_lock(bus, parent)
     const baseline_in_use = lock.in_use
     const withGlobalLock = <T extends (...args: any[]) => any>(fn: T): T =>
       handler_mode.global_lock
@@ -607,7 +607,7 @@ for (const handler_mode of STEP1_HANDLER_MODES) {
       event_handler_concurrency: 'serial',
     })
     const parent = ParentEvent({ event_timeout: 0.01 })
-    const lock = getHandlerLock(bus, parent)
+    const lock = get_handler_lock(bus, parent)
     const baseline_in_use = lock.in_use
     const withGlobalLock = <T extends (...args: any[]) => any>(fn: T): T =>
       handler_mode.global_lock
@@ -992,7 +992,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 //           └── 1 handler: never runs, CANCELLED when top_handler_main times out
 //
 // KEY MECHANIC: When a child event is awaited via event.done() inside a handler,
-// it triggers "queue-jumping" via processEventImmediately (cross-bus).
+// it triggers "queue-jumping" via _processEventImmediately (cross-bus).
 // Queue-jumped events use yield-and-reacquire: the parent handler's lock is
 // temporarily released so child handlers can acquire it normally. This means
 // child handlers run SERIALLY on a serial handler bus (respecting concurrency limits).
@@ -1003,7 +1003,7 @@ test('multi-level timeout cascade with mixed cancellations', async () => {
 // that handler begins execution — NOT from when the event was dispatched.
 // With serial handlers, each timeout starts when the handler acquires the lock.
 //
-// CANCELLATION CASCADE: When a handler times out, bus.eventCancelPendingChildProcessing()
+// CANCELLATION CASCADE: When a handler times out, bus._cancelPendingChildProcessing()
 // walks the event's children tree and marks any "pending" handler results as
 // EventHandlerCancelledError. Only "pending" results are cancelled — handlers
 // that already started ("started" status) continue running in the background.
@@ -1071,7 +1071,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   // ── QueuedGrandchildEvent handler ─────────────────────────────────────
   // This event is emitted by child_handler but NOT awaited, so it sits in
   // pending_event_queue. When child_handler times out at 80ms,
-  // bus.eventCancelPendingChildProcessing walks ChildEvent.event_children and finds
+  // bus._cancelPendingChildProcessing walks ChildEvent.event_children and finds
   // this event still pending → its handler results are marked as cancelled.
   const queued_gc_handler = () => {
     execution_log.push('queued_gc_start') // should never reach here
@@ -1098,7 +1098,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
   // ── SiblingEvent handler ──────────────────────────────────────────────
   // This event is emitted by top_handler_main but NOT awaited. Stays in
   // pending_event_queue until top_handler_main times out at 250ms →
-  // cancelled by bus.eventCancelPendingChildProcessing.
+  // cancelled by bus._cancelPendingChildProcessing.
   const sibling_handler = () => {
     execution_log.push('sibling_start') // should never reach here
     return 'sibling_done'
@@ -1196,7 +1196,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
 
   // ── QueuedGrandchildEvent: CANCELLED by child_handler timeout ───────
   // This event was emitted but never awaited. It sat in pending_event_queue
-  // until child_handler timed out, which triggered bus.eventCancelPendingChildProcessing
+  // until child_handler timed out, which triggered bus._cancelPendingChildProcessing
   // to walk ChildEvent.event_children and cancel all pending handlers.
   assert.ok(queued_grandchild_ref, 'QueuedGrandchildEvent should have been emitted')
   assert.equal(queued_grandchild_ref!.event_status, 'completed')
@@ -1216,7 +1216,7 @@ test('three-level timeout cascade with per-level timeouts and cascading cancella
 
   // ── SiblingEvent: CANCELLED by top_handler_main timeout ─────────────
   // Same pattern: emitted but never awaited, stays in queue, cancelled when
-  // top_handler_main times out and bus.eventCancelPendingChildProcessing runs.
+  // top_handler_main times out and bus._cancelPendingChildProcessing runs.
   assert.ok(sibling_ref, 'SiblingEvent should have been emitted')
   assert.equal(sibling_ref!.event_status, 'completed')
 
@@ -1370,7 +1370,7 @@ test('cancellation error chain preserves cause references through hierarchy', as
   const deep_cancel = deep_result.error as EventHandlerCancelledError
   assert.ok(deep_cancel.cause instanceof EventHandlerTimeoutError, 'Cancellation should reference parent timeout')
   // The cause should be the INNER handler's timeout, because that's
-  // the handler whose bus.eventCancelPendingChildProcessing actually cancelled DeepEvent.
+  // the handler whose bus._cancelPendingChildProcessing actually cancelled DeepEvent.
   assert.ok(
     deep_cancel.cause.message.includes('inner_handler') || deep_cancel.cause.message.includes('child_handler'),
     'cause should reference the handler that directly caused cancellation'
@@ -1380,7 +1380,7 @@ test('cancellation error chain preserves cause references through hierarchy', as
 // =============================================================================
 // When a parent has a timeout but a child has event_timeout: null (no timeout),
 // the child's handlers run indefinitely on their own — but if the PARENT times
-// out, bus.eventCancelPendingChildProcessing still cancels any pending child handlers.
+// out, bus._cancelPendingChildProcessing still cancels any pending child handlers.
 // This tests that cancellation works across timeout/no-timeout boundaries.
 // =============================================================================
 

@@ -28,7 +28,7 @@ test('EventBus toJSON/fromJSON roundtrip uses id-keyed structures', async () => 
     return 'ok'
   })
 
-  const release_pause = bus.locks.requestRunloopPause()
+  const release_pause = bus.locks._requestRunloopPause()
   const pending_event = bus.emit(SerializableEvent({ event_timeout: 11 }))
   await Promise.resolve()
 
@@ -49,8 +49,8 @@ test('EventBus toJSON/fromJSON roundtrip uses id-keyed structures', async () => 
   assert.equal(restored.event_history.max_history_size, 500)
   assert.equal(restored.event_history.max_history_drop, false)
   assert.equal(restored.event_concurrency, 'parallel')
-  assert.equal(restored.event_handler_concurrency_default, 'parallel')
-  assert.equal(restored.event_handler_completion_default, 'first')
+  assert.equal(restored.event_handler_concurrency, 'parallel')
+  assert.equal(restored.event_handler_completion, 'first')
   assert.equal(restored.event_timeout, null)
   assert.equal(restored.event_handler_slow_timeout, 12)
   assert.equal(restored.event_slow_timeout, 34)
@@ -101,7 +101,7 @@ test('EventBus toJSON promotes pending events into event_history snapshot', asyn
     return 'ok'
   })
 
-  const release_pause = bus.locks.requestRunloopPause()
+  const release_pause = bus.locks._requestRunloopPause()
   const pending = bus.emit(PendingEvent({}))
   await Promise.resolve()
 

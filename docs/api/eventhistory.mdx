@@ -100,7 +100,7 @@ Both runtimes expose explicit accessors in addition to mapping methods.
 
 - `trim_event_history` / `trimEventHistory` applies configured retention policy.
 - `cleanup_excess_events` / `cleanupExcessEvents` performs direct overage cleanup.
-- `on_remove` callbacks let the caller run cleanup side effects (for example `event._gc()`).
+- `on_remove` callbacks let the caller run cleanup side effects when history entries are removed.
 
 ## Constructor options
 

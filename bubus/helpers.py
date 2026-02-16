@@ -14,7 +14,7 @@ P = ParamSpec('P')
 QueueEntryType = TypeVar('QueueEntryType')
 
 
-async def with_timeout(awaitable: Awaitable[R], timeout: float | None = None) -> R:
+async def run_with_timeout(awaitable: Awaitable[R], timeout: float | None = None) -> R:
     """Await `awaitable` with optional timeout."""
     if timeout is None:
         return await awaitable
@@ -28,7 +28,7 @@ async def cancel_and_await(task: asyncio.Task[Any] | None, timeout: float | None
     if not task.done():
         task.cancel()
     try:
-        await with_timeout(task, timeout=timeout)
+        await run_with_timeout(task, timeout=timeout)
     except (asyncio.CancelledError, TimeoutError):
         pass
     except Exception:
@@ -36,7 +36,7 @@ async def cancel_and_await(task: asyncio.Task[Any] | None, timeout: float | None
 
 
 @asynccontextmanager
-async def with_slow_monitor(
+async def _run_with_slow_monitor(
     monitor_factory: Callable[[], Coroutine[Any, Any, Any]] | None,
     *,
     task_name: str | None = None,
@@ -240,9 +240,9 @@ def log_filtered_traceback(exc: BaseException) -> str:
 
 
 __all__ = [
-    'with_timeout',
+    'run_with_timeout',
     'cancel_and_await',
-    'with_slow_monitor',
+    '_run_with_slow_monitor',
     'log_filtered_traceback',
     'CleanShutdownQueue',
     'QueueShutDown',

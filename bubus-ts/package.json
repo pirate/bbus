@@ -31,7 +31,7 @@
     "prettier": "prettier --write .",
     "eslint": "eslint .",
     "lint": "pnpm run prettier && pnpm run eslint && pnpm run typecheck",
-    "test": "NODE_OPTIONS='--expose-gc' node --expose-gc --test --import tsx tests/**/*.test.ts",
+    "test": "NODE_OPTIONS='--expose-gc' node --expose-gc --test --import tsx \"tests/**/*.test.ts\"",
     "perf": "pnpm run perf:node && pnpm run perf:bun && pnpm run perf:deno && pnpm run perf:browser",
     "debug:node": "NODE_OPTIONS='--expose-gc' node --expose-gc --import tsx",
     "debug:bun": "bun --expose-gc run",

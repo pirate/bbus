@@ -219,56 +219,73 @@ bus.eventIsParentOf(parentEvent, childEvent)
 </Tab>
 </Tabs>
 
-### Execution pipeline (internal)
+### Execution pipeline
 
-Both runtimes use the same layered model, but with runtime-native wrapper primitives:
+Both runtimes use the same layered model, expressed with runtime-native wrappers.
 
 - Event scope lock
-- Event-level timeout/slow monitor wrappers
+- Event-level timeout and slow monitor
 - Per-handler lock
-- Handler-level timeout/slow monitor wrappers
+- Handler-level timeout and slow monitor
 - Handler execution context scope
-- Error normalization + completion callbacks
+- Error normalization and completion callbacks
 
 <Tabs>
 <Tab title="Python">
 
 ```python
-# Event-level wrappers inside EventBus.process_event(...)
-async with locks.with_event_lock(...):
-    async with asyncio.timeout(event_timeout):
-        async with with_slow_monitor(...):
-            await event.event_run_handlers(...)
+# EventBus.step(...)
+async with self.locks.with_event_lock(self, event):
+    await self.process_event(event, timeout=timeout)
 
-# Handler-level wrappers inside EventResult.run_handler(...)
-async with eventbus.locks.with_handler_lock(...):
-    async with event_result.with_timeout(event):
-        async with with_slow_monitor(...):
-            with eventbus.with_handler_execution_context(event, handler_id):
-                await event_result.call_handler(...)
+# EventBus.process_event(...)
+async with asyncio.timeout(resolved_event_timeout):
+    async with with_slow_monitor(self._create_slow_event_warning_timer(event)):
+        await event._run_handlers(
+            eventbus=self,
+            handlers=self.get_handlers_for_event(event),
+            timeout=resolved_event_timeout,
+        )
+
+# EventResult.run_handler(...)
+async with eventbus.locks.with_handler_lock(eventbus, event, event_result):
+    with eventbus.with_handler_execution_context(event, event_result.handler_id):
+        async with event_result.with_timeout(event):
+            async with with_slow_monitor(handler_slow_monitor):
+                await event_result.call_handler(event, handler, dispatch_context)
 ```
 
 </Tab>
 <Tab title="TypeScript">
 
 ```ts
-// Event-level wrappers inside EventBus.processEvent(...)
-await locks.withEventLock(event, () =>
-  _runHandlersWithTimeout(event, pendingEntries, () =>
-    withSlowMonitor(event.createSlowEventWarningTimer(), () =>
-      scopedEvent.runHandlers(pendingEntries)
-    )
-  )
+// EventBus.processEvent(...)
+await this.locks.withEventLock(
+  event,
+  () =>
+    this._runHandlersWithTimeout(event, pending_entries, resolved_event_timeout, () =>
+      runWithSlowMonitor(event._createSlowEventWarningTimer(), () => scoped_event._runHandlers(pending_entries))
+    ),
+  options
 )
 
-// Handler-level wrappers inside EventResult.runHandler(...)
-await locks.withHandlerExecutionContext(result, async () => {
-  await runWithAsyncContext(event.eventGetDispatchContext() ?? null, async () => {
-    const handlerResult = await withTimeout(handlerTimeout, onHandlerTimeout, () =>
-      withSlowMonitor(slowTimer, () =>
-        runWithAbortMonitor(() => handler(handlerEvent), abortSignal)
-      )
+// BaseEvent._runHandlers(...)
+await this.bus.locks.withHandlerLock(original, this.bus.event_handler_concurrency_default, async (handler_lock) => {
+  await entry.runHandler(handler_lock)
+})
+
+// EventResult.runHandler(...)
+await this.bus.locks.withHandlerExecutionContext(this, async () => {
+  await runWithAsyncContext(event._getDispatchContext() ?? null, async () => {
+    const handler_result = await runWithTimeout(
+      this.handler_timeout,
+      () => this._createHandlerTimeoutError(event),
+      () =>
+        runWithSlowMonitor(slow_handler_warning_timer, () =>
+          runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
+        )
     )
+    this._finalizeHandlerResult(event, handler_result)
   })
 })
 ```

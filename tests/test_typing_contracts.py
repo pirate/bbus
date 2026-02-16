@@ -35,7 +35,7 @@ def _build_contract_handler(bus: EventBus) -> EventHandler:
 
 
 def _assert_pending_result_types(event: TypeContractEvent, bus: EventBus, handler_entry: EventHandler) -> None:
-    pending_results = event.event_create_pending_handler_results(
+    pending_results = event._create_pending_handler_results(
         {handler_entry.id: handler_entry},
         eventbus=bus,
         timeout=event.event_timeout,
@@ -57,11 +57,11 @@ async def _assert_pipeline_types(bus: EventBus, event: TypeContractEvent) -> Non
     handler_result = event.event_results[handler_entry.id]
     assert_type(handler_result, EventResult[TypeContractResult])
 
-    handler_lock_scope: AsyncContextManager[None] = bus.locks.with_handler_lock(bus, event, handler_result)
+    handler_lock_scope: AsyncContextManager[None] = bus.locks._run_with_handler_lock(bus, event, handler_result)
     async with handler_lock_scope:
         pass
 
-    handler_context_scope: ContextManager[None] = bus.with_handler_execution_context(event, handler_entry.id)
+    handler_context_scope: ContextManager[None] = bus._run_with_handler_execution_context(event, handler_entry.id)
     with handler_context_scope:
         pass
 
@@ -86,7 +86,7 @@ def test_typing_contracts_module_loads() -> None:
 This file is for static type checking only (pyright/ty), not runtime pytest execution.
 """
 
-# pyright: strict, reportUnnecessaryTypeIgnoreComment=true
+# pyright: strict, reportUnnecessaryTypeIgnoreComment=true, reportPrivateUsage=false
 
 from typing import TYPE_CHECKING
 

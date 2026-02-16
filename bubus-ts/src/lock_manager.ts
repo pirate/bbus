@@ -100,7 +100,7 @@ export class HandlerLock {
     this.state = 'held'
   }
 
-  // used by EventBus.processEventImmediately to yield the parent handler's lock to the child event so it can be processed immediately
+  // used by EventBus._processEventImmediately to yield the parent handler's lock to the child event so it can be processed immediately
   yieldHandlerLockForChildRun(): boolean {
     if (!this.lock || this.state !== 'held') {
       return false
@@ -110,7 +110,7 @@ export class HandlerLock {
     return true
   }
 
-  // used by EventBus.processEventImmediately to reacquire the handler lock after the child event has been processed
+  // used by EventBus._processEventImmediately to reacquire the handler lock after the child event has been processed
   async reclaimHandlerLockIfRunning(): Promise<boolean> {
     if (!this.lock || this.state !== 'yielded') {
       return false
@@ -137,7 +137,7 @@ export class HandlerLock {
     }
   }
 
-  // used by EventBus.processEventImmediately to yield the handler lock and reacquire it after the child event has been processed
+  // used by EventBus._processEventImmediately to yield the handler lock and reacquire it after the child event has been processed
   async runQueueJump<T>(fn: () => Promise<T>): Promise<T> {
     const yielded = this.yieldHandlerLockForChildRun()
     try {
@@ -156,16 +156,16 @@ export class HandlerLock {
 export type EventBusInterfaceForLockManager = {
   isIdleAndQueueEmpty: () => boolean
   event_concurrency: EventConcurrencyMode
+  event_global_lock: AsyncLock
 }
 
 // The LockManager is responsible for managing the concurrency of events and handlers
 export class LockManager {
   private bus: EventBusInterfaceForLockManager // Live bus reference; used to read defaults and idle state.
 
-  static _lock_for_event_global_serial = new AsyncLock(1) // used for the global-serial concurrency mode
   readonly bus_event_lock: AsyncLock // Per-bus event lock; created with LockManager and never swapped.
-  private pause_depth: number // Re-entrant pause counter; increments on requestRunloopPause, decrements on release.
-  private pause_waiters: Array<() => void> // Resolvers for waitUntilRunloopResumed; drained when pause_depth hits 0.
+  private pause_depth: number // Re-entrant pause counter; increments on _requestRunloopPause, decrements on release.
+  private pause_waiters: Array<() => void> // Resolvers for _waitUntilRunloopResumed; drained when pause_depth hits 0.
   private active_handler_results: EventResult[] // Stack of active handler results for "inside handler" detection.
 
   private idle_waiters: Array<(became_idle: boolean) => void> // Resolvers waiting for stable idle; cleared when idle confirmed.
@@ -187,7 +187,7 @@ export class LockManager {
 
   // Low-level runloop pause: increments a re-entrant counter and returns a release
   // function. Used for broad, bus-scoped pauses during queue-jump across buses.
-  requestRunloopPause(): () => void {
+  _requestRunloopPause(): () => void {
     this.pause_depth += 1
     let released = false
     return () => {
@@ -207,7 +207,7 @@ export class LockManager {
     }
   }
 
-  waitUntilRunloopResumed(): Promise<void> {
+  _waitUntilRunloopResumed(): Promise<void> {
     if (this.pause_depth === 0) {
       return Promise.resolve()
     }
@@ -216,11 +216,11 @@ export class LockManager {
     })
   }
 
-  isPaused(): boolean {
+  _isPaused(): boolean {
     return this.pause_depth > 0
   }
 
-  async withHandlerExecutionContext<T>(result: EventResult, fn: () => Promise<T>): Promise<T> {
+  async _runWithHandlerExecutionContext<T>(result: EventResult, fn: () => Promise<T>): Promise<T> {
     this.active_handler_results.push(result)
     try {
       return await fn()
@@ -232,19 +232,19 @@ export class LockManager {
     }
   }
 
-  getActiveHandlerResult(): EventResult | undefined {
+  _getActiveHandlerResult(): EventResult | undefined {
     return this.active_handler_results[this.active_handler_results.length - 1]
   }
 
-  getActiveHandlerResults(): EventResult[] {
+  _getActiveHandlerResults(): EventResult[] {
     return [...this.active_handler_results]
   }
 
   // Per-bus check: true only if this specific bus has a handler on its stack.
-  // For cross-bus queue-jumping, EventBus.processEventImmediately uses getParentEventResultAcrossAllBuses()
+  // For cross-bus queue-jumping, EventBus._processEventImmediately uses getParentEventResultAcrossAllBuses()
   // to walk up the parent event tree, and the bus proxy passes handler_result
-  // to processEventImmediately so it can yield/reacquire the correct lock.
-  isAnyHandlerActive(): boolean {
+  // to _processEventImmediately so it can yield/reacquire the correct lock.
+  _isAnyHandlerActive(): boolean {
     return this.active_handler_results.length > 0
   }
 
@@ -289,7 +289,7 @@ export class LockManager {
 
   // Called by EventBus.markEventCompleted and EventBus.markHandlerCompleted to notify
   // waitUntilIdle() callers that the bus may now be idle.
-  notifyIdleListeners(): void {
+  _notifyIdleListeners(): void {
     // Fast-path: most completions have no waitUntilIdle() callers waiting,
     // so skip expensive idle snapshot scans in that common case.
     if (this.idle_waiters.length === 0) {
@@ -328,12 +328,12 @@ export class LockManager {
       return null
     }
     if (resolved === 'global-serial') {
-      return LockManager._lock_for_event_global_serial
+      return this.bus.event_global_lock
     }
     return this.bus_event_lock
   }
 
-  async withEventLock<T>(
+  async _runWithEventLock<T>(
     event: BaseEvent,
     fn: () => Promise<T>,
     options: { bypass_event_locks?: boolean; pre_acquired_lock?: AsyncLock | null } = {}
@@ -345,12 +345,12 @@ export class LockManager {
     return await runWithLock(this.getLockForEvent(event), fn)
   }
 
-  async withHandlerLock<T>(
+  async _runWithHandlerLock<T>(
     event: BaseEvent,
     default_handler_concurrency: EventHandlerConcurrencyMode | undefined,
     fn: (lock: HandlerLock | null) => Promise<T>
   ): Promise<T> {
-    const lock = event.eventGetHandlerLock(default_handler_concurrency)
+    const lock = event._getHandlerLock(default_handler_concurrency)
     if (lock) {
       await lock.acquire()
     }
@@ -371,7 +371,7 @@ export class LockManager {
     this.idle_check_pending = true
     setTimeout(() => {
       this.idle_check_pending = false
-      this.notifyIdleListeners()
+      this._notifyIdleListeners()
     }, 0)
   }
 

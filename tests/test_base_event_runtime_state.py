@@ -76,8 +76,8 @@ async def test_event_without_handlers():
     # Initialize the completion signal (normally done when dispatched)
     _ = event.event_completed_signal
 
-    # Mark as completed manually (simulating what happens in event_mark_complete_if_all_handlers_completed)
-    event.event_mark_complete_if_all_handlers_completed()
+    # Mark as completed manually (simulating what happens in _mark_completed)
+    event._mark_completed()
 
     # After marking complete, it should be set
     # When no handlers but event is completed, event_started_at returns event_completed_at
@@ -103,7 +103,7 @@ def test_event_with_manually_set_completed_at():
     assert event.event_completed_at is not None
 
     # Reconcile state through the lifecycle method.
-    event.event_mark_complete_if_all_handlers_completed()
+    event._mark_completed()
     assert event.event_status == 'completed'
     assert event.event_started_at is not None
 
@@ -113,7 +113,7 @@ def test_event_with_manually_set_completed_at():
 
     # Complete the handler
     list(event.event_results.values())[0].update(status='completed', result='done')
-    event.event_mark_complete_if_all_handlers_completed()
+    event._mark_completed()
     assert event.event_completed_at is not None
 
 
@@ -168,6 +168,6 @@ def test_event_status_is_serialized_and_stateful():
     assert started_payload['event_status'] == 'started'
 
     result.update(status='completed', result='ok')
-    event.event_mark_complete_if_all_handlers_completed()
+    event._mark_completed()
     completed_payload = event.model_dump(mode='json')
     assert completed_payload['event_status'] == 'completed'

@@ -65,7 +65,7 @@ async def test_event_and_result_without_eventbus() -> None:
     )
     assert handler_entry.id is not None
     handler_id = handler_entry.id
-    pending_results = event.event_create_pending_handler_results({handler_id: handler_entry})
+    pending_results = event._create_pending_handler_results({handler_id: handler_entry})
     event_result = pending_results[handler_id]
 
     test_bus = EventBus(name='StandaloneTest2')
@@ -79,7 +79,7 @@ async def test_event_and_result_without_eventbus() -> None:
     assert event_result.status == 'completed'
     assert event.event_results[handler_id] is event_result
 
-    event.event_mark_complete_if_all_handlers_completed()
+    event._mark_completed()
     assert event.event_completed_at is not None
     await test_bus.stop()
 
@@ -110,11 +110,12 @@ def test_event_handler_model_is_serializable() -> None:
 
 def test_event_handler_id_matches_ts_uuidv5_algorithm() -> None:
     registered_at = datetime(2025, 1, 2, 3, 4, 5, 678901, tzinfo=UTC)
+    handler_registered_ts = 678901
     entry = EventHandler(
         handler_name='pkg.module.handler',
         handler_file_path='~/project/app.py:123',
         handler_registered_at=registered_at,
-        handler_registered_ts=1735787045678901000,
+        handler_registered_ts=handler_registered_ts,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
@@ -123,7 +124,7 @@ def test_event_handler_id_matches_ts_uuidv5_algorithm() -> None:
     namespace = uuid5(NAMESPACE_DNS, 'bubus-handler')
     expected_seed = (
         '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.py:123|'
-        '2025-01-02T03:04:05.678Z|1735787045678901000|StandaloneEvent'
+        f'2025-01-02T03:04:05.678Z|{handler_registered_ts}|StandaloneEvent'
     )
     expected_id = str(uuid5(namespace, expected_seed))
 

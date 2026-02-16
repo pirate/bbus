@@ -13,17 +13,31 @@ test('BaseEvent lifecycle transitions are explicit and awaitable', async () => {
   assert.equal(standalone.event_started_at, null)
   assert.equal(standalone.event_completed_at, null)
 
-  standalone.markStarted()
+  standalone._markStarted()
   assert.equal(standalone.event_status, 'started')
   assert.equal(typeof standalone.event_started_at, 'string')
 
-  standalone.markCompleted(false)
+  standalone._markCompleted(false)
   assert.equal(standalone.event_status, 'completed')
   assert.equal(typeof standalone.event_completed_at, 'string')
-  await standalone.waitForCompletion()
+  await standalone._waitForCompletion()
 })
 
-test('BaseEvent rejects reserved bus/first fields in payload and event shape', () => {
+test('BaseEvent.eventTimestampNow emits raw monotonic performance.now() values', () => {
+  const first = BaseEvent.eventTimestampNow()
+  const second = BaseEvent.eventTimestampNow()
+
+  assert.equal(typeof first.ts, 'number')
+  assert.equal(typeof second.ts, 'number')
+  assert.ok(Number.isFinite(first.ts))
+  assert.ok(Number.isFinite(second.ts))
+  assert.ok(first.ts >= 0)
+  assert.ok(second.ts >= first.ts)
+  assert.equal(Number.isInteger(Date.parse(first.isostring)), true)
+  assert.equal(Number.isInteger(Date.parse(second.isostring)), true)
+})
+
+test('BaseEvent rejects reserved runtime fields in payload and event shape', () => {
   const ReservedFieldEvent = BaseEvent.extend('BaseEventReservedFieldEvent', {})
 
   assert.throws(() => {
@@ -41,17 +55,43 @@ test('BaseEvent rejects reserved bus/first fields in payload and event shape', (
   assert.throws(() => {
     void BaseEvent.extend('BaseEventReservedFirstShapeEvent', { first: z.string() })
   }, /field "first" is reserved/i)
+
+  assert.throws(() => {
+    void ReservedFieldEvent({ toString: 'payload_to_string_field' } as unknown as never)
+  }, /field "toString" is reserved/i)
+
+  assert.throws(() => {
+    void BaseEvent.extend('BaseEventReservedToStringShapeEvent', { toString: z.string() })
+  }, /field "toString" is reserved/i)
+
+  assert.throws(() => {
+    void ReservedFieldEvent({ toJSON: 'payload_to_json_field' } as unknown as never)
+  }, /field "toJSON" is reserved/i)
+
+  assert.throws(() => {
+    void BaseEvent.extend('BaseEventReservedToJSONShapeEvent', { toJSON: z.string() })
+  }, /field "toJSON" is reserved/i)
+
+  assert.throws(() => {
+    void ReservedFieldEvent({ fromJSON: 'payload_from_json_field' } as unknown as never)
+  }, /field "fromJSON" is reserved/i)
+
+  assert.throws(() => {
+    void BaseEvent.extend('BaseEventReservedFromJSONShapeEvent', { fromJSON: z.string() })
+  }, /field "fromJSON" is reserved/i)
 })
 
 test('BaseEvent rejects unknown event_* fields while allowing known event_* overrides', () => {
   const AllowedEvent = BaseEvent.extend('BaseEventAllowedEventConfigEvent', {
     event_timeout: 123,
+    event_slow_timeout: 9,
     event_handler_timeout: 45,
     value: z.string(),
   })
 
   const event = AllowedEvent({ value: 'ok' })
   assert.equal(event.event_timeout, 123)
+  assert.equal(event.event_slow_timeout, 9)
   assert.equal(event.event_handler_timeout, 45)
 
   assert.throws(() => {
@@ -179,8 +219,8 @@ test('BaseEvent status hooks capture bus reference before event gc', async () =>
   const event = HookEvent({})
   event.bus = bus
 
-  event.markStarted()
-  event.markCompleted()
+  event._markStarted()
+  event._markCompleted()
   event._gc()
 
   assert.equal(bus.scheduled.length, 2)

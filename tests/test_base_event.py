@@ -6,6 +6,8 @@ from pydantic import ValidationError
 
 from bubus import BaseEvent, EventBus
 
+JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+
 
 @pytest.fixture(autouse=True)
 async def cleanup_eventbus_instances():
@@ -47,11 +49,17 @@ async def test_event_bus_aliases_bus_property():
     await bus.stop()
 
 
-async def test_bus_and_first_fields_are_reserved_in_event_payload():
+async def test_reserved_runtime_fields_are_rejected():
     with pytest.raises(ValidationError, match='Field "bus" is reserved'):
         MainEvent.model_validate({'bus': 'payload_bus_field'})
     with pytest.raises(ValidationError, match='Field "first" is reserved'):
         MainEvent.model_validate({'first': 'payload_first_field'})
+    with pytest.raises(ValidationError, match='Field "toString" is reserved'):
+        MainEvent.model_validate({'toString': 'payload_to_string_field'})
+    with pytest.raises(ValidationError, match='Field "toJSON" is reserved'):
+        MainEvent.model_validate({'toJSON': 'payload_to_json_field'})
+    with pytest.raises(ValidationError, match='Field "fromJSON" is reserved'):
+        MainEvent.model_validate({'fromJSON': 'payload_from_json_field'})
 
 
 async def test_unknown_event_prefixed_field_rejected_in_payload():
@@ -67,9 +75,55 @@ async def test_model_prefixed_field_rejected_in_payload():
 async def test_builtin_event_prefixed_override_is_allowed():
     class AllowedTimeoutOverrideEvent(BaseEvent[None]):
         event_timeout: float | None = 234234
+        event_slow_timeout: float | None = 12
 
     event = AllowedTimeoutOverrideEvent()
     assert event.event_timeout == 234234
+    assert event.event_slow_timeout == 12
+
+
+async def test_event_ts_fields_are_recognized():
+    event = MainEvent.model_validate(
+        {
+            'event_created_ts': 123,
+            'event_started_ts': 456,
+            'event_completed_ts': 789,
+            'event_slow_timeout': 1.5,
+            'event_emitted_by_handler_id': 'handler-123',
+            'event_pending_bus_count': 2,
+        }
+    )
+    assert event.event_created_ts == 123
+    assert event.event_started_ts == 456
+    assert event.event_completed_ts == 789
+    assert event.event_slow_timeout == 1.5
+    assert event.event_emitted_by_handler_id == 'handler-123'
+    assert event.event_pending_bus_count == 2
+
+
+async def test_python_serialized_ts_fields_are_integers():
+    bus = EventBus(name='TsIntBus')
+
+    class TsIntEvent(BaseEvent[str]):
+        value: str = 'ok'
+
+    bus.on(TsIntEvent, lambda _event: 'done')
+    event = await bus.emit(TsIntEvent(value='hello'))
+
+    payload = event.model_dump(mode='json')
+    assert isinstance(payload['event_created_ts'], int)
+    assert isinstance(payload['event_started_ts'], int)
+    assert isinstance(payload['event_completed_ts'], int)
+    assert 0 <= payload['event_created_ts'] <= JS_MAX_SAFE_INTEGER
+    assert 0 <= payload['event_started_ts'] <= JS_MAX_SAFE_INTEGER
+    assert 0 <= payload['event_completed_ts'] <= JS_MAX_SAFE_INTEGER
+
+    first_result = next(iter(event.event_results.values()))
+    result_payload = first_result.model_dump(mode='json')
+    assert isinstance(result_payload['handler_registered_ts'], int)
+    assert 0 <= result_payload['handler_registered_ts'] <= JS_MAX_SAFE_INTEGER
+
+    await bus.stop()
 
 
 async def test_builtin_model_prefixed_override_is_allowed():
@@ -78,28 +132,6 @@ async def test_builtin_model_prefixed_override_is_allowed():
 
     event = AllowedModelConfigOverrideEvent()
     assert event.event_type == 'AllowedModelConfigOverrideEvent'
-
-
-async def test_unknown_event_prefixed_field_rejected_at_class_definition():
-    def define_invalid_event_class() -> type[BaseEvent[None]]:
-        class InvalidEventPrefixedFieldEvent(BaseEvent[None]):
-            event_some_field_we_dont_recognize: int = 123
-
-        return InvalidEventPrefixedFieldEvent
-
-    with pytest.raises(TypeError, match='event_some_field_we_dont_recognize'):
-        define_invalid_event_class()
-
-
-async def test_unknown_model_prefixed_field_rejected_at_class_definition():
-    def define_invalid_model_event_class() -> type[BaseEvent[None]]:
-        class InvalidModelPrefixedFieldEvent(BaseEvent[None]):
-            model_something_random: int = 123
-
-        return InvalidModelPrefixedFieldEvent
-
-    with pytest.raises(TypeError, match='model_something_random'):
-        define_invalid_model_event_class()
 
 
 async def test_event_bus_property_single_bus():

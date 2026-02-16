@@ -192,10 +192,10 @@ async def test_run_handler_marks_started_after_handler_lock_entry():
 
     handler_entry = bus.on(LockOrderEvent, handler)
     event = LockOrderEvent()
-    event.event_create_pending_handler_results({handler_entry.id: handler_entry}, eventbus=bus, timeout=event.event_timeout)
+    event._create_pending_handler_results({handler_entry.id: handler_entry}, eventbus=bus, timeout=event.event_timeout)
     event_result = event.event_results[handler_entry.id]
     release_lock = asyncio.Event()
-    original_with_handler_lock = bus.locks.with_handler_lock
+    original_with_handler_lock = bus.locks._run_with_handler_lock
 
     @asynccontextmanager
     async def blocked_with_handler_lock(*args: Any, **kwargs: Any):
@@ -203,7 +203,7 @@ async def test_run_handler_marks_started_after_handler_lock_entry():
         async with original_with_handler_lock(*args, **kwargs):
             yield
 
-    setattr(bus.locks, 'with_handler_lock', blocked_with_handler_lock)
+    setattr(bus.locks, '_run_with_handler_lock', blocked_with_handler_lock)
 
     run_task = asyncio.create_task(bus.run_handler(event, handler_entry, timeout=event.event_timeout))
     assert event_result.status == 'pending'
@@ -228,10 +228,10 @@ async def test_run_handler_starts_slow_monitor_after_lock_wait(caplog: Any):
 
     handler_entry = bus.on(SlowMonitorOrderEvent, handler)
     event = SlowMonitorOrderEvent()
-    event.event_create_pending_handler_results({handler_entry.id: handler_entry}, eventbus=bus, timeout=event.event_timeout)
+    event._create_pending_handler_results({handler_entry.id: handler_entry}, eventbus=bus, timeout=event.event_timeout)
 
     release_lock = asyncio.Event()
-    original_with_handler_lock = bus.locks.with_handler_lock
+    original_with_handler_lock = bus.locks._run_with_handler_lock
 
     @asynccontextmanager
     async def blocked_with_handler_lock(*args: Any, **kwargs: Any):
@@ -240,7 +240,7 @@ async def test_run_handler_starts_slow_monitor_after_lock_wait(caplog: Any):
             yield
 
     caplog.set_level(logging.WARNING, logger='bubus')
-    setattr(bus.locks, 'with_handler_lock', blocked_with_handler_lock)
+    setattr(bus.locks, '_run_with_handler_lock', blocked_with_handler_lock)
     try:
         run_task = asyncio.create_task(bus.run_handler(event, handler_entry, timeout=event.event_timeout))
         await asyncio.sleep(0.03)

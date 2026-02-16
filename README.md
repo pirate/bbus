@@ -466,7 +466,7 @@ print(await event_bus.emit(DoSomeMathEvent(a=100, b=120)).event_result())
 You can use these helpers to interact with the results returned by handlers:
 
 - `BaseEvent.event_result()`
-- `BaseEvent.event_results_list()`, `BaseEvent.event_results_filtered()`
+- `BaseEvent.event_results_list()`
 - Inspect raw per-handler entries via `BaseEvent.event_results`
 
 **2. Have the handler do the work, then emit another event containing the result value, which other code can find:**
@@ -1039,17 +1039,6 @@ all_results = await event.event_results_list(raise_if_any=False, raise_if_none=F
 
 `event_results_list()` is the canonical collection helper for multiple handler return values.
 
-##### `event_create_pending_handler_results(handlers: dict[str, EventHandler], eventbus: EventBus | None = None, timeout: float | None = None) -> dict[str, EventResult]`
-
-Create (or reset) the `EventResult` placeholders for the provided handlers. The `EventBus` uses this internally before it begins executing handlers so that the event's state is immediately visible. Advanced users can call it when coordinating handler execution manually.
-
-```python
-applicable_handlers = bus.get_handlers_for_event(event)  # internal helper shown for illustration
-pending_results = event.event_create_pending_handler_results(applicable_handlers, eventbus=bus)
-
-assert all(result.status == 'pending' for result in pending_results.values())
-```
-
 ##### `event_bus` (property)
 
 Shortcut to get the `EventBus` that is currently processing this event. Can be used to avoid having to pass an `EventBus` instance to your handlers.
@@ -1138,13 +1127,12 @@ class EventHandler(BaseModel):
     eventbus_id: str                 # Owning EventBus ID
 ```
 
-The raw callable is stored on `handler`, but is excluded from JSON serialization (`to_json_dict()`).
+The raw callable is stored on `handler`, but is excluded from JSON serialization (`model_dump_json(exclude={'handler'})`).
 
 #### `EventHandler` Properties and Methods
 
 - `label` (property): Short display label like `my_handler#abcd`.
-- `__call__(event)`: Invokes the wrapped callable directly.
-- `to_json_dict() -> dict[str, Any]`: JSON-safe metadata dump (excludes callable).
+- `model_dump_json(exclude={'handler'}) -> str`: JSON metadata dump (callable excluded).
 - `from_json_dict(data, handler=None) -> EventHandler`: Rebuilds metadata; optional callable reattachment.
 - `from_callable(...) -> EventHandler`: Build a new handler entry from a callable plus bus/pattern metadata.
 

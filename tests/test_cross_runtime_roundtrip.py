@@ -547,7 +547,7 @@ async def test_python_to_ts_to_python_bus_roundtrip_rehydrates_and_resumes(tmp_p
 
     event_one = PyTsBusResumeEvent(label='e1')
     event_two = PyTsBusResumeEvent(label='e2')
-    seeded_results = event_one.event_create_pending_handler_results(
+    seeded_results = event_one._create_pending_handler_results(
         {handler_one_id: handler_one_entry, handler_two_id: handler_two_entry}, eventbus=source_bus
     )
     seeded = seeded_results[handler_one_id]

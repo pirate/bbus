@@ -435,8 +435,8 @@ class TestParentEventTracking:
         finally:
             await bus2.stop(clear=True)
 
-    async def test_event_are_all_children_complete(self, eventbus: EventBus):
-        """Test the event_are_all_children_complete method"""
+    async def test__are_all_children_complete(self, eventbus: EventBus):
+        """Test the _are_all_children_complete method"""
         completion_order: list[str] = []
 
         async def parent_handler(event: ParentEvent) -> str:
@@ -461,13 +461,13 @@ class TestParentEventTracking:
         # Check completion status during processing
         # At this point, parent handler hasn't run yet, so no children exist
         print(f'Children immediately after dispatch: {len(parent.event_children)}')
-        assert parent.event_are_all_children_complete()  # No children yet, so technically complete
+        assert parent._are_all_children_complete()  # No children yet, so technically complete
 
         # Wait for all processing
         await parent_event
 
         # Now all children should be complete
-        assert parent.event_are_all_children_complete()
+        assert parent._are_all_children_complete()
         assert len(parent.event_children) == 2
         for child in parent.event_children:
             assert child.event_status == 'completed'

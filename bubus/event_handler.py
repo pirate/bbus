@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import math
 import os
 import time
 from collections.abc import Awaitable, Callable, Coroutine
@@ -115,6 +116,8 @@ _InvokableEventHandlerCallable: TypeAlias = Callable[['BaseEvent[Any]'], Any | A
 ContravariantEventHandlerCallable: TypeAlias = EventHandlerFunc[T_Event] | AsyncEventHandlerFunc[T_Event]
 
 HANDLER_ID_NAMESPACE: UUID = uuid5(NAMESPACE_DNS, 'bubus-handler')
+SUB_MS_NS_OFFSET_MODULUS = 1_000_000
+JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
@@ -207,7 +210,7 @@ class EventHandler(BaseModel):
     handler_timeout: float | None = None
     handler_slow_timeout: float | None = None
     handler_registered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    handler_registered_ts: int | float = Field(default_factory=time.time_ns)
+    handler_registered_ts: int = Field(default_factory=lambda: time.monotonic_ns() % SUB_MS_NS_OFFSET_MODULUS)
     event_pattern: str = '*'
     eventbus_name: str = 'EventBus'
     eventbus_id: str = '00000000-0000-0000-0000-000000000000'
@@ -237,6 +240,20 @@ class EventHandler(BaseModel):
         normalized = str(value)
         assert normalized.isidentifier() and not normalized.startswith('_'), f'Invalid event bus name: {value!r}'
         return normalized
+
+    @field_validator('handler_registered_ts', mode='before')
+    @classmethod
+    def _normalize_handler_registered_ts(cls, value: Any) -> int:
+        if isinstance(value, bool):
+            raise TypeError('handler_registered_ts must be an integer offset')
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and not math.isfinite(value):
+                raise TypeError('handler_registered_ts must be finite')
+            normalized = int(value)
+            if normalized < 0 or normalized > JS_MAX_SAFE_INTEGER:
+                raise ValueError(f'handler_registered_ts must be in [0, {JS_MAX_SAFE_INTEGER}], got {normalized}')
+            return normalized
+        raise TypeError(f'handler_registered_ts must be numeric, got {type(value).__name__}')
 
     @property
     def eventbus_label(self) -> str:
@@ -330,11 +347,6 @@ class EventHandler(BaseModel):
 
         return normalized_handler
 
-    def to_json_dict(self) -> dict[str, Any]:
-        payload = self.model_dump(mode='json', exclude={'handler'})
-        payload['handler_registered_ts'] = self.handler_registered_ts % 1_000_000
-        return payload
-
     @classmethod
     def from_json_dict(cls, data: Any, handler: EventHandlerCallable | None = None) -> 'EventHandler':
         entry = cls.model_validate(data)
@@ -378,7 +390,9 @@ class EventHandler(BaseModel):
             'handler_async': async_handler,
             'handler_file_path': resolved_file_path,
             'handler_registered_at': handler_registered_at or datetime.now(UTC),
-            'handler_registered_ts': handler_registered_ts or time.time_ns(),
+            'handler_registered_ts': handler_registered_ts
+            if handler_registered_ts is not None
+            else (time.monotonic_ns() % SUB_MS_NS_OFFSET_MODULUS),
             'event_pattern': event_pattern,
             'eventbus_name': eventbus_name,
             'eventbus_id': eventbus_id,

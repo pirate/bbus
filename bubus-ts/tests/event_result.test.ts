@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { BaseEvent, EventBus } from '../src/index.js'
 import { EventHandler } from '../src/event_handler.js'
 import { EventResult } from '../src/event_result.js'
+import type { EventHandlerConcurrencyMode, HandlerLock } from '../src/lock_manager.js'
 
 const StringResultEvent = BaseEvent.extend('StringResultEvent', {
   event_result_type: z.string(),
@@ -162,7 +163,7 @@ test('runHandler does not create a slow monitor timer for already-settled result
   result.status = 'completed'
 
   let timer_created = false
-  result.createSlowHandlerWarningTimer = () => {
+  result._createSlowHandlerWarningTimer = () => {
     timer_created = true
     return null
   }
@@ -183,7 +184,7 @@ test('runHandler starts slow monitor timer only after handler is marked started'
 
   const result = new EventResult({ event, handler })
   let status_seen_during_timer_creation: string | null = null
-  result.createSlowHandlerWarningTimer = () => {
+  result._createSlowHandlerWarningTimer = () => {
     status_seen_during_timer_creation = result.status
     return null
   }
@@ -194,7 +195,7 @@ test('runHandler starts slow monitor timer only after handler is marked started'
   bus.destroy()
 })
 
-test('handler result stays pending while waiting for withHandlerLock entry', async () => {
+test('handler result stays pending while waiting for _runWithHandlerLock entry', async () => {
   const LockWaitEvent = BaseEvent.extend('RunHandlerLockWaitEvent', {})
   const bus = new EventBus('RunHandlerLockWaitBus', { event_handler_concurrency: 'serial' })
 
@@ -204,8 +205,12 @@ test('handler result stays pending while waiting for withHandlerLock entry', asy
   const release_lock_promise = new Promise<void>((resolve) => {
     release_lock = resolve
   })
-  const original_with_handler_lock = bus.locks.withHandlerLock.bind(bus.locks)
-  bus.locks.withHandlerLock = async (event, default_handler_concurrency, fn) => {
+  const original_with_handler_lock = bus.locks._runWithHandlerLock.bind(bus.locks)
+  bus.locks._runWithHandlerLock = async <T>(
+    event: BaseEvent,
+    default_handler_concurrency: EventHandlerConcurrencyMode | undefined,
+    fn: (lock: HandlerLock | null) => Promise<T>
+  ): Promise<T> => {
     await release_lock_promise
     return await original_with_handler_lock(event, default_handler_concurrency, fn)
   }
@@ -252,8 +257,12 @@ test('slow handler warning is based on handler runtime after lock wait', async (
     const release_lock_promise = new Promise<void>((resolve) => {
       release_lock = resolve
     })
-    const original_with_handler_lock = bus.locks.withHandlerLock.bind(bus.locks)
-    bus.locks.withHandlerLock = async (event, default_handler_concurrency, fn) => {
+    const original_with_handler_lock = bus.locks._runWithHandlerLock.bind(bus.locks)
+    bus.locks._runWithHandlerLock = async <T>(
+      event: BaseEvent,
+      default_handler_concurrency: EventHandlerConcurrencyMode | undefined,
+      fn: (lock: HandlerLock | null) => Promise<T>
+    ): Promise<T> => {
       await release_lock_promise
       return await original_with_handler_lock(event, default_handler_concurrency, fn)
     }

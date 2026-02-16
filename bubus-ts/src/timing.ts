@@ -1,4 +1,4 @@
-export async function withTimeout<T>(timeout_seconds: number | null, on_timeout: () => Error, fn: () => Promise<T>): Promise<T> {
+export async function runWithTimeout<T>(timeout_seconds: number | null, on_timeout: () => Error, fn: () => Promise<T>): Promise<T> {
   const task = Promise.resolve().then(fn)
   if (timeout_seconds === null) {
     return await task
@@ -34,7 +34,7 @@ export async function withTimeout<T>(timeout_seconds: number | null, on_timeout:
   })
 }
 
-export async function withSlowMonitor<T>(slow_timer: ReturnType<typeof setTimeout> | null, fn: () => Promise<T>): Promise<T> {
+export async function runWithSlowMonitor<T>(slow_timer: ReturnType<typeof setTimeout> | null, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
   } finally {

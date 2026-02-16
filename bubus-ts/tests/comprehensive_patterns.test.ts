@@ -263,7 +263,7 @@ test('done() on non-proxied event keeps bus paused during queue-jump', async () 
     await raw_child.done()
     // After done() returns, bus should still be paused because
     // we're still inside a handler doing queue-jump processing
-    paused_after_done = bus.locks.isPaused()
+    paused_after_done = bus.locks._isPaused()
   })
 
   bus.emit(Event1({}))
@@ -289,13 +289,13 @@ test('bus pause state clears after queue-jump completes', async () => {
     // First queue-jump
     const child_a = event.bus?.emit(ChildA({}))!
     await child_a.done()
-    paused_during_handler = bus.locks.isPaused()
+    paused_during_handler = bus.locks._isPaused()
 
     // Second queue-jump — bus should remain paused across both awaits.
     const child_b = event.bus?.emit(ChildB({}))!
-    paused_between_dones = bus.locks.isPaused()
+    paused_between_dones = bus.locks._isPaused()
     await child_b.done()
-    paused_after_second_done = bus.locks.isPaused()
+    paused_after_second_done = bus.locks._isPaused()
   })
 
   bus.emit(Event1({}))
@@ -311,7 +311,7 @@ test('bus pause state clears after queue-jump completes', async () => {
   assert.equal(paused_after_second_done, true, 'bus should remain paused after second done()')
 
   // After handler finishes and bus is idle, pause must be released.
-  assert.equal(bus.locks.isPaused(), false, 'bus should no longer be paused after handler completes')
+  assert.equal(bus.locks._isPaused(), false, 'bus should no longer be paused after handler completes')
 })
 
 test('isInsideHandler() is per-bus, not global', async () => {
@@ -327,13 +327,13 @@ test('isInsideHandler() is per-bus, not global', async () => {
   let bus_b_inside_during_b_handler = false
 
   bus_a.on(EventA, () => {
-    bus_a_inside_during_a_handler = bus_a.locks.isAnyHandlerActive()
-    bus_b_inside_during_a_handler = bus_b.locks.isAnyHandlerActive()
+    bus_a_inside_during_a_handler = bus_a.locks._isAnyHandlerActive()
+    bus_b_inside_during_a_handler = bus_b.locks._isAnyHandlerActive()
   })
 
   bus_b.on(EventB, () => {
-    bus_a_inside_during_b_handler = bus_a.locks.isAnyHandlerActive()
-    bus_b_inside_during_b_handler = bus_b.locks.isAnyHandlerActive()
+    bus_a_inside_during_b_handler = bus_a.locks._isAnyHandlerActive()
+    bus_b_inside_during_b_handler = bus_b.locks._isAnyHandlerActive()
   })
 
   // Dispatch to bus_a first, wait for completion so bus_b has no active handlers
@@ -345,16 +345,16 @@ test('isInsideHandler() is per-bus, not global', async () => {
   await bus_b.waitUntilIdle()
 
   // During bus_a's handler: bus_a should report inside, bus_b should not
-  assert.equal(bus_a_inside_during_a_handler, true, 'bus_a.locks.isAnyHandlerActive() should be true during bus_a handler')
-  assert.equal(bus_b_inside_during_a_handler, false, 'bus_b.locks.isAnyHandlerActive() should be false during bus_a handler')
+  assert.equal(bus_a_inside_during_a_handler, true, 'bus_a.locks._isAnyHandlerActive() should be true during bus_a handler')
+  assert.equal(bus_b_inside_during_a_handler, false, 'bus_b.locks._isAnyHandlerActive() should be false during bus_a handler')
 
   // During bus_b's handler: bus_b should report inside, bus_a should not
-  assert.equal(bus_b_inside_during_b_handler, true, 'bus_b.locks.isAnyHandlerActive() should be true during bus_b handler')
-  assert.equal(bus_a_inside_during_b_handler, false, 'bus_a.locks.isAnyHandlerActive() should be false during bus_b handler')
+  assert.equal(bus_b_inside_during_b_handler, true, 'bus_b.locks._isAnyHandlerActive() should be true during bus_b handler')
+  assert.equal(bus_a_inside_during_b_handler, false, 'bus_a.locks._isAnyHandlerActive() should be false during bus_b handler')
 
   // After all handlers complete, neither bus should report inside
-  assert.equal(bus_a.locks.isAnyHandlerActive(), false, 'bus_a.locks.isAnyHandlerActive() should be false after idle')
-  assert.equal(bus_b.locks.isAnyHandlerActive(), false, 'bus_b.locks.isAnyHandlerActive() should be false after idle')
+  assert.equal(bus_a.locks._isAnyHandlerActive(), false, 'bus_a.locks._isAnyHandlerActive() should be false after idle')
+  assert.equal(bus_b.locks._isAnyHandlerActive(), false, 'bus_b.locks._isAnyHandlerActive() should be false after idle')
 })
 
 test('dispatch multiple, await one skips others until after handler completes', async () => {
@@ -723,7 +723,7 @@ test('deeply nested awaited children', async () => {
 // =============================================================================
 // Queue-Jump Concurrency Tests (Two-Bus)
 //
-// BUG: processEventImmediately (queue-jump across buses) passes { bypass_handler_locks: true,
+// BUG: _processEventImmediately (queue-jump across buses) passes { bypass_handler_locks: true,
 // bypass_event_locks: true } for ALL buses. This causes:
 //   1. Handlers to run in parallel regardless of configured concurrency
 //   2. Event locks on remote buses to be skipped
@@ -868,7 +868,7 @@ test('BUG: queue-jump two-bus global handler lock should serialize across both b
   await bus_b.waitUntilIdle()
 
   // With a global retry semaphore, no two handlers should overlap anywhere.
-  // processEventImmediately processes buses sequentially (bus_a first,
+  // _processEventImmediately processes buses sequentially (bus_a first,
   // then bus_b), so the expected order is strictly serial:
   //   a1_start, a1_end, a2_start, a2_end, b1_start, b1_end, b2_start, b2_end
   //
@@ -886,7 +886,7 @@ test('BUG: queue-jump two-bus global handler lock should serialize across both b
   assert.ok(b1_end < b2_start, `global lock: b1 should finish before b2 starts. Got: [${log.join(', ')}]`)
 
   // Check: bus_a handlers all finish before bus_b handlers start
-  // (processEventImmediately processes sequentially and the retry
+  // (_processEventImmediately processes sequentially and the retry
   // semaphore enforces a global handler lock)
   const a2_end = log.indexOf('a2_end')
   const b1_start = log.indexOf('b1_start')

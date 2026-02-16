@@ -20,7 +20,7 @@ class ValueError extends Error {
 
 const createHandlerEntry = (bus: EventBus, handler_id: string, handler_name: string, event_pattern: string): EventHandler => {
   const handler: EventHandlerCallable = () => undefined
-  const { isostring: handler_registered_at, ts: handler_registered_ts } = BaseEvent.nextTimestamp()
+  const { isostring: handler_registered_at, ts: handler_registered_ts } = BaseEvent.eventTimestampNow()
   return new EventHandler({
     id: handler_id,
     handler,
@@ -61,8 +61,8 @@ test('logTree: with handler results', () => {
     event,
     handler: createHandlerEntry(bus, handler_id, 'test_handler', event.event_type),
   })
-  result.markStarted()
-  result.markCompleted('status: success')
+  result._markStarted()
+  result._markCompleted('status: success')
   event.event_results.set(handler_id, result)
 
   bus.event_history.set(event.event_id, event)
@@ -86,8 +86,8 @@ test('logTree: with handler errors', () => {
     event,
     handler: createHandlerEntry(bus, handler_id, 'error_handler', event.event_type),
   })
-  result.markStarted()
-  result.markError(new ValueError('Test error message'))
+  result._markStarted()
+  result._markError(new ValueError('Test error message'))
   event.event_results.set(handler_id, result)
 
   bus.event_history.set(event.event_id, event)
@@ -110,8 +110,8 @@ test('logTree: complex nested', () => {
     event: root,
     handler: createHandlerEntry(bus, root_handler_id, 'root_handler', root.event_type),
   })
-  root_result.markStarted()
-  root_result.markCompleted('Root processed')
+  root_result._markStarted()
+  root_result._markCompleted('Root processed')
   root.event_results.set(root_handler_id, root_result)
 
   const child = ChildEvent({ value: 100 })
@@ -125,8 +125,8 @@ test('logTree: complex nested', () => {
     event: child,
     handler: createHandlerEntry(bus, child_handler_id, 'child_handler', child.event_type),
   })
-  child_result.markStarted()
-  child_result.markCompleted([1, 2, 3])
+  child_result._markStarted()
+  child_result._markCompleted([1, 2, 3])
   child.event_results.set(child_handler_id, child_result)
 
   const grandchild = GrandchildEvent({})
@@ -140,8 +140,8 @@ test('logTree: complex nested', () => {
     event: grandchild,
     handler: createHandlerEntry(bus, grandchild_handler_id, 'grandchild_handler', grandchild.event_type),
   })
-  grandchild_result.markStarted()
-  grandchild_result.markCompleted(null)
+  grandchild_result._markStarted()
+  grandchild_result._markCompleted(null)
   grandchild.event_results.set(grandchild_handler_id, grandchild_result)
 
   bus.event_history.set(root.event_id, root)
@@ -193,8 +193,8 @@ test('logTree: timing info', () => {
     event,
     handler: createHandlerEntry(bus, handler_id, 'timed_handler', event.event_type),
   })
-  result.markStarted()
-  result.markCompleted('done')
+  result._markStarted()
+  result._markCompleted('done')
   event.event_results.set(handler_id, result)
 
   bus.event_history.set(event.event_id, event)
@@ -216,7 +216,7 @@ test('logTree: running handler', () => {
     event,
     handler: createHandlerEntry(bus, handler_id, 'running_handler', event.event_type),
   })
-  result.markStarted()
+  result._markStarted()
   event.event_results.set(handler_id, result)
 
   bus.event_history.set(event.event_id, event)

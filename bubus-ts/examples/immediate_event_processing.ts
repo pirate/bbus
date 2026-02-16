@@ -98,9 +98,9 @@ async function main(): Promise<void> {
       log(`[parent:${event.mode}] child.done() resolved`)
     } else {
       // Normal queue wait: child waits its turn behind already-queued sibling work.
-      log(`[parent:${event.mode}] await child.waitForCompletion()`)
-      await child.waitForCompletion()
-      log(`[parent:${event.mode}] child.waitForCompletion() resolved`)
+      log(`[parent:${event.mode}] await child._waitForCompletion()`)
+      await child._waitForCompletion()
+      log(`[parent:${event.mode}] child._waitForCompletion() resolved`)
     }
 
     log(`[parent:${event.mode}] end`)
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
   const runScenario = async (mode: Scenario): Promise<void> => {
     log(`----- scenario=${mode} -----`)
 
-    // Parent event uses parallel concurrency so waitForCompletion() in handler
+    // Parent event uses parallel concurrency so _waitForCompletion() in handler
     // can wait safely while other queued events continue to run.
     const parent = bus_a.emit(
       ParentEvent({
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
       })
     )
 
-    await parent.waitForCompletion()
+    await parent._waitForCompletion()
     await Promise.all([bus_a.waitUntilIdle(), bus_b.waitUntilIdle()])
     log(`----- done scenario=${mode} -----`)
   }

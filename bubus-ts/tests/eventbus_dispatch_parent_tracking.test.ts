@@ -430,7 +430,7 @@ test('event_children is empty when handlers do not emit children', async () => {
   assert.equal(parent.event_children.length, 0)
 })
 
-test('eventAreAllChildrenComplete reflects child completion state', async () => {
+test('_areAllChildrenComplete reflects child completion state', async () => {
   const bus = new EventBus('EventChildrenCompletionBus')
 
   bus.on(ParentEvent, (event) => {
@@ -444,11 +444,11 @@ test('eventAreAllChildrenComplete reflects child completion state', async () => 
   })
 
   const parent = bus.emit(ParentEvent({ message: 'completion' }))
-  assert.equal(parent.eventAreAllChildrenComplete(), true)
+  assert.equal(parent._areAllChildrenComplete(), true)
   await parent.done()
 
   assert.equal(parent.event_children.length, 2)
-  assert.equal(parent.eventAreAllChildrenComplete(), true)
+  assert.equal(parent._areAllChildrenComplete(), true)
   for (const child of parent.event_children) {
     assert.equal(child.event_status, 'completed')
   }
@@ -465,5 +465,5 @@ test('forwarded events are not counted as parent event_children', async () => {
   await parent.done()
 
   assert.equal(parent.event_children.length, 0)
-  assert.equal(parent.eventAreAllChildrenComplete(), true)
+  assert.equal(parent._areAllChildrenComplete(), true)
 })

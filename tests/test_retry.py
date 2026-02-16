@@ -962,9 +962,9 @@ class LockEvent(BaseEvent[str]):
 
 
 def test_lock_manager_uses_context_manager_api_only() -> None:
-    assert hasattr(LockManager, 'with_event_lock')
-    assert hasattr(LockManager, 'with_handler_lock')
-    assert hasattr(LockManager, 'with_handler_dispatch_context')
+    assert hasattr(LockManager, '_run_with_event_lock')
+    assert hasattr(LockManager, '_run_with_handler_lock')
+    assert hasattr(LockManager, '_run_with_handler_dispatch_context')
 
     # Legacy alias methods were intentionally removed in the refactor.
     assert not hasattr(LockManager, 'lock_for_event')
@@ -980,10 +980,10 @@ async def test_handler_dispatch_context_preserves_reentrant_locking_in_dispatch_
     # Simulate a captured dispatch context from outside event processing.
     dispatch_context = contextvars.Context()
 
-    async with lock_manager.with_event_lock(bus, event):
+    async with lock_manager._run_with_event_lock(bus, event):
 
         async def lock_without_dispatch_mark() -> str:
-            async with lock_manager.with_event_lock(bus, event):
+            async with lock_manager._run_with_event_lock(bus, event):
                 return 'acquired'
 
         blocked_task = asyncio.create_task(lock_without_dispatch_mark(), context=dispatch_context)
@@ -993,8 +993,8 @@ async def test_handler_dispatch_context_preserves_reentrant_locking_in_dispatch_
         await asyncio.gather(blocked_task, return_exceptions=True)
 
         async def lock_with_dispatch_mark() -> str:
-            with lock_manager.with_handler_dispatch_context(bus, event):
-                async with lock_manager.with_event_lock(bus, event):
+            with lock_manager._run_with_handler_dispatch_context(bus, event):
+                async with lock_manager._run_with_event_lock(bus, event):
                     return 'acquired'
 
         marked_task = asyncio.create_task(lock_with_dispatch_mark(), context=dispatch_context)

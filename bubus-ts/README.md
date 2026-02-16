@@ -485,17 +485,6 @@ EventFactory.fromJSON?.(data: unknown): TypedEvent
 - In TypeScript-only usage, `event_result_type` can be any Zod schema shape or base type like `number | string | boolean | etc.`. For cross-language roundtrips, object-like schemas (including Python `TypedDict`/`dataclass`-style shapes) are reconstructed on Python as Pydantic models, JSON object keys are always strings, and some fine-grained string-shape constraints may be normalized between Zod and Pydantic.
 - Round-trip coverage is in `bubus-ts/tests/event_result_typed_results.test.ts` and `bubus-ts/tests/eventbus.test.ts`.
 
-#### Advanced/internal public methods
-
-Mostly used by bus internals or custom runtimes:
-
-- `markStarted()`
-- `markCancelled(cause)`
-- `markCompleted(force?, notify_parents?)`
-- `eventCreatePendingHandlerResults(bus)`
-- `runHandlers(pending_entries?)`
-- `eventCancelPendingChildProcessing(reason)`
-
 </details>
 
 <details>
@@ -531,18 +520,6 @@ Each handler execution creates one `EventResult` stored in `event.event_results`
 - `raw_value` -> `any` raw result value before schema validation, available when handler return value validation fails
 - `handler_timeout` -> `number` seconds before handler execution is aborted (precedence: handler config -> event config -> bus level defaults)
 - `handler_slow_timeout` -> `number` seconds before logging a slow execution warning (same prececence as `handler_timeout`)
-
-#### Advanced/Internal methods
-
-```ts
-markStarted(): Promise<never>
-markCompleted(result): void
-markError(error): void
-
-runHandler(): Promise<void>
-signalAbort(error: Error): void
-linkEmittedChildEvent(child_event): void
-```
 
 #### `toString()` / `toJSON()` / `fromJSON()`
 

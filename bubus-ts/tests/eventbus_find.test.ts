@@ -328,7 +328,7 @@ test('find respects where filter', async () => {
 
 test('find supports metadata filters like event_status', async () => {
   const bus = new EventBus('FindEventStatusFilterBus')
-  const release_pause = bus.locks.requestRunloopPause()
+  const release_pause = bus.locks._requestRunloopPause()
 
   const pending_event = bus.emit(ParentEvent({}))
 
@@ -702,7 +702,7 @@ test('find past includes in-progress dispatched events', async () => {
 
 test('find future resolves on dispatch before completion', async () => {
   const bus = new EventBus('FindOnDispatchBus')
-  const release_pause = bus.locks.requestRunloopPause()
+  const release_pause = bus.locks._requestRunloopPause()
 
   bus.on(ParentEvent, async () => {
     await delay(80)

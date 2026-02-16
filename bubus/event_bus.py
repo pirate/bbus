@@ -45,7 +45,7 @@ from bubus.helpers import (
     CleanShutdownQueue,
     QueueShutDown,
     log_filtered_traceback,
-    with_slow_monitor,
+    _run_with_slow_monitor,
 )
 from bubus.lock_manager import LockManager, LockManagerProtocol, ReentrantLock
 from bubus.middlewares import EventBusMiddleware
@@ -137,6 +137,7 @@ class EventBus:
 
     # Track all EventBus instances (using weakrefs to allow garbage collection)
     all_instances: GlobalBusRegistry = GlobalBusRegistry()
+    _lock_for_event_global_serial: ReentrantLock = ReentrantLock()
 
     # Per-loop EventBus registry and original close method tracking.
     _loop_eventbus_instances: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, weakref.WeakSet['EventBus']] = (
@@ -179,6 +180,33 @@ class EventBus:
     _lock_for_event_bus_serial: ReentrantLock
     locks: LockManagerProtocol
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Subclasses get isolated global registries/locks by default.
+        cls.all_instances = GlobalBusRegistry()
+        cls._lock_for_event_global_serial = ReentrantLock()
+        cls._loop_eventbus_instances = weakref.WeakKeyDictionary()
+        cls._loop_original_close = weakref.WeakKeyDictionary()
+
+    @classmethod
+    def iter_all_instances(cls) -> Iterator['EventBus']:
+        """Iterate live EventBus instances for ``cls`` and all subclasses."""
+        pending_classes: list[type[EventBus]] = [cls]
+        seen_classes: set[type[EventBus]] = set()
+        seen_buses: set[int] = set()
+        while pending_classes:
+            bus_class = pending_classes.pop()
+            if bus_class in seen_classes:
+                continue
+            seen_classes.add(bus_class)
+            pending_classes.extend(bus_class.__subclasses__())
+            for bus in list(bus_class.all_instances):
+                bus_id = id(bus)
+                if bus_id in seen_buses:
+                    continue
+                seen_buses.add(bus_id)
+                yield bus
+
     def __init__(
         self,
         name: PythonIdentifierStr | None = None,
@@ -206,7 +234,7 @@ class EventBus:
         original_name = self.name
         conflicting_buses: list[EventBus] = []
 
-        for existing_bus in list(EventBus.all_instances):  # Make a list copy to avoid modification during iteration
+        for existing_bus in list(type(self).all_instances):  # Make a list copy to avoid modification during iteration
             if existing_bus is not self and existing_bus.name == self.name:
                 # Since stop() renames buses to _stopped_{id}, any bus with a matching
                 # user-specified name is either running or never-started - both should
@@ -274,7 +302,7 @@ class EventBus:
         self.find_waiters = set()
 
         # Register this instance
-        EventBus.all_instances.add(self)
+        type(self).all_instances.add(self)
 
     @staticmethod
     def _normalize_middlewares(middlewares: Sequence[EventBusMiddlewareInput] | None) -> list[EventBusMiddleware]:
@@ -352,6 +380,11 @@ class EventBus:
         """Public accessor for the bus-serial event lock used by LockManager."""
         return self._lock_for_event_bus_serial
 
+    @property
+    def event_global_serial_lock(self) -> ReentrantLock:
+        """Class-scoped global-serial lock (isolated per EventBus subclass)."""
+        return type(self)._lock_for_event_global_serial
+
     @staticmethod
     def _stub_handler_callable(_event: BaseEvent[Any]) -> None:
         return None
@@ -363,12 +396,12 @@ class EventBus:
         for key in ('event_created_ts', 'event_started_ts', 'event_completed_ts'):
             value = payload.get(key)
             if isinstance(value, (int, float)):
-                payload[key] = value % 1_000_000
+                payload[key] = int(value)
         for result_payload in payload['event_results']:
             for key in ('handler_registered_ts', 'started_ts', 'completed_ts'):
                 value = result_payload.get(key)
                 if isinstance(value, (int, float)):
-                    result_payload[key] = value % 1_000_000
+                    result_payload[key] = int(value)
         return payload
 
     @staticmethod
@@ -453,6 +486,8 @@ class EventBus:
         handler_entry = cls._hydrate_handler_from_event_result(bus, event, result_payload)
         model_payload = dict(result_payload)
         child_ids = [child_id for child_id in model_payload.pop('event_children', []) if isinstance(child_id, str)]
+        has_result = 'result' in model_payload
+        raw_result = model_payload.pop('result', None)
         for flat_key in (
             'handler_id',
             'handler_name',
@@ -470,14 +505,16 @@ class EventBus:
             model_payload.pop(flat_key, None)
         model_payload['event_id'] = event.event_id
         model_payload['handler'] = handler_entry
-        event_result = EventResult[Any].model_validate(model_payload)
+        event_result = EventResult.model_validate(model_payload)
+        if has_result:
+            event_result.result = raw_result
         event_result.handler = handler_entry
         return event_result, child_ids
 
     def model_dump(self) -> dict[str, Any]:
         handlers_payload: dict[str, dict[str, Any]] = {}
         for handler_entry in self.handlers.values():
-            handlers_payload[handler_entry.id] = handler_entry.to_json_dict()
+            handlers_payload[handler_entry.id] = json.loads(handler_entry.model_dump_json(exclude={'handler'}))
 
         handlers_by_key_payload: dict[str, list[str]] = {
             str(key): [str(handler_id) for handler_id in handler_ids] for key, handler_ids in self.handlers_by_key.items()
@@ -873,10 +910,9 @@ class EventBus:
             self.in_flight_event_ids or self.processing_event_ids or self._parallel_event_tasks or self._pending_middleware_tasks
         )
 
-    @staticmethod
-    def _mark_event_complete_on_all_buses(event: BaseEvent[Any]) -> None:
+    def _mark_event_complete_on_all_buses(self, event: BaseEvent[Any]) -> None:
         event_id = event.event_id
-        for bus in list(EventBus.all_instances):
+        for bus in list(type(self).all_instances):
             if bus:
                 bus.in_flight_event_ids.discard(event_id)
                 if bus.event_history.max_history_size == 0:
@@ -1088,8 +1124,8 @@ class EventBus:
 
         # Capture emit-time context for propagation to handlers (GitHub issue #20)
         # This ensures ContextVars set before emit() are accessible in handlers
-        if event.event_get_dispatch_context() is None:
-            event.event_set_dispatch_context(contextvars.copy_context())
+        if event._get_dispatch_context() is None:
+            event._set_dispatch_context(contextvars.copy_context())
 
         # Track child events - if we're inside a handler, add this event to the handler's event_children list
         # Only track if this is a NEW event (not forwarding an existing event)
@@ -1099,6 +1135,8 @@ class EventBus:
             if current_event is not None and current_handler_id in current_event.event_results:
                 # Only add as child if it's a different event (not forwarding the same event)
                 if event.event_id != current_event.event_id:
+                    if event.event_emitted_by_handler_id is None:
+                        event.event_emitted_by_handler_id = current_handler_id
                     current_event.event_results[current_handler_id].event_children.append(event)
 
         # Add this EventBus label to the event_path if not already there
@@ -1337,7 +1375,7 @@ class EventBus:
             parent = self.event_history.get(current_id)
             if parent is None:
                 # Check other buses
-                for bus in list(EventBus.all_instances):
+                for bus in list(type(self).all_instances):
                     if bus is not self and current_id in bus.event_history:
                         parent = bus.event_history[current_id]
                         break
@@ -1358,19 +1396,20 @@ class EventBus:
 
                 # Hook into the event loop's close method to cleanup before it closes
                 # this is necessary to silence "RuntimeError: no running event loop" and "event loop is closed" errors on shutdown
-                registered_eventbuses: weakref.WeakSet[EventBus] | None = EventBus._loop_eventbus_instances.get(loop)
+                eventbus_class = type(self)
+                registered_eventbuses: weakref.WeakSet[EventBus] | None = eventbus_class._loop_eventbus_instances.get(loop)
                 if registered_eventbuses is None:
                     registered_eventbuses = weakref.WeakSet()
-                    EventBus._loop_eventbus_instances[loop] = registered_eventbuses
+                    eventbus_class._loop_eventbus_instances[loop] = registered_eventbuses
 
-                if loop not in EventBus._loop_original_close:
+                if loop not in eventbus_class._loop_original_close:
                     original_close = loop.close
-                    EventBus._loop_original_close[loop] = original_close
+                    eventbus_class._loop_original_close[loop] = original_close
 
                     def close_with_cleanup() -> None:
                         empty_eventbuses: weakref.WeakSet[EventBus] = weakref.WeakSet()
                         # Clean up all registered EventBuses before closing the loop
-                        for eventbus in list(EventBus._loop_eventbus_instances.get(loop, empty_eventbuses)):
+                        for eventbus in list(eventbus_class._loop_eventbus_instances.get(loop, empty_eventbuses)):
                             try:
                                 # Stop the eventbus while loop is still running
                                 if eventbus._is_running:
@@ -1507,13 +1546,13 @@ class EventBus:
             self.in_flight_event_ids.clear()
 
             # Remove from global instance tracking
-            if self in EventBus.all_instances:
-                EventBus.all_instances.discard(self)
+            if self in type(self).all_instances:
+                type(self).all_instances.discard(self)
 
             # Remove from event loop's tracking if present
             try:
                 loop = asyncio.get_running_loop()
-                registered_eventbuses = EventBus._loop_eventbus_instances.get(loop)
+                registered_eventbuses = type(self)._loop_eventbus_instances.get(loop)
                 if registered_eventbuses is not None:
                     registered_eventbuses.discard(self)
             except RuntimeError:
@@ -1769,7 +1808,7 @@ class EventBus:
             # Descendants are not currently being processed in this frame, so they must consider
             # queues on this bus too (otherwise queued children can be marked complete too early).
             current_bus = self if event.event_id == root_event.event_id else None
-            event.event_mark_complete_if_all_handlers_completed(current_bus=current_bus)
+            event._mark_completed(current_bus=current_bus)
             just_completed = (not was_complete) and self._is_event_complete_fast(event)
             if just_completed:
                 self._mark_event_complete_on_all_buses(event)
@@ -1841,7 +1880,7 @@ class EventBus:
         # Acquire the event lock selected by event/bus concurrency policy.
         self.processing_event_ids.add(event.event_id)
         try:
-            async with self.locks.with_event_lock(self, event):
+            async with self.locks._run_with_event_lock(self, event):
                 # Process the event
                 if not self._is_event_complete_fast(event):
                     await self.process_event(event, timeout=timeout)
@@ -1881,7 +1920,7 @@ class EventBus:
 
     async def _mark_event_complete_if_ready(self, event: BaseEvent[Any]) -> None:
         was_complete = self._is_event_complete_fast(event)
-        event.event_mark_complete_if_all_handlers_completed(current_bus=self)
+        event._mark_completed(current_bus=self)
         just_completed = (not was_complete) and self._is_event_complete_fast(event)
         if just_completed:
             self._mark_event_complete_on_all_buses(event)
@@ -1896,7 +1935,7 @@ class EventBus:
 
             parent_event = None
             parent_bus: EventBus | None = None
-            for bus in list(EventBus.all_instances):
+            for bus in list(type(self).all_instances):
                 if bus and current.event_parent_id in bus.event_history:
                     parent_event = bus.event_history[current.event_parent_id]
                     parent_bus = bus
@@ -1907,7 +1946,7 @@ class EventBus:
 
             was_complete = self._is_event_complete_fast(parent_event)
             if not was_complete:
-                parent_event.event_mark_complete_if_all_handlers_completed(current_bus=parent_bus)
+                parent_event._mark_completed(current_bus=parent_bus)
             just_completed = (not was_complete) and self._is_event_complete_fast(parent_event)
             if parent_bus and just_completed:
                 self._mark_event_complete_on_all_buses(parent_event)
@@ -1936,7 +1975,7 @@ class EventBus:
         5. Propagates completion status up the parent event chain
         6. Cleans up event history if over size limit
 
-        IMPORTANT: This method assumes the caller already applied `locks.with_event_lock(...)`
+        IMPORTANT: This method assumes the caller already applied `locks._run_with_event_lock(...)`
         for the event execution.
         For safe external use, call step() instead which handles locking.
 
@@ -1949,7 +1988,7 @@ class EventBus:
 
             - **Event not in queue**: Works fine, handlers execute normally. This method
               does not interact with the queue at all.
-            - **Event already completed**: Handlers run AGAIN, ``event_create_pending_handler_results()``
+            - **Event already completed**: Handlers run AGAIN, ``_create_pending_handler_results()``
               overwrites previous results. No guard against double-processing.
             - **Event in queue but not next**: Works fine for this call, but event stays
               in queue and will be processed again later by the run loop.
@@ -1977,11 +2016,11 @@ class EventBus:
         timeout_scope = asyncio.timeout(resolved_event_timeout)
         try:
             async with timeout_scope:
-                async with with_slow_monitor(
+                async with _run_with_slow_monitor(
                     slow_event_monitor_factory,
                     task_name=f'{self}.slow_event_monitor({event})',
                 ):
-                    await event.event_run_handlers(
+                    await event._run_handlers(
                         eventbus=self,
                         handlers=applicable_handlers,
                         timeout=resolved_event_timeout,
@@ -2023,19 +2062,19 @@ class EventBus:
         return filtered_handlers
 
     @contextmanager
-    def with_handler_execution_context(self, event: BaseEvent[T_EventResultType], handler_id: str):
+    def _run_with_handler_execution_context(self, event: BaseEvent[T_EventResultType], handler_id: str):
         """Scope ContextVar state for one handler execution.
 
         This is the single handler execution context manager used by
         ``EventResult.run_handler(...)`` for both sync and async handlers. It sets
         current event/handler/bus ContextVars and mirrors event-lock ownership
-        into copied dispatch contexts via ``locks.with_handler_dispatch_context(...)``.
+        into copied dispatch contexts via ``locks._run_with_handler_dispatch_context(...)``.
         """
         event_token = EventBus.current_event_context.set(event)
         current_handler_token = EventBus.current_handler_id_context.set(handler_id)
         current_eventbus_token = EventBus.current_eventbus_context.set(self)
         try:
-            with self.locks.with_handler_dispatch_context(self, event):
+            with self.locks._run_with_handler_dispatch_context(self, event):
                 yield
         finally:
             EventBus.current_event_context.reset(event_token)
@@ -2052,7 +2091,7 @@ class EventBus:
         timeout_error = TimeoutError(
             f'Event {self.label}.on({event.event_type}#{event.event_id[-4:]}) timed out after {timeout_seconds}s'
         )
-        event.event_cancel_pending_child_processing(timeout_error)
+        event._cancel_pending_child_processing(timeout_error)
         for event_result in event.event_results.values():
             if event_result.status == 'pending':
                 event_result.update(
@@ -2091,7 +2130,7 @@ class EventBus:
         resolved_slow_timeout = self._resolve_handler_slow_timeout(event, handler_entry, self)
 
         if handler_id not in event.event_results:
-            new_results = event.event_create_pending_handler_results(
+            new_results = event._create_pending_handler_results(
                 {handler_id: handler_entry}, eventbus=self, timeout=resolved_timeout
             )
             for pending_result in new_results.values():
@@ -2210,7 +2249,7 @@ class EventBus:
         # Find parent event in any bus's history
         parent_event = None
         # Create a list copy to avoid "Set changed size during iteration" error
-        for bus in list(EventBus.all_instances):
+        for bus in list(type(self).all_instances):
             if event.event_parent_id in bus.event_history:
                 parent_event = bus.event_history[event.event_parent_id]
                 break
@@ -2252,7 +2291,7 @@ class EventBus:
 
         # Iterate through all EventBus instances
         # Create a list copy to avoid "Set changed size during iteration" error
-        for bus in list(EventBus.all_instances):
+        for bus in list(type(self).all_instances):
             try:
                 bus_bytes = 0
 
@@ -2297,7 +2336,7 @@ class EventBus:
 
             warning_msg = (
                 f'\n⚠️  WARNING: Total EventBus memory usage is {total_mb:.1f}MB (>50MB limit)\n'
-                f'Active EventBus instances: {len(EventBus.all_instances)}\n'
+                f'Active EventBus instances: {len(type(self).all_instances)}\n'
             )
             if details:
                 warning_msg += 'Memory breakdown:\n' + '\n'.join(details[:5])  # Show top 5

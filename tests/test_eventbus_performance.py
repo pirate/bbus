@@ -1355,7 +1355,7 @@ async def test_perf_debug_hot_path_breakdown() -> None:
         (event_bus_module.EventBus, 'process_event'),
         (event_bus_module.EventBus, 'run_handler'),
         (event_bus_module.EventHistory, 'trim_event_history'),
-        (base_event_module.BaseEvent, 'event_create_pending_handler_results'),
+        (base_event_module.BaseEvent, '_create_pending_handler_results'),
     ]
     for owner, method_ref in instrumented:
         profiler.instrument(owner, method_ref)

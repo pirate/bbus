@@ -19,17 +19,17 @@ class LockManagerProtocol(Protocol):
         """Return the concrete event-level lock object or ``None`` for parallel mode."""
         ...
 
-    def with_event_lock(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> Any:
+    def _run_with_event_lock(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> Any:
         """Context manager for event-level lock scope."""
         ...
 
-    def with_handler_lock(
+    def _run_with_handler_lock(
         self, bus: 'EventBus', event: BaseEvent[T_EventResultType], event_result: EventResult[T_EventResultType]
     ) -> Any:
         """Context manager for per-handler lock scope."""
         ...
 
-    def with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> Any:
+    def _run_with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> Any:
         """Context manager that mirrors held event-lock state into dispatch context."""
         ...
 
@@ -130,8 +130,6 @@ class LockManager:
     handlers should use only these APIs instead of touching lock objects directly.
     """
 
-    _lock_for_event_global_serial = ReentrantLock()
-
     def get_lock_for_event(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> ReentrantLock | None:
         """Resolve the event-level lock for one event execution.
 
@@ -145,7 +143,7 @@ class LockManager:
         if resolved == EventConcurrencyMode.PARALLEL:
             return None
         if resolved == EventConcurrencyMode.GLOBAL_SERIAL:
-            return self._lock_for_event_global_serial
+            return bus.event_global_serial_lock
         return bus.event_bus_serial_lock
 
     def get_lock_for_event_handler(
@@ -165,14 +163,14 @@ class LockManager:
         resolved = event.event_handler_concurrency or bus.event_handler_concurrency
         if resolved == EventHandlerConcurrencyMode.PARALLEL:
             return None
-        current_lock = event.event_get_handler_lock()
+        current_lock = event._get_handler_lock()
         if current_lock is None:
             current_lock = ReentrantLock()
-            event.event_set_handler_lock(current_lock)
+            event._set_handler_lock(current_lock)
         return current_lock
 
     @asynccontextmanager
-    async def with_event_lock(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]):
+    async def _run_with_event_lock(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]):
         """Acquire/release the resolved event lock around event processing.
 
         Lifecycle:
@@ -187,7 +185,7 @@ class LockManager:
             yield
 
     @asynccontextmanager
-    async def with_handler_lock(
+    async def _run_with_handler_lock(
         self, bus: 'EventBus', event: BaseEvent[T_EventResultType], event_result: EventResult[T_EventResultType]
     ):
         """Acquire/release the resolved per-event handler lock around one handler run.
@@ -204,7 +202,7 @@ class LockManager:
             yield
 
     @contextmanager
-    def with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]):
+    def _run_with_handler_dispatch_context(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]):
         """Mirror parent event-lock ownership into the current copied context.
 
         Lifecycle:

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { BaseEvent, EventBus } from '../src/index.js'
-import { LockManager } from '../src/lock_manager.js'
+import { GlobalBusRegistry } from '../src/event_bus.js'
+import { AsyncLock } from '../src/lock_manager.js'
 import { z } from 'zod'
 
 const delay = (ms: number): Promise<void> =>
@@ -19,8 +20,8 @@ test('EventBus initializes with correct defaults', async () => {
   assert.equal(bus.event_history.max_history_size, 100)
   assert.equal(bus.event_history.max_history_drop, false)
   assert.equal(bus.event_concurrency, 'bus-serial')
-  assert.equal(bus.event_handler_concurrency_default, 'serial')
-  assert.equal(bus.event_handler_completion_default, 'all')
+  assert.equal(bus.event_handler_concurrency, 'serial')
+  assert.equal(bus.event_handler_completion, 'all')
   assert.equal(bus.event_timeout, 60)
   assert.equal(bus.event_history.size, 0)
   assert.ok(EventBus.all_instances.has(bus))
@@ -70,8 +71,8 @@ test('EventBus applies custom options', () => {
   assert.equal(bus.event_history.max_history_size, 500)
   assert.equal(bus.event_history.max_history_drop, false)
   assert.equal(bus.event_concurrency, 'parallel')
-  assert.equal(bus.event_handler_concurrency_default, 'serial')
-  assert.equal(bus.event_handler_completion_default, 'first')
+  assert.equal(bus.event_handler_concurrency, 'serial')
+  assert.equal(bus.event_handler_completion, 'first')
   assert.equal(bus.event_timeout, 30)
 })
 
@@ -94,11 +95,11 @@ test('EventBus exposes locks API surface', () => {
   const bus = new EventBus('GateSurfaceBus')
   const locks = bus.locks as unknown as Record<string, unknown>
 
-  assert.equal(typeof locks.requestRunloopPause, 'function')
-  assert.equal(typeof locks.waitUntilRunloopResumed, 'function')
-  assert.equal(typeof locks.isPaused, 'function')
+  assert.equal(typeof locks._requestRunloopPause, 'function')
+  assert.equal(typeof locks._waitUntilRunloopResumed, 'function')
+  assert.equal(typeof locks._isPaused, 'function')
   assert.equal(typeof locks.waitForIdle, 'function')
-  assert.equal(typeof locks.notifyIdleListeners, 'function')
+  assert.equal(typeof locks._notifyIdleListeners, 'function')
   assert.equal(typeof locks.getLockForEvent, 'function')
 })
 
@@ -109,11 +110,11 @@ test('EventBus locks methods are callable and preserve lock resolution behavior'
   })
   const GateEvent = BaseEvent.extend('GateInvocationEvent', {})
 
-  const release_pause = bus.locks.requestRunloopPause()
-  assert.equal(bus.locks.isPaused(), true)
+  const release_pause = bus.locks._requestRunloopPause()
+  assert.equal(bus.locks._isPaused(), true)
 
   let resumed = false
-  const resumed_promise = bus.locks.waitUntilRunloopResumed().then(() => {
+  const resumed_promise = bus.locks._waitUntilRunloopResumed().then(() => {
     resumed = true
   })
   await Promise.resolve()
@@ -121,14 +122,14 @@ test('EventBus locks methods are callable and preserve lock resolution behavior'
 
   release_pause()
   await resumed_promise
-  assert.equal(bus.locks.isPaused(), false)
+  assert.equal(bus.locks._isPaused(), false)
 
   const event_with_global = GateEvent({
     event_concurrency: 'global-serial',
     event_handler_concurrency: 'serial',
   })
-  assert.equal(bus.locks.getLockForEvent(event_with_global), LockManager._lock_for_event_global_serial)
-  const handler_lock = event_with_global.eventGetHandlerLock(bus.event_handler_concurrency_default)
+  assert.equal(bus.locks.getLockForEvent(event_with_global), bus.event_global_lock)
+  const handler_lock = event_with_global._getHandlerLock(bus.event_handler_concurrency)
   assert.ok(handler_lock)
 
   const event_with_parallel = GateEvent({
@@ -136,14 +137,14 @@ test('EventBus locks methods are callable and preserve lock resolution behavior'
     event_handler_concurrency: 'parallel',
   })
   assert.equal(bus.locks.getLockForEvent(event_with_parallel), null)
-  assert.equal(event_with_parallel.eventGetHandlerLock(bus.event_handler_concurrency_default), null)
+  assert.equal(event_with_parallel._getHandlerLock(bus.event_handler_concurrency), null)
 
   const another_serial_event = GateEvent({ event_handler_concurrency: 'serial' })
-  const another_lock = another_serial_event.eventGetHandlerLock(bus.event_handler_concurrency_default)
+  const another_lock = another_serial_event._getHandlerLock(bus.event_handler_concurrency)
   assert.notEqual(handler_lock, another_lock)
 
   bus.emit(GateEvent({}))
-  bus.locks.notifyIdleListeners()
+  bus.locks._notifyIdleListeners()
   await bus.locks.waitForIdle()
 })
 
@@ -151,15 +152,15 @@ test('BaseEvent lifecycle methods are callable and preserve lifecycle behavior',
   const LifecycleEvent = BaseEvent.extend('LifecycleMethodInvocationEvent', {})
 
   const standalone = LifecycleEvent({})
-  standalone.markStarted()
+  standalone._markStarted()
   assert.equal(standalone.event_status, 'started')
-  standalone.markCompleted(false)
+  standalone._markCompleted(false)
   assert.equal(standalone.event_status, 'completed')
-  await standalone.waitForCompletion()
+  await standalone._waitForCompletion()
 
   const bus = new EventBus('LifecycleMethodInvocationBus')
   const dispatched = bus.emit(LifecycleEvent({}))
-  await dispatched.waitForCompletion()
+  await dispatched._waitForCompletion()
   assert.equal(dispatched.event_status, 'completed')
 })
 
@@ -800,6 +801,36 @@ test('EventBus.all_instances tracks all created buses', () => {
   assert.equal(EventBus.all_instances.size, initial_count + 2)
 })
 
+test('EventBus subclasses isolate registries and global-serial locks', () => {
+  class IsolatedBusA extends EventBus {}
+  class IsolatedBusB extends EventBus {}
+
+  const bus_a1 = new IsolatedBusA('IsolatedBusA1', { event_concurrency: 'global-serial' })
+  const bus_a2 = new IsolatedBusA('IsolatedBusA2', { event_concurrency: 'global-serial' })
+  const bus_b1 = new IsolatedBusB('IsolatedBusB1', { event_concurrency: 'global-serial' })
+
+  assert.equal(IsolatedBusA.all_instances.has(bus_a1), true)
+  assert.equal(IsolatedBusA.all_instances.has(bus_a2), true)
+  assert.equal(IsolatedBusA.all_instances.has(bus_b1), false)
+  assert.equal(IsolatedBusB.all_instances.has(bus_b1), true)
+  assert.equal(IsolatedBusB.all_instances.has(bus_a1), false)
+  assert.equal(EventBus.all_instances.has(bus_a1), false)
+  assert.equal(EventBus.all_instances.has(bus_b1), false)
+
+  const lock_a1 = bus_a1.locks.getLockForEvent(new BaseEvent())
+  const lock_a2 = bus_a2.locks.getLockForEvent(new BaseEvent())
+  const lock_b1 = bus_b1.locks.getLockForEvent(new BaseEvent())
+  assert.notEqual(lock_a1, null)
+  assert.notEqual(lock_a2, null)
+  assert.notEqual(lock_b1, null)
+  assert.equal(lock_a1, lock_a2)
+  assert.notEqual(lock_a1, lock_b1)
+
+  bus_a1.destroy()
+  bus_a2.destroy()
+  bus_b1.destroy()
+})
+
 // ─── Circular forwarding prevention ──────────────────────────────────────────
 
 test('circular forwarding does not cause infinite loop', async () => {
@@ -849,77 +880,110 @@ test('circular forwarding does not cause infinite loop', async () => {
 
 // ─── EventBus GC / memory leak ───────────────────────────────────────────────
 
+const flush_gc_cycles = async (gc: () => void, cycles: number): Promise<void> => {
+  for (let i = 0; i < cycles; i += 1) {
+    gc()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+}
+
 test('unreferenced EventBus can be garbage collected (not retained by all_instances)', async () => {
-  // This test requires --expose-gc to force garbage collection
-  const gc = globalThis.gc as (() => void) | undefined
+  const gc = globalThis.gc
   if (typeof gc !== 'function') {
-    // Can't test GC without --expose-gc; skip gracefully
-    return
+    assert.fail('GC tests require --expose-gc')
   }
 
-  let weak_ref: WeakRef<EventBus>
+  let weak_ref: WeakRef<EventBus> | null = null
 
-    // Create a bus inside an IIFE so the only reference is the WeakRef
+  // Create a bus inside an IIFE so the only reference is the WeakRef
   ;(() => {
     const bus = new EventBus('GCTestBus')
     weak_ref = new WeakRef(bus)
   })()
 
-  // Force garbage collection
-  gc()
-  await delay(50)
-  gc()
+  await flush_gc_cycles(gc, 20)
 
   // If EventBus.all_instances holds a strong reference (Set<EventBus>),
   // the bus will NOT be collected — proving the memory leak.
   // After the fix (WeakRef-based storage), the bus should be collected.
   assert.equal(
-    weak_ref!.deref(),
+    weak_ref?.deref(),
     undefined,
     'bus should be garbage collected when no external references remain — ' +
       'EventBus.all_instances is holding a strong reference (memory leak)'
   )
 })
 
-test('unreferenced buses with event history are garbage collected without destroy()', async () => {
-  const gc = globalThis.gc as (() => void) | undefined
+test('subclass registry and global lock are collectable when subclass goes out of scope', async () => {
+  const gc = globalThis.gc
   if (typeof gc !== 'function') {
-    return
+    assert.fail('GC tests require --expose-gc')
   }
 
-  const GcEvent = BaseEvent.extend('GcNoDestroyEvent', {})
-  const weak_refs: Array<WeakRef<EventBus>> = []
+  let subclass_ref!: WeakRef<typeof EventBus>
+  let registry_ref!: WeakRef<GlobalBusRegistry>
+  let lock_ref!: WeakRef<AsyncLock>
+  let bus_ref!: WeakRef<EventBus>
 
-  gc()
-  await delay(20)
-  gc()
+  ;(() => {
+    class ScopedSubclassBus extends EventBus {}
+    const bus = new ScopedSubclassBus('ScopedSubclassBus', { event_concurrency: 'global-serial' })
+    subclass_ref = new WeakRef(ScopedSubclassBus)
+    registry_ref = new WeakRef(ScopedSubclassBus.all_instances)
+    lock_ref = new WeakRef(bus.event_global_lock)
+    bus_ref = new WeakRef(bus)
+  })()
+
+  await flush_gc_cycles(gc, 300)
+
+  assert.equal(bus_ref.deref(), undefined, 'subclass bus instance should be collectable')
+  assert.equal(subclass_ref.deref(), undefined, 'subclass type should be collectable')
+  assert.equal(registry_ref.deref(), undefined, 'subclass all_instances registry should be collectable')
+  assert.equal(lock_ref.deref(), undefined, 'subclass global lock should be collectable')
+})
+
+test('unreferenced buses with event history are garbage collected without destroy()', async () => {
+  const gc = globalThis.gc
+  if (typeof gc !== 'function') {
+    assert.fail('GC tests require --expose-gc')
+  }
+
+  class IsolatedRegistryBus extends EventBus {}
+
+  const GcEvent = BaseEvent.extend('GcNoDestroyEvent', {})
+  const weak_refs: Array<WeakRef<IsolatedRegistryBus>> = []
+  const created_bus_ids: string[] = []
+
+  await flush_gc_cycles(gc, 10)
   const heap_before = process.memoryUsage().heapUsed
 
-  const create_and_run_bus = async (index: number): Promise<WeakRef<EventBus>> => {
-    const bus = new EventBus(`GC-NoDestroy-${index}`, { max_history_size: 200 })
+  const create_and_run_bus = async (index: number): Promise<{ ref: WeakRef<IsolatedRegistryBus>; id: string }> => {
+    const bus = new IsolatedRegistryBus(`GC-NoDestroy-${index}`, { max_history_size: 200 })
     bus.on(GcEvent, () => {})
     for (let i = 0; i < 200; i += 1) {
       const event = bus.emit(GcEvent({}))
       await event.done()
     }
     await bus.waitUntilIdle()
-    return new WeakRef(bus)
+    return { ref: new WeakRef(bus), id: bus.id }
   }
 
   for (let i = 0; i < 120; i += 1) {
-    weak_refs.push(await create_and_run_bus(i))
+    const { ref, id } = await create_and_run_bus(i)
+    weak_refs.push(ref)
+    created_bus_ids.push(id)
   }
 
-  for (let i = 0; i < 30; i += 1) {
-    gc()
-    await delay(20)
-  }
+  await flush_gc_cycles(gc, 30)
 
   const alive_count = weak_refs.reduce((count, ref) => count + (ref.deref() ? 1 : 0), 0)
+  const remaining_ids = new Set(Array.from(IsolatedRegistryBus.all_instances).map((bus) => bus.id))
   const heap_after = process.memoryUsage().heapUsed
 
   assert.equal(alive_count, 0, 'all unreferenced buses should be garbage collected without explicit destroy()')
-  assert.equal(EventBus.all_instances.size, 0, 'all_instances should not retain unreferenced buses')
+  for (const id of created_bus_ids) {
+    assert.equal(remaining_ids.has(id), false, `all_instances should not retain unreferenced bus ${id}`)
+  }
   assert.ok(
     heap_after <= heap_before + 20 * 1024 * 1024,
     `heap should return near baseline after GC, before=${(heap_before / 1024 / 1024).toFixed(1)}MB after=${(heap_after / 1024 / 1024).toFixed(1)}MB`

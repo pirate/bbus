@@ -125,7 +125,7 @@ export class EventHandler {
         handler_registered_ts: params.handler_registered_ts,
         event_pattern: params.event_pattern,
       })
-    this.handler = EventHandler.normalizeHandler(params.handler)
+    this.handler = EventHandler.resolveAsyncHandler(params.handler)
     this.handler_name = params.handler_name
     this.handler_file_path = params.handler_file_path ?? null
     this.handler_timeout = params.handler_timeout
@@ -141,7 +141,7 @@ export class EventHandler {
     return Object.prototype.toString.call(handler) === '[object AsyncFunction]'
   }
 
-  static normalizeHandler(handler: EventHandlerCallable): EventHandlerCallable {
+  static resolveAsyncHandler(handler: EventHandlerCallable): EventHandlerCallable {
     const cached_normalized_handler = this._normalized_handler_by_raw.get(handler)
     if (cached_normalized_handler) {
       return cached_normalized_handler
@@ -159,16 +159,16 @@ export class EventHandler {
     return normalized_handler
   }
 
-  static getRawHandler(handler: EventHandlerCallable): EventHandlerCallable {
+  static _getRawHandler(handler: EventHandlerCallable): EventHandlerCallable {
     return this._raw_handler_by_normalized.get(handler) ?? handler
   }
 
-  static handlersMatch(registered_handler: EventHandlerCallable, candidate_handler: EventHandlerCallable): boolean {
+  static _handlersMatch(registered_handler: EventHandlerCallable, candidate_handler: EventHandlerCallable): boolean {
     if (registered_handler === candidate_handler) {
       return true
     }
-    const registered_raw_handler = this.getRawHandler(registered_handler)
-    const candidate_raw_handler = this.getRawHandler(candidate_handler)
+    const registered_raw_handler = this._getRawHandler(registered_handler)
+    const candidate_raw_handler = this._getRawHandler(candidate_handler)
     return registered_raw_handler === candidate_handler || registered_raw_handler === candidate_raw_handler
   }
 
@@ -195,7 +195,7 @@ export class EventHandler {
 
   // autodetect the path/to/source/file.ts:lineno where the handler is defined for better logs
   // optional (controlled by EventBus.event_handler_detect_file_paths) because it can slow down performance to introspect stack traces and find file paths
-  detectHandlerFilePath(): void {
+  _detectHandlerFilePath(): void {
     const line = new Error().stack
       ?.split('\n')
       .map((l) => l.trim())
@@ -234,7 +234,7 @@ export class EventHandler {
       handler_timeout: this.handler_timeout,
       handler_slow_timeout: this.handler_slow_timeout,
       handler_registered_at: this.handler_registered_at,
-      handler_registered_ts: this.handler_registered_ts % 1_000_000,
+      handler_registered_ts: this.handler_registered_ts,
     }
   }
 

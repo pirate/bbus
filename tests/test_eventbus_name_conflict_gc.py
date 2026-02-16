@@ -7,6 +7,7 @@ name conflicts when creating new instances with the same name.
 """
 
 import asyncio
+import gc
 import weakref
 
 import pytest
@@ -263,3 +264,45 @@ class TestNameConflictGC:
 
         assert all(ref() is None for ref in refs), 'all unreferenced buses should be collected without stop()'
         assert len(EventBus.all_instances) <= baseline_instances
+
+    def test_subclass_registry_and_global_lock_are_collected_with_subclass(self):
+        """
+        When a temporary EventBus subclass goes out of scope, its class-scoped
+        all_instances registry and global-serial lock should be collectable too.
+        """
+        subclass_ref = None
+        registry_ref = None
+        lock_ref = None
+        bus_ref = None
+
+        def create_scoped_subclass() -> None:
+            class ScopedSubclassBus(EventBus):
+                pass
+
+            bus = ScopedSubclassBus(name='ScopedSubclassBus', event_concurrency='global-serial')
+            nonlocal subclass_ref, registry_ref, lock_ref, bus_ref
+            subclass_ref = weakref.ref(ScopedSubclassBus)
+            registry_ref = weakref.ref(ScopedSubclassBus.all_instances)
+            lock_ref = weakref.ref(bus.event_global_serial_lock)
+            bus_ref = weakref.ref(bus)
+
+        create_scoped_subclass()
+        assert subclass_ref is not None
+        assert registry_ref is not None
+        assert lock_ref is not None
+        assert bus_ref is not None
+
+        for _ in range(500):
+            gc.collect()
+            if (
+                subclass_ref() is None
+                and registry_ref() is None
+                and lock_ref() is None
+                and bus_ref() is None
+            ):
+                break
+
+        assert bus_ref() is None, 'subclass bus instance should be collectable'
+        assert subclass_ref() is None, 'subclass type should be collectable'
+        assert registry_ref() is None, 'subclass all_instances registry should be collectable'
+        assert lock_ref() is None, 'subclass global-serial lock should be collectable'
