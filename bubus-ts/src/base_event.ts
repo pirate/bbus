@@ -515,7 +515,7 @@ export class BaseEvent {
     }
     const resolved_completion = original.event_handler_completion ?? this.bus?.event_handler_completion ?? 'all'
     if (resolved_completion === 'first') {
-      if (original._getHandlerLock() !== null) {
+      if (original._getHandlerLock(this.bus?.event_handler_concurrency) !== null) {
         for (const entry of pending_results) {
           await this._runHandlerWithLock(original, entry)
           if (!this._isFirstModeWinningResult(entry)) {

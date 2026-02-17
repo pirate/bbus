@@ -1084,6 +1084,51 @@ test('forwarded event uses processing-bus defaults unless explicit overrides are
   assert.ok(override_b1_end < override_b2_start, `explicit override should force serial handler concurrency. Got: [${log.join(', ')}]`)
 })
 
+test('forwarded first-mode uses processing-bus handler concurrency defaults', async () => {
+  const ForwardedFirstEvent = BaseEvent.extend('ForwardedFirstDefaultsEvent', {
+    event_result_type: z.string(),
+  })
+
+  const bus_a = new EventBus('ForwardedFirstDefaults_A', {
+    event_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
+    event_handler_completion: 'all',
+  })
+  const bus_b = new EventBus('ForwardedFirstDefaults_B', {
+    event_concurrency: 'bus-serial',
+    event_handler_concurrency: 'parallel',
+    event_handler_completion: 'first',
+  })
+
+  const log: string[] = []
+  bus_a.on('*', bus_b.emit)
+
+  bus_b.on(ForwardedFirstEvent, async () => {
+    log.push('slow_start')
+    await delay(20)
+    log.push('slow_end')
+    return 'slow'
+  })
+
+  bus_b.on(ForwardedFirstEvent, async () => {
+    log.push('fast_start')
+    await delay(1)
+    log.push('fast_end')
+    return 'fast'
+  })
+
+  const result = await bus_a.emit(ForwardedFirstEvent({ event_timeout: null })).first()
+  await bus_a.waitUntilIdle()
+  await bus_b.waitUntilIdle()
+
+  assert.equal(result, 'fast', `first-mode on processing bus should pick fast handler. Got: ${String(result)}. log=[${log.join(', ')}]`)
+  const slow_start = log.indexOf('slow_start')
+  const fast_start = log.indexOf('fast_start')
+  assert.ok(slow_start >= 0, `slow handler should have started. log=[${log.join(', ')}]`)
+  assert.ok(fast_start >= 0, `fast handler should have started. log=[${log.join(', ')}]`)
+  assert.ok(slow_start < fast_start, `both handlers should start before first-mode completion resolves. log=[${log.join(', ')}]`)
+})
+
 // =============================================================================
 // Event-level concurrency on the forward bus.
 //

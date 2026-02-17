@@ -430,28 +430,55 @@ test('event_children is empty when handlers do not emit children', async () => {
   assert.equal(parent.event_children.length, 0)
 })
 
-test('_areAllChildrenComplete reflects child completion state', async () => {
+test('parent completion waits for all children', async () => {
   const bus = new EventBus('EventChildrenCompletionBus')
+  const completion_order: string[] = []
+  let child_started_resolve: (() => void) | null = null
+  const child_started = new Promise<void>((resolve) => {
+    child_started_resolve = resolve
+  })
+  let release_children: (() => void) | null = null
+  const children_released = new Promise<void>((resolve) => {
+    release_children = resolve
+  })
+  let child_started_signaled = false
 
   bus.on(ParentEvent, (event) => {
     event.bus?.emit(ChildEvent({ data: 'child_a' }))
     event.bus?.emit(ChildEvent({ data: 'child_b' }))
+    completion_order.push('parent_handler')
     return 'parent'
   })
   bus.on(ChildEvent, async (event) => {
-    await delay(10)
+    if (!child_started_signaled) {
+      child_started_signaled = true
+      child_started_resolve?.()
+    }
+    await children_released
+    completion_order.push(`child_handler_${event.data ?? 'child'}`)
     return `done_${event.data ?? 'child'}`
   })
 
   const parent = bus.emit(ParentEvent({ message: 'completion' }))
-  assert.equal(parent._areAllChildrenComplete(), true)
-  await bus.waitUntilIdle()
-  await parent.done()
+  try {
+    await child_started
+    assert.ok(parent.event_children.length >= 1)
+    assert.equal(parent.event_completed_at ?? null, null)
+    assert.notEqual(parent.event_status, 'completed')
 
-  assert.equal(parent.event_children.length, 2)
-  assert.equal(parent._areAllChildrenComplete(), true)
-  for (const child of parent.event_children) {
-    assert.equal(child.event_status, 'completed')
+    release_children?.()
+    await parent.done()
+    await bus.waitUntilIdle()
+
+    assert.equal(parent.event_children.length, 2)
+    assert.equal(parent.event_status, 'completed')
+    assert.ok(parent.event_completed_at)
+    assert.ok(completion_order.includes('parent_handler'))
+    for (const child of parent.event_children) {
+      assert.equal(child.event_status, 'completed')
+    }
+  } finally {
+    release_children?.()
   }
 })
 

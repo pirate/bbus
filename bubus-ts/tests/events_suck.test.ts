@@ -9,21 +9,23 @@ test('events_suck.wrap builds imperative methods for emitting events', async () 
   const CreateEvent = BaseEvent.extend('EventsSuckCreateEvent', {
     name: z.string(),
     age: z.number(),
+    nickname: z.string().nullable().optional(),
     event_result_type: z.string(),
   })
   const UpdateEvent = BaseEvent.extend('EventsSuckUpdateEvent', {
     id: z.string(),
     age: z.number().nullable().optional(),
+    source: z.string().nullable().optional(),
     event_result_type: z.boolean(),
   })
 
   bus.on(CreateEvent, async (event) => {
-    assert.equal((event as unknown as { nickname?: string }).nickname, 'bobby')
+    assert.equal(event.nickname, 'bobby')
     return `user-${event.age}`
   })
 
   bus.on(UpdateEvent, async (event) => {
-    assert.equal((event as unknown as { source?: string }).source, 'sync')
+    assert.equal(event.source, 'sync')
     return event.age === 46
   })
 
