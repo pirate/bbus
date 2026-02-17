@@ -41,6 +41,24 @@ test('BaseEvent.eventResultUpdate creates and updates typed handler results', as
   bus.destroy()
 })
 
+test('BaseEvent.eventResultUpdate status-only update does not implicitly pass undefined result/error keys', () => {
+  const TypedEvent = BaseEvent.extend('BaseEventEventResultUpdateStatusOnlyEvent', { event_result_type: z.string() })
+  const bus = new EventBus('BaseEventEventResultUpdateStatusOnlyBus')
+  const event = TypedEvent({})
+  const handler_entry = bus.on(TypedEvent, async () => 'ok')
+
+  const errored = event.eventResultUpdate(handler_entry, { eventbus: bus, error: new Error('seeded error') })
+  assert.equal(errored.status, 'error')
+  assert.ok(errored.error instanceof Error)
+
+  const status_only = event.eventResultUpdate(handler_entry, { eventbus: bus, status: 'pending' })
+  assert.equal(status_only.status, 'pending')
+  assert.ok(status_only.error instanceof Error)
+  assert.equal(status_only.result, undefined)
+
+  bus.destroy()
+})
+
 test('await event.done() queue-jumps child processing inside handlers', async () => {
   const ParentEvent = BaseEvent.extend('BaseEventImmediateParentEvent', {})
   const ChildEvent = BaseEvent.extend('BaseEventImmediateChildEvent', {})

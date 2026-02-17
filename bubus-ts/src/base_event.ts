@@ -470,11 +470,11 @@ export class BaseEvent {
     }
 
     if (options.status !== undefined || options.result !== undefined || options.error !== undefined) {
-      event_result.update({
-        status: options.status,
-        result: options.result,
-        error: options.error,
-      })
+      const update_params: Parameters<EventResult<this>['update']>[0] = {}
+      if (options.status !== undefined) update_params.status = options.status
+      if (options.result !== undefined) update_params.result = options.result
+      if (options.error !== undefined) update_params.error = options.error
+      event_result.update(update_params)
       if (event_result.status === 'started' && event_result.started_at !== null) {
         original_event._markStarted(event_result.started_at, false)
       }
