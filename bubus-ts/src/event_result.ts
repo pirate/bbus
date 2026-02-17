@@ -260,7 +260,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
 
   update(params: { status?: EventResultStatus; result?: EventResultType<TEvent> | BaseEvent | undefined; error?: unknown }): this {
     const has_status = params.status !== undefined
-    const has_result = params.result !== undefined || params.status === 'completed'
+    const has_result = 'result' in params
     const has_error = params.error !== undefined
 
     if (has_status && params.status !== undefined) {
