@@ -437,9 +437,11 @@ test('parent completion waits for all children', async () => {
   const child_started = new Promise<void>((resolve) => {
     child_started_resolve = resolve
   })
-  let release_children: (() => void) | null = null
+  let release_children!: () => void
   const children_released = new Promise<void>((resolve) => {
-    release_children = resolve
+    release_children = () => {
+      resolve()
+    }
   })
   let child_started_signaled = false
 
@@ -466,7 +468,7 @@ test('parent completion waits for all children', async () => {
     assert.equal(parent.event_completed_at ?? null, null)
     assert.notEqual(parent.event_status, 'completed')
 
-    release_children?.()
+    release_children()
     await parent.done()
     await bus.waitUntilIdle()
 
@@ -478,7 +480,7 @@ test('parent completion waits for all children', async () => {
       assert.equal(child.event_status, 'completed')
     }
   } finally {
-    release_children?.()
+    release_children()
   }
 })
 

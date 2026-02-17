@@ -48,20 +48,23 @@ repos:
         pass_filenames: false
       - id: ts-prettier
         name: ts-prettier
-        entry: ./bubus-ts/node_modules/.bin/prettier --write --ignore-unknown
+        entry: pnpm --dir bubus-ts run prettier
         language: system
         files: ^bubus-ts/
         exclude: \.sh$
+        pass_filenames: false
       - id: ts-eslint
         name: ts-eslint
-        entry: ./bubus-ts/node_modules/.bin/eslint --config bubus-ts/eslint.config.js
+        entry: pnpm --dir bubus-ts run eslint
         language: system
         files: ^bubus-ts/.*\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$
+        pass_filenames: false
       - id: ts-typecheck
         name: ts-typecheck
-        entry: ./bubus-ts/node_modules/.bin/tsc-files -p bubus-ts/tsconfig.typecheck.json
+        entry: pnpm --dir bubus-ts run typecheck
         language: system
         files: ^bubus-ts/.*\.(ts|tsx|mts|cts)$
+        pass_filenames: false
       # see pyproject.toml for more details on ruff config
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
