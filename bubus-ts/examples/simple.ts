@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node --import tsx
 // Run: node --import tsx examples/simple.ts
 
+import assert from 'node:assert/strict'
 import { BaseEvent, EventBus } from '../src/index.js'
 import { z } from 'zod'
 
@@ -58,7 +59,18 @@ async function main(): Promise<void> {
       plan: 'pro',
     })
   )
-  await register_event.done()
+  await register_event.done({ raise_if_any: false })
+  const schema_error_result = Array.from(register_event.event_results.values()).find(
+    (result) => result.status === 'error' && result.error instanceof Error && result.error.name === 'EventHandlerResultSchemaError'
+  )
+  const valid_result = Array.from(register_event.event_results.values()).find(
+    (result) =>
+      result.status === 'completed' &&
+      typeof (result.result as { user_id?: unknown } | undefined)?.user_id === 'string' &&
+      typeof (result.result as { welcome_email_sent?: unknown } | undefined)?.welcome_email_sent === 'boolean'
+  )
+  assert.ok(schema_error_result, 'expected one handler to fail event_result_type validation')
+  assert.ok(valid_result, 'expected one handler to return a valid typed result')
 
   // 6) Inspect per-handler results (completed vs error) from event.event_results.
   console.log('\nRegisterUserEvent handler outcomes:')

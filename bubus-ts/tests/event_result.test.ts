@@ -3,7 +3,7 @@ import { test } from 'node:test'
 
 import { z } from 'zod'
 
-import { BaseEvent, EventBus } from '../src/index.js'
+import { BaseEvent, EventBus, EventHandlerResultSchemaError } from '../src/index.js'
 import { EventHandler } from '../src/event_handler.js'
 import { EventResult } from '../src/event_result.js'
 
@@ -63,11 +63,15 @@ test('invalid result marks handler error', async () => {
   bus.on(ObjectResultEvent, () => JSON.parse('{"value":"bad","count":"nope"}'))
 
   const event = bus.emit(ObjectResultEvent({}))
-  await event.done()
+  await assert.rejects(
+    () => event.done(),
+    (error: unknown) => error instanceof EventHandlerResultSchemaError
+  )
 
   const result = Array.from(event.event_results.values())[0]
   assert.equal(result.status, 'error')
-  assert.ok(result.error instanceof Error)
+  assert.ok(result.error instanceof EventHandlerResultSchemaError)
+  assert.ok(event.event_errors.length > 0)
 })
 
 test('event with no result schema stores raw values', async () => {

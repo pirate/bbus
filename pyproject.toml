@@ -106,6 +106,7 @@ skip-magic-trailing-comma = false
 
 [tool.pyright]
 stubPath = "bubus/typings"
+pythonVersion = "3.11"
 typeCheckingMode = "strict"
 reportMissingImports = "error"
 reportMissingTypeStubs = "error"

@@ -3,7 +3,7 @@ import { test } from 'node:test'
 
 import { z } from 'zod'
 
-import { BaseEvent, EventBus } from '../src/index.js'
+import { BaseEvent, EventBus, EventHandlerResultSchemaError } from '../src/index.js'
 
 const typed_result_type = z.object({
   value: z.string(),
@@ -118,8 +118,14 @@ test('event_result_type supports constructor shorthands and enforces them', asyn
   })
   bus.on(invalid_number_event, () => JSON.parse('"not-a-number"'))
   const invalid = bus.emit(invalid_number_event({}))
-  await invalid.done()
-  assert.equal(Array.from(invalid.event_results.values())[0]?.status, 'error')
+  await assert.rejects(
+    () => invalid.done(),
+    (error: unknown) => error instanceof EventHandlerResultSchemaError
+  )
+  const invalid_result = Array.from(invalid.event_results.values())[0]
+  assert.equal(invalid_result?.status, 'error')
+  assert.ok(invalid_result?.error instanceof EventHandlerResultSchemaError)
+  assert.equal(invalid.event_errors.length, 1)
 })
 
 test('invalid handler result marks error when schema is defined', async () => {
@@ -128,11 +134,14 @@ test('invalid handler result marks error when schema is defined', async () => {
   bus.on(NumberResultEvent, () => JSON.parse('"not-a-number"'))
 
   const event = bus.emit(NumberResultEvent({}))
-  await event.done()
+  await assert.rejects(
+    () => event.done(),
+    (error: unknown) => error instanceof EventHandlerResultSchemaError
+  )
 
   const result = Array.from(event.event_results.values())[0]
   assert.equal(result.status, 'error')
-  assert.ok(result.error instanceof Error)
+  assert.ok(result.error instanceof EventHandlerResultSchemaError)
   assert.ok(event.event_errors.length > 0)
 })
 

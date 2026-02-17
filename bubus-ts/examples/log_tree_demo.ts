@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict'
 import { z } from 'zod'
 
 import { BaseEvent, EventBus } from '../src/index.js'
@@ -81,9 +82,9 @@ async function main(): Promise<void> {
   bus_b.on(GrandchildEvent, grandchild_fast_handler)
   bus_b.on(GrandchildEvent, grandchild_slow_handler)
 
-  const root_event = bus_a.emit(RootEvent({ url: 'https://example.com', event_timeout: 0.25 }))
-
-  await root_event.done()
+  const root_event = bus_a.emit(RootEvent({ url: 'https://example.com', event_timeout: 0.45 }))
+  await root_event.done({ raise_if_any: false })
+  assert.ok(root_event.event_errors.length > 0, 'expected root event to include timeout-related errors')
 
   console.log('\n=== BusA logTree ===')
   console.log(bus_a.logTree())

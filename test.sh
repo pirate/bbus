@@ -9,7 +9,15 @@ uv run pytest
 
 (
   cd bubus-ts
-  pnpm run test
+  ts_test_file_count=0
+  while IFS= read -r test_file; do
+    ts_test_file_count=$((ts_test_file_count + 1))
+    NODE_OPTIONS='--expose-gc' node --expose-gc --test --import tsx "$test_file"
+  done < <(find tests -type f -name '*.test.ts' | sort)
+  if [[ "$ts_test_file_count" -eq 0 ]]; then
+    echo "No TypeScript test files found in bubus-ts/tests/" >&2
+    exit 1
+  fi
 )
 
 shopt -s nullglob

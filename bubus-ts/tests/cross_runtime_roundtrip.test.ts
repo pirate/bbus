@@ -569,9 +569,10 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
   const wrong_event = BaseEvent.fromJSON(screenshot_payload)
   assert.equal(typeof (wrong_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
   const wrong_dispatched = wrong_bus.emit(wrong_event)
-  await runWithTimeout(wrong_dispatched.done(), EVENT_WAIT_TIMEOUT_MS, 'wrong-shape event completion')
+  await runWithTimeout(wrong_dispatched.done({ raise_if_any: false }), EVENT_WAIT_TIMEOUT_MS, 'wrong-shape event completion')
   const wrong_result = Array.from(wrong_dispatched.event_results.values())[0]
   assert.equal(wrong_result.status, 'error')
+  assert.equal((wrong_result.error as { name?: string } | undefined)?.name, 'EventHandlerResultSchemaError')
   wrong_bus.destroy()
 
   const right_bus = new EventBus('TsPyTsRightShape')
