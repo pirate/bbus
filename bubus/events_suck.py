@@ -86,12 +86,12 @@ def _event_payload(event: BaseEvent[Any]) -> dict[str, Any]:
 
 
 def _annotation_allows_none(annotation: Any) -> bool:
-    if annotation is None or annotation is type(None):  # noqa: E721
+    if annotation is None or annotation is type(None):
         return True
     origin = get_origin(annotation)
     if origin is None:
         return False
-    return any(arg is type(None) for arg in get_args(annotation))  # noqa: E721
+    return any(arg is type(None) for arg in get_args(annotation))
 
 
 def _make_event_class(event_name: str, func: Callable[..., Any]) -> EventClass:

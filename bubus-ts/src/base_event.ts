@@ -568,7 +568,7 @@ export class BaseEvent {
     original._event_dispatch_context = dispatch_context
   }
 
-  // Get parent event object from event_parent_id (checks across all busses)
+  // Get parent event object from event_parent_id (checks across all buses)
   get event_parent(): BaseEvent | undefined {
     const original = this._event_original ?? this
     const parent_id = original.event_parent_id

@@ -229,7 +229,7 @@ async def _measure_warm_latency_ms(kind: str, config: dict[str, Any]) -> float:
             await asyncio.wait_for(measured_seen.wait(), timeout=600.0)
             elapsed_ms = (time.perf_counter_ns() - start_ns) / 1_000_000.0
             return elapsed_ms / measured_count_target
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             last_error = exc
         finally:
             await sender.close()

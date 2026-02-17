@@ -23,6 +23,13 @@ source .venv/bin/activate  # On Unix/macOS
 uv sync --dev --all-extras
 ```
 
+Recommended once per clone:
+
+```bash
+prek install           # install pre-commit hooks
+prek run --all-files   # run pre-commit hooks on all files manually
+```
+
 ```bash
 # Run linter & type checker
 uv run ruff check --fix
@@ -52,6 +59,10 @@ git clone https://github.com/pirate/bbus bubus && cd bubus
 
 cd ./bubus-ts
 pnpm install
+
+prek install           # install pre-commit hooks
+prek run --all-files   # run pre-commit hooks on all files manually
+
 pnpm lint
 pnpm test
 ```

@@ -347,7 +347,7 @@ export class EventHandlerAbortedError extends EventHandlerError {
   }
 }
 
-// When a handler run succesfully but returned a value that failed event_result_type validation
+// When a handler run successfully but returned a value that failed event_result_type validation
 export class EventHandlerResultSchemaError extends EventHandlerError {
   raw_value: unknown
 

@@ -7,8 +7,8 @@ import asyncio
 import random
 import string
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from bubus import BaseEvent, EventBus, SQLiteHistoryMirrorMiddleware
 

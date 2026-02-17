@@ -671,7 +671,7 @@ export class EventBus {
       ...options,
     })
     if (this.event_handler_detect_file_paths) {
-      // optionally peform (expensive) file path detection for the handler using Error().stack introspection
+      // optionally perform (expensive) file path detection for the handler using Error().stack introspection
       // makes logs much more useful for debugging, but is expensive to do if not needed
       handler_entry._detectHandlerFilePath()
     }

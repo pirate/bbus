@@ -14,10 +14,10 @@ except ImportError:  # pragma: no cover - direct script execution path
 
 TABLE_MATRIX = [
     ('50k-events', '1 bus x 50k events x 1 handler'),
-    ('500-buses-x-100-events', '500 busses x 100 events x 1 handler'),
+    ('500-buses-x-100-events', '500 buses x 100 events x 1 handler'),
     ('1-event-x-50k-parallel-handlers', '1 bus x 1 event x 50k parallel handlers'),
     ('50k-one-off-handlers', '1 bus x 50k events x 50k one-off handlers'),
-    ('worst-case-forwarding-timeouts', 'Worst case (N busses x N events x N handlers)'),
+    ('worst-case-forwarding-timeouts', 'Worst case (N buses x N events x N handlers)'),
 ]
 
 

@@ -43,7 +43,6 @@ dev = [
     "pytest-asyncio>=1.1.0",
     "pytest-httpserver>=1.0.8",
     "ipdb>=0.13.13",
-    "pre-commit>=4.2.0",
     "codespell>=2.4.1",
     "pyright>=1.1.404",
     "ty>=0.0.1a19",
@@ -51,6 +50,7 @@ dev = [
     "psutil>=7.0.0",
     "pytest-cov>=6.2.1",
     "pytest-timeout>=2.4.0",
+    "prek>=0.3.3",
 ]
 
 [build-system]

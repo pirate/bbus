@@ -4,8 +4,12 @@ set -euo pipefail
 uv run ruff format bubus examples tests
 export UV_NO_SYNC=1
 uv run ruff check --fix bubus examples tests
-uv run ty check bubus examples tests
-uv run pyright
+uv run ty check bubus examples tests &
+ty_pid=$!
+uv run pyright &
+pyright_pid=$!
+wait "$ty_pid"
+wait "$pyright_pid"
 
 (
   cd bubus-ts
@@ -22,15 +26,25 @@ uv run pytest
 )
 
 shopt -s nullglob
+python_example_pids=()
 for example_file in examples/*.py; do
-  timeout 120 uv run python "$example_file"
+  timeout 120 uv run python "$example_file" &
+  python_example_pids+=("$!")
+done
+for pid in "${python_example_pids[@]}"; do
+  wait "$pid"
 done
 
 (
   cd bubus-ts
   shopt -s nullglob
+  ts_example_pids=()
   for example_file in examples/*.ts; do
-    timeout 120 node --import tsx "$example_file"
+    timeout 120 node --import tsx "$example_file" &
+    ts_example_pids+=("$!")
+  done
+  for pid in "${ts_example_pids[@]}"; do
+    wait "$pid"
   done
 )
 

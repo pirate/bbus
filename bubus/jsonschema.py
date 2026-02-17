@@ -205,7 +205,7 @@ def _create_dynamic_model(
     )
 
 
-def pydantic_model_from_json_schema(result_type: Any) -> Any:  # noqa: C901
+def pydantic_model_from_json_schema(result_type: Any) -> Any:
     """Reconstruct runtime types from JSON Schema when possible."""
     if not isinstance(result_type, dict):
         return result_type

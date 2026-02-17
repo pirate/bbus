@@ -28,7 +28,7 @@ It's async native, has proper automatic nested event tracking, and powerful conc
 
 - nice Pydantic / Zod schemas for events that can be exchanged between both languages
 - automatic UUIDv7s and monotonic nanosecond timestamps for ordering events globally
-- built in locking options to force strict global FIFO procesing or fully parallel processing
+- built in locking options to force strict global FIFO processing or fully parallel processing
 
 ---
 
@@ -1162,7 +1162,7 @@ The raw callable is stored on `handler`, but is excluded from JSON serialization
 ### `EventBus`, `BaseEvent`, and `EventHandler` concurrency config fields
 
 These options can be set as bus-level defaults, event-level options, or as handler-specific options.
-They control the concurrency of how events are processed within a bus, across all busses, and how handlers execute within a single event.
+They control the concurrency of how events are processed within a bus, across all buses, and how handlers execute within a single event.
 
 - `event_concurrency`: `'global-serial' | 'bus-serial' | 'parallel'` controls event-level scheduling (`None` on events defers to bus default)
 - `event_handler_concurrency`: `'serial' | 'parallel'` should handlers on a single event run in parallel or in sequential order
@@ -1281,7 +1281,7 @@ bus.on(DatabaseEvent, db_service.execute_query)
 uv run tests/performance_runtime.py   # run the performance test suite in python
 ```
 
-| Runtime | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
+| Runtime | 1 bus x 50k events x 1 handler | 500 buses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N buses x N events x N handlers) |
 | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
 | Python | `0.179ms/event`, `0.235kb/event` | `0.191ms/event`, `0.191kb/event` | `0.035ms/handler`, `8.164kb/handler` | `0.255ms/event`, `0.185kb/event` | `0.351ms/event`, `5.867kb/event` |
 
@@ -1309,6 +1309,13 @@ source .venv/bin/activate  # On Unix/macOS
 
 # Install dependencies
 uv sync --dev --all-extras
+```
+
+Recommended once per clone:
+
+```bash
+prek install           # install pre-commit hooks
+prek run --all-files   # run pre-commit hooks on all files manually
 ```
 
 ```bash

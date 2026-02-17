@@ -21,7 +21,7 @@ It's async native, has proper automatic nested event tracking, and powerful conc
 
 - nice Zod / Pydantic schemas for events that can be exchanged between both languages
 - automatic UUIDv7s and monotonic nanosecond timestamps for ordering events globally
-- built in locking options to force strict global FIFO procesing or fully parallel processing
+- built in locking options to force strict global FIFO processing or fully parallel processing
 
 ---
 
@@ -808,7 +808,7 @@ bridge.on('*', bus.emit) // listen for new events in redis channel and emit them
 ### Browser support notes
 
 - The package output is ESM (`./dist/esm`) which is supported by all browsers [released after 2018](https://caniuse.com/?search=ESM)
-- `AsyncLocalStorage` is preserved at emit and used during handling when availabe (Node/Bun), otel/tracing context will work normally in those environments
+- `AsyncLocalStorage` is preserved at emit and used during handling when available (Node/Bun), otel/tracing context will work normally in those environments
 
 ### Performance comparison (local run, per-event)
 
@@ -819,7 +819,7 @@ Measured locally on an `Apple M4 Pro` with:
 - `pnpm run perf:deno` (`deno v2.6.8`)
 - `pnpm run perf:browser` (`chrome v145.0.7632.6`)
 
-| Runtime            | 1 bus x 50k events x 1 handler | 500 busses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N busses x N events x N handlers) |
+| Runtime            | 1 bus x 50k events x 1 handler | 500 buses x 100 events x 1 handler | 1 bus x 1 event x 50k parallel handlers | 1 bus x 50k events x 50k one-off handlers | Worst case (N buses x N events x N handlers) |
 | ------------------ | ------------------------------ | ----------------------------------- | --------------------------------------- | ----------------------------------------- | --------------------------------------------- |
 | Node               | `0.015ms/event`, `0.6kb/event` | `0.058ms/event`, `0.1kb/event`      | `0.021ms/handler`, `3.8kb/handler`      | `0.028ms/event`, `0.6kb/event`            | `0.442ms/event`, `0.9kb/event`                |
 | Bun                | `0.011ms/event`, `2.5kb/event` | `0.054ms/event`, `1.0kb/event`      | `0.006ms/handler`, `4.5kb/handler`      | `0.019ms/event`, `2.8kb/event`            | `0.441ms/event`, `3.1kb/event`                |
@@ -845,6 +845,10 @@ git clone https://github.com/pirate/bbus bubus && cd bubus
 
 cd ./bubus-ts
 pnpm install
+
+prek install           # install pre-commit hooks
+prek run --all-files   # run pre-commit hooks on all files manually
+
 pnpm lint
 pnpm test
 ```
