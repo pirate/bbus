@@ -8,7 +8,7 @@ import { BaseEvent, EventBus } from '../src/index.js'
 const PingEvent = BaseEvent.extend('PingEvent', { value: z.number() })
 const ProxyDispatchRootEvent = BaseEvent.extend('ProxyDispatchRootEvent', {})
 const ProxyDispatchChildEvent = BaseEvent.extend('ProxyDispatchChildEvent', {})
-const ForwardedFirstDefaultsEvent = BaseEvent.extend('ForwardedFirstDefaultsEvent', {})
+const ForwardedFirstDefaultsEvent = BaseEvent.extend('ForwardedFirstDefaultsEvent', { event_result_type: z.string() })
 
 test('events forward between buses without duplication', async () => {
   const bus_a = new EventBus('BusA')
