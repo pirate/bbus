@@ -2,3 +2,5 @@ dist/
 *.md
 *.yaml
 *.json
+*.sh
+.prettierignore

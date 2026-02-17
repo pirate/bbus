@@ -38,20 +38,30 @@ repos:
         name: ty-check
         entry: uv run ty check
         language: system
-        files: ^(bubus/|tests/|examples/|pyproject\.toml)
+        files: ^(bubus/|tests/|examples/)
         pass_filenames: false
       - id: pyright
         name: pyright
         entry: uv run pyright
         language: system
-        files: ^(bubus/|tests/|examples/|pyproject\.toml)
+        files: ^(bubus/|tests/|examples/)
         pass_filenames: false
-      - id: ts-lint
-        name: ts-lint
-        entry: pnpm --dir bubus-ts run lint
+      - id: ts-prettier
+        name: ts-prettier
+        entry: ./bubus-ts/node_modules/.bin/prettier --write --ignore-unknown
         language: system
         files: ^bubus-ts/
-        pass_filenames: false
+        exclude: \.sh$
+      - id: ts-eslint
+        name: ts-eslint
+        entry: ./bubus-ts/node_modules/.bin/eslint --config bubus-ts/eslint.config.js
+        language: system
+        files: ^bubus-ts/.*\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$
+      - id: ts-typecheck
+        name: ts-typecheck
+        entry: ./bubus-ts/node_modules/.bin/tsc-files -p bubus-ts/tsconfig.typecheck.json
+        language: system
+        files: ^bubus-ts/.*\.(ts|tsx|mts|cts)$
       # see pyproject.toml for more details on ruff config
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -79,5 +89,6 @@ repos:
       - id: forbid-submodules
       - id: check-added-large-files
         args: ["--maxkb=600"]
-      # - id: name-tests-test
-      #   args: ["--pytest-test-first"]
+      - id: name-tests-test
+        args: ["--pytest-test-first"]
+        exclude: ^tests/(bridge_listener_worker|performance_runtime|performance_scenarios)\.py$

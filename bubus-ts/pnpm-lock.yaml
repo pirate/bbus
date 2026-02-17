@@ -32,6 +32,9 @@ importers:
       prettier:
         specifier: ^3.8.1
         version: 3.8.1
+      tsc-files:
+        specifier: ^1.1.4
+        version: 1.1.4(typescript@5.9.3)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -735,6 +738,12 @@ packages:
     peerDependencies:
       typescript: '>=4.8.4'
 
+  tsc-files@1.1.4:
+    resolution: { integrity: sha512-RePsRsOLru3BPpnf237y1Xe1oCGta8rmSYzM76kYo5tLGsv5R2r3s64yapYorGTPuuLyfS9NVbh9ydzmvNie2w== }
+    hasBin: true
+    peerDependencies:
+      typescript: '>=3'
+
   tsx@4.21.0:
     resolution: { integrity: sha512-5C1sg4USs1lfG0GFb2RLXsdpXqBSEhAaA/0kPL01wxzpMqLILNxIxIOKiILz+cdg/pLnOUxFYOR5yhHU666wbw== }
     engines: { node: '>=18.0.0' }
@@ -1435,6 +1444,10 @@ snapshots:
       picomatch: 4.0.3
 
   ts-api-utils@2.4.0(typescript@5.9.3):
+    dependencies:
+      typescript: 5.9.3
+
+  tsc-files@1.1.4(typescript@5.9.3):
     dependencies:
       typescript: 5.9.3
 
