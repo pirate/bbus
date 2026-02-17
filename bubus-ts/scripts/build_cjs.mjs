@@ -23,7 +23,4 @@ await build({
   outdir: dist_dir,
 })
 
-await writeFile(
-  join(dist_dir, 'package.json'),
-  '{\n  "type": "commonjs",\n  "main": "./index.js",\n  "types": "./index.d.ts"\n}\n'
-)
+await writeFile(join(dist_dir, 'package.json'), '{\n  "type": "commonjs",\n  "main": "./index.js",\n  "types": "./index.d.ts"\n}\n')

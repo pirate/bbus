@@ -47,7 +47,7 @@ test('done() re-raises the first processing exception after completion', async (
   assert.equal(event.event_results.size, 2)
   assert.equal(
     Array.from(event.event_results.values()).every((result) => result.status === 'error'),
-    true,
+    true
   )
 })
 

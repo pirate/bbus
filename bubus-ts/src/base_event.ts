@@ -1080,16 +1080,12 @@ export class BaseEvent {
 
   _firstProcessingError(options: { ignore_first_mode_control_errors?: boolean } = {}): unknown | undefined {
     const ignore_first_mode_control_errors = options.ignore_first_mode_control_errors ?? false
-    return (
-      Array.from(this.event_results.values())
-        .filter((event_result) => event_result.error !== undefined && event_result.completed_at !== null)
-        .filter((event_result) =>
-          ignore_first_mode_control_errors ? !this._isFirstModeControlError(event_result.error) : true
-        )
-        .sort((event_result_a, event_result_b) => compareIsoDatetime(event_result_a.completed_at, event_result_b.completed_at))
-        .map((event_result) => event_result.error)
-        .at(0)
-    )
+    return Array.from(this.event_results.values())
+      .filter((event_result) => event_result.error !== undefined && event_result.completed_at !== null)
+      .filter((event_result) => (ignore_first_mode_control_errors ? !this._isFirstModeControlError(event_result.error) : true))
+      .sort((event_result_a, event_result_b) => compareIsoDatetime(event_result_a.completed_at, event_result_b.completed_at))
+      .map((event_result) => event_result.error)
+      .at(0)
   }
 
   // Returns the first non-undefined completed handler result, sorted by completion time.

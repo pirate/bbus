@@ -9,9 +9,11 @@ const missingDependencyError = (bridge_name: string, package_name: string): Erro
 export const assertOptionalDependencyAvailable = (bridge_name: string, package_name: string): void => {
   if (!isNodeRuntime()) return
 
-  const maybe_process = (globalThis as {
-    process?: { getBuiltinModule?: (name: string) => any; cwd?: () => string }
-  }).process
+  const maybe_process = (
+    globalThis as {
+      process?: { getBuiltinModule?: (name: string) => any; cwd?: () => string }
+    }
+  ).process
   const get_builtin_module = maybe_process?.getBuiltinModule
 
   let require_fn: { resolve: (specifier: string) => string } | undefined
