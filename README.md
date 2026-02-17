@@ -1237,3 +1237,5 @@ uv run tests/performance_runtime.py
 ## 🏛️ License
 
 This project is licensed under the MIT License.
+
+This repo is the main active fork that adds many new features and performance enhancements over the original project (which has since gone stale): https://github.com/browser-use/bubus
