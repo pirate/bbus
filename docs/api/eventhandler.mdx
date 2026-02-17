@@ -45,7 +45,7 @@ bus.off(MyEvent, entry)
 <Tab title="Python">
 
 ```python
-payload = entry.to_json_dict()
+payload = entry.model_dump(mode='json', exclude={'handler'})
 print(payload)
 # {
 #   "id": "018f...",

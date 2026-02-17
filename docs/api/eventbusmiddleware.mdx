@@ -3,33 +3,174 @@ title: EventBusMiddleware
 description: Base middleware interface for EventBus lifecycle hooks.
 ---
 
-> [!WARNING]
-> `EventBusMiddleware` is a Python-only feature. The TypeScript package does not currently expose middleware hooks.
+`EventBusMiddleware` defines the middleware hook contract used by `EventBus` in both runtimes.
 
-`EventBusMiddleware` is the base class for custom middleware.
+## Interface
 
-## Constructor params
+<Tabs>
+<Tab title="Python">
 
-None.
+```python
+from typing import Any
+from bubus import BaseEvent, EventBus, EventHandler, EventResult, EventStatus
+
+class EventBusMiddleware:
+    async def on_event_change(self, eventbus: EventBus, event: BaseEvent[Any], status: EventStatus) -> None:
+        ...
+
+    async def on_event_result_change(
+        self,
+        eventbus: EventBus,
+        event: BaseEvent[Any],
+        event_result: EventResult[Any],
+        status: EventStatus,
+    ) -> None:
+        ...
+
+    async def on_bus_handlers_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
+        ...
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import type { BaseEvent, EventBus, EventHandler, EventResult, EventStatus } from 'bubus'
+
+export interface EventBusMiddleware {
+  onEventChange?(eventbus: EventBus, event: BaseEvent, status: EventStatus): void | Promise<void>
+  onEventResultChange?(
+    eventbus: EventBus,
+    event: BaseEvent,
+    event_result: EventResult,
+    status: EventStatus
+  ): void | Promise<void>
+  onBusHandlersChange?(eventbus: EventBus, handler: EventHandler, registered: boolean): void | Promise<void>
+}
+```
+
+</Tab>
+</Tabs>
 
 ## Setup with EventBus
+
+<Tabs>
+<Tab title="Python">
 
 ```python
 from bubus import EventBus
 from bubus.middlewares import EventBusMiddleware
 
 class AnalyticsMiddleware(EventBusMiddleware):
-    async def on_event_result_change(self, eventbus, event, event_result, status):
-        if status == 'completed':
-            print(event.event_type, event_result.handler_name)
-            # SomeEvent on_some_event
+    pass
 
-bus = EventBus('AppBus', middlewares=[AnalyticsMiddleware()])
+bus = EventBus('AppBus', middlewares=[AnalyticsMiddleware])
 ```
 
-## Behavior
+</Tab>
+<Tab title="TypeScript">
 
-- `on_event_change(eventbus, event, status)` runs on event lifecycle transitions.
-- `on_event_result_change(eventbus, event, event_result, status)` runs on handler result transitions.
-- `on_handler_change(eventbus, handler, registered)` runs when handlers are added/removed.
-- Override only the hooks you need.
+```ts
+import { EventBus, type EventBusMiddleware } from 'bubus'
+
+class AnalyticsMiddleware implements EventBusMiddleware {}
+
+const bus = new EventBus('AppBus', { middlewares: [AnalyticsMiddleware] })
+```
+
+</Tab>
+</Tabs>
+
+## Lifecycle behavior
+
+- `on_event_change` / `onEventChange` runs on event lifecycle transitions.
+- `on_event_result_change` / `onEventResultChange` runs on handler-result lifecycle transitions.
+- `on_bus_handlers_change` / `onBusHandlersChange` runs when handlers are added/removed.
+- Hook `status` values are only `pending`, `started`, and `completed`.
+- Handler failures are represented on `event_result.status == 'error'` and `event_result.error` when the hook status is `completed`.
+
+## Custom middleware example
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventBus, EventStatus
+from bubus.middlewares import EventBusMiddleware
+
+class AnalyticsMiddleware(EventBusMiddleware):
+    async def on_event_result_change(self, eventbus, event, event_result, status):
+        if status != EventStatus.COMPLETED:
+            return
+        if event_result.status == 'error':
+            return
+        print(event.event_type, event_result.handler_name)
+
+    async def on_bus_handlers_change(self, eventbus, handler, registered):
+        action = 'registered' if registered else 'unregistered'
+        print(eventbus.label, handler.id, action)
+
+bus = EventBus('AppBus', middlewares=[AnalyticsMiddleware])
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import {
+  BaseEvent,
+  EventBus,
+  type EventHandler,
+  type EventBusMiddleware,
+  type EventResult,
+  type EventStatus,
+} from 'bubus'
+
+class AnalyticsMiddleware implements EventBusMiddleware {
+  async onEventResultChange(
+    eventbus: EventBus,
+    event: BaseEvent,
+    event_result: EventResult,
+    status: EventStatus
+  ): Promise<void> {
+    if (status !== 'completed') {
+      return
+    }
+    if (event_result.status === 'error') {
+      return
+    }
+    console.log(event.event_type, event_result.handler_name)
+  }
+
+  async onBusHandlersChange(eventbus: EventBus, handler: EventHandler, registered: boolean): Promise<void> {
+    const action = registered ? 'registered' : 'unregistered'
+    console.log(eventbus.label, handler.id, action)
+  }
+}
+
+const bus = new EventBus('AppBus', { middlewares: [AnalyticsMiddleware] })
+```
+
+</Tab>
+</Tabs>
+
+## Built-in implementations
+
+<Tabs>
+<Tab title="Python">
+
+- `OtelTracingMiddleware`
+- `AutoErrorEventMiddleware`
+- `AutoReturnEventMiddleware`
+- `AutoHandlerChangeEventMiddleware`
+- `WALEventBusMiddleware`
+- `LoggerEventBusMiddleware`
+- `SQLiteHistoryMirrorMiddleware`
+
+</Tab>
+<Tab title="TypeScript">
+
+TypeScript currently exports the middleware interface but no built-in middleware implementations.
+
+</Tab>
+</Tabs>

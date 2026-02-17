@@ -2,7 +2,7 @@
 name = "bubus"
 description = "Advanced Pydantic-powered event bus with async support"
 authors = [{ name = "Nick Sweeting" }]
-version = "2.1.0"
+version = "2.2.1"
 readme = "README.md"
 requires-python = ">=3.11"
 urls = {Repository = "https://github.com/pirate/bbus"}
@@ -30,18 +30,19 @@ redis = [
     "redis>=7.1.1",
 ]
 bridges = [
-    "bubus[postgres,nats,redis]",
+    "asyncpg>=0.31.0",
+    "nats-py>=2.13.1",
+    "redis>=7.1.1",
 ]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.11.2",
+    "ruff>=0.15.1",
     "build>=1.2.2",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.1.0",
     "pytest-httpserver>=1.0.8",
     "ipdb>=0.13.13",
-    "pre-commit>=4.2.0",
     "codespell>=2.4.1",
     "pyright>=1.1.404",
     "ty>=0.0.1a19",
@@ -49,6 +50,7 @@ dev = [
     "psutil>=7.0.0",
     "pytest-cov>=6.2.1",
     "pytest-timeout>=2.4.0",
+    "prek>=0.3.3",
 ]
 
 [build-system]
@@ -97,10 +99,17 @@ skip-magic-trailing-comma = false
 [tool.pyright]
 typeCheckingMode = "strict"
 reportMissingImports = "error"
-reportMissingTypeStubs = false
+reportMissingTypeStubs = "error"
+reportPrivateUsage = "error"
 venvPath = "."
 venv = ".venv"
-include = ["bubus"]
+include = ["bubus", "examples", "tests"]
+executionEnvironments = [
+    { root = "tests", extraPaths = ["."] },
+]
+
+[tool.ty.src]
+include = ["bubus", "examples", "tests"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -47,7 +47,7 @@ jobs:
       - id: lsgrep
         run: |
           TS_TEST_TASKS="$(
-            find bubus-ts/tests -maxdepth 1 -type f -name '*.test.ts' \
+            find bubus-ts/tests -maxdepth 1 -type f -name '*.test.ts' ! -name 'eventbus_performance.test.ts' \
               | sort \
               | sed 's|^bubus-ts/tests/||' \
               | sed 's|\.test\.ts$||' \
@@ -111,7 +111,51 @@ jobs:
           cache: pnpm
           cache-dependency-path: bubus-ts/pnpm-lock.yaml
 
+      - name: Install bridge service binaries
+        if: matrix.task.kind == 'test' && matrix.task.name == 'bridges'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server nats-server postgresql sqlite3
+
+          PG_INITDB_PATH="$(find /usr/lib/postgresql -type f -name initdb | head -n 1)"
+          PG_BINDIR="$(dirname "${PG_INITDB_PATH}")"
+          if [[ -z "${PG_BINDIR}" || ! -x "${PG_BINDIR}/initdb" || ! -x "${PG_BINDIR}/postgres" ]]; then
+            echo "Failed to locate PostgreSQL binaries (initdb/postgres)" > /dev/stderr
+            exit 1
+          fi
+          echo "${PG_BINDIR}" >> "${GITHUB_PATH}"
+          export PATH="${PG_BINDIR}:${PATH}"
+
+          redis-server --version
+          nats-server --version
+          initdb --version
+          postgres --version
+          sqlite3 --version
+
       - run: pnpm install --frozen-lockfile
+
+      - uses: astral-sh/setup-uv@v6
+        if: matrix.task.kind == 'test' && matrix.task.name == 'cross_runtime_roundtrip'
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install Python deps for cross-runtime roundtrip tests
+        if: matrix.task.kind == 'test' && matrix.task.name == 'cross_runtime_roundtrip'
+        run: |
+          cd ..
+          uv sync --dev --all-extras
+
+      - name: Verify bridge optional Node deps
+        if: matrix.task.kind == 'test' && matrix.task.name == 'bridges'
+        run: |
+          node - <<'NODE'
+          const required = ['ioredis', 'nats', 'pg']
+          for (const pkg of required) {
+            require.resolve(pkg)
+          }
+          console.log('optional bridge deps resolve OK')
+          NODE
       - name: Prepare coverage directory
         run: |
           rm -rf .v8-coverage
@@ -250,8 +294,9 @@ jobs:
           echo "[Download TypeScript HTML coverage artifact (ts-coverage-report)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${{ steps.upload_ts_coverage_report.outputs.artifact-id }})" >> "$GITHUB_STEP_SUMMARY"
 
   perf:
-    needs: coverage
     runs-on: ubuntu-latest
+    outputs:
+      perf_stats: ${{ steps.export_perf.outputs.perf_stats }}
     defaults:
       run:
         working-directory: bubus-ts
@@ -275,5 +320,36 @@ jobs:
           deno-version: v2.x
 
       - run: pnpm install --frozen-lockfile
-      - run: npx --yes --package=playwright playwright install chromium
-      - run: pnpm run perf
+      - name: Run TypeScript runtime perf
+        run: pnpm run perf | tee ts_perf.log
+      - name: Export TypeScript perf stats
+        id: export_perf
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          text = Path("ts_perf.log").read_text(encoding="utf-8", errors="replace")
+          lines = [line.strip() for line in text.splitlines()]
+          stat_lines = [
+              line
+              for line in lines
+              if re.match(r"^\[(node|bun|deno|browser)\]\s.+:\s.*latency=", line)
+          ]
+
+          if not stat_lines:
+              stat_lines = ["unable to parse ts perf stats; see job log"]
+
+          stats = "\n".join(stat_lines)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("perf_stats<<EOF\n")
+              fh.write(stats + "\n")
+              fh.write("EOF\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("### TypeScript Perf Stats\n\n```\n")
+              fh.write(stats + "\n")
+              fh.write("```\n")
+          PY

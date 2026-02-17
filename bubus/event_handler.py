@@ -1,11 +1,13 @@
+import asyncio
 import inspect
+import math
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, cast, overload, runtime_checkable
 from uuid import NAMESPACE_DNS, UUID, uuid5
 from weakref import ref as weakref
 
@@ -23,6 +25,25 @@ T_Event = TypeVar('T_Event', bound='BaseEvent[Any]', contravariant=True, default
 
 # For protocols with __func__ attributes, we need an invariant TypeVar
 T_EventInvariant = TypeVar('T_EventInvariant', bound='BaseEvent[Any]', default='BaseEvent[Any]')
+T_EventResult = TypeVar('T_EventResult', default=Any)
+T_HandlerEvent = TypeVar('T_HandlerEvent', bound='BaseEvent[Any]', default='BaseEvent[Any]')
+T_HandlerReturn = TypeVar('T_HandlerReturn', default=Any)
+
+
+class EventHandlerCancelledError(asyncio.CancelledError):
+    """Handler was cancelled before starting or before producing a result."""
+
+
+class EventHandlerTimeoutError(TimeoutError):
+    """Handler exceeded its configured handler timeout."""
+
+
+class EventHandlerAbortedError(asyncio.CancelledError):
+    """Handler was interrupted while running (for example by event hard-timeout)."""
+
+
+class EventHandlerResultSchemaError(ValueError):
+    """Handler returned a value incompatible with the event_result_type schema."""
 
 
 @runtime_checkable
@@ -81,29 +102,24 @@ class AsyncEventHandlerClassMethod(Protocol[T_EventInvariant]):
     __func__: Callable[[type[Any], T_EventInvariant], Awaitable[Any]]
 
 
-# Event handlers can be sync/async functions, methods, class methods, or coroutines.
-# This alias represents the raw callable used by EventBus execution internals.
-EventHandlerCallable: TypeAlias = (
-    EventHandlerFunc['BaseEvent[Any]']
-    | AsyncEventHandlerFunc['BaseEvent[Any]']
-    | EventHandlerMethod['BaseEvent[Any]']
-    | AsyncEventHandlerMethod['BaseEvent[Any]']
-    | EventHandlerClassMethod['BaseEvent[Any]']
-    | AsyncEventHandlerClassMethod['BaseEvent[Any]']
-)
+# Event handlers are normalized to bound single-argument callables at registration time.
+EventHandlerCallable: TypeAlias = EventHandlerFunc['BaseEvent[Any]'] | AsyncEventHandlerFunc['BaseEvent[Any]']
 
-# ContravariantEventHandlerCallable is needed to allow handlers to accept any
-# BaseEvent subclass in some signatures.
-ContravariantEventHandlerCallable: TypeAlias = (
-    EventHandlerFunc[T_Event]  # cannot be BaseEvent or type checker will complain
-    | AsyncEventHandlerFunc['BaseEvent[Any]']
-    | EventHandlerMethod['BaseEvent[Any]']
-    | AsyncEventHandlerMethod[T_Event]  # cannot be 'BaseEvent' or type checker will complain
-    | EventHandlerClassMethod['BaseEvent[Any]']
-    | AsyncEventHandlerClassMethod['BaseEvent[Any]']
-)
+# Normalized async callable shape used at call sites that require a Coroutine.
+NormalizedEventHandlerCallable: TypeAlias = Callable[
+    ['BaseEvent[T_EventResult]'],
+    Coroutine[Any, Any, T_EventResult | 'BaseEvent[Any]' | None],
+]
+
+# Internal normalized one-argument callable used for invocation at runtime.
+_InvokableEventHandlerCallable: TypeAlias = Callable[['BaseEvent[Any]'], Any | Awaitable[Any]]
+
+# ContravariantEventHandlerCallable allows subtype-specific handlers.
+ContravariantEventHandlerCallable: TypeAlias = EventHandlerFunc[T_Event] | AsyncEventHandlerFunc[T_Event]
 
 HANDLER_ID_NAMESPACE: UUID = uuid5(NAMESPACE_DNS, 'bubus-handler')
+SUB_MS_NS_OFFSET_MODULUS = 1_000_000
+JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
@@ -121,7 +137,7 @@ def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
 class _HandlerCacheKey:
     __slots__ = ('handler_ref', 'handler_id', '_hash')
 
-    def __init__(self, handler: EventHandlerCallable) -> None:
+    def __init__(self, handler: Callable[..., Any]) -> None:
         # Some callables override __eq__ without __hash__ and become unhashable.
         # Use identity-based hashing for a stable cache key without retaining handlers.
         self.handler_ref = weakref(handler)
@@ -177,6 +193,50 @@ def _get_callable_handler_file_path(handler_key: _HandlerCacheKey) -> str | None
     return None
 
 
+@overload
+def _normalize_handler_callable(
+    handler: Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]],
+) -> Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]]: ...
+
+
+@overload
+def _normalize_handler_callable(
+    handler: Callable[[T_HandlerEvent], Awaitable[T_HandlerReturn]],
+) -> Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]]: ...
+
+
+@overload
+def _normalize_handler_callable(
+    handler: Callable[[T_HandlerEvent], T_HandlerReturn],
+) -> Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]]: ...
+
+
+def _normalize_handler_callable(
+    handler: Callable[[T_HandlerEvent], object],
+) -> Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]]:
+    """Normalize one handler callable to a single async call signature."""
+    if not callable(handler):
+        raise ValueError(f'Handler {handler!r} must be callable, got: {type(handler)}')
+
+    if inspect.iscoroutinefunction(handler):
+        return cast(Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]], handler)
+
+    async def normalized_handler(event: T_HandlerEvent) -> T_HandlerReturn:
+        handler_result = handler(event)
+        # BaseEvent implements __await__ for ergonomic `await event`, but handler
+        # return values of BaseEvent must be treated as plain results (forwarded
+        # child event refs), not awaited here.
+        if inspect.isawaitable(handler_result):
+            from bubus.base_event import BaseEvent
+
+            if isinstance(handler_result, BaseEvent):
+                return cast(T_HandlerReturn, handler_result)
+            return cast(T_HandlerReturn, await handler_result)
+        return cast(T_HandlerReturn, handler_result)
+
+    return normalized_handler
+
+
 class EventHandler(BaseModel):
     """Serializable metadata wrapper around a registered event handler callable."""
 
@@ -195,7 +255,7 @@ class EventHandler(BaseModel):
     handler_timeout: float | None = None
     handler_slow_timeout: float | None = None
     handler_registered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    handler_registered_ts: int | float = Field(default_factory=time.time_ns)
+    handler_registered_ts: int = Field(default_factory=lambda: time.monotonic_ns() % SUB_MS_NS_OFFSET_MODULUS)
     event_pattern: str = '*'
     eventbus_name: str = 'EventBus'
     eventbus_id: str = '00000000-0000-0000-0000-000000000000'
@@ -216,12 +276,27 @@ class EventHandler(BaseModel):
         assert normalized.isidentifier() and not normalized.startswith('_'), f'Invalid event bus name: {value!r}'
         return normalized
 
+    @field_validator('handler_registered_ts', mode='before')
+    @classmethod
+    def _normalize_handler_registered_ts(cls, value: Any) -> int:
+        if isinstance(value, bool):
+            raise TypeError('handler_registered_ts must be an integer offset')
+        if isinstance(value, int):
+            if value < 0 or value > JS_MAX_SAFE_INTEGER:
+                raise ValueError(f'handler_registered_ts must be in [0, {JS_MAX_SAFE_INTEGER}], got {value}')
+            return value
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise TypeError('handler_registered_ts must be finite')
+            raise TypeError('handler_registered_ts must be an integer offset')
+        raise TypeError(f'handler_registered_ts must be numeric, got {type(value).__name__}')
+
     @property
     def eventbus_label(self) -> str:
         return f'{self.eventbus_name}#{self.eventbus_id[-4:]}'
 
     @staticmethod
-    def get_callable_handler_name(handler: EventHandlerCallable) -> str:
+    def get_callable_handler_name(handler: Callable[..., Any]) -> str:
         assert hasattr(handler, '__name__'), f'Handler {handler} has no __name__ attribute!'
         if inspect.ismethod(handler):
             return f'{type(handler.__self__).__name__}.{handler.__name__}'
@@ -251,6 +326,16 @@ class EventHandler(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         if not self.id:
             self.id = self.compute_handler_id()
+
+    @property
+    def _handler_async(self) -> NormalizedEventHandlerCallable[Any] | None:
+        """Return the normalized async callable view of `handler`."""
+        if self.handler is None:
+            return None
+        return cast(
+            NormalizedEventHandlerCallable[Any],
+            _normalize_handler_callable(cast(Callable[[Any], object], self.handler)),
+        )
 
     def compute_handler_id(self) -> str:
         """Match TS handler-id algorithm: uuidv5(seed, HANDLER_ID_NAMESPACE)."""
@@ -282,30 +367,11 @@ class EventHandler(BaseModel):
         handler_callable = cast(Callable[[Any], Any], self.handler)
         return handler_callable(event)
 
-    def to_json_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode='json', exclude={'handler'})
-
-    @classmethod
-    def from_json_dict(cls, data: Any, handler: EventHandlerCallable | None = None) -> 'EventHandler':
-        entry = cls.model_validate(data)
-        if not entry.id:
-            entry.id = entry.compute_handler_id()
-        handler_name_provided = isinstance(data, dict) and bool(cast(dict[str, Any], data).get('handler_name'))
-        if handler is not None:
-            entry.handler = handler
-            if not handler_name_provided and entry.handler_name == 'anonymous':
-                try:
-                    derived_name = cls.get_callable_handler_name(handler)
-                    entry.handler_name = derived_name.strip() or 'function'
-                except Exception:
-                    entry.handler_name = 'function'
-        return entry
-
     @classmethod
     def from_callable(
         cls,
         *,
-        handler: EventHandlerCallable,
+        handler: ContravariantEventHandlerCallable[Any],
         event_pattern: str,
         eventbus_name: str,
         eventbus_id: str,
@@ -325,7 +391,9 @@ class EventHandler(BaseModel):
             'handler': handler,
             'handler_file_path': resolved_file_path,
             'handler_registered_at': handler_registered_at or datetime.now(UTC),
-            'handler_registered_ts': handler_registered_ts or time.time_ns(),
+            'handler_registered_ts': handler_registered_ts
+            if handler_registered_ts is not None
+            else (time.monotonic_ns() % SUB_MS_NS_OFFSET_MODULUS),
             'event_pattern': event_pattern,
             'eventbus_name': eventbus_name,
             'eventbus_id': eventbus_id,
@@ -358,4 +426,5 @@ __all__ = [
     'EventHandlerClassMethod',
     'EventHandlerFunc',
     'EventHandlerMethod',
+    'NormalizedEventHandlerCallable',
 ]

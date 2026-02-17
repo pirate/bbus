@@ -20,8 +20,6 @@ import {
   SocketEventBridge,
 } from '../src/index.js'
 
-const SKIP_IN_GITHUB_ACTIONS = process.env.GITHUB_ACTIONS === 'true' ? 'bridge tests are skipped on GitHub Actions' : false
-
 const tests_dir = dirname(fileURLToPath(import.meta.url))
 const TEST_RUN_ID = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 
@@ -306,28 +304,28 @@ const assertRoundtrip = async (kind: string, config: Record<string, string>): Pr
   }
 }
 
-test('HTTPEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTIONS }, async () => {
+test('HTTPEventBridge roundtrip between processes', async () => {
   const endpoint = `http://127.0.0.1:${await getFreePort()}/events`
   await assertRoundtrip('http', { endpoint })
   const latency_ms = await measureWarmLatencyMs('http', { endpoint })
   console.log(`LATENCY ts http ${latency_ms.toFixed(3)}ms`)
 })
 
-test('SocketEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTIONS }, async () => {
+test('SocketEventBridge roundtrip between processes', async () => {
   const socket_path = `/tmp/bb-${TEST_RUN_ID}-${Math.random().toString(16).slice(2)}.sock`
   await assertRoundtrip('socket', { path: socket_path })
   const latency_ms = await measureWarmLatencyMs('socket', { path: socket_path })
   console.log(`LATENCY ts socket ${latency_ms.toFixed(3)}ms`)
 })
 
-test('SocketEventBridge rejects long socket paths', { skip: SKIP_IN_GITHUB_ACTIONS }, async () => {
+test('SocketEventBridge rejects long socket paths', async () => {
   const long_path = `/tmp/${'a'.repeat(100)}.sock`
   assert.throws(() => {
     new SocketEventBridge(long_path)
   })
 })
 
-test('JSONLEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTIONS }, async () => {
+test('JSONLEventBridge roundtrip between processes', async () => {
   const temp_dir = makeTempDir('bubus-jsonl')
   try {
     const config = { path: join(temp_dir, 'events.jsonl') }
@@ -339,7 +337,7 @@ test('JSONLEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTI
   }
 })
 
-test('SQLiteEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTIONS }, async () => {
+test('SQLiteEventBridge roundtrip between processes', async () => {
   const temp_dir = makeTempDir('bubus-sqlite')
   try {
     const sqlite_path = join(temp_dir, 'events.sqlite3')
@@ -377,7 +375,7 @@ test('SQLiteEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACT
   }
 })
 
-test('RedisEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTIONS }, async () => {
+test('RedisEventBridge roundtrip between processes', async () => {
   const temp_dir = makeTempDir('bubus-redis')
   const port = await getFreePort()
   const redis = spawn(
@@ -397,7 +395,7 @@ test('RedisEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTI
   }
 })
 
-test('NATSEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTIONS }, async () => {
+test('NATSEventBridge roundtrip between processes', async () => {
   const port = await getFreePort()
   const nats = spawn('nats-server', ['-a', '127.0.0.1', '-p', String(port)], { stdio: ['ignore', 'pipe', 'pipe'] })
   try {
@@ -411,7 +409,7 @@ test('NATSEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTIO
   }
 })
 
-test('PostgresEventBridge roundtrip between processes', { skip: SKIP_IN_GITHUB_ACTIONS }, async () => {
+test('PostgresEventBridge roundtrip between processes', async () => {
   const temp_dir = makeTempDir('bubus-postgres')
   const data_dir = join(temp_dir, 'pgdata')
   runChecked('initdb', ['-D', data_dir, '-A', 'trust', '-U', 'postgres'])

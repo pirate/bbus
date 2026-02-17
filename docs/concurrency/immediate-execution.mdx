@@ -28,8 +28,8 @@ class ChildEvent(BaseEvent[str]):
 bus = EventBus('RpcBus')
 
 async def on_parent(event: ParentEvent) -> str:
-    assert event.bus is not None
-    child = event.bus.emit(ChildEvent())
+    assert event.event_bus is not None
+    child = event.event_bus.emit(ChildEvent())
     await child  # queue-jump while still inside this handler
     value = await child.event_result()
     return f'parent got: {value}'
@@ -54,7 +54,7 @@ const ChildEvent = BaseEvent.extend('ChildEvent', { event_result_type: z.string(
 const bus = new EventBus('RpcBus')
 
 bus.on(ParentEvent, async (event) => {
-  const child = event.bus!.emit(ChildEvent({}))
+  const child = event.event_bus!.emit(ChildEvent({}))
   await child.done() // queue-jump while still inside this handler
   return `parent got: ${child.event_result}`
 })
@@ -88,10 +88,10 @@ bus = EventBus('OrderBus', event_concurrency='bus-serial', event_handler_concurr
 order: list[str] = []
 
 async def on_parent(event: ParentEvent) -> None:
-    assert event.bus is not None
+    assert event.event_bus is not None
     order.append('parent_start')
-    event.bus.emit(SiblingEvent())
-    child = event.bus.emit(ChildEvent())
+    event.event_bus.emit(SiblingEvent())
+    child = event.event_bus.emit(ChildEvent())
     await child
     order.append('parent_end')
 
@@ -130,8 +130,8 @@ const order: string[] = []
 
 bus.on(ParentEvent, async (event) => {
   order.push('parent_start')
-  event.bus!.emit(SiblingEvent({}))
-  const child = event.bus!.emit(ChildEvent({}))
+  event.event_bus!.emit(SiblingEvent({}))
+  const child = event.event_bus!.emit(ChildEvent({}))
   await child.done()
   order.push('parent_end')
 })
@@ -166,8 +166,9 @@ if (!(order.indexOf('parent_end') < order.indexOf('sibling'))) throw new Error('
 ## Notes
 
 - In Python, `await child_event` inside a handler is the immediate path.
-- In TypeScript, use `await child_event.done()` or `await child_event.immediate()`.
-- In TypeScript, `await child_event.waitForCompletion()` keeps normal queue order (non-queue-jump wait).
+- In Python, `await child_event.event_completed()` keeps normal queue order (non-queue-jump wait).
+- In TypeScript, use `await child_event.done()`.
+- In TypeScript, `await child_event.eventCompleted()` keeps normal queue order (non-queue-jump wait).
 
 ## Related pages
 

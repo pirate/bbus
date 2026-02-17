@@ -3,7 +3,8 @@ import logging
 import time
 import traceback
 from collections import deque
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import asynccontextmanager
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar, cast
 
@@ -11,6 +12,49 @@ from typing import Any, ParamSpec, TypeVar, cast
 R = TypeVar('R')
 P = ParamSpec('P')
 QueueEntryType = TypeVar('QueueEntryType')
+
+
+async def run_with_timeout(awaitable: Awaitable[R], timeout: float | None = None) -> R:
+    """Await `awaitable` with optional timeout."""
+    if timeout is None:
+        return await awaitable
+    return await asyncio.wait_for(awaitable, timeout=timeout)
+
+
+async def cancel_and_await(task: asyncio.Task[Any] | None, timeout: float | None = None) -> None:
+    """Best-effort task cancellation helper that suppresses cancellation-time noise."""
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    try:
+        await run_with_timeout(task, timeout=timeout)
+    except (asyncio.CancelledError, TimeoutError):
+        pass
+    except Exception:
+        pass
+
+
+@asynccontextmanager
+async def _run_with_slow_monitor(
+    monitor_factory: Callable[[], Coroutine[Any, Any, Any]] | None,
+    *,
+    task_name: str | None = None,
+):
+    """Run an optional slow-monitor task scoped to the surrounding execution.
+
+    The monitor is started on enter and always cancelled on exit.
+    """
+    task: asyncio.Task[Any] | None = None
+    if monitor_factory is not None:
+        if task_name is None:
+            task = asyncio.create_task(monitor_factory())
+        else:
+            task = asyncio.create_task(monitor_factory(), name=task_name)
+    try:
+        yield task
+    finally:
+        await cancel_and_await(task)
 
 
 class QueueShutDown(Exception):
@@ -23,8 +67,20 @@ class CleanShutdownQueue(asyncio.Queue[QueueEntryType]):
     """asyncio.Queue subclass that handles shutdown cleanly without warnings."""
 
     _is_shutdown: bool = False
+    _queue: deque[QueueEntryType]
     _getters: deque[asyncio.Future[QueueEntryType]]
     _putters: deque[asyncio.Future[QueueEntryType]]
+
+    def iter_items(self) -> tuple[QueueEntryType, ...]:
+        """Return a snapshot of queued items in FIFO order."""
+        return tuple(self._queue)
+
+    def remove_item(self, item: QueueEntryType) -> bool:
+        """Remove one matching queued item if present."""
+        if item not in self._queue:
+            return False
+        self._queue.remove(item)
+        return True
 
     def shutdown(self, immediate: bool = True):
         """Shutdown the queue and clean up all pending futures."""
@@ -50,7 +106,7 @@ class CleanShutdownQueue(asyncio.Queue[QueueEntryType]):
             if self._is_shutdown:
                 raise QueueShutDown
 
-            getter = cast(asyncio.Future[QueueEntryType], asyncio.get_running_loop().create_future())
+            getter: asyncio.Future[QueueEntryType] = asyncio.get_running_loop().create_future()
             assert isinstance(getter, asyncio.Future)
             self._getters.append(getter)
             try:
@@ -73,7 +129,7 @@ class CleanShutdownQueue(asyncio.Queue[QueueEntryType]):
             if self._is_shutdown:
                 raise QueueShutDown
 
-            putter = cast(asyncio.Future[QueueEntryType], asyncio.get_running_loop().create_future())
+            putter: asyncio.Future[QueueEntryType] = asyncio.get_running_loop().create_future()
             assert isinstance(putter, asyncio.Future)
             self._putters.append(putter)
             try:
@@ -184,6 +240,9 @@ def log_filtered_traceback(exc: BaseException) -> str:
 
 
 __all__ = [
+    'run_with_timeout',
+    'cancel_and_await',
+    '_run_with_slow_monitor',
     'log_filtered_traceback',
     'CleanShutdownQueue',
     'QueueShutDown',

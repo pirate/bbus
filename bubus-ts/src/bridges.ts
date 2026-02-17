@@ -1,6 +1,6 @@
 import { BaseEvent } from './base_event.js'
 import { EventBus } from './event_bus.js'
-import type { EventClass, EventHandlerFunction, EventPattern, UntypedEventHandlerFunction } from './types.js'
+import type { EventClass, EventHandlerCallable, EventPattern, UntypedEventHandlerFunction } from './types.js'
 
 type EndpointScheme = 'unix' | 'http' | 'https'
 
@@ -98,20 +98,20 @@ class _EventBridge {
     this.on = this.on.bind(this)
   }
 
-  on<T extends BaseEvent>(event_pattern: EventClass<T>, handler: EventHandlerFunction<T>): void
+  on<T extends BaseEvent>(event_pattern: EventClass<T>, handler: EventHandlerCallable<T>): void
   on<T extends BaseEvent>(event_pattern: string | '*', handler: UntypedEventHandlerFunction<T>): void
-  on(event_pattern: EventPattern | '*', handler: EventHandlerFunction | UntypedEventHandlerFunction): void {
+  on(event_pattern: EventPattern | '*', handler: EventHandlerCallable | UntypedEventHandlerFunction): void {
     this.ensureListenerStarted()
     if (typeof event_pattern === 'string') {
       this.inbound_bus.on(event_pattern, handler as UntypedEventHandlerFunction<BaseEvent>)
       return
     }
-    this.inbound_bus.on(event_pattern as EventClass<BaseEvent>, handler as EventHandlerFunction<BaseEvent>)
+    this.inbound_bus.on(event_pattern as EventClass<BaseEvent>, handler as EventHandlerCallable<BaseEvent>)
   }
 
-  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+  async emit<T extends BaseEvent>(event: T): Promise<void> {
     if (!this.send_to) {
-      throw new Error(`${this.constructor.name}.dispatch() requires send_to`)
+      throw new Error(`${this.constructor.name}.emit() requires send_to`)
     }
 
     const payload = event.toJSON()
@@ -124,8 +124,8 @@ class _EventBridge {
     await this.sendHttp(this.send_to, payload)
   }
 
-  async emit<T extends BaseEvent>(event: T): Promise<void> {
-    return this.dispatch(event)
+  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+    return this.emit(event)
   }
 
   async start(): Promise<void> {
@@ -193,8 +193,8 @@ class _EventBridge {
   }
 
   private async handleIncomingPayload(payload: unknown): Promise<void> {
-    const event = BaseEvent.fromJSON(payload).reset()
-    this.inbound_bus.dispatch(event)
+    const event = BaseEvent.fromJSON(payload).eventReset()
+    this.inbound_bus.emit(event)
   }
 
   private async sendHttp(endpoint: ParsedEndpoint, payload: unknown): Promise<void> {

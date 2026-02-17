@@ -282,8 +282,6 @@ async def handler_timeout_demo() -> None:
         event = bus.emit(TimeoutEvent(ms=60, event_handler_timeout=0.5))
         await event
 
-        if slow_entry.id is None:
-            raise RuntimeError('Expected slow handler to have an id')
         slow_result = event.event_results.get(slow_entry.id)
         handler_timed_out = slow_result is not None and isinstance(slow_result.error, TimeoutError)
         log(

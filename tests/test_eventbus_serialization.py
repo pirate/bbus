@@ -15,7 +15,7 @@ def _make_bus_with_pending_event() -> tuple[EventBus, SerializableEvent, str]:
         name='SerializableBus',
         id='018f8e40-1234-7000-8000-000000001234',
         max_history_size=500,
-        max_history_drop=True,
+        max_history_drop=False,
         event_concurrency='parallel',
         event_handler_concurrency='parallel',
         event_handler_completion='first',
@@ -61,8 +61,8 @@ def test_eventbus_model_dump_json_roundtrip_uses_id_keyed_structures() -> None:
     restored = EventBus.validate(bus.model_dump_json())
     assert restored.id == bus.id
     assert restored.name == bus.name
-    assert restored.max_history_size == bus.max_history_size
-    assert restored.max_history_drop == bus.max_history_drop
+    assert restored.event_history.max_history_size == bus.event_history.max_history_size
+    assert restored.event_history.max_history_drop == bus.event_history.max_history_drop
     assert str(restored.event_concurrency) == str(bus.event_concurrency)
     assert str(restored.event_handler_concurrency) == str(bus.event_handler_concurrency)
     assert str(restored.event_handler_completion) == str(bus.event_handler_completion)

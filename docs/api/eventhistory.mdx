@@ -1,0 +1,122 @@
+---
+title: EventHistory
+description: EventHistory ordered store API for lookup, retention, and trimming.
+---
+
+`EventHistory` is the ordered event store owned by each `EventBus` as `bus.event_history`.
+
+It is the canonical history backend in both runtimes and exposes mapping-style access (`{event_id: event}`), lookup (`find`), and retention controls.
+
+## Common fields
+
+- `max_history_size`: max retained events (`None`/`null` means unbounded, `0` keeps only in-flight visibility)
+- `max_history_drop`: whether to trim oldest entries when over limit
+- Ordered mapping keyed by `event_id`
+
+## Mapping interface
+
+`EventHistory` behaves like an ordered mapping in both runtimes.
+
+<Tabs>
+<Tab title="Python">
+
+```python
+from bubus import EventHistory
+
+history = EventHistory(max_history_size=100, max_history_drop=True)
+history[event.event_id] = event
+
+exists = event.event_id in history
+loaded = history.get(event.event_id)
+count = len(history)
+
+for event_id, item in history.items():
+    print(event_id, item.event_type)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+import { EventHistory } from 'bubus'
+
+const history = new EventHistory({ max_history_size: 100, max_history_drop: true })
+history.set(event.event_id, event)
+
+const exists = history.has(event.event_id)
+const loaded = history.get(event.event_id)
+const count = history.size
+
+for (const [event_id, item] of history) {
+  console.log(event_id, item.event_type)
+}
+```
+
+</Tab>
+</Tabs>
+
+## Accessor methods
+
+Both runtimes expose explicit accessors in addition to mapping methods.
+
+<Tabs>
+<Tab title="Python">
+
+- `add_event(event)`
+- `get_event(event_id)`
+- `remove_event(event_id)`
+- `has_event(event_id)`
+- `find(...)`
+- `trim_event_history(...)`
+- `cleanup_excess_events(...)`
+
+</Tab>
+<Tab title="TypeScript">
+
+- `addEvent(event)`
+- `getEvent(event_id)`
+- `removeEvent(event_id)`
+- `hasEvent(event_id)`
+- `find(...)`
+- `trimEventHistory(...)`
+- `cleanupExcessEvents(...)`
+
+</Tab>
+</Tabs>
+
+## `find(...)`
+
+`EventHistory.find(...)` supports:
+
+- event pattern (`'EventType'`, class, or `'*'`)
+- `where` predicate filtering
+- field equality filters (`**event_fields` in Python, options object fields in TypeScript)
+- `past` / `future` windows
+- `child_of` constraints
+
+`EventBus.find(...)` delegates to `event_history.find(...)`. Future waiter ownership remains on `EventBus`; the bus injects the callback used for future waits.
+
+## Retention and trim methods
+
+- `trim_event_history` / `trimEventHistory` applies configured retention policy.
+- `cleanup_excess_events` / `cleanupExcessEvents` performs direct overage cleanup.
+- `on_remove` callbacks let the caller run cleanup side effects when history entries are removed.
+
+## Constructor options
+
+<Tabs>
+<Tab title="Python">
+
+```python
+history = EventHistory(max_history_size=100, max_history_drop=False)
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const history = new EventHistory({ max_history_size: 100, max_history_drop: false })
+```
+
+</Tab>
+</Tabs>

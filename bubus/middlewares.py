@@ -8,11 +8,10 @@ import logging
 import sqlite3
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
-from bubus.base_event import BaseEvent, EventStatus
+from bubus.base_event import BaseEvent, EventResult, EventStatus
 from bubus.event_handler import EventHandler
-from bubus.event_result import EventResult
 from bubus.logging import log_eventbus_tree
 
 if TYPE_CHECKING:
@@ -40,14 +39,17 @@ class EventBusMiddleware:
 
     Hooks:
         on_event_change(eventbus, event, status): Called on event state transitions
-        on_event_result_change(eventbus, event, event_result, status): Called on EventResult state transitions
-        on_handler_change(eventbus, handler, registered): Called when handlers are added/removed via on()/off()
+        on_event_result_change(eventbus, event, event_result, status): Called on EventResult lifecycle transitions
+        on_bus_handlers_change(eventbus, handler, registered): Called when handlers are added/removed via on()/off()
 
-    Status values: EventStatus.PENDING, STARTED, COMPLETED, ERROR
+    Status values for these hooks are only:
+    EventStatus.PENDING, EventStatus.STARTED, EventStatus.COMPLETED.
+    Handler failures are surfaced via ``event_result.status == 'error'`` and ``event_result.error``
+    when ``status`` is ``EventStatus.COMPLETED``.
     """
 
     async def on_event_change(self, eventbus: EventBus, event: BaseEvent[Any], status: EventStatus) -> None:
-        """Called on event state transitions (pending, started, completed, error)."""
+        """Called on event state transitions (pending, started, completed)."""
 
     async def on_event_result_change(
         self,
@@ -56,9 +58,13 @@ class EventBusMiddleware:
         event_result: EventResult[Any],
         status: EventStatus,
     ) -> None:
-        """Called on EventResult state transitions (pending, started, completed, error)."""
+        """Called on EventResult lifecycle transitions (pending, started, completed).
 
-    async def on_handler_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
+        Note: ``status`` never equals ``'error'``. Check ``event_result.status``
+        and ``event_result.error`` on the completed callback to detect failures.
+        """
+
+    async def on_bus_handlers_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
         """Called when handlers are added (registered=True) or removed (registered=False)."""
 
 
@@ -243,7 +249,7 @@ class AutoErrorEventMiddleware(EventBusMiddleware):
         if status != EventStatus.COMPLETED or event_result.error is None or event.event_type.endswith(_SYNTHETIC_EVENT_SUFFIXES):
             return
         try:
-            eventbus.dispatch(
+            eventbus.emit(
                 AutoErrorEvent(
                     event_type=f'{event.event_type}ErrorEvent',
                     error=event_result.error,
@@ -251,7 +257,7 @@ class AutoErrorEventMiddleware(EventBusMiddleware):
                 )
             )
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to emit auto error event for %s: %s', eventbus, event.event_id, exc)
+            logger.exception('❌ %s Failed to emit auto error event for %s: %s', eventbus, event.event_id, exc)
 
 
 class AutoReturnEventMiddleware(EventBusMiddleware):
@@ -274,22 +280,29 @@ class AutoReturnEventMiddleware(EventBusMiddleware):
         ):
             return
         try:
-            eventbus.dispatch(AutoReturnEvent(event_type=f'{event.event_type}ResultEvent', data=result_value))
+            eventbus.emit(AutoReturnEvent(event_type=f'{event.event_type}ResultEvent', data=result_value))
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to emit auto result event for %s: %s', eventbus, event.event_id, exc)
+            logger.exception('❌ %s Failed to emit auto result event for %s: %s', eventbus, event.event_id, exc)
 
 
 class AutoHandlerChangeEventMiddleware(EventBusMiddleware):
     """Use in `EventBus(middlewares=[...])` to emit handler metadata events on .on() and .off()."""
 
-    async def on_handler_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
+    async def on_bus_handlers_change(self, eventbus: EventBus, handler: EventHandler, registered: bool) -> None:
         try:
+            handler_snapshot = handler.model_copy(deep=False)
             if registered:
-                eventbus.dispatch(BusHandlerRegisteredEvent(handler=handler.model_copy(deep=True)))
+                eventbus.emit(BusHandlerRegisteredEvent(handler=handler_snapshot))
             else:
-                eventbus.dispatch(BusHandlerUnregisteredEvent(handler=handler.model_copy(deep=True)))
+                eventbus.emit(BusHandlerUnregisteredEvent(handler=handler_snapshot))
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to emit auto handler change event for handler %s: %s', eventbus, handler.id, exc)
+            logger.exception(
+                '❌ %s Failed to emit auto handler change event for handler %s: %s(%r)',
+                eventbus,
+                handler.id,
+                type(exc).__name__,
+                exc,
+            )
 
 
 class WALEventBusMiddleware(EventBusMiddleware):
@@ -304,10 +317,10 @@ class WALEventBusMiddleware(EventBusMiddleware):
         if status != EventStatus.COMPLETED:
             return
         try:
-            event_json = event.model_dump_json()  # pyright: ignore[reportUnknownMemberType]
+            event_json = event.model_dump_json()
             await asyncio.to_thread(self._write_line, event_json + '\n')
         except Exception as exc:  # pragma: no cover
-            logger.error('❌ %s Failed to save event %s to WAL: %s', eventbus, event.event_id, exc)
+            logger.exception('❌ %s Failed to save event %s to WAL: %s', eventbus, event.event_id, exc)
 
     def _write_line(self, line: str) -> None:
         with self._lock:
@@ -339,7 +352,8 @@ class LoggerEventBusMiddleware(EventBusMiddleware):
             log_eventbus_tree(eventbus)
 
     def _write_line(self, line: str) -> None:
-        with self.log_path.open('a', encoding='utf-8') as fp:  # type: ignore[union-attr]
+        assert self.log_path is not None
+        with self.log_path.open('a', encoding='utf-8') as fp:
             fp.write(line)
 
 
@@ -352,11 +366,27 @@ class SQLiteHistoryMirrorMiddleware(EventBusMiddleware):
 
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False, isolation_level=None)
+        self._closed = False
         self._init_db()
+
+    def close(self) -> None:
+        """Close the SQLite connection; safe to call multiple times."""
+        with self._lock:
+            if self._closed:
+                return
+            self._conn.close()
+            self._closed = True
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        self.close()
+        return False
 
     def __del__(self):
         try:
-            self._conn.close()
+            self.close()
         except Exception:
             pass
 

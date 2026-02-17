@@ -6,6 +6,7 @@ from .base_event import (
     EventConcurrencyMode,
     EventHandlerCompletionMode,
     EventHandlerConcurrencyMode,
+    EventResult,
     EventStatus,
     PythonIdentifierStr,
     PythonIdStr,
@@ -13,9 +14,14 @@ from .base_event import (
 )
 from .bridges import HTTPEventBridge, SocketEventBridge
 from .event_bus import EventBus
-from .event_handler import EventHandler
-from .event_history import EventHistory, InMemoryEventHistory
-from .event_result import EventResult
+from .event_handler import (
+    EventHandler,
+    EventHandlerAbortedError,
+    EventHandlerCancelledError,
+    EventHandlerResultSchemaError,
+    EventHandlerTimeoutError,
+)
+from .event_history import EventHistory
 from .middlewares import (
     AutoErrorEventMiddleware,
     AutoHandlerChangeEventMiddleware,
@@ -44,11 +50,14 @@ __all__ = [
     'AutoReturnEventMiddleware',
     'WALEventBusMiddleware',
     'EventHistory',
-    'InMemoryEventHistory',
     'BaseEvent',
     'EventStatus',
     'EventResult',
     'EventHandler',
+    'EventHandlerCancelledError',
+    'EventHandlerResultSchemaError',
+    'EventHandlerTimeoutError',
+    'EventHandlerAbortedError',
     'EventHandlerConcurrencyMode',
     'EventHandlerCompletionMode',
     'EventConcurrencyMode',

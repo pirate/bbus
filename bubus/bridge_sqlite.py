@@ -75,7 +75,7 @@ class SQLiteEventBridge:
         self._ensure_started()
         self._inbound_bus.on(event_pattern, handler)
 
-    async def dispatch(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
+    async def emit(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
         self._ensure_started()
         if not self._running:
             await self.start()
@@ -92,8 +92,8 @@ class SQLiteEventBridge:
             return None
         return event
 
-    async def emit(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
-        return await self.dispatch(event)
+    async def dispatch(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
+        return await self.emit(event)
 
     async def start(self) -> None:
         current_task = asyncio.current_task()
@@ -190,7 +190,7 @@ class SQLiteEventBridge:
 
     async def _dispatch_inbound_payload(self, payload: Any) -> None:
         event = BaseEvent[Any].model_validate(payload).event_reset()
-        self._inbound_bus.dispatch(event)
+        self._inbound_bus.emit(event)
 
     def _connect(self) -> sqlite3.Connection:
         # Under concurrent bridge startup/teardown across processes, sqlite can

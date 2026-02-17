@@ -20,7 +20,7 @@ console.log(`Memory before: RSS=${(mem_before.rss / 1024 / 1024).toFixed(1)}MB, 
 const t0 = performance.now()
 const pending: Array<ReturnType<typeof SimpleEvent>> = []
 for (let i = 0; i < total_events; i++) {
-  pending.push(bus.dispatch(SimpleEvent({})))
+  pending.push(bus.emit(SimpleEvent({})))
 }
 const t1 = performance.now()
 console.log(`Dispatch ${total_events} events: ${(t1 - t0).toFixed(0)}ms (${(total_events / ((t1 - t0) / 1000)).toFixed(0)} events/s)`)
@@ -55,6 +55,6 @@ console.log(
 )
 
 console.log(`\nProcessed: ${processed_count}/${total_events}`)
-console.log(`History size: ${bus.event_history.size} (max: ${bus.max_history_size})`)
+console.log(`History size: ${bus.event_history.size} (max: ${bus.event_history.max_history_size})`)
 console.log(`Heap delta (before GC): +${((mem_after.heapUsed - mem_before.heapUsed) / 1024 / 1024).toFixed(1)}MB`)
 console.log(`Heap delta (after GC): +${((mem_gc.heapUsed - mem_before.heapUsed) / 1024 / 1024).toFixed(1)}MB`)

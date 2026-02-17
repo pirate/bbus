@@ -33,9 +33,9 @@ export type EventHandlerConcurrencyMode = (typeof EVENT_HANDLER_CONCURRENCY_MODE
 export const EVENT_HANDLER_COMPLETION_MODES = ['all', 'first'] as const
 export type EventHandlerCompletionMode = (typeof EVENT_HANDLER_COMPLETION_MODES)[number]
 
-// ─── AsyncSemaphore ──────────────────────────────────────────────────────────
+// ─── AsyncLock ───────────────────────────────────────────────────────────────
 
-export class AsyncSemaphore {
+export class AsyncLock {
   size: number
   in_use: number
   waiters: Array<() => void>
@@ -57,30 +57,31 @@ export class AsyncSemaphore {
     await new Promise<void>((resolve) => {
       this.waiters.push(resolve)
     })
-    this.in_use += 1
   }
 
   release(): void {
     if (this.size === Infinity) {
       return
     }
-    this.in_use = Math.max(0, this.in_use - 1)
     const next = this.waiters.shift()
     if (next) {
+      // Handoff: keep permit accounted for and transfer directly to next waiter.
       next()
+      return
     }
+    this.in_use = Math.max(0, this.in_use - 1)
   }
 }
 
-export const runWithSemaphore = async <T>(semaphore: AsyncSemaphore | null, fn: () => Promise<T>): Promise<T> => {
-  if (!semaphore) {
+export const runWithLock = async <T>(lock: AsyncLock | null, fn: () => Promise<T>): Promise<T> => {
+  if (!lock) {
     return await fn()
   }
-  await semaphore.acquire()
+  await lock.acquire()
   try {
     return await fn()
   } finally {
-    semaphore.release()
+    lock.release()
   }
 }
 
@@ -88,37 +89,37 @@ export const runWithSemaphore = async <T>(semaphore: AsyncSemaphore | null, fn: 
 
 export type HandlerExecutionState = 'held' | 'yielded' | 'closed'
 
-// Tracks a single handler execution's ownership of a semaphore lock.
+// Tracks a single handler execution's ownership of a handler lock.
 // Reacquire is race-safe: if the handler exits while waiting to reclaim,
 // the reclaimed lock is immediately released to avoid leaks.
 export class HandlerLock {
-  private semaphore: AsyncSemaphore | null
+  private lock: AsyncLock | null
   private state: HandlerExecutionState
 
-  constructor(semaphore: AsyncSemaphore | null) {
-    this.semaphore = semaphore
+  constructor(lock: AsyncLock | null) {
+    this.lock = lock
     this.state = 'held'
   }
 
-  // used by EventBus.processEventImmediately to yield the parent handler's lock to the child event so it can be processed immediately
+  // used by EventBus._processEventImmediately to yield the parent handler's lock to the child event so it can be processed immediately
   yieldHandlerLockForChildRun(): boolean {
-    if (!this.semaphore || this.state !== 'held') {
+    if (!this.lock || this.state !== 'held') {
       return false
     }
     this.state = 'yielded'
-    this.semaphore.release()
+    this.lock.release()
     return true
   }
 
-  // used by EventBus.processEventImmediately to reacquire the handler lock after the child event has been processed
+  // used by EventBus._processEventImmediately to reacquire the handler lock after the child event has been processed
   async reclaimHandlerLockIfRunning(): Promise<boolean> {
-    if (!this.semaphore || this.state !== 'yielded') {
+    if (!this.lock || this.state !== 'yielded') {
       return false
     }
-    await this.semaphore.acquire()
+    await this.lock.acquire()
     if (this.state !== 'yielded') {
       // Handler exited while this reacquire was pending.
-      this.semaphore.release()
+      this.lock.release()
       return false
     }
     this.state = 'held'
@@ -130,14 +131,14 @@ export class HandlerLock {
     if (this.state === 'closed') {
       return
     }
-    const should_release = !!this.semaphore && this.state === 'held'
+    const should_release = !!this.lock && this.state === 'held'
     this.state = 'closed'
     if (should_release) {
-      this.semaphore!.release()
+      this.lock!.release()
     }
   }
 
-  // used by EventBus.processEventImmediately to yield the handler lock and reacquire it after the child event has been processed
+  // used by EventBus._processEventImmediately to yield the handler lock and reacquire it after the child event has been processed
   async runQueueJump<T>(fn: () => Promise<T>): Promise<T> {
     const yielded = this.yieldHandlerLockForChildRun()
     try {
@@ -155,26 +156,32 @@ export class HandlerLock {
 // Interface that must be implemented by the EventBus class to be used by the LockManager
 export type EventBusInterfaceForLockManager = {
   isIdleAndQueueEmpty: () => boolean
-  event_concurrency_default: EventConcurrencyMode
+  event_concurrency: EventConcurrencyMode
+  _lock_for_event_global_serial: AsyncLock
+}
+
+export type LockManagerOptions = {
+  auto_schedule_idle_checks?: boolean
 }
 
 // The LockManager is responsible for managing the concurrency of events and handlers
 export class LockManager {
   private bus: EventBusInterfaceForLockManager // Live bus reference; used to read defaults and idle state.
+  private auto_schedule_idle_checks: boolean
 
-  static global_event_semaphore = new AsyncSemaphore(1) // used for the global-serial concurrency mode
-  readonly bus_event_semaphore: AsyncSemaphore // Per-bus event semaphore; created with LockManager and never swapped.
-  private pause_depth: number // Re-entrant pause counter; increments on requestRunloopPause, decrements on release.
-  private pause_waiters: Array<() => void> // Resolvers for waitUntilRunloopResumed; drained when pause_depth hits 0.
+  readonly bus_event_lock: AsyncLock // Per-bus event lock; created with LockManager and never swapped.
+  private pause_depth: number // Re-entrant pause counter; increments on _requestRunloopPause, decrements on release.
+  private pause_waiters: Array<() => void> // Resolvers for _waitUntilRunloopResumed; drained when pause_depth hits 0.
   private active_handler_results: EventResult[] // Stack of active handler results for "inside handler" detection.
 
-  private idle_waiters: Array<() => void> // Resolvers waiting for stable idle; cleared when idle confirmed.
+  private idle_waiters: Array<(became_idle: boolean) => void> // Resolvers waiting for stable idle; cleared when idle confirmed.
   private idle_check_pending: boolean // Debounce flag to avoid scheduling redundant idle checks.
   private idle_check_streak: number // Counts consecutive idle checks; used to require two ticks of idle.
 
-  constructor(bus: EventBusInterfaceForLockManager) {
+  constructor(bus: EventBusInterfaceForLockManager, options: LockManagerOptions = {}) {
     this.bus = bus
-    this.bus_event_semaphore = new AsyncSemaphore(1) // used for the bus-serial concurrency mode
+    this.auto_schedule_idle_checks = options.auto_schedule_idle_checks ?? true
+    this.bus_event_lock = new AsyncLock(1) // used for the bus-serial concurrency mode
 
     this.pause_depth = 0
     this.pause_waiters = []
@@ -187,7 +194,7 @@ export class LockManager {
 
   // Low-level runloop pause: increments a re-entrant counter and returns a release
   // function. Used for broad, bus-scoped pauses during queue-jump across buses.
-  requestRunloopPause(): () => void {
+  _requestRunloopPause(): () => void {
     this.pause_depth += 1
     let released = false
     return () => {
@@ -207,7 +214,7 @@ export class LockManager {
     }
   }
 
-  waitUntilRunloopResumed(): Promise<void> {
+  _waitUntilRunloopResumed(): Promise<void> {
     if (this.pause_depth === 0) {
       return Promise.resolve()
     }
@@ -216,43 +223,80 @@ export class LockManager {
     })
   }
 
-  isPaused(): boolean {
+  _isPaused(): boolean {
     return this.pause_depth > 0
   }
 
-  enterActiveHandlerContext(result: EventResult): void {
+  async _runWithHandlerDispatchContext<T>(result: EventResult, fn: () => Promise<T>): Promise<T> {
     this.active_handler_results.push(result)
-  }
-
-  exitActiveHandlerContext(result: EventResult): void {
-    const idx = this.active_handler_results.indexOf(result)
-    if (idx >= 0) {
-      this.active_handler_results.splice(idx, 1)
+    try {
+      return await fn()
+    } finally {
+      const idx = this.active_handler_results.indexOf(result)
+      if (idx >= 0) {
+        this.active_handler_results.splice(idx, 1)
+      }
     }
   }
 
-  getActiveHandlerResult(): EventResult | undefined {
+  _getActiveHandlerResult(): EventResult | undefined {
     return this.active_handler_results[this.active_handler_results.length - 1]
   }
 
+  _getActiveHandlerResults(): EventResult[] {
+    return [...this.active_handler_results]
+  }
+
   // Per-bus check: true only if this specific bus has a handler on its stack.
-  // For cross-bus queue-jumping, EventBus.processEventImmediately uses getParentEventResultAcrossAllBusses()
+  // For cross-bus queue-jumping, EventBus._processEventImmediately uses getParentEventResultAcrossAllBuses()
   // to walk up the parent event tree, and the bus proxy passes handler_result
-  // to processEventImmediately so it can yield/reacquire the correct semaphore.
-  isAnyHandlerActive(): boolean {
+  // to _processEventImmediately so it can yield/reacquire the correct lock.
+  _isAnyHandlerActive(): boolean {
     return this.active_handler_results.length > 0
   }
 
-  waitForIdle(): Promise<void> {
+  waitForIdle(timeout_seconds: number | null = null): Promise<boolean> {
     return new Promise((resolve) => {
-      this.idle_waiters.push(resolve)
+      let done = false
+      let timeout_id: ReturnType<typeof setTimeout> | null = null
+
+      const finish = (became_idle: boolean): void => {
+        if (done) {
+          return
+        }
+        done = true
+        if (timeout_id !== null) {
+          clearTimeout(timeout_id)
+          timeout_id = null
+        }
+        resolve(became_idle)
+      }
+
+      this.idle_waiters.push(finish)
       this.scheduleIdleCheck()
+
+      if (timeout_seconds === null || timeout_seconds === undefined) {
+        return
+      }
+
+      const timeout_ms = Math.max(0, Number(timeout_seconds)) * 1000
+      if (!Number.isFinite(timeout_ms)) {
+        return
+      }
+
+      timeout_id = setTimeout(() => {
+        const index = this.idle_waiters.indexOf(finish)
+        if (index >= 0) {
+          this.idle_waiters.splice(index, 1)
+        }
+        finish(false)
+      }, timeout_ms)
     })
   }
 
   // Called by EventBus.markEventCompleted and EventBus.markHandlerCompleted to notify
   // waitUntilIdle() callers that the bus may now be idle.
-  notifyIdleListeners(): void {
+  _notifyIdleListeners(): void {
     // Fast-path: most completions have no waitUntilIdle() callers waiting,
     // so skip expensive idle snapshot scans in that common case.
     if (this.idle_waiters.length === 0) {
@@ -280,32 +324,64 @@ export class LockManager {
     const waiters = this.idle_waiters
     this.idle_waiters = []
     for (const resolve of waiters) {
-      resolve()
+      resolve(true)
     }
   }
 
-  // get the bus-level semaphore that prevents/allows multiple events to be processed concurrently on the same bus
-  getSemaphoreForEvent(event: BaseEvent): AsyncSemaphore | null {
-    const resolved = event.event_concurrency ?? this.bus.event_concurrency_default
+  // get the bus-level lock that prevents/allows multiple events to be processed concurrently on the same bus
+  getLockForEvent(event: BaseEvent): AsyncLock | null {
+    const resolved = event.event_concurrency ?? this.bus.event_concurrency
     if (resolved === 'parallel') {
       return null
     }
     if (resolved === 'global-serial') {
-      return LockManager.global_event_semaphore
+      return this.bus._lock_for_event_global_serial
     }
-    return this.bus_event_semaphore
+    return this.bus_event_lock
+  }
+
+  async _runWithEventLock<T>(
+    event: BaseEvent,
+    fn: () => Promise<T>,
+    options: { bypass_event_locks?: boolean; pre_acquired_lock?: AsyncLock | null } = {}
+  ): Promise<T> {
+    const pre_acquired = options.pre_acquired_lock ?? null
+    if (options.bypass_event_locks || pre_acquired) {
+      return await fn()
+    }
+    return await runWithLock(this.getLockForEvent(event), fn)
+  }
+
+  async _runWithHandlerLock<T>(
+    event: BaseEvent,
+    default_handler_concurrency: EventHandlerConcurrencyMode | undefined,
+    fn: (lock: HandlerLock | null) => Promise<T>
+  ): Promise<T> {
+    const lock = event._getHandlerLock(default_handler_concurrency)
+    if (lock) {
+      await lock.acquire()
+    }
+    const handler_lock = lock ? new HandlerLock(lock) : null
+    try {
+      return await fn(handler_lock)
+    } finally {
+      handler_lock?.exitHandlerRun()
+    }
   }
 
   // Schedules a debounced idle check to run after a short delay. Used to gate
   // waitUntilIdle() calls during handler execution and after event completion.
   private scheduleIdleCheck(): void {
+    if (!this.auto_schedule_idle_checks) {
+      return
+    }
     if (this.idle_check_pending) {
       return
     }
     this.idle_check_pending = true
     setTimeout(() => {
       this.idle_check_pending = false
-      this.notifyIdleListeners()
+      this._notifyIdleListeners()
     }, 0)
   }
 

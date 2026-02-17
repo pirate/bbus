@@ -22,18 +22,50 @@ repos:
   #   hooks:
   #     - id: add-trailing-comma
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.7
+  - repo: local
     hooks:
-      - id: ruff-check
-        args: [ --fix ]
       - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-check
+        name: ruff-check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ty-check
+        name: ty-check
+        entry: uv run ty check
+        language: system
+        files: ^(bubus/|tests/|examples/)
+        pass_filenames: false
+      - id: pyright
+        name: pyright
+        entry: uv run pyright
+        language: system
+        files: ^(bubus/|tests/|examples/)
+        pass_filenames: false
+      - id: ts-prettier
+        name: ts-prettier
+        entry: pnpm --dir bubus-ts run prettier
+        language: system
+        files: ^bubus-ts/
+        exclude: \.sh$
+        pass_filenames: false
+      - id: ts-eslint
+        name: ts-eslint
+        entry: pnpm --dir bubus-ts run eslint
+        language: system
+        files: ^bubus-ts/.*\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$
+        pass_filenames: false
+      - id: ts-typecheck
+        name: ts-typecheck
+        entry: pnpm --dir bubus-ts run typecheck
+        language: system
+        files: ^bubus-ts/.*\.(ts|tsx|mts|cts)$
+        pass_filenames: false
       # see pyproject.toml for more details on ruff config
-
-  - repo: https://github.com/RobertCraigie/pyright-python
-    rev: v1.1.403
-    hooks:
-    - id: pyright
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -60,5 +92,6 @@ repos:
       - id: forbid-submodules
       - id: check-added-large-files
         args: ["--maxkb=600"]
-      # - id: name-tests-test
-      #   args: ["--pytest-test-first"]
+      - id: name-tests-test
+        args: ["--pytest-test-first"]
+        exclude: ^tests/(bridge_listener_worker|performance_runtime|performance_scenarios)\.py$

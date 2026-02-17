@@ -63,6 +63,29 @@ type _assert_constructor_object_result = Assert<IsEqual<ConstructorObjectResult,
 
 const bus = new EventBus('TypeInferenceBus')
 
+const find_by_class_call = bus.find(InferableResultEvent, { past: true, future: false })
+type FindByClassReturn = Awaited<typeof find_by_class_call>
+type _assert_find_by_class_return = Assert<IsEqual<FindByClassReturn, InstanceType<typeof InferableResultEvent> | null>>
+
+const find_by_class_with_where_call = bus.find(
+  InferableResultEvent,
+  (event) => {
+    const target: string = event.target_id
+    return target.length > 0
+  },
+  { past: true, future: false }
+)
+type FindByClassWithWhereReturn = Awaited<typeof find_by_class_with_where_call>
+type _assert_find_by_class_with_where_return = Assert<IsEqual<FindByClassWithWhereReturn, InstanceType<typeof InferableResultEvent> | null>>
+
+const find_history_by_class_call = bus.event_history.find(InferableResultEvent, (event) => event.target_id.length > 0, { past: true })
+type FindHistoryByClassReturn = Awaited<typeof find_history_by_class_call>
+type _assert_find_history_by_class_return = Assert<IsEqual<FindHistoryByClassReturn, InstanceType<typeof InferableResultEvent> | null>>
+
+const find_by_wildcard_call = bus.find('*', { past: true, future: false })
+type FindByWildcardReturn = Awaited<typeof find_by_wildcard_call>
+type _assert_find_by_wildcard_return = Assert<IsEqual<FindByWildcardReturn, BaseEvent | null>>
+
 bus.on(InferableResultEvent, (event) => {
   const target: string = event.target_id
   return { ok: true }

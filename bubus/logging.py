@@ -86,7 +86,7 @@ def log_event_tree(
 
         for i, (_handler_id, result) in enumerate(results_sorted):
             is_last_item = i == total_items - 1
-            lines.append(log_eventresult_tree(result, new_indent, is_last_item, event_children_by_parent))
+            lines.append(log_event_result_tree(result, new_indent, is_last_item, event_children_by_parent))
             # Track child events printed by this result
             for child in result.event_children:
                 printed_child_ids.add(child.event_id)
@@ -102,7 +102,7 @@ def log_event_tree(
     return '\n'.join(lines)
 
 
-def log_eventresult_tree(
+def log_event_result_tree(
     result: 'EventResult[Any]',
     indent: str = '',
     is_last: bool = True,
@@ -213,6 +213,7 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
     """Log detailed timeout information showing the event tree and which handler timed out"""
 
     from bubus.base_event import logger
+    from bubus.event_bus import EventBus
 
     if not logger.isEnabledFor(logging.WARNING):
         return
@@ -221,13 +222,12 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
 
     # Find the root event by walking up the parent chain
     root_event = event
-    eventbus = event.event_bus
     visited_parent_ids: set[str] = set()
     while root_event.event_parent_id and root_event.event_parent_id not in visited_parent_ids:
         visited_parent_ids.add(root_event.event_parent_id)
         parent_found = False
         # Search for parent in all EventBus instances
-        for bus in list(eventbus.all_instances):
+        for bus in list(EventBus.all_instances):
             if root_event.event_parent_id in bus.event_history:
                 root_event = bus.event_history[root_event.event_parent_id]
                 parent_found = True
@@ -423,7 +423,7 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
         # This is for handlers that were registered but didn't get to run due to timeouts
         # Find which EventBus contains this event
         event_bus = None
-        for bus in list(eventbus.all_instances):
+        for bus in list(EventBus.all_instances):
             if evt.event_id in bus.event_history:
                 event_bus = bus
                 break

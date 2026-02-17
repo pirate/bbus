@@ -4,7 +4,7 @@
 import { BaseEvent } from './base_event.js'
 import { EventBus } from './event_bus.js'
 import { assertOptionalDependencyAvailable, importOptionalDependency, isNodeRuntime } from './optional_deps.js'
-import type { EventClass, EventHandlerFunction, EventPattern, UntypedEventHandlerFunction } from './types.js'
+import type { EventClass, EventHandlerCallable, EventPattern, UntypedEventHandlerFunction } from './types.js'
 
 const randomSuffix = (): string => Math.random().toString(36).slice(2, 10)
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -94,18 +94,18 @@ export class PostgresEventBridge {
     this.on = this.on.bind(this)
   }
 
-  on<T extends BaseEvent>(event_pattern: EventClass<T>, handler: EventHandlerFunction<T>): void
+  on<T extends BaseEvent>(event_pattern: EventClass<T>, handler: EventHandlerCallable<T>): void
   on<T extends BaseEvent>(event_pattern: string | '*', handler: UntypedEventHandlerFunction<T>): void
-  on(event_pattern: EventPattern | '*', handler: EventHandlerFunction | UntypedEventHandlerFunction): void {
+  on(event_pattern: EventPattern | '*', handler: EventHandlerCallable | UntypedEventHandlerFunction): void {
     this.ensureStarted()
     if (typeof event_pattern === 'string') {
       this.inbound_bus.on(event_pattern, handler as UntypedEventHandlerFunction<BaseEvent>)
       return
     }
-    this.inbound_bus.on(event_pattern as EventClass<BaseEvent>, handler as EventHandlerFunction<BaseEvent>)
+    this.inbound_bus.on(event_pattern as EventClass<BaseEvent>, handler as EventHandlerCallable<BaseEvent>)
   }
 
-  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+  async emit<T extends BaseEvent>(event: T): Promise<void> {
     this.ensureStarted()
     if (!this.client) await this.start()
 
@@ -134,8 +134,8 @@ export class PostgresEventBridge {
     await this.client.query('SELECT pg_notify($1, $2)', [this.channel, JSON.stringify(String(event.event_id))])
   }
 
-  async emit<T extends BaseEvent>(event: T): Promise<void> {
-    return this.dispatch(event)
+  async dispatch<T extends BaseEvent>(event: T): Promise<void> {
+    return this.emit(event)
   }
 
   async start(): Promise<void> {
@@ -229,8 +229,8 @@ export class PostgresEventBridge {
   }
 
   private async dispatchInboundPayload(payload: unknown): Promise<void> {
-    const event = BaseEvent.fromJSON(payload).reset()
-    this.inbound_bus.dispatch(event)
+    const event = BaseEvent.fromJSON(payload).eventReset()
+    this.inbound_bus.emit(event)
   }
 
   private async ensureTableExists(): Promise<void> {

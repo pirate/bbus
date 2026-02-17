@@ -1,7 +1,10 @@
 export { BaseEvent, BaseEventSchema } from './base_event.js'
+export { EventHistory } from './event_history.js'
+export type { EventHistoryFindOptions, EventHistoryTrimOptions } from './event_history.js'
 export { EventResult } from './event_result.js'
 export { EventBus } from './event_bus.js'
-export type { EventBusJSON } from './event_bus.js'
+export type { EventBusJSON, EventBusOptions } from './event_bus.js'
+export type { EventBusMiddleware, EventBusMiddlewareCtor, EventBusMiddlewareInput } from './middlewares.js'
 export {
   EventHandlerTimeoutError,
   EventHandlerCancelledError,
@@ -14,7 +17,7 @@ export type {
   EventHandlerCompletionMode,
   EventBusInterfaceForLockManager,
 } from './lock_manager.js'
-export type { EventClass, EventHandlerFunction as EventHandler, EventPattern, EventStatus, FindOptions, FindWindow } from './types.js'
+export type { EventClass, EventHandlerCallable as EventHandler, EventPattern, EventStatus, FindOptions, FindWindow } from './types.js'
 export { retry, clearSemaphoreRegistry, RetryTimeoutError, SemaphoreTimeoutError } from './retry.js'
 export type { RetryOptions } from './retry.js'
 export {

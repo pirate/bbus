@@ -41,30 +41,30 @@ const value = entry.result
 </Tab>
 </Tabs>
 
-## Internal lifecycle methods
+## Scope stack ordering
 
-Used by bus internals; generally not needed for normal app code.
+`EventResult` execution is intentionally layered as nested scopes/wrappers.
+
+These are flow references for execution order, not public API method documentation.
 
 <Tabs>
 <Tab title="Python">
 
-```python
-# internal methods used by EventBus
-await entry.execute(...)
-entry.update(status='started' | 'completed' | 'error', result=..., error=...)
-```
+- `eventbus.locks._run_with_handler_lock(...)`
+- `eventbus._run_with_handler_dispatch_context(...)`
+- `event_result._run_with_timeout(...)`
+- `_run_with_slow_monitor(...)`
+- `event_result._call_handler(...)`
 
 </Tab>
 <Tab title="TypeScript">
 
-```ts
-entry.markStarted()
-entry.markCompleted(result)
-entry.markError(error)
-await entry.runHandler()
-entry.signalAbort(error)
-entry.linkEmittedChildEvent(childEvent)
-```
+- `_runWithHandlerLock(...)` (acquired before `runHandler(...)`)
+- `_runWithHandlerDispatchContext(...)`
+- `_runWithAsyncContext(...)`
+- `_runWithTimeout(...)`
+- `_runWithSlowMonitor(...)`
+- `_runWithAbortMonitor(...)` around handler invocation
 
 </Tab>
 </Tabs>

@@ -1,8 +1,9 @@
 {
   "name": "bubus",
-  "version": "2.1.0",
+  "version": "2.2.1",
   "description": "Event bus library for browsers and ESM Node.js",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/esm/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/types/index.d.ts",
@@ -11,6 +12,11 @@
       "types": "./dist/types/index.d.ts",
       "import": "./dist/esm/index.js",
       "default": "./dist/esm/index.js"
+    },
+    "./*": {
+      "types": "./dist/types/*.d.ts",
+      "import": "./dist/esm/*.js",
+      "default": "./dist/esm/*.js"
     }
   },
   "files": [
@@ -19,21 +25,21 @@
   ],
   "scripts": {
     "build": "pnpm run build:esm && pnpm run build:types",
-    "build:esm": "esbuild src/index.ts --bundle --format=esm --platform=neutral --target=es2022 --sourcemap --outdir=dist/esm",
+    "build:esm": "node ./scripts/build_esm.mjs",
     "build:types": "tsc -p tsconfig.json --emitDeclarationOnly",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "prettier": "prettier --write .",
     "eslint": "eslint .",
     "lint": "pnpm run prettier && pnpm run eslint && pnpm run typecheck",
-    "test": "NODE_OPTIONS='--expose-gc' node --expose-gc --test --import tsx tests/**/*.test.ts",
+    "test": "NODE_OPTIONS='--expose-gc' node --expose-gc --test --import tsx \"tests/**/*.test.ts\"",
     "perf": "pnpm run perf:node && pnpm run perf:bun && pnpm run perf:deno && pnpm run perf:browser",
     "debug:node": "NODE_OPTIONS='--expose-gc' node --expose-gc --import tsx",
     "debug:bun": "bun --expose-gc run",
-    "debug:deno": "deno run --v8-flags=--expose-gc",
+    "debug:deno": "deno run --sloppy-imports --v8-flags=--expose-gc",
     "perf:node": "pnpm run build && pnpm run debug:node -- tests/performance.runtime.ts --scenario 50k-events && pnpm run debug:node -- tests/performance.runtime.ts --scenario 500-buses-x-100-events && pnpm run debug:node -- tests/performance.runtime.ts --scenario 1-event-x-50k-parallel-handlers && pnpm run debug:node -- tests/performance.runtime.ts --scenario 50k-one-off-handlers && pnpm run debug:node -- tests/performance.runtime.ts --scenario worst-case-forwarding-timeouts && pnpm run debug:node -- tests/performance.runtime.ts --scenario cleanup-equivalence",
     "perf:bun": "pnpm run build && pnpm run debug:bun -- tests/performance.runtime.ts --scenario 50k-events && pnpm run debug:bun -- tests/performance.runtime.ts --scenario 500-buses-x-100-events && pnpm run debug:bun -- tests/performance.runtime.ts --scenario 1-event-x-50k-parallel-handlers && pnpm run debug:bun -- tests/performance.runtime.ts --scenario 50k-one-off-handlers && pnpm run debug:bun -- tests/performance.runtime.ts --scenario worst-case-forwarding-timeouts && pnpm run debug:bun -- tests/performance.runtime.ts --scenario cleanup-equivalence",
     "perf:deno": "pnpm run build && pnpm run debug:deno -- tests/performance.runtime.ts --scenario 50k-events && pnpm run debug:deno -- tests/performance.runtime.ts --scenario 500-buses-x-100-events && pnpm run debug:deno -- tests/performance.runtime.ts --scenario 1-event-x-50k-parallel-handlers && pnpm run debug:deno -- tests/performance.runtime.ts --scenario 50k-one-off-handlers && pnpm run debug:deno -- tests/performance.runtime.ts --scenario worst-case-forwarding-timeouts && pnpm run debug:deno -- tests/performance.runtime.ts --scenario cleanup-equivalence",
-    "perf:browser": "pnpm run build && npx --yes --package=playwright -c 'PW_BIN=\"$(command -v playwright)\"; PW_NODE_MODULES=\"$(cd \"$(dirname \"$PW_BIN\")/..\" && pwd)\"; NODE_PATH=\"$PW_NODE_MODULES\" playwright test tests/performance.browser.spec.cjs --browser=chromium --workers=1 --reporter=line --output=/tmp/bubus-playwright-results'",
+    "perf:browser": "pnpm run build && bash ./scripts/run_browser_perf.sh",
     "release:dry-run": "pnpm publish --access public --dry-run --no-git-checks",
     "release:check": "pnpm run typecheck && pnpm test && pnpm run build"
   },
@@ -46,11 +52,13 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/node": "^25.2.3",
     "@typescript-eslint/eslint-plugin": "^8.55.0",
     "@typescript-eslint/parser": "^8.55.0",
     "esbuild": "^0.27.3",
     "eslint": "^9.39.2",
     "prettier": "^3.8.1",
+    "tsc-files": "^1.1.4",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },

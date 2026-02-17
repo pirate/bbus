@@ -36,7 +36,7 @@ class JSONLEventBridge:
         self._ensure_started()
         self._inbound_bus.on(event_pattern, handler)
 
-    async def dispatch(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
+    async def emit(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
         self._ensure_started()
 
         payload = event.model_dump(mode='json')
@@ -48,8 +48,8 @@ class JSONLEventBridge:
             return None
         return event
 
-    async def emit(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
-        return await self.dispatch(event)
+    async def dispatch(self, event: BaseEvent[Any]) -> BaseEvent[Any] | None:
+        return await self.emit(event)
 
     async def start(self) -> None:
         current_task = asyncio.current_task()
@@ -134,7 +134,7 @@ class JSONLEventBridge:
 
     async def _dispatch_inbound_payload(self, payload: Any) -> None:
         event = BaseEvent[Any].model_validate(payload).event_reset()
-        self._inbound_bus.dispatch(event)
+        self._inbound_bus.emit(event)
 
     def _read_appended_text(self, offset: int) -> tuple[str, int]:
         try:

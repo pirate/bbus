@@ -23,6 +23,13 @@ source .venv/bin/activate  # On Unix/macOS
 uv sync --dev --all-extras
 ```
 
+Recommended once per clone:
+
+```bash
+prek install           # install pre-commit hooks
+prek run --all-files   # run pre-commit hooks on all files manually
+```
+
 ```bash
 # Run linter & type checker
 uv run ruff check --fix
@@ -35,8 +42,8 @@ uv run pytest -vxs --full-trace tests/
 # Run specific test file
 uv run pytest tests/test_eventbus.py
 
-# Run Python perf suite
-uv run tests/performance_runtime.py
+# Run Python perf test suite
+uv run pytest tests/test_eventbus_performance.py -vxs
 
 # Run the entire lint+test+examples+perf suite for both python and ts
 ./test.sh
@@ -52,6 +59,10 @@ git clone https://github.com/pirate/bbus bubus && cd bubus
 
 cd ./bubus-ts
 pnpm install
+
+prek install           # install pre-commit hooks
+prek run --all-files   # run pre-commit hooks on all files manually
+
 pnpm lint
 pnpm test
 ```
