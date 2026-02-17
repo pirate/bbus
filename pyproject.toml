@@ -2,10 +2,9 @@
 name = "bubus"
 description = "Advanced Pydantic-powered event bus with async support"
 authors = [{ name = "Nick Sweeting" }]
-version = "2.2.1"
+version = "2.3.1"
 readme = "README.md"
 requires-python = ">=3.11"
-urls = {Repository = "https://github.com/pirate/bbus"}
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -34,6 +33,15 @@ bridges = [
     "nats-py>=2.13.1",
     "redis>=7.1.1",
 ]
+
+[project.urls]
+Homepage = "https://bubus.sweeting.me"
+Repository = "https://github.com/pirate/bbus"
+"Issue Tracker" = "https://github.com/pirate/bbus/issues"
+Documentation = "https://bubus.sweeting.me"
+DeepWiki = "https://deepwiki.com/pirate/bbus"
+PyPI = "https://pypi.org/project/bubus/"
+NPM = "https://www.npmjs.com/package/bubus"
 
 [dependency-groups]
 dev = [

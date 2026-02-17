@@ -215,34 +215,6 @@ print(event.event_path)  # ['MainBus#ab12', 'AuthBus#cd34', 'DataBus#ef56']  # l
 </details>
 
 <details>
-<summary><strong>Bridges</strong></summary>
-
-
-Bridges are optional extra connectors provided that allow you to send/receive events from an external service, and you do not need to use a bridge to use bubus since it's normally purely in-memory. These are just simple helpers to forward bubus events JSON to storage engines / other processes / other machines; they prevent loops automatically, but beyond that it's only basic forwarding with no handler pickling or anything fancy.
-
-Bridges all expose a very simple bus-like API with only `.emit()` and `.on()`.
-
-**Example usage: link a bus to a redis pub/sub channel**
-```python
-bridge = RedisEventBridge('redis://redis@localhost:6379')
-
-bus.on('*', bridge.emit)  # listen for all events on bus and send them to redis channel
-bridge.on('*', bus.emit)  # listen for new events in redis channel and emit them to our bus
-```
-
-- `SocketEventBridge('/tmp/bubus_events.sock')`
-- `HTTPEventBridge(send_to='https://127.0.0.1:8001/bubus_events', listen_on='http://0.0.0.0:8002/bubus_events')`
-- `JSONLEventBridge('/tmp/bubus_events.jsonl')`
-- `SQLiteEventBridge('/tmp/bubus_events.sqlite3')`
-- `PostgresEventBridge('postgresql://user:pass@localhost:5432/dbname/bubus_events')`
-- `RedisEventBridge('redis://user:pass@localhost:6379/1/bubus_events')`
-- `NATSEventBridge('nats://localhost:4222', 'bubus_events')`
-
-<br/>
-
-</details>
-
-<details>
 <summary><strong>🔱 Event Results Aggregation</strong></summary>
 
 
@@ -762,7 +734,7 @@ class AnalyticsMiddleware(EventBusMiddleware):
 ## 📚 API Documentation
 
 <details>
-<summary><strong>Review bus construction, defaults, and core lifecycle methods.</strong></summary>
+<summary><strong><code>EventBus</code></strong></summary>
 
 
 The main event bus class that manages event processing and handler execution.
@@ -919,7 +891,7 @@ await bus.stop(clear=True)   # Stop and clear all event history and handlers to 
 </details>
 
 <details>
-<summary><strong>Review event fields, runtime state, and result helper methods.</strong></summary>
+<summary><strong><code>BaseEvent</code></strong></summary>
 
 
 Base class for all events. Subclass `BaseEvent` to define your own events.
@@ -1089,7 +1061,7 @@ async def some_handler(event: MyEvent):
 </details>
 
 <details>
-<summary><strong>Review per-handler status, timing, outputs, and captured errors.</strong></summary>
+<summary><strong><code>EventResult</code></strong></summary>
 
 
 The placeholder object that represents the pending result from a single handler executing an event.  
@@ -1134,7 +1106,7 @@ value = await handler_result  # Returns result or raises an exception if handler
 </details>
 
 <details>
-<summary><strong>Review handler metadata, registration fields, and serialization helpers.</strong></summary>
+<summary><strong><code>EventHandler</code></strong></summary>
 
 
 Serializable metadata wrapper around a registered handler callable.
@@ -1168,124 +1140,6 @@ The raw callable is stored on `handler`, but is excluded from JSON serialization
 ---
 
 </details>
-
-## 🧵 Advanced Concurrency Control
-
-### `EventBus`, `BaseEvent`, and `EventHandler` concurrency config fields
-
-These options can be set as bus-level defaults, event-level options, or as handler-specific options.
-They control the concurrency of how events are processed within a bus, across all buses, and how handlers execute within a single event.
-
-- `event_concurrency`: `'global-serial' | 'bus-serial' | 'parallel'` controls event-level scheduling (`None` on events defers to bus default)
-- `event_handler_concurrency`: `'serial' | 'parallel'` should handlers on a single event run in parallel or in sequential order
-- `event_handler_completion`: `'all' | 'first'` should all handlers run, or should we stop handler execution once any handler returns a non-`None` value
-
-### `@retry` Decorator
-
-The `@retry` decorator provides automatic retry functionality with built-in concurrency control for any function, including event handlers. This is particularly useful when handlers interact with external services that may temporarily fail. It can be used completely independently from the rest of the library, it does not require a bus and can be used more generally to control concurrenty/timeouts/retries of any python function.
-
-```python
-from bubus import EventBus, BaseEvent
-from bubus.retry import retry
-
-bus = EventBus()
-
-class FetchDataEvent(BaseEvent[dict[str, Any]]):
-    url: str
-
-@retry(
-    retry_after=2,              # Wait 2 seconds between retries
-    max_attempts=3,             # Total attempts including initial call
-    timeout=5,                  # Each attempt times out after 5 seconds
-    semaphore_limit=5,          # Max 5 concurrent executions
-    retry_backoff_factor=1.5,   # Exponential backoff: 2s, 3s, 4.5s
-    retry_on_errors=[TimeoutError, ConnectionError],  # Only retry on specific exceptions
-)
-async def fetch_with_retry(event: FetchDataEvent) -> dict[str, Any]:
-    # This handler will automatically retry on network failures
-    async with aiohttp.ClientSession() as session:
-        async with session.get(event.url) as response:
-            return await response.json()
-
-bus.on(FetchDataEvent, fetch_with_retry)
-```
-
-#### Retry Parameters
-
-- **`timeout`**: Maximum amount of time function is allowed to take per attempt, in seconds (`None` = unbounded, default: `None`)
-- **`max_attempts`**: Total attempts including the first attempt (minimum effective value: `1`, default: `1`)
-- **`retry_on_errors`**: List of exception classes or compiled regex matchers. Regexes are matched against `f"{err.__class__.__name__}: {err}"` (default: `None` = retry on any `Exception`)
-- **`retry_after`**: Base seconds to wait between retries (default: 0)
-- **`retry_backoff_factor`**: Multiplier for wait time after each retry (default: 1.0)
-- **`semaphore_limit`**: Maximum number of concurrent calls that can run at the same time
-- **`semaphore_scope`**: Scope for the semaphore: `class`, `instance`, `global`, or `multiprocess`
-- **`semaphore_timeout`**: Maximum time to wait for a semaphore slot before proceeding or failing. If omitted: `timeout * max(1, semaphore_limit - 1)` when `timeout` is set, otherwise wait forever
-- **`semaphore_lax`**: Continue anyway if semaphore fails to be acquired in within the given time
-- **`semaphore_name`**: Unique semaphore name (string) or callable getter that receives function args and returns a name
-
-#### Semaphore Options
-
-Control concurrency with built-in semaphore support:
-
-```python
-# Global semaphore - all calls share one limit
-@retry(semaphore_limit=3, semaphore_scope='global')
-async def global_limited_handler(event): ...
-
-# Per-class semaphore - all instances of a class share one limit
-class MyService:
-    @retry(semaphore_limit=2, semaphore_scope='class')
-    async def class_limited_handler(self, event): ...
-
-# Per-instance semaphore - each instance gets its own limit
-class MyService:
-    @retry(semaphore_limit=1, semaphore_scope='instance')
-    async def instance_limited_handler(self, event): ...
-
-# Cross-process semaphore - all processes share one limit
-@retry(semaphore_limit=5, semaphore_scope='multiprocess')
-async def process_limited_handler(event): ...
-```
-
-#### Advanced Example
-
-```python
-import logging
-
-# Configure logging to see retry attempts
-logging.basicConfig(level=logging.INFO)
-
-class DatabaseEvent(BaseEvent):
-    query: str
-
-class DatabaseService:
-    @retry(
-        retry_after=1,
-        max_attempts=5,
-        timeout=10,
-        semaphore_limit=10,          # Max 10 concurrent DB operations
-        semaphore_scope='class',     # Shared across all instances
-        semaphore_timeout=30,        # Wait up to 30s for semaphore
-        semaphore_lax=False,         # Fail if can't acquire semaphore
-        retry_backoff_factor=2.0,    # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-        retry_on_errors=[ConnectionError, TimeoutError],
-    )
-    async def execute_query(self, event: DatabaseEvent):
-        # Automatically retries on connection failures
-        # Limited to 10 concurrent operations across all instances
-        result = await self.db.execute(event.query)
-        return result
-
-# Register the handler
-db_service = DatabaseService()
-bus.on(DatabaseEvent, db_service.execute_query)
-```
-
-<br/>
-
----
-
-<br/>
 
 ## 🏃 Performance (Python)
 
