@@ -1,6 +1,7 @@
 """Test that the AttributeError bug related to 'event_completed_at' is fixed"""
 
 import asyncio
+from contextlib import suppress
 from datetime import UTC, datetime
 
 from bubus import BaseEvent, EventBus
@@ -182,12 +183,19 @@ async def test_event_status_is_serialized_and_stateful():
     bus.on('SampleEvent', slow_handler)
 
     processing_task = asyncio.create_task(bus.emit(event).event_completed())
-    await handler_entered.wait()
-    started_payload = event.model_dump(mode='json')
-    assert started_payload['event_status'] == 'started'
+    try:
+        await asyncio.wait_for(handler_entered.wait(), timeout=1.0)
+        started_payload = event.model_dump(mode='json')
+        assert started_payload['event_status'] == 'started'
 
-    release_handler.set()
-    completed_event = await processing_task
-    await bus.stop()
-    completed_payload = completed_event.model_dump(mode='json')
-    assert completed_payload['event_status'] == 'completed'
+        release_handler.set()
+        completed_event = await asyncio.wait_for(processing_task, timeout=1.0)
+        completed_payload = completed_event.model_dump(mode='json')
+        assert completed_payload['event_status'] == 'completed'
+    finally:
+        release_handler.set()
+        if not processing_task.done():
+            processing_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await processing_task
+        await bus.stop()

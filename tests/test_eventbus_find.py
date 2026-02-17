@@ -1271,7 +1271,7 @@ class TestFindLegacyPatternCoverage:
             find_task = asyncio.create_task(
                 bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id != 'excluded',
+                    where=lambda e: e.target_id != '1556eff9-dea5-78ae-8219-7bb92f787370',
                     past=False,
                     future=1,
                 )
@@ -1281,7 +1281,7 @@ class TestFindLegacyPatternCoverage:
             found, dispatched = await asyncio.gather(find_task, dispatch_task)
 
             assert found is not None
-            assert found.target_id == '1556eff9-dea5-78ae-8219-7bb92f787370'
+            assert found.target_id == '45c2761f-3475-72aa-8dd8-b3cf4a4923e2'
 
         finally:
             await bus.stop(clear=True)

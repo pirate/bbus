@@ -120,8 +120,8 @@ class TestContextPropagation:
         """
         Different dispatches should have isolated contexts.
 
-        If dispatch A sets request_id='596a2fbd-f73a-7c8a-8418-08bae3387086' and dispatch B sets request_id='e0b62fa0-3fe8-750d-8bbd-e1403673ee2d',
-        handler A should see 'A' and handler B should see 'B'.
+        If dispatch A sets request_id='req-A' and dispatch B sets request_id='req-B',
+        handler A should see 'req-A' and handler B should see 'req-B'.
         """
         bus = EventBus(name='IsolationTestBus')
         captured_values: list[str] = []

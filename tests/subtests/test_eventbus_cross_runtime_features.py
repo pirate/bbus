@@ -271,13 +271,14 @@ async def test_context_propagates_through_forwarding_and_child_dispatch_with_lin
     bus_b.on(ContextParentEvent, on_parent)
     bus_b.on(ContextChildEvent, on_child)
 
-    token = request_id_var.set('req-cross-feature-001')
+    request_id = 'fc81f432-98cd-7a06-824c-dafed74761bb'
+    token = request_id_var.set(request_id)
     try:
         parent = await bus_a.emit(ContextParentEvent())
         await bus_b.wait_until_idle()
 
-        assert captured_parent_request_id == 'req-cross-feature-001'
-        assert captured_child_request_id == 'req-cross-feature-001'
+        assert captured_parent_request_id == request_id
+        assert captured_child_request_id == request_id
         assert parent_event_id is not None
         assert child_parent_id == parent_event_id
         assert parent.event_path[0].startswith('ParityContextForwardA#')

@@ -19,6 +19,15 @@ class LockManagerProtocol(Protocol):
         """Return the concrete event-level lock object or ``None`` for parallel mode."""
         ...
 
+    def get_lock_for_event_handler(
+        self,
+        bus: 'EventBus',
+        event: BaseEvent[T_EventResultType],
+        event_result: EventResult[T_EventResultType],
+    ) -> 'ReentrantLock | None':
+        """Return the concrete handler-level lock object or ``None`` for parallel mode."""
+        ...
+
     def _run_with_event_lock(self, bus: 'EventBus', event: BaseEvent[T_EventResultType]) -> Any:
         """Context manager for event-level lock scope."""
         ...

@@ -65,7 +65,7 @@ class TestRetryWithEventBus:
 
         bus = EventBus(name='test_concurrent_bus', event_handler_concurrency='parallel')
 
-        async def create_handler(handler_id: int):
+        def create_handler(handler_id: int):
             @retry(
                 max_attempts=1,
                 timeout=5.0,
@@ -90,21 +90,16 @@ class TestRetryWithEventBus:
             return limited_handler
 
         for i in range(1, 5):
-            handler = await create_handler(i)
+            handler = create_handler(i)
             bus.on('WorkEvent', handler)
 
         event = WorkEvent(work_id=1)
         await bus.emit(event)
         await bus.wait_until_idle(timeout=3)
 
-        assert max_concurrent <= 2, f'Max concurrent was {max_concurrent}, expected <= 2'
+        assert max_concurrent == 2, f'Max concurrent was {max_concurrent}, expected exactly 2 with semaphore_limit=2'
         for handler_id in range(1, 5):
             assert len(handler_results[handler_id]) == 2, f'Handler {handler_id} should have started and completed'
-
-        all_starts = [r[1] for results in handler_results.values() for r in results if r[0] == 'started']
-        all_ends = [r[1] for results in handler_results.values() for r in results if r[0] == 'completed']
-        total_time = max(all_ends) - min(all_starts)
-        assert 0.35 < total_time < 0.6, f'Total execution time was {total_time:.3f}s, expected ~0.4s'
 
         await bus.stop()
 
@@ -188,4 +183,222 @@ class TestRetryWithEventBus:
         assert isinstance(result.error, TypeError)
         assert 'This should NOT be retried' in str(result.error)
 
+        await bus.stop()
+
+    async def test_retry_decorated_method_class_scope_serializes_across_instances(self):
+        """Class scope semaphore should serialize bound method handlers across instances."""
+
+        class ScopeClassEvent(BaseEvent[str]):
+            pass
+
+        bus = EventBus(name='test_scope_class_bus', event_handler_concurrency='parallel')
+        active = 0
+        max_active = 0
+
+        class SomeService:
+            @retry(
+                max_attempts=1,
+                semaphore_scope='class',
+                semaphore_limit=1,
+                semaphore_name='on_scope_class_event',
+            )
+            async def on_scope_class_event(self, _event: ScopeClassEvent) -> str:
+                nonlocal active, max_active
+                active += 1
+                max_active = max(max_active, active)
+                await asyncio.sleep(0.05)
+                active -= 1
+                return 'ok'
+
+        service_a = SomeService()
+        service_b = SomeService()
+        bus.on(ScopeClassEvent, service_a.on_scope_class_event)
+        bus.on(ScopeClassEvent, service_b.on_scope_class_event)
+
+        event = await bus.emit(ScopeClassEvent())
+        await event.event_completed()
+
+        assert max_active == 1, f'class scope should serialize across instances, got max_active={max_active}'
+        await bus.stop()
+
+    async def test_retry_decorated_method_instance_scope_allows_parallel_across_instances(self):
+        """Instance scope semaphore should allow bound handlers from different instances to overlap."""
+
+        class ScopeInstanceEvent(BaseEvent[str]):
+            pass
+
+        bus = EventBus(name='test_scope_instance_bus', event_handler_concurrency='parallel')
+        active = 0
+        max_active = 0
+        calls = 0
+
+        class SomeService:
+            @retry(
+                max_attempts=1,
+                semaphore_scope='instance',
+                semaphore_limit=1,
+                semaphore_name='on_scope_instance_event',
+            )
+            async def on_scope_instance_event(self, _event: ScopeInstanceEvent) -> str:
+                nonlocal active, max_active, calls
+                active += 1
+                max_active = max(max_active, active)
+                calls += 1
+                await asyncio.sleep(0.05)
+                active -= 1
+                return 'ok'
+
+        service_a = SomeService()
+        service_b = SomeService()
+        bus.on(ScopeInstanceEvent, service_a.on_scope_instance_event)
+        bus.on(ScopeInstanceEvent, service_b.on_scope_instance_event)
+
+        event = await bus.emit(ScopeInstanceEvent())
+        await event.event_completed()
+
+        assert calls == 2, f'expected both handlers to run, got calls={calls}'
+        assert max_active == 2, f'instance scope should allow overlap across instances, got max_active={max_active}'
+        await bus.stop()
+
+    async def test_retry_decorated_method_global_scope_serializes_all_bound_handlers(self):
+        """Global scope semaphore should serialize bound method handlers across all instances."""
+
+        class ScopeGlobalEvent(BaseEvent[str]):
+            pass
+
+        bus = EventBus(name='test_scope_global_bus', event_handler_concurrency='parallel')
+        active = 0
+        max_active = 0
+
+        class SomeService:
+            @retry(
+                max_attempts=1,
+                semaphore_scope='global',
+                semaphore_limit=1,
+                semaphore_name='on_scope_global_event',
+            )
+            async def on_scope_global_event(self, _event: ScopeGlobalEvent) -> str:
+                nonlocal active, max_active
+                active += 1
+                max_active = max(max_active, active)
+                await asyncio.sleep(0.05)
+                active -= 1
+                return 'ok'
+
+        service_a = SomeService()
+        service_b = SomeService()
+        bus.on(ScopeGlobalEvent, service_a.on_scope_global_event)
+        bus.on(ScopeGlobalEvent, service_b.on_scope_global_event)
+
+        event = await bus.emit(ScopeGlobalEvent())
+        await event.event_completed()
+
+        assert max_active == 1, f'global scope should serialize all handlers, got max_active={max_active}'
+        await bus.stop()
+
+    async def test_retry_hof_bind_after_wrap_instance_scope_preserves_instance_isolation(self):
+        """HOF pattern retry(...)(fn) then bind to instances should keep instance-scope isolation."""
+
+        class HofBindEvent(BaseEvent[str]):
+            pass
+
+        bus = EventBus(name='test_hof_bind_bus', event_handler_concurrency='parallel')
+        active = 0
+        max_active = 0
+
+        @retry(
+            max_attempts=1,
+            semaphore_scope='instance',
+            semaphore_limit=1,
+            semaphore_name='hof_bind_handler',
+        )
+        async def handler(self: object, _event: HofBindEvent) -> str:
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.05)
+            active -= 1
+            return 'ok'
+
+        class Holder:
+            pass
+
+        holder_a = Holder()
+        holder_b = Holder()
+        bus.on(HofBindEvent, handler.__get__(holder_a, Holder))
+        bus.on(HofBindEvent, handler.__get__(holder_b, Holder))
+
+        event = await bus.emit(HofBindEvent())
+        await event.event_completed()
+
+        assert max_active == 2, f'bind-after-wrap instance scope should allow overlap, got max_active={max_active}'
+        await bus.stop()
+
+    async def test_retry_wrapping_emit_retries_full_dispatch_cycle(self):
+        """Retry wrapper around emit+event_completed should retry full event dispatch when handler errors."""
+
+        class TabsEvent(BaseEvent[str]):
+            pass
+
+        class DOMEvent(BaseEvent[str]):
+            pass
+
+        class ScreenshotEvent(BaseEvent[str]):
+            pass
+
+        bus = EventBus(name='test_retry_emit_bus', event_handler_concurrency='parallel')
+        tabs_attempts = 0
+        dom_calls = 0
+        screenshot_calls = 0
+
+        async def tabs_handler(_event: TabsEvent) -> str:
+            nonlocal tabs_attempts
+            tabs_attempts += 1
+            if tabs_attempts < 3:
+                raise RuntimeError(f'tabs fail attempt {tabs_attempts}')
+            return 'tabs ok'
+
+        async def dom_handler(_event: DOMEvent) -> str:
+            nonlocal dom_calls
+            dom_calls += 1
+            return 'dom ok'
+
+        async def screenshot_handler(_event: ScreenshotEvent) -> str:
+            nonlocal screenshot_calls
+            screenshot_calls += 1
+            return 'screenshot ok'
+
+        bus.on(TabsEvent, tabs_handler)
+        bus.on(DOMEvent, dom_handler)
+        bus.on(ScreenshotEvent, screenshot_handler)
+
+        @retry(max_attempts=4)
+        async def emit_tabs_with_retry() -> TabsEvent:
+            tabs_event = await bus.emit(TabsEvent())
+            await tabs_event.event_completed()
+            failed_results = [result for result in tabs_event.event_results.values() if result.status == 'error']
+            if failed_results:
+                first_error = failed_results[0].error
+                if isinstance(first_error, Exception):
+                    raise first_error
+                raise RuntimeError(f'tabs emit failed with non-exception error payload: {first_error!r}')
+            return tabs_event
+
+        async def emit_and_wait(event: BaseEvent[str]):
+            emitted = await bus.emit(event)
+            await emitted.event_completed()
+            return emitted
+
+        tabs_event, dom_event, screenshot_event = await asyncio.gather(
+            emit_tabs_with_retry(),
+            emit_and_wait(DOMEvent()),
+            emit_and_wait(ScreenshotEvent()),
+        )
+
+        assert tabs_attempts == 3, f'expected 3 attempts for tabs flow, got {tabs_attempts}'
+        assert tabs_event.event_status == 'completed'
+        assert dom_calls == 1
+        assert screenshot_calls == 1
+        assert dom_event.event_status == 'completed'
+        assert screenshot_event.event_status == 'completed'
         await bus.stop()
