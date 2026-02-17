@@ -592,8 +592,9 @@ class TestFindPastOnly:
 
             found = await bus.find(
                 '*',
-                where=lambda event: isinstance(event, UserActionEvent)
-                and event.user_id == 'b57fcb67-faeb-7a56-8907-116d8cbb1472',
+                where=lambda event: (
+                    isinstance(event, UserActionEvent) and event.user_id == 'b57fcb67-faeb-7a56-8907-116d8cbb1472'
+                ),
                 past=True,
                 future=False,
             )

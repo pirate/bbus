@@ -2,6 +2,7 @@
 set -euo pipefail
 
 uv run ruff format bubus examples tests
+export UV_NO_SYNC=1
 uv run ruff check --fix bubus examples tests
 uv run ty check bubus examples tests
 uv run pyright

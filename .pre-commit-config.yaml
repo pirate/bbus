@@ -22,18 +22,37 @@ repos:
   #   hooks:
   #     - id: add-trailing-comma
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.7
+  - repo: local
     hooks:
-      - id: ruff-check
-        args: [ --fix ]
       - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-check
+        name: ruff-check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ty-check
+        name: ty-check
+        entry: uv run ty check
+        language: system
+        files: ^(bubus/|tests/|examples/|pyproject\.toml)
+        pass_filenames: false
+      - id: pyright
+        name: pyright
+        entry: uv run pyright
+        language: system
+        files: ^(bubus/|tests/|examples/|pyproject\.toml)
+        pass_filenames: false
+      - id: ts-lint
+        name: ts-lint
+        entry: pnpm --dir bubus-ts run lint
+        language: system
+        files: ^bubus-ts/
+        pass_filenames: false
       # see pyproject.toml for more details on ruff config
-
-  - repo: https://github.com/RobertCraigie/pyright-python
-    rev: v1.1.403
-    hooks:
-    - id: pyright
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
