@@ -3,7 +3,7 @@ import { test } from 'node:test'
 
 import { z } from 'zod'
 
-import { BaseEvent, EventBus } from '../src/index.js'
+import { BaseEvent, EventBus, monotonicDatetime } from '../src/index.js'
 
 test('BaseEvent lifecycle transitions are explicit and awaitable', async () => {
   const LifecycleEvent = BaseEvent.extend('BaseEventLifecycleTestEvent', {})
@@ -21,6 +21,42 @@ test('BaseEvent lifecycle transitions are explicit and awaitable', async () => {
   assert.equal(standalone.event_status, 'completed')
   assert.equal(typeof standalone.event_completed_at, 'string')
   await standalone.eventCompleted()
+})
+
+test('BaseEvent.eventResultUpdate creates and updates typed handler results', async () => {
+  const TypedEvent = BaseEvent.extend('BaseEventEventResultUpdateEvent', { event_result_type: z.string() })
+  const bus = new EventBus('BaseEventEventResultUpdateBus')
+  const event = TypedEvent({})
+  const handler_entry = bus.on(TypedEvent, async () => 'ok')
+
+  const pending = event.eventResultUpdate(handler_entry, { eventbus: bus, status: 'pending' })
+  assert.equal(event.event_results.get(handler_entry.id), pending)
+  assert.equal(pending.status, 'pending')
+
+  const completed = event.eventResultUpdate(handler_entry, { eventbus: bus, status: 'completed', result: 'seeded' })
+  assert.equal(completed, pending)
+  assert.equal(completed.status, 'completed')
+  assert.equal(completed.result, 'seeded')
+
+  bus.destroy()
+})
+
+test('BaseEvent.eventResultUpdate status-only update does not implicitly pass undefined result/error keys', () => {
+  const TypedEvent = BaseEvent.extend('BaseEventEventResultUpdateStatusOnlyEvent', { event_result_type: z.string() })
+  const bus = new EventBus('BaseEventEventResultUpdateStatusOnlyBus')
+  const event = TypedEvent({})
+  const handler_entry = bus.on(TypedEvent, async () => 'ok')
+
+  const errored = event.eventResultUpdate(handler_entry, { eventbus: bus, error: new Error('seeded error') })
+  assert.equal(errored.status, 'error')
+  assert.ok(errored.error instanceof Error)
+
+  const status_only = event.eventResultUpdate(handler_entry, { eventbus: bus, status: 'pending' })
+  assert.equal(status_only.status, 'pending')
+  assert.ok(status_only.error instanceof Error)
+  assert.equal(status_only.result, undefined)
+
+  bus.destroy()
 })
 
 test('await event.done() queue-jumps child processing inside handlers', async () => {
@@ -98,18 +134,15 @@ test('await event.eventCompleted() preserves normal queue order inside handlers'
   bus.destroy()
 })
 
-test('BaseEvent.eventTimestampNow emits raw monotonic performance.now() values', () => {
-  const first = BaseEvent.eventTimestampNow()
-  const second = BaseEvent.eventTimestampNow()
+test('monotonicDatetime emits parseable, monotonic ISO timestamps', () => {
+  const first = monotonicDatetime()
+  const second = monotonicDatetime()
 
-  assert.equal(typeof first.ts, 'number')
-  assert.equal(typeof second.ts, 'number')
-  assert.ok(Number.isFinite(first.ts))
-  assert.ok(Number.isFinite(second.ts))
-  assert.ok(first.ts >= 0)
-  assert.ok(second.ts >= first.ts)
-  assert.equal(Number.isInteger(Date.parse(first.isostring)), true)
-  assert.equal(Number.isInteger(Date.parse(second.isostring)), true)
+  assert.equal(typeof first, 'string')
+  assert.equal(typeof second, 'string')
+  assert.equal(Number.isInteger(Date.parse(first)), true)
+  assert.equal(Number.isInteger(Date.parse(second)), true)
+  assert.ok(second > first)
 })
 
 test('BaseEvent rejects reserved runtime fields in payload and event shape', () => {
@@ -206,23 +239,47 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
 
   const json = event.toJSON() as Record<string, unknown>
   assert.equal(json.event_status, 'completed')
-  assert.equal(typeof json.event_created_ts, 'number')
-  assert.equal(typeof json.event_started_ts, 'number')
-  assert.equal(typeof json.event_completed_ts, 'number')
+  assert.equal(typeof json.event_created_at, 'string')
+  assert.equal(typeof json.event_started_at, 'string')
+  assert.equal(typeof json.event_completed_at, 'string')
+  assert.match(String(json.event_created_at), /Z$/)
+  assert.match(String(json.event_started_at), /Z$/)
+  assert.match(String(json.event_completed_at), /Z$/)
   assert.equal(json.event_pending_bus_count, 0)
 
   const json_results = json.event_results as Array<Record<string, unknown>>
   assert.equal(json_results.length, 1)
   assert.equal(json_results[0].status, 'completed')
   assert.equal(json_results[0].result, 'ok')
+  assert.equal(typeof json_results[0].handler_registered_at, 'string')
+  assert.match(String(json_results[0].handler_registered_at), /Z$/)
 
   const restored = RuntimeEvent.fromJSON?.(json) ?? RuntimeEvent(json as never)
   assert.equal(restored.event_status, 'completed')
-  assert.equal(restored.event_created_ts, event.event_created_ts)
+  assert.equal(restored.event_created_at, event.event_created_at)
   assert.equal(restored.event_results.size, 1)
   assert.equal(Array.from(restored.event_results.values())[0].result, 'ok')
 
   bus.destroy()
+})
+
+test('BaseEvent event_*_at fields are recognized and normalized', () => {
+  const AtFieldEvent = BaseEvent.extend('BaseEventAtFieldRecognitionEvent', {})
+  const event = AtFieldEvent({
+    event_created_at: '2025-01-02T03:04:05.678901234Z',
+    event_started_at: '2025-01-02T03:04:06.100000000Z',
+    event_completed_at: '2025-01-02T03:04:07.200000000Z',
+    event_slow_timeout: 1.5,
+    event_emitted_by_handler_id: '018f8e40-1234-7000-8000-000000000301',
+    event_pending_bus_count: 2,
+  } as never)
+
+  assert.equal(event.event_created_at, '2025-01-02T03:04:05.678901234Z')
+  assert.equal(event.event_started_at, '2025-01-02T03:04:06.100000000Z')
+  assert.equal(event.event_completed_at, '2025-01-02T03:04:07.200000000Z')
+  assert.equal(event.event_slow_timeout, 1.5)
+  assert.equal(event.event_emitted_by_handler_id, '018f8e40-1234-7000-8000-000000000301')
+  assert.equal(event.event_pending_bus_count, 2)
 })
 
 test('BaseEvent reset returns a fresh pending event that can be redispatched', async () => {
@@ -278,12 +335,7 @@ test('BaseEvent status hooks capture bus reference before event gc', async () =>
   const HookEvent = BaseEvent.extend('BaseEventHookCaptureEvent', {})
 
   class HookCaptureBus extends EventBus {
-    scheduled: Array<() => void> = []
     seen_statuses: string[] = []
-
-    scheduleMicrotask(fn: () => void): void {
-      this.scheduled.push(fn)
-    }
 
     async onEventChange(_event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
       this.seen_statuses.push(status)
@@ -298,13 +350,6 @@ test('BaseEvent status hooks capture bus reference before event gc', async () =>
   event._markCompleted()
   event._gc()
 
-  assert.equal(bus.scheduled.length, 2)
-  assert.doesNotThrow(() => {
-    for (const callback of bus.scheduled) {
-      callback()
-    }
-  })
-  await Promise.resolve()
   assert.deepEqual(bus.seen_statuses, ['started', 'completed'])
 
   bus.destroy()

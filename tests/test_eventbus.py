@@ -23,6 +23,7 @@ import pytest
 from pydantic import Field
 
 from bubus import BaseEvent, EventBus
+from bubus.helpers import monotonic_datetime
 
 
 class CreateAgentTaskEvent(BaseEvent):
@@ -1279,7 +1280,8 @@ class TestFindPastMethod:
     async def test_find_past_respects_time_window(self, eventbus):
         event = eventbus.emit(UserActionEvent(action='old', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
         await eventbus.wait_until_idle()
-        event.event_created_at -= timedelta(seconds=30)
+        old_created_at = datetime.fromisoformat(event.event_created_at) - timedelta(seconds=30)
+        event.event_created_at = monotonic_datetime(old_created_at.isoformat().replace('+00:00', 'Z'))
 
         match = await eventbus.find('UserActionEvent', past=10, future=False)
         assert match is None

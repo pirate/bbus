@@ -67,7 +67,8 @@ class TestDebouncingPattern:
             def is_fresh(event: ScreenshotEvent) -> bool:
                 if event.event_completed_at is None:
                     return False
-                return (datetime.now(UTC) - event.event_completed_at).seconds < 5
+                completed_at = datetime.fromisoformat(event.event_completed_at)
+                return (datetime.now(UTC) - completed_at).total_seconds() < 5
 
             def matches_fresh_tab(event: ScreenshotEvent) -> bool:
                 return event.target_id == TARGET_ID_1 and is_fresh(event)

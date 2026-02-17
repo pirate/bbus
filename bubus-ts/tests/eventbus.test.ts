@@ -177,9 +177,9 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
 
   const json = event.toJSON() as Record<string, unknown>
   assert.equal(json.event_status, 'completed')
-  assert.equal(typeof json.event_created_ts, 'number')
-  assert.equal(typeof json.event_started_ts, 'number')
-  assert.equal(typeof json.event_completed_ts, 'number')
+  assert.equal(typeof json.event_created_at, 'string')
+  assert.equal(typeof json.event_started_at, 'string')
+  assert.equal(typeof json.event_completed_at, 'string')
   assert.equal(json.event_pending_bus_count, 0)
   assert.ok(Array.isArray(json.event_results))
   const json_results = json.event_results as Array<Record<string, unknown>>
@@ -190,7 +190,7 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
 
   const restored = RuntimeEvent.fromJSON?.(json) ?? RuntimeEvent(json as never)
   assert.equal(restored.event_status, 'completed')
-  assert.equal(restored.event_created_ts, event.event_created_ts)
+  assert.equal(restored.event_created_at, event.event_created_at)
   assert.equal(restored.event_pending_bus_count, 0)
   assert.equal(restored.event_results.size, 1)
   const restored_result = Array.from(restored.event_results.values())[0]

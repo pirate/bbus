@@ -6,8 +6,6 @@ from pydantic import ValidationError
 
 from bubus import BaseEvent, EventBus
 
-JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
-
 
 @pytest.fixture(autouse=True)
 async def cleanup_eventbus_instances():
@@ -167,26 +165,70 @@ async def test_builtin_event_prefixed_override_is_allowed():
     assert event.event_slow_timeout == 12
 
 
-async def test_event_ts_fields_are_recognized():
+async def test_event_at_fields_are_recognized():
     event = MainEvent.model_validate(
         {
-            'event_created_ts': 123,
-            'event_started_ts': 456,
-            'event_completed_ts': 789,
+            'event_created_at': '2025-01-02T03:04:05.678901234Z',
+            'event_started_at': '2025-01-02T03:04:06.100000000Z',
+            'event_completed_at': '2025-01-02T03:04:07.200000000Z',
             'event_slow_timeout': 1.5,
             'event_emitted_by_handler_id': '018f8e40-1234-7000-8000-000000000301',
             'event_pending_bus_count': 2,
         }
     )
-    assert event.event_created_ts == 123
-    assert event.event_started_ts == 456
-    assert event.event_completed_ts == 789
+    assert event.event_created_at == '2025-01-02T03:04:05.678901234Z'
+    assert event.event_started_at == '2025-01-02T03:04:06.100000000Z'
+    assert event.event_completed_at == '2025-01-02T03:04:07.200000000Z'
     assert event.event_slow_timeout == 1.5
     assert event.event_emitted_by_handler_id == '018f8e40-1234-7000-8000-000000000301'
     assert event.event_pending_bus_count == 2
 
 
-async def test_python_serialized_ts_fields_are_integers():
+async def test_event_result_update_creates_and_updates_typed_handler_results():
+    class EventResultUpdateEvent(BaseEvent[str]):
+        pass
+
+    bus = EventBus(name='BaseEventEventResultUpdateBus')
+    event = EventResultUpdateEvent()
+    handler_entry = bus.on(EventResultUpdateEvent, lambda _: 'ok')
+
+    pending = event.event_result_update(handler_entry, eventbus=bus, status='pending')
+    assert event.event_results[handler_entry.id] is pending
+    assert pending.status == 'pending'
+
+    completed = event.event_result_update(handler_entry, eventbus=bus, status='completed', result='seeded')
+    assert completed is pending
+    assert completed.status == 'completed'
+    assert completed.result == 'seeded'
+
+    await bus.stop()
+
+
+async def test_event_result_update_status_only_preserves_existing_error_and_result():
+    class EventResultUpdateStatusOnlyEvent(BaseEvent[str]):
+        pass
+
+    bus = EventBus(name='BaseEventEventResultUpdateStatusOnlyBus')
+
+    def handler(_: EventResultUpdateStatusOnlyEvent) -> str:
+        return 'ok'
+
+    handler_entry = bus.on(EventResultUpdateStatusOnlyEvent, handler)
+    event = EventResultUpdateStatusOnlyEvent()
+
+    errored = event.event_result_update(handler_entry, eventbus=bus, error=RuntimeError('seeded error'))
+    assert errored.status == 'error'
+    assert isinstance(errored.error, RuntimeError)
+
+    status_only = event.event_result_update(handler_entry, eventbus=bus, status='pending')
+    assert status_only.status == 'pending'
+    assert isinstance(status_only.error, RuntimeError)
+    assert status_only.result is None
+
+    await bus.stop()
+
+
+async def test_python_serialized_at_fields_are_strings():
     bus = EventBus(name='TsIntBus')
 
     class TsIntEvent(BaseEvent[str]):
@@ -196,17 +238,17 @@ async def test_python_serialized_ts_fields_are_integers():
     event = await bus.emit(TsIntEvent(value='hello'))
 
     payload = event.model_dump(mode='json')
-    assert isinstance(payload['event_created_ts'], int)
-    assert isinstance(payload['event_started_ts'], int)
-    assert isinstance(payload['event_completed_ts'], int)
-    assert 0 <= payload['event_created_ts'] <= JS_MAX_SAFE_INTEGER
-    assert 0 <= payload['event_started_ts'] <= JS_MAX_SAFE_INTEGER
-    assert 0 <= payload['event_completed_ts'] <= JS_MAX_SAFE_INTEGER
+    assert isinstance(payload['event_created_at'], str)
+    assert isinstance(payload['event_started_at'], str)
+    assert isinstance(payload['event_completed_at'], str)
+    assert payload['event_created_at'].endswith('Z')
+    assert payload['event_started_at'].endswith('Z')
+    assert payload['event_completed_at'].endswith('Z')
 
     first_result = next(iter(event.event_results.values()))
     result_payload = first_result.model_dump(mode='json')
-    assert isinstance(result_payload['handler_registered_ts'], int)
-    assert 0 <= result_payload['handler_registered_ts'] <= JS_MAX_SAFE_INTEGER
+    assert isinstance(result_payload['handler_registered_at'], str)
+    assert result_payload['handler_registered_at'].endswith('Z')
 
     await bus.stop()
 

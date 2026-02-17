@@ -1,10 +1,13 @@
 import asyncio
 import logging
+import re
+import threading
 import time
 import traceback
 from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar, cast
 
@@ -12,6 +15,59 @@ from typing import Any, ParamSpec, TypeVar, cast
 R = TypeVar('R')
 P = ParamSpec('P')
 QueueEntryType = TypeVar('QueueEntryType')
+
+_MONOTONIC_DATETIME_REGEX = re.compile(
+    r'^(\d{4})-(\d{2})-(\d{2})'
+    r'T(\d{2}):(\d{2}):(\d{2})'
+    r'(?:\.(\d{1,9}))?'
+    r'(Z|[+-]\d{2}:\d{2})$'
+)
+_MONOTONIC_DATETIME_LENGTH = 30  # YYYY-MM-DDTHH:MM:SS.fffffffffZ
+_MONOTONIC_EPOCH_ANCHOR_NS = time.time_ns()
+_MONOTONIC_CLOCK_ANCHOR_NS = time.monotonic_ns()
+_last_monotonic_datetime_ns = _MONOTONIC_EPOCH_ANCHOR_NS
+_last_monotonic_datetime_lock = threading.Lock()
+
+
+def _format_epoch_ns_to_iso(epoch_ns: int) -> str:
+    seconds, fractional_ns = divmod(epoch_ns, 1_000_000_000)
+    base_datetime = datetime.fromtimestamp(seconds, tz=UTC)
+    if base_datetime.year <= 1990 or base_datetime.year >= 2500:
+        raise ValueError('Datetime year must be >1990 and <2500')
+    normalized = f'{base_datetime.strftime("%Y-%m-%dT%H:%M:%S")}.{fractional_ns:09d}Z'
+    assert len(normalized) == _MONOTONIC_DATETIME_LENGTH, (
+        f'Expected canonical datetime length {_MONOTONIC_DATETIME_LENGTH}, got {len(normalized)}: {normalized!r}'
+    )
+    return normalized
+
+
+def monotonic_datetime(isostring: str | None = None) -> str:
+    """Return canonical UTC ISO datetime with exactly 9 fractional digits."""
+    if isostring is not None:
+        match = _MONOTONIC_DATETIME_REGEX.fullmatch(isostring)
+        if match is None:
+            raise ValueError(f'Invalid ISO datetime: {isostring!r}')
+
+        parsed = datetime.fromisoformat(isostring.replace('Z', '+00:00'))
+        parsed_utc = parsed.astimezone(UTC)
+        if parsed_utc.year <= 1990 or parsed_utc.year >= 2500:
+            raise ValueError(f'Datetime year must be >1990 and <2500: {isostring!r}')
+
+        fractional = (match.group(7) or '').ljust(9, '0')
+        normalized = f'{parsed_utc.strftime("%Y-%m-%dT%H:%M:%S")}.{fractional}Z'
+        assert len(normalized) == _MONOTONIC_DATETIME_LENGTH, (
+            f'Expected canonical datetime length {_MONOTONIC_DATETIME_LENGTH}, got {len(normalized)}: {normalized!r}'
+        )
+        return normalized
+
+    global _last_monotonic_datetime_ns
+    elapsed_ns = time.monotonic_ns() - _MONOTONIC_CLOCK_ANCHOR_NS
+    epoch_ns = _MONOTONIC_EPOCH_ANCHOR_NS + elapsed_ns
+    with _last_monotonic_datetime_lock:
+        if epoch_ns <= _last_monotonic_datetime_ns:
+            epoch_ns = _last_monotonic_datetime_ns + 1
+        _last_monotonic_datetime_ns = epoch_ns
+    return _format_epoch_ns_to_iso(epoch_ns)
 
 
 async def run_with_timeout(awaitable: Awaitable[R], timeout: float | None = None) -> R:

@@ -1,12 +1,10 @@
-from datetime import UTC, datetime
-from typing import cast
-from uuid import NAMESPACE_DNS, uuid4, uuid5
+from uuid import uuid4
 
 import pytest
 
 from bubus.base_event import BaseEvent, EventResult
 from bubus.event_bus import EventBus
-from bubus.event_handler import EventHandler, EventHandlerCallable
+from bubus.event_handler import EventHandler
 
 
 class StandaloneEvent(BaseEvent[str]):
@@ -22,7 +20,7 @@ async def test_event_result_run_handler_with_base_event() -> None:
         return 'ok'
 
     handler_entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='Standalone',
         eventbus_id='dafc8026-409b-7794-8067-62e302999216',
@@ -58,7 +56,7 @@ async def test_event_and_result_without_eventbus() -> None:
         return evt.data.upper()
 
     handler_entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='EventBus',
         eventbus_id='00000000-0000-0000-0000-000000000000',
@@ -90,7 +88,7 @@ def test_event_handler_model_is_serializable() -> None:
         return event.data
 
     entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
@@ -107,38 +105,25 @@ def test_event_handler_model_is_serializable() -> None:
     assert loaded.handler is None
 
 
-def test_event_handler_id_matches_ts_uuidv5_algorithm() -> None:
-    registered_at = datetime(2025, 1, 2, 3, 4, 5, 678901, tzinfo=UTC)
-    handler_registered_ts = 678901
+def test_event_handler_id_matches_typescript_uuidv5_algorithm() -> None:
+    expected_seed = '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.py:123|2025-01-02T03:04:05.678901000Z|StandaloneEvent'
+    expected_id = '0acdaf2c-a5b1-5785-8499-7c48b3c2c5d8'
+
     entry = EventHandler(
         handler_name='pkg.module.handler',
         handler_file_path='~/project/app.py:123',
-        handler_registered_at=registered_at,
-        handler_registered_ts=handler_registered_ts,
+        handler_registered_at='2025-01-02T03:04:05.678901000Z',
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
     )
 
-    namespace = uuid5(NAMESPACE_DNS, 'bubus-handler')
-    expected_seed = (
-        '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.py:123|'
-        f'2025-01-02T03:04:05.678Z|{handler_registered_ts}|StandaloneEvent'
+    assert (
+        f'{entry.eventbus_id}|{entry.handler_name}|{entry.handler_file_path}|{entry.handler_registered_at}|{entry.event_pattern}'
+        == expected_seed
     )
-    expected_id = str(uuid5(namespace, expected_seed))
-
     assert entry.compute_handler_id() == expected_id
     assert entry.id == expected_id
-
-
-def test_handler_registered_ts_rejects_negative_fractional_float() -> None:
-    with pytest.raises(TypeError, match='handler_registered_ts must be an integer offset'):
-        EventHandler.model_validate({'handler_registered_ts': -0.5})
-
-
-def test_handler_registered_ts_rejects_positive_fractional_float() -> None:
-    with pytest.raises(TypeError, match='handler_registered_ts must be an integer offset'):
-        EventHandler.model_validate({'handler_registered_ts': 1.9})
 
 
 def test_event_handler_model_detects_handler_file_path() -> None:
@@ -146,7 +131,7 @@ def test_event_handler_model_detects_handler_file_path() -> None:
         return event.data
 
     entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
@@ -157,6 +142,59 @@ def test_event_handler_model_detects_handler_file_path() -> None:
     assert entry.handler_file_path.endswith(expected_suffix)
 
 
+def test_event_handler_from_callable_supports_id_override_and_detect_file_path_toggle() -> None:
+    def handler(event: StandaloneEvent) -> str:
+        return event.data
+
+    explicit_id = '018f8e40-1234-7000-8000-000000009999'
+    explicit = EventHandler.from_callable(
+        handler=handler,
+        id=explicit_id,
+        event_pattern='StandaloneEvent',
+        eventbus_name='StandaloneBus',
+        eventbus_id='018f8e40-1234-7000-8000-000000001234',
+        detect_handler_file_path=False,
+    )
+    assert explicit.id == explicit_id
+
+    no_detect = EventHandler.from_callable(
+        handler=handler,
+        event_pattern='StandaloneEvent',
+        eventbus_name='StandaloneBus',
+        eventbus_id='018f8e40-1234-7000-8000-000000001234',
+        detect_handler_file_path=False,
+    )
+    assert no_detect.handler_file_path is None
+
+
+def test_event_result_update_keeps_consistent_ordering_semantics_for_status_result_error() -> None:
+    def handler(event: StandaloneEvent) -> str:
+        return event.data
+
+    handler_entry = EventHandler.from_callable(
+        handler=handler,
+        event_pattern='StandaloneEvent',
+        eventbus_name='StandaloneBus',
+        eventbus_id='018f8e40-1234-7000-8000-000000001234',
+    )
+    event_result: EventResult[str] = EventResult(
+        event_id=str(uuid4()),
+        handler=handler_entry,
+        timeout=None,
+        result_type=str,
+    )
+
+    existing_error = RuntimeError('existing')
+    event_result.error = existing_error
+    event_result.update(status='completed')
+    assert event_result.status == 'completed'
+    assert event_result.error is existing_error
+
+    event_result.update(status='error', result='seeded')
+    assert event_result.result == 'seeded'
+    assert event_result.status == 'error'
+
+
 def test_event_result_serializes_handler_metadata_and_derived_fields() -> None:
     """EventResult stores handler metadata and derives convenience fields from it."""
 
@@ -164,7 +202,7 @@ def test_event_result_serializes_handler_metadata_and_derived_fields() -> None:
         return event.data
 
     entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',

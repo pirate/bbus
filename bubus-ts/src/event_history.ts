@@ -1,6 +1,7 @@
 import { BaseEvent } from './base_event.js'
 import type { EventPattern, FindWindow } from './types.js'
 import { normalizeEventPattern } from './types.js'
+import { monotonicDatetime } from './helpers.js'
 
 export type EventHistoryFindOptions = {
   past?: FindWindow
@@ -97,10 +98,6 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
     return normalizeEventPattern(event_pattern)
   }
 
-  static isEventCompleteFast(event: BaseEvent): boolean {
-    return event.event_status === 'completed'
-  }
-
   find(event_pattern: '*', where?: (event: TEvent) => boolean, options?: EventHistoryFindOptions): Promise<TEvent | null>
   find<TMatch extends TEvent>(
     event_pattern: EventPattern<TMatch>,
@@ -122,7 +119,7 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
     }
 
     const event_key = EventHistory.normalizeEventPattern(event_pattern)
-    const cutoff_ms = past === true ? null : performance.timeOrigin + performance.now() - Math.max(0, Number(past)) * 1000
+    const cutoff_at = past === true ? null : monotonicDatetime(new Date(Date.now() - Math.max(0, Number(past)) * 1000).toISOString())
 
     const event_field_filters = Object.entries(options).filter(
       ([key, value]) =>
@@ -134,34 +131,17 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
         value !== undefined
     )
 
-    const matches = (event: BaseEvent): boolean => {
-      if (event_key !== '*' && event.event_type !== event_key) {
-        return false
-      }
-      if (child_of && !eventIsChildOf(event, child_of)) {
-        return false
-      }
-      let field_mismatch = false
-      for (const [field_name, expected] of event_field_filters) {
-        if ((event as unknown as Record<string, unknown>)[field_name] !== expected) {
-          field_mismatch = true
-          break
-        }
-      }
-      if (field_mismatch) {
-        return false
-      }
-      if (!where(event as TEvent)) {
-        return false
-      }
-      return true
-    }
+    const matches = (event: BaseEvent): boolean =>
+      (event_key === '*' || event.event_type === event_key) &&
+      (!child_of || eventIsChildOf(event, child_of)) &&
+      event_field_filters.every(([field_name, expected]) => (event as unknown as Record<string, unknown>)[field_name] === expected) &&
+      where(event as TEvent)
 
     if (past !== false) {
       const history_values = Array.from(this._events.values())
       for (let i = history_values.length - 1; i >= 0; i -= 1) {
         const event = history_values[i]
-        if (cutoff_ms !== null && Date.parse(event.event_created_at) < cutoff_ms) {
+        if (cutoff_at !== null && event.event_created_at < cutoff_at) {
           continue
         }
         if (matches(event)) {
@@ -185,24 +165,21 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
     if (max_history_size === 0) {
       return this.trimEventHistory(options)
     }
-    if (this.size <= max_history_size) {
+    const remove_count = this.size - max_history_size
+    if (remove_count <= 0) {
       return 0
     }
 
     const on_remove = options.on_remove
-    const remove_count = this.size - max_history_size
-    const event_ids_to_remove = Array.from(this._events.keys()).slice(0, remove_count)
     let removed_count = 0
 
-    for (const event_id of event_ids_to_remove) {
+    for (const event_id of Array.from(this._events.keys()).slice(0, remove_count)) {
       const event = this._events.get(event_id)
       if (!event) {
         continue
       }
       this._events.delete(event_id)
-      if (on_remove) {
-        on_remove(event)
-      }
+      on_remove?.(event)
       removed_count += 1
     }
 
@@ -226,24 +203,23 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
           continue
         }
         this._events.delete(event_id)
-        if (on_remove) {
-          on_remove(event)
-        }
+        on_remove?.(event)
         removed_count += 1
       }
       return removed_count
     }
 
-    if (!max_history_drop) {
-      return 0
-    }
-
-    if (this.size <= max_history_size) {
+    if (!max_history_drop || this.size <= max_history_size) {
       return 0
     }
 
     let remaining_overage = this.size - max_history_size
     let removed_count = 0
+    const remove_event = (event_id: string, event: TEvent): void => {
+      this._events.delete(event_id)
+      on_remove?.(event)
+      removed_count += 1
+    }
 
     for (const [event_id, event] of Array.from(this._events.entries())) {
       if (remaining_overage <= 0) {
@@ -252,38 +228,28 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
       if (!is_event_complete(event)) {
         continue
       }
-      this._events.delete(event_id)
-      if (on_remove) {
-        on_remove(event)
-      }
-      removed_count += 1
+      remove_event(event_id, event)
       remaining_overage -= 1
     }
 
     let dropped_uncompleted = 0
-    if (remaining_overage > 0) {
-      for (const [event_id, event] of Array.from(this._events.entries())) {
-        if (remaining_overage <= 0) {
-          break
-        }
-        if (!is_event_complete(event)) {
-          dropped_uncompleted += 1
-        }
-        this._events.delete(event_id)
-        if (on_remove) {
-          on_remove(event)
-        }
-        removed_count += 1
-        remaining_overage -= 1
+    for (const [event_id, event] of Array.from(this._events.entries())) {
+      if (remaining_overage <= 0) {
+        break
       }
+      if (!is_event_complete(event)) {
+        dropped_uncompleted += 1
+      }
+      remove_event(event_id, event)
+      remaining_overage -= 1
+    }
 
-      if (dropped_uncompleted > 0 && !this._warned_about_dropping_uncompleted_events) {
-        this._warned_about_dropping_uncompleted_events = true
-        const owner_label = options.owner_label ?? 'EventBus'
-        console.error(
-          `[bubus] ⚠️ Bus ${owner_label} has exceeded max_history_size=${max_history_size} and is dropping oldest history entries (even uncompleted events). Increase max_history_size or set max_history_drop=false to reject.`
-        )
-      }
+    if (dropped_uncompleted > 0 && !this._warned_about_dropping_uncompleted_events) {
+      this._warned_about_dropping_uncompleted_events = true
+      const owner_label = options.owner_label ?? 'EventBus'
+      console.error(
+        `[bubus] ⚠️ Bus ${owner_label} has exceeded max_history_size=${max_history_size} and is dropping oldest history entries (even uncompleted events). Increase max_history_size or set max_history_drop=false to reject.`
+      )
     }
 
     return removed_count

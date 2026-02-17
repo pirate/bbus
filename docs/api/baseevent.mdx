@@ -64,7 +64,6 @@ Common event metadata fields available in both runtimes:
 - `event_created_at`, `event_started_at`, `event_completed_at`
 - `event_started_at` / `event_completed_at` are `None` (Python) / `null` (TypeScript) until set
 - `event_parent_id` and `event_emitted_by_handler_id` are `None` / `null` when unset
-- TypeScript also exposes `event_created_ts`, `event_started_ts`, `event_completed_ts` (`number | null` for started/completed timestamps)
 - `event_path`: buses traversed
 - `event_results`: per-handler result entries
 - Child-event tracking (`event_children`/descendants)
@@ -139,6 +138,29 @@ const filtered = await event.eventResultsList((result) => typeof result === 'str
 })
 const first = event.event_result
 const errors = event.event_errors
+```
+
+</Tab>
+</Tabs>
+
+### Per-handler result entries
+
+You can create/update a specific `EventResult` entry for a handler (useful for controlled seeding/rehydration flows).
+
+<Tabs>
+<Tab title="Python">
+
+```python
+pending = event.event_result_update(handler=handler_entry, eventbus=bus, status='pending')
+pending.update(status='completed', result='seeded')
+```
+
+</Tab>
+<Tab title="TypeScript">
+
+```ts
+const pending = event.eventResultUpdate(handler_entry, { eventbus: bus, status: 'pending' })
+pending.update({ status: 'completed', result: 'seeded' })
 ```
 
 </Tab>

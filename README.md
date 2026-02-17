@@ -945,9 +945,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     # runtime state fields
     event_status: Literal['pending', 'started', 'completed']  # event processing status (auto-set)
-    event_created_at: datetime   # When event was created, auto-generated (auto-set)
-    event_started_at: datetime | None   # When first handler started executing during event processing (auto-set)
-    event_completed_at: datetime | None # When all event handlers finished processing (auto-set)
+    event_created_at: str        # Canonical ISO timestamp with 9 fractional digits (auto-set)
+    event_started_at: str | None # Set when first handler starts
+    event_completed_at: str | None # Set when event processing completes
     event_parent_id: str | None  # Parent event ID that led to this event during handling (auto-set)
     event_path: list[str]        # List of bus labels traversed, e.g. BusName#ab12 (auto-set)
     event_results: dict[str, EventResult]   # Handler results {<handler uuid>: EventResult} (auto-set)
@@ -1008,6 +1008,19 @@ Return a fresh event copy with runtime processing state reset back to pending.
 - The original event object is not mutated, it returns a new copy with some fields reset.
 - A new UUIDv7 `event_id` is generated for the returned copy (to allow it to process as a separate event it needs a new unique uuid)
 - Runtime completion state is cleared (`event_results`, completion signal/flags, processed timestamp, emit context).
+
+##### `event_result_update(handler, eventbus: EventBus | None=None, **kwargs) -> EventResult`
+
+Create or update a single `EventResult` entry for a handler.
+
+- If no entry exists yet for the handler id, a pending result row is created.
+- Useful for deterministic seeding/rehydration before normal processing resumes.
+- Supports `status`, `result`, `error`, and `timeout` updates through `**kwargs`.
+
+```python
+seeded = event.event_result_update(handler=handler_entry, eventbus=bus, status='pending')
+seeded.update(status='completed', result='seeded')
+```
 
 ##### `event_result(timeout: float | None=None, include: EventResultFilter=None, raise_if_any: bool=True, raise_if_none: bool=True) -> Any`
 
@@ -1098,8 +1111,8 @@ class EventResult(BaseModel):
     result: Any               # Handler return value
     error: BaseException | None  # Captured exception if the handler failed
     
-    started_at: datetime | None      # When handler started
-    completed_at: datetime | None    # When handler completed
+    started_at: str | None      # Canonical ISO timestamp when handler started
+    completed_at: str | None    # Canonical ISO timestamp when handler completed
     timeout: float | None            # Handler timeout in seconds
     event_children: list[BaseEvent] # child events emitted during handler execution
 ```
@@ -1137,8 +1150,7 @@ class EventHandler(BaseModel):
     handler_file_path: str | None    # Source file path (if known)
     handler_timeout: float | None    # Optional per-handler timeout override
     handler_slow_timeout: float | None  # Optional "slow handler" threshold
-    handler_registered_at: datetime  # Registration timestamp (datetime)
-    handler_registered_ts: int       # Registration timestamp (ns epoch)
+    handler_registered_at: str       # Registration timestamp (ISO string, 9 fractional digits)
     event_pattern: str               # Registered event pattern (type name or '*')
     eventbus_name: str               # Owning EventBus name
     eventbus_id: str                 # Owning EventBus ID

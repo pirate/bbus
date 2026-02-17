@@ -1,8 +1,6 @@
 import asyncio
 import inspect
-import math
 import os
-import time
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -13,6 +11,8 @@ from weakref import ref as weakref
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import TypeVar
+
+from bubus.helpers import monotonic_datetime
 
 if TYPE_CHECKING:
     from bubus.base_event import BaseEvent
@@ -118,8 +118,6 @@ _InvokableEventHandlerCallable: TypeAlias = Callable[['BaseEvent[Any]'], Any | A
 ContravariantEventHandlerCallable: TypeAlias = EventHandlerFunc[T_Event] | AsyncEventHandlerFunc[T_Event]
 
 HANDLER_ID_NAMESPACE: UUID = uuid5(NAMESPACE_DNS, 'bubus-handler')
-SUB_MS_NS_OFFSET_MODULUS = 1_000_000
-JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 def _format_handler_source_path(path: str, line_no: int | None = None) -> str:
@@ -254,8 +252,7 @@ class EventHandler(BaseModel):
     handler_file_path: str | None = None
     handler_timeout: float | None = None
     handler_slow_timeout: float | None = None
-    handler_registered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    handler_registered_ts: int = Field(default_factory=lambda: time.monotonic_ns() % SUB_MS_NS_OFFSET_MODULUS)
+    handler_registered_at: str = Field(default_factory=monotonic_datetime)
     event_pattern: str = '*'
     eventbus_name: str = 'EventBus'
     eventbus_id: str = '00000000-0000-0000-0000-000000000000'
@@ -276,20 +273,16 @@ class EventHandler(BaseModel):
         assert normalized.isidentifier() and not normalized.startswith('_'), f'Invalid event bus name: {value!r}'
         return normalized
 
-    @field_validator('handler_registered_ts', mode='before')
+    @field_validator('handler_registered_at', mode='before')
     @classmethod
-    def _normalize_handler_registered_ts(cls, value: Any) -> int:
-        if isinstance(value, bool):
-            raise TypeError('handler_registered_ts must be an integer offset')
-        if isinstance(value, int):
-            if value < 0 or value > JS_MAX_SAFE_INTEGER:
-                raise ValueError(f'handler_registered_ts must be in [0, {JS_MAX_SAFE_INTEGER}], got {value}')
-            return value
-        if isinstance(value, float):
-            if not math.isfinite(value):
-                raise TypeError('handler_registered_ts must be finite')
-            raise TypeError('handler_registered_ts must be an integer offset')
-        raise TypeError(f'handler_registered_ts must be numeric, got {type(value).__name__}')
+    def _normalize_handler_registered_at(cls, value: Any) -> str:
+        if isinstance(value, datetime):
+            normalized_value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+            normalized_input = normalized_value.isoformat().replace('+00:00', 'Z')
+            return monotonic_datetime(normalized_input)
+        if value is None:
+            return monotonic_datetime()
+        return monotonic_datetime(str(value))
 
     @property
     def eventbus_label(self) -> str:
@@ -340,14 +333,7 @@ class EventHandler(BaseModel):
     def compute_handler_id(self) -> str:
         """Match TS handler-id algorithm: uuidv5(seed, HANDLER_ID_NAMESPACE)."""
         file_path = self.handler_file_path or 'unknown'
-        registered_at = self.handler_registered_at
-        if registered_at.tzinfo is None:
-            registered_at = registered_at.replace(tzinfo=UTC)
-        registered_at_iso = registered_at.astimezone(UTC).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
-        seed = (
-            f'{self.eventbus_id}|{self.handler_name}|{file_path}|'
-            f'{registered_at_iso}|{self.handler_registered_ts}|{self.event_pattern}'
-        )
+        seed = f'{self.eventbus_id}|{self.handler_name}|{file_path}|{self.handler_registered_at}|{self.event_pattern}'
         return str(uuid5(HANDLER_ID_NAMESPACE, seed))
 
     @property
@@ -380,8 +366,7 @@ class EventHandler(BaseModel):
         handler_file_path: str | None = None,
         handler_timeout: float | None = None,
         handler_slow_timeout: float | None = None,
-        handler_registered_at: datetime | None = None,
-        handler_registered_ts: int | None = None,
+        handler_registered_at: str | datetime | None = None,
     ) -> 'EventHandler':
         resolved_file_path = handler_file_path
         if resolved_file_path is None and detect_handler_file_path:
@@ -390,10 +375,7 @@ class EventHandler(BaseModel):
         handler_params: dict[str, Any] = {
             'handler': handler,
             'handler_file_path': resolved_file_path,
-            'handler_registered_at': handler_registered_at or datetime.now(UTC),
-            'handler_registered_ts': handler_registered_ts
-            if handler_registered_ts is not None
-            else (time.monotonic_ns() % SUB_MS_NS_OFFSET_MODULUS),
+            'handler_registered_at': handler_registered_at,
             'event_pattern': event_pattern,
             'eventbus_name': eventbus_name,
             'eventbus_id': eventbus_id,

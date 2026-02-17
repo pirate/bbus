@@ -22,6 +22,7 @@ from .event_handler import (
     EventHandlerTimeoutError,
 )
 from .event_history import EventHistory
+from .helpers import monotonic_datetime
 from .middlewares import (
     AutoErrorEventMiddleware,
     AutoHandlerChangeEventMiddleware,
@@ -50,6 +51,7 @@ __all__ = [
     'AutoReturnEventMiddleware',
     'WALEventBusMiddleware',
     'EventHistory',
+    'monotonic_datetime',
     'BaseEvent',
     'EventStatus',
     'EventResult',
