@@ -23,6 +23,34 @@ test('BaseEvent lifecycle transitions are explicit and awaitable', async () => {
   await standalone.eventCompleted()
 })
 
+test('done() re-raises the first processing exception after completion', async () => {
+  const ErrorEvent = BaseEvent.extend('BaseEventDoneRaisesFirstErrorEvent', {})
+  const bus = new EventBus('BaseEventDoneRaisesFirstErrorBus', {
+    event_handler_concurrency: 'parallel',
+    event_timeout: null,
+  })
+
+  bus.on(ErrorEvent, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    throw new Error('first failure')
+  })
+
+  bus.on(ErrorEvent, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    throw new Error('second failure')
+  })
+
+  const event = bus.emit(ErrorEvent({}))
+  await assert.rejects(() => event.done(), /first failure/)
+
+  assert.equal(event.event_status, 'completed')
+  assert.equal(event.event_results.size, 2)
+  assert.equal(
+    Array.from(event.event_results.values()).every((result) => result.status === 'error'),
+    true,
+  )
+})
+
 test('BaseEvent.eventResultUpdate creates and updates typed handler results', async () => {
   const TypedEvent = BaseEvent.extend('BaseEventEventResultUpdateEvent', { event_result_type: z.string() })
   const bus = new EventBus('BaseEventEventResultUpdateBus')

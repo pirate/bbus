@@ -13,19 +13,36 @@ let _AsyncLocalStorageClass: (new () => AsyncLocalStorageLike) | null = null
 
 const is_node = typeof process !== 'undefined' && typeof process.versions !== 'undefined' && typeof process.versions.node === 'string'
 
-if (is_node) {
-  try {
-    const importer = new Function('specifier', 'return import(specifier)') as (
-      specifier: string
-    ) => Promise<{ AsyncLocalStorage?: new () => AsyncLocalStorageLike }>
-    const mod = await importer('node:async_hooks')
+const loadAsyncLocalStorageClass = (): (new () => AsyncLocalStorageLike) | null => {
+  if (!is_node) return null
+
+  // Prefer process.getBuiltinModule when available (works in ESM and CJS without top-level await).
+  const maybe_process = (globalThis as { process?: { getBuiltinModule?: (name: string) => unknown } }).process
+  const get_builtin_module = maybe_process?.getBuiltinModule
+  if (typeof get_builtin_module === 'function') {
+    const mod = get_builtin_module('node:async_hooks') as { AsyncLocalStorage?: new () => AsyncLocalStorageLike } | undefined
     if (mod?.AsyncLocalStorage) {
-      _AsyncLocalStorageClass = mod.AsyncLocalStorage
+      return mod.AsyncLocalStorage
+    }
+  }
+
+  // Fallback for older Node runtimes where require is available.
+  try {
+    const maybe_require = Function('return typeof require === "function" ? require : undefined')() as
+      | ((specifier: string) => { AsyncLocalStorage?: new () => AsyncLocalStorageLike })
+      | undefined
+    const mod = maybe_require?.('node:async_hooks')
+    if (mod?.AsyncLocalStorage) {
+      return mod.AsyncLocalStorage
     }
   } catch {
-    _AsyncLocalStorageClass = null
+    return null
   }
+
+  return null
 }
+
+_AsyncLocalStorageClass = loadAsyncLocalStorageClass()
 
 /** Create a new AsyncLocalStorage instance, or null if unavailable (e.g. in browsers). */
 export const createAsyncLocalStorage = (): AsyncLocalStorageLike | null => {

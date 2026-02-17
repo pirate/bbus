@@ -173,7 +173,7 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
   bus.on(RuntimeEvent, () => 'ok')
 
   const event = bus.emit(RuntimeEvent({}))
-  await event.done()
+  await event.done({ raise_if_any: false })
 
   const json = event.toJSON() as Record<string, unknown>
   assert.equal(json.event_status, 'completed')
@@ -306,7 +306,7 @@ test('fromJSON reconstructs integer and null schemas for runtime validation', as
     event_result_type: { type: 'integer' },
   })
   bus.on('RawIntegerEventBad', () => 1.5)
-  await bus.emit(int_bad_event).done()
+  await bus.emit(int_bad_event).done({ raise_if_any: false })
   const int_bad_result = Array.from(int_bad_event.event_results.values())[0]
   assert.equal(int_bad_result.status, 'error')
 
@@ -356,7 +356,7 @@ test('fromJSON reconstructs nested object/array result schemas', async () => {
     event_result_type: raw_nested_schema,
   })
   bus.on('RawNestedSchemaEventBad', () => ({ items: ['bad'], meta: { ok: 'yes' } }))
-  await bus.emit(invalid_event).done()
+  await bus.emit(invalid_event).done({ raise_if_any: false })
   const invalid_result = Array.from(invalid_event.event_results.values())[0]
   assert.equal(invalid_result.status, 'error')
 
@@ -397,7 +397,7 @@ test('event transitions through pending -> started -> completed', async () => {
   const event = bus.emit(TestEvent({}))
   const original = event._event_original ?? event
 
-  await event.done()
+  await event.done({ raise_if_any: false })
 
   assert.equal(status_during_handler, 'started')
   assert.equal(original.event_status, 'completed')
@@ -410,7 +410,7 @@ test('event with no handlers completes immediately', async () => {
   const OrphanEvent = BaseEvent.extend('OrphanEvent', {})
 
   const event = bus.emit(OrphanEvent({}))
-  await event.done()
+  await event.done({ raise_if_any: false })
 
   const original = event._event_original ?? event
   assert.equal(original.event_status, 'completed')
@@ -612,7 +612,7 @@ test('handler error is captured without crashing the bus', async () => {
   })
 
   const event = bus.emit(ErrorEvent({}))
-  await event.done()
+  await event.done({ raise_if_any: false })
 
   const original = event._event_original ?? event
   assert.equal(original.event_status, 'completed')
@@ -648,7 +648,7 @@ test('one handler error does not prevent other handlers from running', async () 
   })
 
   const event = bus.emit(MultiEvent({}))
-  await event.done()
+  await event.done({ raise_if_any: false })
 
   const original = event._event_original ?? event
   assert.equal(original.event_status, 'completed')
@@ -770,7 +770,7 @@ test('dispatch leaves event_timeout unset and processing uses bus timeout defaul
 
   assert.equal(original.event_timeout, null)
 
-  await event.done()
+  await event.done({ raise_if_any: false })
   assert.equal(original.event_errors.length, 1)
 })
 

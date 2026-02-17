@@ -407,11 +407,13 @@ Special configuration fields you can set on each event to control processing:
 #### `done()`
 
 ```ts
-done(): Promise<this>
+done(options?: { raise_if_any?: boolean }): Promise<this>
 ```
 
 - If called from inside a running handler, it queue-jumps child processing immediately.
 - If called outside handler context, it waits for normal completion (or processes immediately if already next).
+- Re-raises the first handler exception encountered after processing completes.
+- Pass `{ raise_if_any: false }` to only wait for completion without re-raising handler exceptions.
 - Rejects if event is not attached to a bus (`event has no bus attached`).
 - Queue-jump behavior is demonstrated in `bubus-ts/examples/immediate_event_processing.ts` and `bubus-ts/tests/base_event_event_bus_proxy.test.ts`.
 
@@ -433,7 +435,8 @@ first(): Promise<EventResultType<this> | undefined>
 - Forces `event_handler_completion = 'first'` for this run.
 - Returns temporally first non-`undefined` successful handler result.
 - Cancels pending/running losing handlers on the same bus.
-- Returns `undefined` when no handler produces a successful non-`undefined` value.
+- Re-raises the first non-cancellation handler exception encountered after processing completes.
+- Returns `undefined` only when no handler produces a successful non-`undefined` value and no handler raises.
 - Cancellation and winner-selection behavior is covered in `bubus-ts/tests/event_handler_first.test.ts`.
 
 #### `eventResultsList(include?, options?)`

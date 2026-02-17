@@ -142,6 +142,9 @@ type EventResultsListOptions<TEvent extends BaseEvent> = {
   raise_if_any?: boolean
   raise_if_none?: boolean
 }
+type EventDoneOptions = {
+  raise_if_any?: boolean
+}
 type EventResultUpdateOptions<TEvent extends BaseEvent> = {
   eventbus?: EventBus
   status?: 'pending' | 'started' | 'completed' | 'error'
@@ -822,17 +825,32 @@ export class BaseEvent {
 
   // awaitable that triggers immediate (queue-jump) processing of the event on all buses where it is queued
   // use eventCompleted() to wait for normal queue-order completion without queue-jumping.
-  done(): Promise<this> {
+  done(options: EventDoneOptions = {}): Promise<this> {
     if (!this.bus) {
       return Promise.reject(new Error('event has no bus attached'))
     }
-    if (this.event_status === 'completed') {
-      return Promise.resolve(this)
+    const original = this._event_original ?? this
+    const raise_if_any = options.raise_if_any ?? true
+    const completion_promise =
+      this.event_status === 'completed' ? Promise.resolve(original as this) : this.bus._processEventImmediately(this)
+
+    if (!raise_if_any) {
+      return completion_promise
     }
+
     // Always delegate to _processEventImmediately — it walks up the parent event tree
     // to determine whether we're inside a handler (works cross-bus). If no
     // ancestor handler is in-flight, it falls back to eventCompleted().
-    return this.bus._processEventImmediately(this)
+    return completion_promise.then((completed_event) => {
+      const first_error = completed_event._firstProcessingError()
+      if (first_error !== undefined) {
+        if (first_error instanceof Error) {
+          throw first_error
+        }
+        throw new Error(String(first_error))
+      }
+      return completed_event
+    })
   }
 
   // returns the first non-undefined handler result value, cancelling remaining handlers
@@ -845,7 +863,14 @@ export class BaseEvent {
     }
     const original = this._event_original ?? this
     original.event_handler_completion = 'first'
-    return this.done().then((completed_event) => {
+    return this.done({ raise_if_any: false }).then((completed_event) => {
+      const first_error = completed_event._firstProcessingError({ ignore_first_mode_control_errors: true })
+      if (first_error !== undefined) {
+        if (first_error instanceof Error) {
+          throw first_error
+        }
+        throw new Error(String(first_error))
+      }
       const orig = completed_event._event_original ?? completed_event
       return Array.from(orig.event_results.values())
         .filter(
@@ -894,12 +919,12 @@ export class BaseEvent {
     let completed_event: this
 
     if (resolved_timeout_seconds === null) {
-      completed_event = await this.done()
+      completed_event = await this.done({ raise_if_any: false })
     } else {
       completed_event = await _runWithTimeout(
         resolved_timeout_seconds,
         () => new Error(`Timed out waiting for ${original.event_type} results after ${resolved_timeout_seconds}s`),
-        () => this.done()
+        () => this.done({ raise_if_any: false })
       )
     }
 
@@ -1040,6 +1065,30 @@ export class BaseEvent {
         .sort((event_result_a, event_result_b) => compareIsoDatetime(event_result_a.completed_at, event_result_b.completed_at))
         // assemble array of flat error values
         .map((event_result) => event_result.error)
+    )
+  }
+
+  private _isFirstModeControlError(error: unknown): boolean {
+    if (!(error instanceof EventHandlerCancelledError || error instanceof EventHandlerAbortedError)) {
+      return false
+    }
+    if (error.message.includes('first() resolved')) {
+      return true
+    }
+    return error.cause instanceof Error && error.cause.message.includes('first() resolved')
+  }
+
+  _firstProcessingError(options: { ignore_first_mode_control_errors?: boolean } = {}): unknown | undefined {
+    const ignore_first_mode_control_errors = options.ignore_first_mode_control_errors ?? false
+    return (
+      Array.from(this.event_results.values())
+        .filter((event_result) => event_result.error !== undefined && event_result.completed_at !== null)
+        .filter((event_result) =>
+          ignore_first_mode_control_errors ? !this._isFirstModeControlError(event_result.error) : true
+        )
+        .sort((event_result_a, event_result_b) => compareIsoDatetime(event_result_a.completed_at, event_result_b.completed_at))
+        .map((event_result) => event_result.error)
+        .at(0)
     )
   }
 

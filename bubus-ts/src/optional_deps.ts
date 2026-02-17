@@ -9,15 +9,30 @@ const missingDependencyError = (bridge_name: string, package_name: string): Erro
 export const assertOptionalDependencyAvailable = (bridge_name: string, package_name: string): void => {
   if (!isNodeRuntime()) return
 
-  const maybe_process = (globalThis as { process?: { getBuiltinModule?: (name: string) => any } }).process
+  const maybe_process = (globalThis as {
+    process?: { getBuiltinModule?: (name: string) => any; cwd?: () => string }
+  }).process
   const get_builtin_module = maybe_process?.getBuiltinModule
-  if (typeof get_builtin_module !== 'function') return
 
-  const module_builtin = get_builtin_module('module')
-  const create_require = module_builtin?.createRequire
-  if (typeof create_require !== 'function') return
+  let require_fn: { resolve: (specifier: string) => string } | undefined
+  try {
+    require_fn = Function('return typeof require === "function" ? require : undefined')() as
+      | { resolve: (specifier: string) => string }
+      | undefined
+  } catch {
+    require_fn = undefined
+  }
 
-  const require_fn = create_require(import.meta.url) as { resolve: (specifier: string) => string }
+  if (!require_fn && typeof get_builtin_module === 'function') {
+    const module_builtin = get_builtin_module('module')
+    const create_require = module_builtin?.createRequire
+    if (typeof create_require === 'function') {
+      const cwd = typeof maybe_process?.cwd === 'function' ? maybe_process.cwd() : '.'
+      require_fn = create_require(`${cwd}/package.json`) as { resolve: (specifier: string) => string }
+    }
+  }
+
+  if (!require_fn) return
   try {
     require_fn.resolve(package_name)
   } catch {

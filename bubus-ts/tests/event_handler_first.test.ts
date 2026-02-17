@@ -125,7 +125,7 @@ test('first: returns undefined when all handlers return undefined', async () => 
   assert.equal(result, undefined)
 })
 
-test('first: returns undefined when all handlers throw errors', async () => {
+test('first: re-raises the first processing error when all handlers throw', async () => {
   const bus = new EventBus('FirstErrorBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
   const TestEvent = BaseEvent.extend('FirstErrorEvent', { event_result_type: z.string() })
 
@@ -139,12 +139,10 @@ test('first: returns undefined when all handlers throw errors', async () => {
     throw new Error('handler 2 error')
   })
 
-  const result = await bus.emit(TestEvent({})).first()
-
-  assert.equal(result, undefined, 'should return undefined when no handler succeeds')
+  await assert.rejects(() => bus.emit(TestEvent({})).first(), /handler 1 error|handler 2 error/)
 })
 
-test('first: skips error handlers and returns the successful one', async () => {
+test('first: re-raises processing errors even when another handler succeeds', async () => {
   const bus = new EventBus('FirstMixBus', { event_timeout: null, event_handler_concurrency: 'parallel' })
   const TestEvent = BaseEvent.extend('FirstMixEvent', { event_result_type: z.string() })
 
@@ -159,9 +157,10 @@ test('first: skips error handlers and returns the successful one', async () => {
     return 'slow but succeeds'
   })
 
-  const result = await bus.emit(TestEvent({})).first()
-
-  assert.equal(result, 'slow but succeeds')
+  const event = bus.emit(TestEvent({}))
+  await assert.rejects(() => event.first(), /fast but fails/)
+  const has_success = Array.from(event.event_results.values()).some((result) => result.result === 'slow but succeeds')
+  assert.equal(has_success, true)
 })
 
 test('first: returns undefined when no handlers are registered', async () => {
