@@ -184,6 +184,26 @@ async def test_event_at_fields_are_recognized():
     assert event.event_pending_bus_count == 2
 
 
+async def test_event_result_update_creates_and_updates_typed_handler_results():
+    class EventResultUpdateEvent(BaseEvent[str]):
+        pass
+
+    bus = EventBus(name='BaseEventEventResultUpdateBus')
+    event = EventResultUpdateEvent()
+    handler_entry = bus.on(EventResultUpdateEvent, lambda _: 'ok')
+
+    pending = event.event_result_update(handler_entry, eventbus=bus, status='pending')
+    assert event.event_results[handler_entry.id] is pending
+    assert pending.status == 'pending'
+
+    completed = event.event_result_update(handler_entry, eventbus=bus, status='completed', result='seeded')
+    assert completed is pending
+    assert completed.status == 'completed'
+    assert completed.result == 'seeded'
+
+    await bus.stop()
+
+
 async def test_event_result_update_status_only_preserves_existing_error_and_result():
     class EventResultUpdateStatusOnlyEvent(BaseEvent[str]):
         pass

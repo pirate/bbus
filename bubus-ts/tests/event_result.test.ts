@@ -171,7 +171,7 @@ test('EventHandler.fromCallable supports id override and detect_handler_file_pat
   assert.equal(no_detect.handler_file_path, null)
 })
 
-test('EventResult.update keeps python ordering semantics for status/result/error', () => {
+test('EventResult.update keeps consistent ordering semantics for status/result/error', () => {
   const bus = new EventBus('EventResultUpdateOrderingBus')
   const handler = bus.on(StringResultEvent, () => 'ok')
   const event = StringResultEvent({})

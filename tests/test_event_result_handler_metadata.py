@@ -1,11 +1,10 @@
-from typing import cast
 from uuid import uuid4
 
 import pytest
 
 from bubus.base_event import BaseEvent, EventResult
 from bubus.event_bus import EventBus
-from bubus.event_handler import EventHandler, EventHandlerCallable
+from bubus.event_handler import EventHandler
 
 
 class StandaloneEvent(BaseEvent[str]):
@@ -21,7 +20,7 @@ async def test_event_result_run_handler_with_base_event() -> None:
         return 'ok'
 
     handler_entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='Standalone',
         eventbus_id='dafc8026-409b-7794-8067-62e302999216',
@@ -57,7 +56,7 @@ async def test_event_and_result_without_eventbus() -> None:
         return evt.data.upper()
 
     handler_entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='EventBus',
         eventbus_id='00000000-0000-0000-0000-000000000000',
@@ -89,7 +88,7 @@ def test_event_handler_model_is_serializable() -> None:
         return event.data
 
     entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
@@ -132,7 +131,7 @@ def test_event_handler_model_detects_handler_file_path() -> None:
         return event.data
 
     entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
@@ -149,7 +148,7 @@ def test_event_handler_from_callable_supports_id_override_and_detect_file_path_t
 
     explicit_id = '018f8e40-1234-7000-8000-000000009999'
     explicit = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         id=explicit_id,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
@@ -159,7 +158,7 @@ def test_event_handler_from_callable_supports_id_override_and_detect_file_path_t
     assert explicit.id == explicit_id
 
     no_detect = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
@@ -168,12 +167,12 @@ def test_event_handler_from_callable_supports_id_override_and_detect_file_path_t
     assert no_detect.handler_file_path is None
 
 
-def test_event_result_update_keeps_typescript_ordering_semantics_for_status_result_error() -> None:
+def test_event_result_update_keeps_consistent_ordering_semantics_for_status_result_error() -> None:
     def handler(event: StandaloneEvent) -> str:
         return event.data
 
     handler_entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
@@ -203,7 +202,7 @@ def test_event_result_serializes_handler_metadata_and_derived_fields() -> None:
         return event.data
 
     entry = EventHandler.from_callable(
-        handler=cast(EventHandlerCallable, handler),
+        handler=handler,
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
