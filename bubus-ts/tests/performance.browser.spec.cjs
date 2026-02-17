@@ -64,9 +64,10 @@ test.describe('browser runtime perf', () => {
     })
 
     await new Promise((resolve, reject) => {
-      server.listen(0, '127.0.0.1', (error) => {
-        if (error) reject(error)
-        else resolve()
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => {
+        server.removeListener('error', reject)
+        resolve()
       })
     })
 
