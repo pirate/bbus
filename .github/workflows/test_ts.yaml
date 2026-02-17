@@ -296,6 +296,8 @@ jobs:
   perf:
     needs: coverage
     runs-on: ubuntu-latest
+    outputs:
+      perf_stats: ${{ steps.export_perf.outputs.perf_stats }}
     defaults:
       run:
         working-directory: bubus-ts
@@ -319,4 +321,36 @@ jobs:
           deno-version: v2.x
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run perf
+      - name: Run TypeScript runtime perf
+        run: pnpm run perf | tee ts_perf.log
+      - name: Export TypeScript perf stats
+        id: export_perf
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          text = Path("ts_perf.log").read_text(encoding="utf-8", errors="replace")
+          lines = [line.strip() for line in text.splitlines()]
+          stat_lines = [
+              line
+              for line in lines
+              if re.match(r"^\[(node|bun|deno|browser)\]\s.+:\s.*latency=", line)
+          ]
+
+          if not stat_lines:
+              stat_lines = ["unable to parse ts perf stats; see job log"]
+
+          stats = "\n".join(stat_lines)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("perf_stats<<EOF\n")
+              fh.write(stats + "\n")
+              fh.write("EOF\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("### TypeScript Perf Stats\n\n```\n")
+              fh.write(stats + "\n")
+              fh.write("```\n")
+          PY
