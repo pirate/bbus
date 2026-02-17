@@ -246,7 +246,6 @@ jobs:
           echo "[Download Python HTML coverage artifact (coverage-report)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${{ steps.upload_py_coverage_report.outputs.artifact-id }})" >> "$GITHUB_STEP_SUMMARY"
 
   perf:
-    needs: coverage
     runs-on: ubuntu-latest
     outputs:
       perf_stats: ${{ steps.export_perf.outputs.perf_stats }}
