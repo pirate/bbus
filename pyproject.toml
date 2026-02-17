@@ -105,6 +105,7 @@ docstring-code-line-length = 140
 skip-magic-trailing-comma = false
 
 [tool.pyright]
+stubPath = "bubus/typings"
 typeCheckingMode = "strict"
 reportMissingImports = "error"
 reportMissingTypeStubs = "error"
@@ -139,7 +140,7 @@ log_level = "DEBUG"
 [tool.coverage.run]
 source = ["bubus"]
 omit = [
-    "ui/*",
+    "examples/ui/*",
     "*/tests/*",
     "*/__pycache__/*",
     "*.pyc",

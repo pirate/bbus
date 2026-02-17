@@ -85,7 +85,6 @@ Python:
 - `has_event(event_id)`
 - `find(...)`
 - `trim_event_history(...)`
-- `cleanup_excess_events(...)`
 
 TypeScript:
 - `addEvent(event)`
@@ -94,7 +93,6 @@ TypeScript:
 - `hasEvent(event_id)`
 - `find(...)`
 - `trimEventHistory(...)`
-- `cleanupExcessEvents(...)`
 
 ### New distributed claim/lock operations
 

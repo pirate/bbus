@@ -1,23 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 from datetime import datetime
 from typing import Annotated, Any
 
 try:
-    _fastapi = importlib.import_module('fastapi')
-    _fastapi_responses = importlib.import_module('fastapi.responses')
+    from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+    from fastapi.responses import HTMLResponse, JSONResponse
 except ModuleNotFoundError as exc:  # pragma: no cover - optional UI dependency
     raise ModuleNotFoundError("Install 'fastapi' to run the bubus UI module.") from exc
-
-FastAPI = getattr(_fastapi, 'FastAPI')
-Query = getattr(_fastapi, 'Query')
-WebSocket = getattr(_fastapi, 'WebSocket')
-WebSocketDisconnect = getattr(_fastapi, 'WebSocketDisconnect')
-HTMLResponse = getattr(_fastapi_responses, 'HTMLResponse')
-JSONResponse = getattr(_fastapi_responses, 'JSONResponse')
 
 from . import db
 from .config import resolve_db_path

@@ -15,12 +15,12 @@ uv pip install fastapi 'uvicorn[standard]'
 ```bash
 # generate and save a live stream of test events (creates/appends to ./events.sqlite)
 export EVENT_HISTORY_DB=./events.sqlite
-uv run python -m ui.test_events &
+uv run python -m examples.ui.test_events &
 ```
 
 ```bash
 # run the UI backend server and then open the UI in your browser
-uv run uvicorn ui.main:app --reload
+uv run uvicorn examples.ui.main:app --reload
 open http://localhost:8000
 ```
 
