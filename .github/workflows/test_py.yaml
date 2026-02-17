@@ -257,4 +257,5 @@ jobs:
           activate-environment: true
 
       - run: uv sync --dev --all-extras
+      - run: uv run pytest -x tests/test_eventbus_performance.py
       - run: uv run python tests/performance_runtime.py

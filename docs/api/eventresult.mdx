@@ -45,23 +45,26 @@ const value = entry.result
 
 `EventResult` execution is intentionally layered as nested scopes/wrappers.
 
+These are flow references for execution order, not public API method documentation.
+
 <Tabs>
 <Tab title="Python">
 
-- `locks.with_handler_lock(...)`
-- `eventbus.with_handler_execution_context(...)`
-- `with_timeout(...)`
-- `with_slow_monitor(...)`
-- `call_handler(...)`
+- `eventbus.locks._run_with_handler_lock(...)`
+- `eventbus._run_with_handler_dispatch_context(...)`
+- `event_result._run_with_timeout(...)`
+- `_run_with_slow_monitor(...)`
+- `event_result._call_handler(...)`
 
 </Tab>
 <Tab title="TypeScript">
 
-- `withHandlerLock(...)` (acquired before `runHandler(...)`)
-- `withHandlerExecutionContext(...)`
-- `runWithTimeout(...)`
-- `runWithSlowMonitor(...)`
-- handler call (internally wrapped by `runWithAsyncContext(...)` + `runWithAbortMonitor(...)` for context propagation and cancellation)
+- `_runWithHandlerLock(...)` (acquired before `runHandler(...)`)
+- `_runWithHandlerDispatchContext(...)`
+- `_runWithAsyncContext(...)`
+- `_runWithTimeout(...)`
+- `_runWithSlowMonitor(...)`
+- `_runWithAbortMonitor(...)` around handler invocation
 
 </Tab>
 </Tabs>

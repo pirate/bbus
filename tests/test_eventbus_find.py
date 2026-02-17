@@ -67,6 +67,13 @@ class NumberedEvent(BaseEvent[str]):
     value: int = 0
 
 
+TARGET_ID_1 = '9b447756-908c-7b75-8a51-4a2c2b4d9b14'
+TARGET_ID_2 = '194870e1-fa02-70a4-8101-d10d57c3449c'
+TARGET_ID_3 = '7d787f06-07fd-7406-8be7-0255fb41f459'
+TARGET_ID_4 = 'a2c7f40b-a8a7-78b2-84ef-9f8c60c40a24'
+TARGET_ID_CHILD = '12f38f3d-d8a7-7ae2-8778-bc27e285ea34'
+
+
 # =============================================================================
 # Tree Traversal Helper Tests
 # =============================================================================
@@ -405,13 +412,13 @@ class TestFindPastOnly:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
             # Dispatch two events with different target_ids
-            await bus.emit(ScreenshotEvent(target_id='tab1'))
-            event2 = await bus.emit(ScreenshotEvent(target_id='tab2'))
+            await bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
+            event2 = await bus.emit(ScreenshotEvent(target_id=TARGET_ID_2))
 
-            # Find only the one with target_id='tab2'
+            # Find only the one with target_id='194870e1-fa02-70a4-8101-d10d57c3449c'
             found = await bus.find(
                 ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab2',
+                where=lambda e: e.target_id == TARGET_ID_2,
                 past=True,
                 future=False,
             )
@@ -558,10 +565,12 @@ class TestFindPastOnly:
         try:
             bus.on(UserActionEvent, lambda e: 'done')
 
-            await bus.emit(UserActionEvent(action='logout', user_id='u-2'))
-            expected = await bus.emit(UserActionEvent(action='login', user_id='u-1'))
+            await bus.emit(UserActionEvent(action='logout', user_id='28536f9b-4031-7f53-827f-98c24c1b3839'))
+            expected = await bus.emit(UserActionEvent(action='login', user_id='b57fcb67-faeb-7a56-8907-116d8cbb1472'))
 
-            found = await bus.find(UserActionEvent, past=True, future=False, action='login', user_id='u-1')
+            found = await bus.find(
+                UserActionEvent, past=True, future=False, action='login', user_id='b57fcb67-faeb-7a56-8907-116d8cbb1472'
+            )
             assert found is not None
             assert found.event_id == expected.event_id
 
@@ -578,12 +587,13 @@ class TestFindPastOnly:
             bus.on(UserActionEvent, lambda e: 'done')
             bus.on(SystemEvent, lambda e: 'done')
 
-            expected = await bus.emit(UserActionEvent(action='login', user_id='u-1'))
+            expected = await bus.emit(UserActionEvent(action='login', user_id='b57fcb67-faeb-7a56-8907-116d8cbb1472'))
             await bus.emit(SystemEvent())
 
             found = await bus.find(
                 '*',
-                where=lambda event: event.event_type == 'UserActionEvent' and getattr(event, 'user_id', None) == 'u-1',
+                where=lambda event: isinstance(event, UserActionEvent)
+                and event.user_id == 'b57fcb67-faeb-7a56-8907-116d8cbb1472',
                 past=True,
                 future=False,
             )
@@ -719,8 +729,8 @@ class TestFindFutureOnly:
 
             await asyncio.sleep(0.02)
             await bus.emit(SystemEvent())
-            await bus.emit(UserActionEvent(action='normal', user_id='u-x'))
-            expected = await bus.emit(UserActionEvent(action='special', user_id='u-y'))
+            await bus.emit(UserActionEvent(action='normal', user_id='16ced2b3-de40-7d9b-85c8-c02241a00354'))
+            expected = await bus.emit(UserActionEvent(action='special', user_id='391ce6ed-aa72-73d6-87c4-5e20f3c6fc63'))
 
             found = await find_task
             assert found is not None
@@ -767,7 +777,7 @@ class TestFindFutureOnly:
             wait_for_a = asyncio.create_task(
                 bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab-a',
+                    where=lambda e: e.target_id == TARGET_ID_3,
                     past=False,
                     future=1,
                 )
@@ -775,15 +785,15 @@ class TestFindFutureOnly:
             wait_for_b = asyncio.create_task(
                 bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab-b',
+                    where=lambda e: e.target_id == TARGET_ID_4,
                     past=False,
                     future=1,
                 )
             )
 
             await asyncio.sleep(0.02)
-            event_a = await bus.emit(ScreenshotEvent(target_id='tab-a'))
-            event_b = await bus.emit(ScreenshotEvent(target_id='tab-b'))
+            event_a = await bus.emit(ScreenshotEvent(target_id=TARGET_ID_3))
+            event_b = await bus.emit(ScreenshotEvent(target_id=TARGET_ID_4))
 
             found_a, found_b = await asyncio.gather(wait_for_a, wait_for_b)
 
@@ -1222,14 +1232,14 @@ class TestFindLegacyPatternCoverage:
 
             async def dispatch_events():
                 await asyncio.sleep(0.02)
-                await bus.emit(ScreenshotEvent(target_id='wrong'))
+                await bus.emit(ScreenshotEvent(target_id='32b90140-a7ee-7ae7-830c-71a099e93cb3'))
                 await asyncio.sleep(0.02)
-                return await bus.emit(ScreenshotEvent(target_id='correct'))
+                return await bus.emit(ScreenshotEvent(target_id='519664bf-c9fa-7654-896b-fb0cc5b6adab'))
 
             find_task = asyncio.create_task(
                 bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'correct',
+                    where=lambda e: e.target_id == '519664bf-c9fa-7654-896b-fb0cc5b6adab',
                     past=False,
                     future=1,
                 )
@@ -1239,7 +1249,7 @@ class TestFindLegacyPatternCoverage:
             found, dispatched = await asyncio.gather(find_task, dispatch_task)
 
             assert found is not None
-            assert found.target_id == 'correct'
+            assert found.target_id == '519664bf-c9fa-7654-896b-fb0cc5b6adab'
 
         finally:
             await bus.stop(clear=True)
@@ -1253,9 +1263,9 @@ class TestFindLegacyPatternCoverage:
 
             async def dispatch_events():
                 await asyncio.sleep(0.02)
-                await bus.emit(ScreenshotEvent(target_id='excluded'))
+                await bus.emit(ScreenshotEvent(target_id='1556eff9-dea5-78ae-8219-7bb92f787370'))
                 await asyncio.sleep(0.02)
-                return await bus.emit(ScreenshotEvent(target_id='included'))
+                return await bus.emit(ScreenshotEvent(target_id='45c2761f-3475-72aa-8dd8-b3cf4a4923e2'))
 
             find_task = asyncio.create_task(
                 bus.find(
@@ -1270,7 +1280,7 @@ class TestFindLegacyPatternCoverage:
             found, dispatched = await asyncio.gather(find_task, dispatch_task)
 
             assert found is not None
-            assert found.target_id == 'included'
+            assert found.target_id == '1556eff9-dea5-78ae-8219-7bb92f787370'
 
         finally:
             await bus.stop(clear=True)
@@ -1355,7 +1365,7 @@ class TestRaceConditionFix:
 
             async def navigate_handler(event: NavigateEvent) -> str:
                 # This synchronously creates the tab event
-                tab = await bus.emit(TabCreatedEvent(tab_id='new_tab'))
+                tab = await bus.emit(TabCreatedEvent(tab_id='06bee4cf-9f51-7e5d-82d3-65f35169329c'))
                 tab_ref.append(tab)
                 return 'navigate_done'
 
@@ -1500,14 +1510,14 @@ class TestNewParameterCombinations:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
             # Dispatch events with different target_ids
-            await bus.emit(ScreenshotEvent(target_id='tab1'))
+            await bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
             await asyncio.sleep(0.15)
-            event2 = await bus.emit(ScreenshotEvent(target_id='tab2'))
+            event2 = await bus.emit(ScreenshotEvent(target_id=TARGET_ID_2))
 
             # Find with both where filter and past window
             found = await bus.find(
                 ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab2',
+                where=lambda e: e.target_id == TARGET_ID_2,
                 past=0.1,  # Only search last 0.1 seconds
                 future=False,
             )
@@ -1517,7 +1527,7 @@ class TestNewParameterCombinations:
             # tab1 is too old for the past window
             found = await bus.find(
                 ScreenshotEvent,
-                where=lambda e: e.target_id == 'tab1',
+                where=lambda e: e.target_id == TARGET_ID_1,
                 past=0.1,
                 future=False,
             )
@@ -1565,7 +1575,7 @@ class TestNewParameterCombinations:
             child_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.emit(ScreenshotEvent(target_id='child_tab'))
+                child = await bus.emit(ScreenshotEvent(target_id=TARGET_ID_CHILD))
                 child_ref.append(child)
                 return 'done'
 
@@ -1578,14 +1588,14 @@ class TestNewParameterCombinations:
             # Find with all parameters
             found = await bus.find(
                 ScreenshotEvent,
-                where=lambda e: e.target_id == 'child_tab',
+                where=lambda e: e.target_id == TARGET_ID_CHILD,
                 child_of=parent,
                 past=5,
                 future=False,
             )
             assert found is not None
             assert found.event_id == child_ref[0].event_id
-            assert found.target_id == 'child_tab'
+            assert found.target_id == TARGET_ID_CHILD
 
         finally:
             await bus.stop(clear=True)

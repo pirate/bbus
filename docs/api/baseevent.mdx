@@ -39,6 +39,10 @@ const FooCreateEvent = BaseEvent.extend('FooCreateEvent', {
 </Tab>
 </Tabs>
 
+Queue semantics are split in both runtimes:
+- Immediate path: `await event` (Python) / `await event.done()` (TypeScript)
+- Queue-order path: `await event.event_completed()` (Python) / `await event.eventCompleted()` (TypeScript)
+
 ## Core metadata fields
 
 Common event metadata fields available in both runtimes:
@@ -75,6 +79,7 @@ Events are returned in pending state from `emit()`, then complete asynchronously
 ```python
 pending = bus.emit(MyEvent())
 completed = await pending
+completed_in_queue_order = await pending.event_completed()
 value = await completed.event_result()
 ```
 
@@ -84,6 +89,7 @@ value = await completed.event_result()
 ```ts
 const pending = bus.emit(MyEvent({}))
 const completed = await pending.done()
+const completed_in_queue_order = await pending.eventCompleted()
 const value = completed.event_result
 ```
 
@@ -131,9 +137,7 @@ const filtered = await event.eventResultsList((result) => typeof result === 'str
   raise_if_any: false,
   raise_if_none: true,
 })
-const all = event.all_results
 const first = event.event_result
-const last = event.last_result
 const errors = event.event_errors
 ```
 

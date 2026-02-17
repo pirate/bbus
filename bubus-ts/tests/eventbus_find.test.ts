@@ -17,6 +17,15 @@ const UserActionEvent = BaseEvent.extend('UserActionEvent', {
   action: z.string(),
   user_id: z.string(),
 })
+const FIND_TARGET_A = '7d787f06-07fd-7406-8be7-0255fb41f459'
+const FIND_TARGET_B = 'a2c7f40b-a8a7-78b2-84ef-9f8c60c40a24'
+const FIND_USER_1 = 'b57fcb67-faeb-7a56-8907-116d8cbb1472'
+const FIND_USER_2 = '28536f9b-4031-7f53-827f-98c24c1b3839'
+const FIND_USER_3 = '50d357df-e68c-7111-8a6c-7018569514b0'
+const FIND_USER_4 = 'eab58ec9-90ea-7758-893f-afed99518f43'
+const FIND_TARGET_OLD = '9b447756-908c-7b75-8a51-4a2c2b4d9b14'
+const FIND_TARGET_NEW = '194870e1-fa02-70a4-8101-d10d57c3449c'
+const FIND_TARGET_CHILD = '12f38f3d-d8a7-7ae2-8778-bc27e285ea34'
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -315,12 +324,12 @@ test('find past true future true returns past event immediately', async () => {
 test('find respects where filter', async () => {
   const bus = new EventBus('FindWhereBus')
 
-  const event_a = bus.emit(ScreenshotEvent({ target_id: 'tab-a' }))
-  const event_b = bus.emit(ScreenshotEvent({ target_id: 'tab-b' }))
+  const event_a = bus.emit(ScreenshotEvent({ target_id: FIND_TARGET_A }))
+  const event_b = bus.emit(ScreenshotEvent({ target_id: FIND_TARGET_B }))
   await event_a.done()
   await event_b.done()
 
-  const found_event = await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab-b', { past: true, future: false })
+  const found_event = await bus.find(ScreenshotEvent, (event) => event.target_id === FIND_TARGET_B, { past: true, future: false })
 
   assert.ok(found_event)
   assert.equal(found_event.event_id, event_b.event_id)
@@ -373,8 +382,8 @@ test('find supports metadata equality filters like event_id and event_timeout', 
 test('find supports non-event data field equality filters', async () => {
   const bus = new EventBus('FindDataFieldFilterBus')
 
-  const event_a = bus.emit(UserActionEvent({ action: 'logout', user_id: 'u-2' }))
-  const event_b = bus.emit(UserActionEvent({ action: 'login', user_id: 'u-1' }))
+  const event_a = bus.emit(UserActionEvent({ action: 'logout', user_id: FIND_USER_2 }))
+  const event_b = bus.emit(UserActionEvent({ action: 'login', user_id: FIND_USER_1 }))
   await event_a.done()
   await event_b.done()
 
@@ -382,7 +391,7 @@ test('find supports non-event data field equality filters', async () => {
     past: true,
     future: false,
     action: 'login',
-    user_id: 'u-1',
+    user_id: FIND_USER_1,
   })
   assert.ok(found)
   assert.equal(found.event_id, event_b.event_id)
@@ -398,29 +407,29 @@ test('find supports non-event data field equality filters', async () => {
 test('find where filter works with future waiting', async () => {
   const bus = new EventBus('FindWhereFutureBus')
 
-  const find_promise = bus.find(UserActionEvent, (event) => event.user_id === 'user123', { past: false, future: 0.3 })
+  const find_promise = bus.find(UserActionEvent, (event) => event.user_id === FIND_USER_3, { past: false, future: 0.3 })
 
   setTimeout(() => {
-    bus.emit(UserActionEvent({ action: 'logout', user_id: 'user456' }))
-    bus.emit(UserActionEvent({ action: 'login', user_id: 'user123' }))
+    bus.emit(UserActionEvent({ action: 'logout', user_id: FIND_USER_4 }))
+    bus.emit(UserActionEvent({ action: 'login', user_id: FIND_USER_3 }))
   }, 50)
 
   const found_event = await find_promise
   assert.ok(found_event)
-  assert.equal(found_event.user_id, 'user123')
+  assert.equal(found_event.user_id, FIND_USER_3)
 })
 
 test('find wildcard "*" with where filter matches across event types in history', async () => {
   const bus = new EventBus('FindWildcardPastBus')
 
-  const user_event = bus.emit(UserActionEvent({ action: 'login', user_id: 'u-1' }))
+  const user_event = bus.emit(UserActionEvent({ action: 'login', user_id: FIND_USER_1 }))
   const system_event = bus.emit(SystemEvent({}))
   await user_event.done()
   await system_event.done()
 
   const found_event = await bus.find(
     '*',
-    (event) => event.event_type === 'UserActionEvent' && (event as InstanceType<typeof UserActionEvent>).user_id === 'u-1',
+    (event) => event.event_type === 'UserActionEvent' && (event as InstanceType<typeof UserActionEvent>).user_id === FIND_USER_1,
     { past: true, future: false }
   )
 
@@ -440,8 +449,8 @@ test('find wildcard "*" with where filter works for future waiting', async () =>
 
   setTimeout(() => {
     bus.emit(SystemEvent({}))
-    bus.emit(UserActionEvent({ action: 'normal', user_id: 'u-x' }))
-    bus.emit(UserActionEvent({ action: 'special', user_id: 'u-y' }))
+    bus.emit(UserActionEvent({ action: 'normal', user_id: '16ced2b3-de40-7d9b-85c8-c02241a00354' }))
+    bus.emit(UserActionEvent({ action: 'special', user_id: '391ce6ed-aa72-73d6-87c4-5e20f3c6fc63' }))
   }, 40)
 
   const found_event = await find_promise
@@ -458,9 +467,9 @@ test('find with multiple concurrent waiters resolves correct events', async () =
   const find_system = bus.find('SystemEvent', { past: false, future: 0.5 })
 
   setTimeout(() => {
-    bus.emit(UserActionEvent({ action: 'normal', user_id: 'u1' }))
+    bus.emit(UserActionEvent({ action: 'normal', user_id: 'e692b6cb-ae63-773b-8557-3218f7ce5ced' }))
     bus.emit(SystemEvent({}))
-    bus.emit(UserActionEvent({ action: 'special', user_id: 'u2' }))
+    bus.emit(UserActionEvent({ action: 'special', user_id: '2a312e4d-3035-7883-86b9-578ce47046b2' }))
   }, 50)
 
   const [normal, system, special] = await Promise.all([find_normal, find_system, find_special])
@@ -621,18 +630,18 @@ test('find future with child_of waits for matching child', async () => {
 test('find with past float and where filter', async () => {
   const bus = new EventBus('FindWherePastFloatBus')
 
-  const old_event = bus.emit(ScreenshotEvent({ target_id: 'tab1' }))
+  const old_event = bus.emit(ScreenshotEvent({ target_id: FIND_TARGET_OLD }))
   await old_event.done()
   await delay(120)
-  const new_event = bus.emit(ScreenshotEvent({ target_id: 'tab2' }))
+  const new_event = bus.emit(ScreenshotEvent({ target_id: FIND_TARGET_NEW }))
   await new_event.done()
 
-  const found_tab2 = await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab2', { past: 0.1, future: false })
+  const found_tab2 = await bus.find(ScreenshotEvent, (event) => event.target_id === FIND_TARGET_NEW, { past: 0.1, future: false })
 
   assert.ok(found_tab2)
   assert.equal(found_tab2.event_id, new_event.event_id)
 
-  const found_tab1 = await bus.find(ScreenshotEvent, (event) => event.target_id === 'tab1', { past: 0.1, future: false })
+  const found_tab1 = await bus.find(ScreenshotEvent, (event) => event.target_id === FIND_TARGET_OLD, { past: 0.1, future: false })
   assert.equal(found_tab1, null)
 })
 
@@ -664,7 +673,7 @@ test('find with all parameters combined', async () => {
 
   let child_event_id: string | null = null
   bus.on(ParentEvent, async (event) => {
-    const child = await event.bus?.emit(ScreenshotEvent({ target_id: 'child_tab' })).done()
+    const child = await event.bus?.emit(ScreenshotEvent({ target_id: FIND_TARGET_CHILD })).done()
     child_event_id = child?.event_id ?? null
   })
 
@@ -672,7 +681,7 @@ test('find with all parameters combined', async () => {
   await parent_event.done()
   await bus.waitUntilIdle()
 
-  const found_child = await bus.find(ScreenshotEvent, (event) => event.target_id === 'child_tab', {
+  const found_child = await bus.find(ScreenshotEvent, (event) => event.target_id === FIND_TARGET_CHILD, {
     child_of: parent_event,
     past: 5,
     future: false,
@@ -728,7 +737,7 @@ test('find catches child event that fired during parent handler', async () => {
 
   let tab_event_id: string | null = null
   bus.on(NavigateEvent, async (event) => {
-    const tab_event = await event.bus?.emit(TabCreatedEvent({ tab_id: 'new_tab' })).done()
+    const tab_event = await event.bus?.emit(TabCreatedEvent({ tab_id: '06bee4cf-9f51-7e5d-82d3-65f35169329c' })).done()
     tab_event_id = tab_event?.event_id ?? null
   })
   bus.on(TabCreatedEvent, () => {})

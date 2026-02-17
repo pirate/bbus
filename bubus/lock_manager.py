@@ -155,7 +155,7 @@ class LockManager:
         """Resolve the per-event handler lock for one handler execution.
 
         Lifecycle:
-        - Called inside `EventBus.run_handler` before running a handler.
+        - Called inside `EventBus._run_handler` before running a handler.
         - Returns `None` for `'parallel'` handler mode.
         - Returns and lazily initializes the event handler lock for `'serial'`.
         """
@@ -163,10 +163,10 @@ class LockManager:
         resolved = event.event_handler_concurrency or bus.event_handler_concurrency
         if resolved == EventHandlerConcurrencyMode.PARALLEL:
             return None
-        current_lock = event._get_handler_lock()
+        current_lock = event._get_handler_lock()  # pyright: ignore[reportPrivateUsage]
         if current_lock is None:
             current_lock = ReentrantLock()
-            event._set_handler_lock(current_lock)
+            event._set_handler_lock(current_lock)  # pyright: ignore[reportPrivateUsage]
         return current_lock
 
     @asynccontextmanager

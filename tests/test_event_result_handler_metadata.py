@@ -25,7 +25,7 @@ async def test_event_result_run_handler_with_base_event() -> None:
         handler=cast(EventHandlerCallable, handler),
         event_pattern='StandaloneEvent',
         eventbus_name='Standalone',
-        eventbus_id='standalone-1',
+        eventbus_id='dafc8026-409b-7794-8067-62e302999216',
     )
 
     event_result: EventResult[str] = EventResult(
@@ -65,8 +65,7 @@ async def test_event_and_result_without_eventbus() -> None:
     )
     assert handler_entry.id is not None
     handler_id = handler_entry.id
-    pending_results = event._create_pending_handler_results({handler_id: handler_entry})
-    event_result = pending_results[handler_id]
+    event_result = event.event_result_update(handler=handler_entry, status='pending')
 
     test_bus = EventBus(name='StandaloneTest2')
     value = await event_result.run_handler(
@@ -79,7 +78,7 @@ async def test_event_and_result_without_eventbus() -> None:
     assert event_result.status == 'completed'
     assert event.event_results[handler_id] is event_result
 
-    event._mark_completed()
+    await test_bus.emit(event).event_completed()
     assert event.event_completed_at is not None
     await test_bus.stop()
 
@@ -130,6 +129,16 @@ def test_event_handler_id_matches_ts_uuidv5_algorithm() -> None:
 
     assert entry.compute_handler_id() == expected_id
     assert entry.id == expected_id
+
+
+def test_handler_registered_ts_rejects_negative_fractional_float() -> None:
+    with pytest.raises(TypeError, match='handler_registered_ts must be an integer offset'):
+        EventHandler.model_validate({'handler_registered_ts': -0.5})
+
+
+def test_handler_registered_ts_rejects_positive_fractional_float() -> None:
+    with pytest.raises(TypeError, match='handler_registered_ts must be an integer offset'):
+        EventHandler.model_validate({'handler_registered_ts': 1.9})
 
 
 def test_event_handler_model_detects_handler_file_path() -> None:

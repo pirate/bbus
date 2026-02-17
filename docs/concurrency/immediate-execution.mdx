@@ -166,8 +166,9 @@ if (!(order.indexOf('parent_end') < order.indexOf('sibling'))) throw new Error('
 ## Notes
 
 - In Python, `await child_event` inside a handler is the immediate path.
-- In TypeScript, use `await child_event.done()` or `await child_event.immediate()`.
-- In TypeScript, `await child_event.waitForCompletion()` keeps normal queue order (non-queue-jump wait).
+- In Python, `await child_event.event_completed()` keeps normal queue order (non-queue-jump wait).
+- In TypeScript, use `await child_event.done()`.
+- In TypeScript, `await child_event.eventCompleted()` keeps normal queue order (non-queue-jump wait).
 
 ## Related pages
 

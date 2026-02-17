@@ -317,7 +317,7 @@ class WALEventBusMiddleware(EventBusMiddleware):
         if status != EventStatus.COMPLETED:
             return
         try:
-            event_json = event.model_dump_json()  # pyright: ignore[reportUnknownMemberType]
+            event_json = event.model_dump_json()
             await asyncio.to_thread(self._write_line, event_json + '\n')
         except Exception as exc:  # pragma: no cover
             logger.exception('❌ %s Failed to save event %s to WAL: %s', eventbus, event.event_id, exc)

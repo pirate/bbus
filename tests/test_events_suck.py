@@ -8,12 +8,14 @@ class CreateUserEvent(BaseEvent[str]):
     id: str | None = None
     name: str
     age: int
+    nickname: str | None = None
 
 
 class UpdateUserEvent(BaseEvent[bool]):
     id: str
     name: str | None = None
     age: int | None = None
+    source: str | None = None
 
 
 class SomeLegacyImperativeClass:
@@ -43,7 +45,7 @@ async def test_events_suck_wrap_emits_and_returns_first_result():
                 'id': event.id,
                 'name': event.name,
                 'age': event.age,
-                'nickname': getattr(event, 'nickname', None),
+                'nickname': event.nickname,
             }
         )
         return 'user-123'
@@ -54,7 +56,7 @@ async def test_events_suck_wrap_emits_and_returns_first_result():
                 'id': event.id,
                 'name': event.name,
                 'age': event.age,
-                'source': getattr(event, 'source', None),
+                'source': event.source,
             }
         )
         return event.age == 46
@@ -78,7 +80,7 @@ async def test_events_suck_wrap_emits_and_returns_first_result():
     assert updated is True
     assert seen_payloads == [
         {'id': None, 'name': 'bob', 'age': 45, 'nickname': 'bobby'},
-        {'id': 'user-123', 'name': None, 'age': 46, 'source': 'sync'},
+        {'id': created_id, 'name': None, 'age': 46, 'source': 'sync'},
     ]
 
     await bus.stop(clear=True)
@@ -123,15 +125,17 @@ async def test_events_suck_make_events_and_make_handler_runtime_binding():
     bus.on(FooBarAPIPingEvent, events_suck.make_handler(ping_user))
 
     create_result = await bus.emit(FooBarAPICreateEvent(name='bob', age=45)).event_result()
-    update_result = await bus.emit(FooBarAPIUpdateEvent(id='bob-45', age=46, source='sync')).event_result()
-    ping_result = await bus.emit(FooBarAPIPingEvent(user_id='u1')).event_result()
+    update_result = await bus.emit(
+        FooBarAPIUpdateEvent(id='4ddee2b7-782f-7bbf-84ff-6aad2693982e', age=46, source='sync')
+    ).event_result()
+    ping_result = await bus.emit(FooBarAPIPingEvent(user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced')).event_result()
 
     assert create_result == 'bob-45'
     assert update_result is True
-    assert ping_result == 'pong:u1'
+    assert ping_result == 'pong:e692b6cb-ae63-773b-8557-3218f7ce5ced'
     assert impl.calls == [
         ('create', {'id': None, 'name': 'bob', 'age': 45}),
-        ('update', {'id': 'bob-45', 'name': None, 'age': 46, 'source': 'sync'}),
+        ('update', {'id': '4ddee2b7-782f-7bbf-84ff-6aad2693982e', 'name': None, 'age': 46, 'source': 'sync'}),
     ]
 
     await bus.stop(clear=True)

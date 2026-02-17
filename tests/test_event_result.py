@@ -5,7 +5,6 @@
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
 from typing import Any, Literal, assert_type
 
 from pydantic import BaseModel
@@ -187,69 +186,92 @@ async def test_run_handler_marks_started_after_handler_lock_entry():
     class LockOrderEvent(BaseEvent[str]):
         pass
 
-    async def handler(_event: LockOrderEvent) -> str:
-        return 'ok'
+    first_handler_started = asyncio.Event()
+    release_first_handler = asyncio.Event()
 
-    handler_entry = bus.on(LockOrderEvent, handler)
+    async def first_handler(_event: LockOrderEvent) -> str:
+        first_handler_started.set()
+        await release_first_handler.wait()
+        return 'first'
+
+    async def second_handler(_event: LockOrderEvent) -> str:
+        return 'second'
+
+    first_entry = bus.on(LockOrderEvent, first_handler)
+    second_entry = bus.on(LockOrderEvent, second_handler)
     event = LockOrderEvent()
-    event._create_pending_handler_results({handler_entry.id: handler_entry}, eventbus=bus, timeout=event.event_timeout)
-    event_result = event.event_results[handler_entry.id]
-    release_lock = asyncio.Event()
-    original_with_handler_lock = bus.locks._run_with_handler_lock
+    pending_event = bus.emit(event)
+    await first_handler_started.wait()
 
-    @asynccontextmanager
-    async def blocked_with_handler_lock(*args: Any, **kwargs: Any):
-        await release_lock.wait()
-        async with original_with_handler_lock(*args, **kwargs):
-            yield
+    assert first_entry.id in event.event_results
+    assert second_entry.id in event.event_results
+    assert event.event_results[first_entry.id].status == 'started'
+    assert event.event_results[second_entry.id].status == 'pending'
 
-    setattr(bus.locks, '_run_with_handler_lock', blocked_with_handler_lock)
-
-    run_task = asyncio.create_task(bus.run_handler(event, handler_entry, timeout=event.event_timeout))
-    assert event_result.status == 'pending'
-
-    release_lock.set()
-    assert await run_task == 'ok'
-    assert event_result.status == 'completed'
+    release_first_handler.set()
+    await pending_event.event_completed()
+    assert event.event_results[first_entry.id].status == 'completed'
+    assert event.event_results[second_entry.id].status == 'completed'
+    assert event.event_results[first_entry.id].result == 'first'
+    assert event.event_results[second_entry.id].result == 'second'
 
     await bus.stop(clear=True)
 
 
 async def test_run_handler_starts_slow_monitor_after_lock_wait(caplog: Any):
     """Slow handler warning should be based on handler runtime, not lock wait time."""
-    bus = EventBus(name='handler_slow_monitor_start_order_bus', event_handler_slow_timeout=0.01)
+    bus = EventBus(
+        name='handler_slow_monitor_start_order_bus',
+        event_handler_concurrency='serial',
+        event_handler_slow_timeout=1.0,
+    )
 
     class SlowMonitorOrderEvent(BaseEvent[str]):
         pass
 
-    async def handler(_event: SlowMonitorOrderEvent) -> str:
+    first_handler_started = asyncio.Event()
+    release_first_handler = asyncio.Event()
+
+    async def first_handler(_event: SlowMonitorOrderEvent) -> str:
+        first_handler_started.set()
+        await release_first_handler.wait()
+        return 'first'
+
+    async def second_handler(_event: SlowMonitorOrderEvent) -> str:
         await asyncio.sleep(0.03)
         return 'ok'
 
-    handler_entry = bus.on(SlowMonitorOrderEvent, handler)
+    bus.on(SlowMonitorOrderEvent, first_handler)
+    slow_entry = bus.on(SlowMonitorOrderEvent, second_handler)
+    slow_entry.handler_slow_timeout = 0.01
     event = SlowMonitorOrderEvent()
-    event._create_pending_handler_results({handler_entry.id: handler_entry}, eventbus=bus, timeout=event.event_timeout)
-
-    release_lock = asyncio.Event()
-    original_with_handler_lock = bus.locks._run_with_handler_lock
-
-    @asynccontextmanager
-    async def blocked_with_handler_lock(*args: Any, **kwargs: Any):
-        await release_lock.wait()
-        async with original_with_handler_lock(*args, **kwargs):
-            yield
 
     caplog.set_level(logging.WARNING, logger='bubus')
-    setattr(bus.locks, '_run_with_handler_lock', blocked_with_handler_lock)
+
+    pending_event = bus.emit(event)
+    await first_handler_started.wait()
+    await asyncio.sleep(0.03)
+
+    slow_handler_messages_before_release = [
+        record.message
+        for record in caplog.records
+        if 'Slow event handler' in record.message and slow_entry.label in record.message
+    ]
+    assert slow_handler_messages_before_release == []
+
+    release_first_handler.set()
+
     try:
-        run_task = asyncio.create_task(bus.run_handler(event, handler_entry, timeout=event.event_timeout))
-        await asyncio.sleep(0.03)
-        release_lock.set()
-        assert await run_task == 'ok'
+        await pending_event.event_completed()
     finally:
         await bus.stop(clear=True)
 
-    assert any('Slow event handler' in record.message for record in caplog.records)
+    slow_handler_messages_after_release = [
+        record.message
+        for record in caplog.records
+        if 'Slow event handler' in record.message and slow_entry.label in record.message
+    ]
+    assert slow_handler_messages_after_release
 
 
 async def test_find_type_inference():
@@ -260,12 +282,12 @@ async def test_find_type_inference():
         data: str
 
     class SpecificEvent(BaseEvent[CustomResult]):
-        request_id: str = 'test123'
+        request_id: str = 'd1ca37d6-fdda-7e2b-8658-c8bb34034376'
 
     # Validate inline isinstance usage works with await find()
     async def dispatch_inline_isinstance():
         await asyncio.sleep(0.01)
-        bus.emit(SpecificEvent(request_id='inline-isinstance'))
+        bus.emit(SpecificEvent(request_id='57d2fad5-8864-7f52-89ea-e4200dbf3599'))
 
     inline_isinstance_task = asyncio.create_task(dispatch_inline_isinstance())
     assert isinstance(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent)
@@ -274,7 +296,7 @@ async def test_find_type_inference():
     # Validate inline assert_type usage works with await find()
     async def dispatch_inline_assert_type():
         await asyncio.sleep(0.01)
-        bus.emit(SpecificEvent(request_id='inline-assert-type'))
+        bus.emit(SpecificEvent(request_id='87d233ab-822c-71e7-8564-39cd69531436'))
 
     inline_type_task = asyncio.create_task(dispatch_inline_assert_type())
     assert_type(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent | None)
@@ -283,7 +305,7 @@ async def test_find_type_inference():
     # Validate assert_type with isinstance expression
     async def dispatch_inline_isinstance_type():
         await asyncio.sleep(0.01)
-        bus.emit(SpecificEvent(request_id='inline-isinstance-type'))
+        bus.emit(SpecificEvent(request_id='9853009a-1c66-70fa-89da-e9407d0c66dc'))
 
     inline_isinstance_type_task = asyncio.create_task(dispatch_inline_isinstance_type())
     assert_type(isinstance(await bus.find(SpecificEvent, past=False, future=1.0), SpecificEvent), bool)
@@ -292,7 +314,7 @@ async def test_find_type_inference():
     # Start a task that will dispatch the event
     async def dispatch_later():
         await asyncio.sleep(0.01)
-        bus.emit(SpecificEvent(request_id='req456'))
+        bus.emit(SpecificEvent(request_id='34f39b71-07a5-719b-8734-a1b0ee5d5c27'))
 
     dispatch_task = asyncio.create_task(dispatch_later())
 
@@ -306,19 +328,19 @@ async def test_find_type_inference():
 
     # Runtime check
     assert type(expected_event) is SpecificEvent
-    assert expected_event.request_id == 'req456'
+    assert expected_event.request_id == '34f39b71-07a5-719b-8734-a1b0ee5d5c27'
 
     # Test with filters - type should still be preserved
     async def dispatch_multiple():
         await asyncio.sleep(0.01)
-        bus.emit(SpecificEvent(request_id='wrong'))
-        bus.emit(SpecificEvent(request_id='correct'))
+        bus.emit(SpecificEvent(request_id='32b90140-a7ee-7ae7-830c-71a099e93cb3'))
+        bus.emit(SpecificEvent(request_id='519664bf-c9fa-7654-896b-fb0cc5b6adab'))
 
     dispatch_task2 = asyncio.create_task(dispatch_multiple())
 
     # find with where filter
     def is_correct(event: SpecificEvent) -> bool:
-        return event.request_id == 'correct'
+        return event.request_id == '519664bf-c9fa-7654-896b-fb0cc5b6adab'
 
     filtered_event = await bus.find(
         SpecificEvent,
@@ -331,7 +353,7 @@ async def test_find_type_inference():
     assert_type(filtered_event, SpecificEvent)  # Should still be SpecificEvent
     assert isinstance(filtered_event, SpecificEvent)
     assert type(filtered_event) is SpecificEvent
-    assert filtered_event.request_id == 'correct'
+    assert filtered_event.request_id == '519664bf-c9fa-7654-896b-fb0cc5b6adab'
 
     # Test with string event type - returns BaseEvent[Any]
     async def dispatch_string_event():
@@ -539,10 +561,10 @@ def test_custom_pydantic_models_auto_extraction():
     """Custom Pydantic result schemas are extracted from Generic[T]."""
 
     class UserEvent(BaseEvent[UserData]):
-        user_id: str = 'user123'
+        user_id: str = 'fbf27f90-5cc9-798d-8f41-e09f2689f208'
 
     class TaskEvent(BaseEvent[TaskResult]):
-        batch_id: str = 'batch456'
+        batch_id: str = 'b497c95e-a753-77e6-8739-e8a2d3d8ae42'
 
     user_event = UserEvent()
     task_event = TaskEvent()
@@ -624,11 +646,11 @@ def test_json_schema_nested_object_collection_deserialization():
     event = BaseEvent[Any].model_validate({'event_type': 'SchemaEvent', 'event_result_type': json_schema})
 
     adapter = TypeAdapter(event.event_result_type)
-    validated = adapter.validate_python({'batch_a': [{'task_id': 't1', 'status': 'ok'}]})
+    validated = adapter.validate_python({'batch_a': [{'task_id': '6b2e9266-87c4-7d4a-81e5-a6026165e14b', 'status': 'ok'}]})
     assert isinstance(validated, dict)
     assert isinstance(validated['batch_a'], list)
     assert isinstance(validated['batch_a'][0], BaseModel)
-    assert validated['batch_a'][0].model_dump() == {'task_id': 't1', 'status': 'ok'}
+    assert validated['batch_a'][0].model_dump() == {'task_id': '6b2e9266-87c4-7d4a-81e5-a6026165e14b', 'status': 'ok'}
 
     serialized_schema = _event_result_schema_json(event)
     assert serialized_schema.get('type') == 'object'
@@ -643,7 +665,7 @@ def test_json_schema_nested_object_collection_deserialization():
         (dict[str, list[int]], {'scores': [1, 2, 3]}),
         (list[tuple[str, int]], [['x', 1], ['y', 2]]),
         (list[UserData], [{'name': 'alice', 'age': 33}]),
-        (dict[str, list[TaskResult]], {'batch_a': [{'task_id': 't1', 'status': 'ok'}]}),
+        (dict[str, list[TaskResult]], {'batch_a': [{'task_id': '6b2e9266-87c4-7d4a-81e5-a6026165e14b', 'status': 'ok'}]}),
     ],
 )
 def test_json_schema_top_level_shape_deserialization_matrix(shape: Any, payload: Any):
@@ -671,9 +693,9 @@ def test_json_schema_typed_dict_rehydrates_to_pydantic_model():
     assert issubclass(event.event_result_type, BaseModel)
 
     adapter = TypeAdapter(event.event_result_type)
-    validated = adapter.validate_python({'user_id': 'u1', 'active': True, 'score': 9})
+    validated = adapter.validate_python({'user_id': 'e692b6cb-ae63-773b-8557-3218f7ce5ced', 'active': True, 'score': 9})
     assert isinstance(validated, BaseModel)
-    assert validated.model_dump() == {'user_id': 'u1', 'active': True, 'score': 9}
+    assert validated.model_dump() == {'user_id': 'e692b6cb-ae63-773b-8557-3218f7ce5ced', 'active': True, 'score': 9}
 
 
 def test_json_schema_optional_typed_dict_is_lax_on_missing_fields():
@@ -696,9 +718,9 @@ def test_json_schema_dataclass_rehydrates_to_pydantic_model():
     event = BaseEvent[Any].model_validate({'event_type': 'SchemaEvent', 'event_result_type': json_schema})
 
     adapter = TypeAdapter(event.event_result_type)
-    validated = adapter.validate_python({'task_id': 'task-1', 'priority': 2})
+    validated = adapter.validate_python({'task_id': '16272e4a-6936-7e87-872b-0eadeb911f9d', 'priority': 2})
     assert isinstance(validated, BaseModel)
-    assert validated.model_dump() == {'task_id': 'task-1', 'priority': 2}
+    assert validated.model_dump() == {'task_id': '16272e4a-6936-7e87-872b-0eadeb911f9d', 'priority': 2}
 
 
 def test_json_schema_list_of_dataclass_rehydrates_to_list_of_models():
@@ -707,10 +729,10 @@ def test_json_schema_list_of_dataclass_rehydrates_to_list_of_models():
     event = BaseEvent[Any].model_validate({'event_type': 'SchemaEvent', 'event_result_type': json_schema})
 
     adapter = TypeAdapter(event.event_result_type)
-    validated = adapter.validate_python([{'task_id': 'task-2', 'priority': 5}])
+    validated = adapter.validate_python([{'task_id': '78cfaa39-d697-7ef5-8e62-19b94b2cb48e', 'priority': 5}])
     assert isinstance(validated, list)
     assert isinstance(validated[0], BaseModel)
-    assert validated[0].model_dump() == {'task_id': 'task-2', 'priority': 5}
+    assert validated[0].model_dump() == {'task_id': '78cfaa39-d697-7ef5-8e62-19b94b2cb48e', 'priority': 5}
 
 
 async def test_json_schema_nested_object_and_array_runtime_enforcement():
@@ -844,7 +866,7 @@ async def test_module_level_runtime_enforcement():
 
     def correct_handler(event: RuntimeEvent):
         # Return dict that matches ModuleLevelResult schema
-        return {'result_id': 'test123', 'data': {'key': 'value'}, 'success': True}
+        return {'result_id': 'e1bb315c-472f-7bd1-8e72-c8502e1a9a36', 'data': {'key': 'value'}, 'success': True}
 
     def incorrect_handler(event: RuntimeEvent):
         # Return something that doesn't match ModuleLevelResult
@@ -859,7 +881,7 @@ async def test_module_level_runtime_enforcement():
 
     # Should be cast to ModuleLevelResult
     assert isinstance(result1, ModuleLevelResult)
-    assert result1.result_id == 'test123'
+    assert result1.result_id == 'e1bb315c-472f-7bd1-8e72-c8502e1a9a36'
     assert result1.data == {'key': 'value'}
     assert result1.success is True
 

@@ -435,9 +435,11 @@ class TestParentEventTracking:
         finally:
             await bus2.stop(clear=True)
 
-    async def test__are_all_children_complete(self, eventbus: EventBus):
-        """Test the _are_all_children_complete method"""
+    async def test_parent_completion_waits_for_all_children(self, eventbus: EventBus):
+        """Parent event completion should wait until all dispatched children complete."""
         completion_order: list[str] = []
+        child_started = asyncio.Event()
+        release_children = asyncio.Event()
 
         async def parent_handler(event: ParentEvent) -> str:
             child1 = ChildEvent(data='child1')
@@ -448,7 +450,8 @@ class TestParentEventTracking:
             return 'parent'
 
         async def child_handler(event: ChildEvent) -> str:
-            await asyncio.sleep(0.01)  # Simulate work
+            child_started.set()
+            await release_children.wait()
             completion_order.append(f'child_handler_{event.data}')
             return f'handled_{event.data}'
 
@@ -458,16 +461,17 @@ class TestParentEventTracking:
         parent = ParentEvent(message='completion_test')
         parent_event = eventbus.emit(parent)
 
-        # Check completion status during processing
-        # At this point, parent handler hasn't run yet, so no children exist
-        print(f'Children immediately after dispatch: {len(parent.event_children)}')
-        assert parent._are_all_children_complete()  # No children yet, so technically complete
+        # Wait until at least one child handler has started and is blocked.
+        await child_started.wait()
+        assert len(parent.event_children) >= 1
+        assert parent.event_completed_at is None
+        assert parent.event_status != 'completed'
 
-        # Wait for all processing
+        release_children.set()
         await parent_event
 
         # Now all children should be complete
-        assert parent._are_all_children_complete()
+        assert parent.event_status == 'completed'
         assert len(parent.event_children) == 2
         for child in parent.event_children:
             assert child.event_status == 'completed'

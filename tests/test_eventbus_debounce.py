@@ -17,6 +17,10 @@ class SyncEvent(BaseEvent[str]):
     pass
 
 
+TARGET_ID_1 = '9b447756-908c-7b75-8a51-4a2c2b4d9b14'
+TARGET_ID_2 = '194870e1-fa02-70a4-8101-d10d57c3449c'
+
+
 class TestDebouncingPattern:
     """Tests for the debouncing pattern: find() or emit()."""
 
@@ -27,7 +31,7 @@ class TestDebouncingPattern:
             child_ref: list[BaseEvent] = []
 
             async def parent_handler(event: ParentEvent) -> str:
-                child = await bus.emit(ScreenshotEvent(target_id='tab-1'))
+                child = await bus.emit(ScreenshotEvent(target_id='0c1ccf21-65c0-7390-8b64-9182e985740e'))
                 child_ref.append(child)
                 return 'parent_done'
 
@@ -44,7 +48,7 @@ class TestDebouncingPattern:
                     past=10,
                     future=False,
                 )
-                or bus.emit(ScreenshotEvent(target_id='fallback'))
+                or bus.emit(ScreenshotEvent(target_id='d41abf01-392b-7f28-8992-3105a258867d'))
             )
 
             assert reused.event_id == child_ref[0].event_id
@@ -58,7 +62,7 @@ class TestDebouncingPattern:
         try:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
-            original = await bus.emit(ScreenshotEvent(target_id='tab1'))
+            original = await bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
 
             def is_fresh(event: ScreenshotEvent) -> bool:
                 if event.event_completed_at is None:
@@ -66,7 +70,7 @@ class TestDebouncingPattern:
                 return (datetime.now(UTC) - event.event_completed_at).seconds < 5
 
             def matches_fresh_tab(event: ScreenshotEvent) -> bool:
-                return event.target_id == 'tab1' and is_fresh(event)
+                return event.target_id == TARGET_ID_1 and is_fresh(event)
 
             result = await (
                 await bus.find(
@@ -75,7 +79,7 @@ class TestDebouncingPattern:
                     past=True,
                     future=False,
                 )
-                or bus.emit(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
             )
 
             assert result.event_id == original.event_id
@@ -114,15 +118,15 @@ class TestDebouncingPattern:
             result = await (
                 await bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab1',
+                    where=lambda e: e.target_id == TARGET_ID_1,
                     past=True,
                     future=False,
                 )
-                or bus.emit(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
             )
 
             assert result is not None
-            assert result.target_id == 'tab1'
+            assert result.target_id == TARGET_ID_1
             assert result.event_status == 'completed'
 
         finally:
@@ -134,16 +138,16 @@ class TestDebouncingPattern:
         try:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
-            await bus.emit(ScreenshotEvent(target_id='tab1'))
+            await bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
 
             result = await (
                 await bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab1' and False,
+                    where=lambda e: e.target_id == TARGET_ID_1 and False,
                     past=True,
                     future=False,
                 )
-                or bus.emit(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
             )
 
             assert result is not None
@@ -191,17 +195,17 @@ class TestDebouncingPattern:
         try:
             bus.on(ScreenshotEvent, lambda e: 'done')
 
-            original = await bus.emit(ScreenshotEvent(target_id='tab1'))
+            original = await bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
 
             start = datetime.now(UTC)
             result = await (
                 await bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab1',
+                    where=lambda e: e.target_id == TARGET_ID_1,
                     past=True,
                     future=False,
                 )
-                or bus.emit(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
             )
             elapsed = (datetime.now(UTC) - start).total_seconds()
 
@@ -221,16 +225,16 @@ class TestDebouncingPattern:
             result = await (
                 await bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab1',
+                    where=lambda e: e.target_id == TARGET_ID_1,
                     past=True,
                     future=False,
                 )
-                or bus.emit(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
             )
             elapsed = (datetime.now(UTC) - start).total_seconds()
 
             assert result is not None
-            assert result.target_id == 'tab1'
+            assert result.target_id == TARGET_ID_1
             assert elapsed < 0.1
 
         finally:
@@ -247,38 +251,38 @@ class TestDebouncingPattern:
             result1 = await (
                 await bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab1',
+                    where=lambda e: e.target_id == TARGET_ID_1,
                     past=True,
                     future=False,
                 )
-                or bus.emit(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
             )
 
             result2 = await (
                 await bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab1',
+                    where=lambda e: e.target_id == TARGET_ID_1,
                     past=True,
                     future=False,
                 )
-                or bus.emit(ScreenshotEvent(target_id='tab1'))
+                or bus.emit(ScreenshotEvent(target_id=TARGET_ID_1))
             )
 
             result3 = await (
                 await bus.find(
                     ScreenshotEvent,
-                    where=lambda e: e.target_id == 'tab2',
+                    where=lambda e: e.target_id == TARGET_ID_2,
                     past=True,
                     future=False,
                 )
-                or bus.emit(ScreenshotEvent(target_id='tab2'))
+                or bus.emit(ScreenshotEvent(target_id=TARGET_ID_2))
             )
 
             elapsed = (datetime.now(UTC) - start).total_seconds()
 
             assert result1.event_id == result2.event_id
             assert result3.event_id != result1.event_id
-            assert result3.target_id == 'tab2'
+            assert result3.target_id == TARGET_ID_2
             assert elapsed < 0.2
 
         finally:

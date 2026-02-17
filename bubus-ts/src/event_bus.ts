@@ -2,7 +2,7 @@ import { BaseEvent, type BaseEventJSON } from './base_event.js'
 import { EventHistory } from './event_history.js'
 import { EventResult } from './event_result.js'
 import { captureAsyncContext } from './async_context.js'
-import { runWithSlowMonitor, runWithTimeout } from './timing.js'
+import { _runWithSlowMonitor, _runWithTimeout } from './timing.js'
 import {
   AsyncLock,
   type EventConcurrencyMode,
@@ -62,7 +62,7 @@ export type EventBusJSON = {
 
 // Global registry of all EventBus instances to allow for cross-bus coordination
 // when global-serial concurrency mode is used.
-export class GlobalBusRegistry {
+export class GlobalEventBusRegistry {
   private _bus_refs = new Set<WeakRef<EventBus>>()
 
   add(bus: EventBus): void {
@@ -104,11 +104,7 @@ export class GlobalBusRegistry {
     return count
   }
 
-  iter(): Iterator<EventBus> {
-    return this[Symbol.iterator]()
-  }
-
-  *[Symbol.iterator](): Iterator<EventBus> {
+  *[Symbol.iterator](): IterableIterator<EventBus> {
     for (const ref of this._bus_refs) {
       const bus = ref.deref()
       if (bus) {
@@ -140,15 +136,15 @@ export class GlobalBusRegistry {
 }
 
 export class EventBus {
-  private static _registry_by_constructor = new WeakMap<Function, GlobalBusRegistry>()
+  private static _registry_by_constructor = new WeakMap<Function, GlobalEventBusRegistry>()
   private static _global_event_lock_by_constructor = new WeakMap<Function, AsyncLock>()
 
-  private static getRegistryForConstructor(constructor_fn: Function): GlobalBusRegistry {
+  private static getRegistryForConstructor(constructor_fn: Function): GlobalEventBusRegistry {
     const existing_registry = EventBus._registry_by_constructor.get(constructor_fn)
     if (existing_registry) {
       return existing_registry
     }
-    const created_registry = new GlobalBusRegistry()
+    const created_registry = new GlobalEventBusRegistry()
     EventBus._registry_by_constructor.set(constructor_fn, created_registry)
     return created_registry
   }
@@ -163,15 +159,15 @@ export class EventBus {
     return created_lock
   }
 
-  static get all_instances(): GlobalBusRegistry {
+  static get all_instances(): GlobalEventBusRegistry {
     return EventBus.getRegistryForConstructor(this)
   }
 
-  get all_instances(): GlobalBusRegistry {
+  get all_instances(): GlobalEventBusRegistry {
     return EventBus.getRegistryForConstructor(this.constructor as Function)
   }
 
-  get event_global_lock(): AsyncLock {
+  get _lock_for_event_global_serial(): AsyncLock {
     return EventBus.getGlobalEventLockForConstructor(this.constructor as Function)
   }
 
@@ -372,7 +368,7 @@ export class EventBus {
       if (event_timeout === null || pending_entries.length === 0) {
         await fn()
       } else {
-        await runWithTimeout(event_timeout, () => this._createEventTimeoutError(event, pending_entries, event_timeout), fn)
+        await _runWithTimeout(event_timeout, () => this._createEventTimeoutError(event, pending_entries, event_timeout), fn)
       }
     } catch (error) {
       if (error instanceof EventHandlerTimeoutError) {
@@ -729,7 +725,7 @@ export class EventBus {
       // because events may be handled async in a separate context than the emit site
       original_event._setDispatchContext(captureAsyncContext())
     }
-    if (original_event.event_path.includes(this.label) || this.hasProcessedEvent(original_event)) {
+    if (original_event.event_path.includes(this.label) || this._hasProcessedEvent(original_event)) {
       return this._getEventProxyScopedToThisBus(original_event) as T
     }
 
@@ -767,7 +763,7 @@ export class EventBus {
       max_history_size: this.event_history.max_history_size,
       max_history_drop: this.event_history.max_history_drop,
     })
-    this.resolveFindWaiters(original_event)
+    this._resolveFindWaiters(original_event)
 
     original_event.event_pending_bus_count += 1
     this.pending_event_queue.push(original_event)
@@ -933,7 +929,7 @@ export class EventBus {
       result: EventResult
     }> = []
     try {
-      if (this.hasProcessedEvent(event)) {
+      if (this._hasProcessedEvent(event)) {
         return
       }
       event._markStarted()
@@ -949,7 +945,7 @@ export class EventBus {
         event,
         () =>
           this._runHandlersWithTimeout(event, pending_entries, resolved_event_timeout, () =>
-            runWithSlowMonitor(event._createSlowEventWarningTimer(), () => scoped_event._runHandlers(pending_entries))
+            _runWithSlowMonitor(event._createSlowEventWarningTimer(), () => scoped_event._runHandlers(pending_entries))
           ),
         options
       )
@@ -975,7 +971,7 @@ export class EventBus {
     // Find the parent handler's result: prefer the proxy-provided one (only if
     // the handler is still running), then this bus's stack, then walk up the
     // parent event tree (cross-bus case). If none found, we're not inside a
-    // handler and should fall back to _waitForCompletion.
+    // handler and should fall back to eventCompleted().
     const proxy_result = handler_result?.status === 'started' ? handler_result : undefined
     const currently_active_event_result =
       proxy_result ?? this.locks._getActiveHandlerResult() ?? this._getParentEventResultAcrossAllBuses(original_event) ?? undefined
@@ -987,17 +983,17 @@ export class EventBus {
         queue_index === 0 &&
         !this.locks._isPaused() &&
         !this.in_flight_event_ids.has(original_event.event_id) &&
-        !this.hasProcessedEvent(original_event)
+        !this._hasProcessedEvent(original_event)
       if (can_process_now) {
         this.pending_event_queue.shift()
         this.in_flight_event_ids.add(original_event.event_id)
         await this._processEvent(original_event)
         if (original_event.event_status !== 'completed') {
-          await original_event._waitForCompletion()
+          await original_event.eventCompleted()
         }
         return event
       }
-      await original_event._waitForCompletion()
+      await original_event.eventCompleted()
       return event
     }
 
@@ -1033,7 +1029,7 @@ export class EventBus {
         if (!bus.event_history.has(event.event_id)) {
           continue
         }
-        if (bus.hasProcessedEvent(event)) {
+        if (bus._hasProcessedEvent(event)) {
           continue
         }
         if (!seen.has(bus)) {
@@ -1046,7 +1042,7 @@ export class EventBus {
       ordered.push(this)
     }
     if (ordered.length === 0) {
-      await event._waitForCompletion()
+      await event.eventCompleted()
       return
     }
 
@@ -1067,7 +1063,7 @@ export class EventBus {
         if (index >= 0) {
           bus.pending_event_queue.splice(index, 1)
         }
-        if (bus.hasProcessedEvent(event)) {
+        if (bus._hasProcessedEvent(event)) {
           continue
         }
         if (bus.in_flight_event_ids.has(event.event_id)) {
@@ -1087,7 +1083,7 @@ export class EventBus {
       }
 
       if (event.event_status !== 'completed') {
-        await event._waitForCompletion()
+        await event.eventCompleted()
       }
     } finally {
       for (const release of pause_releases) {
@@ -1109,7 +1105,7 @@ export class EventBus {
           continue
         }
         const original_event = next_event._event_original ?? next_event
-        if (this.hasProcessedEvent(original_event)) {
+        if (this._hasProcessedEvent(original_event)) {
           this.pending_event_queue.shift()
           continue
         }
@@ -1144,7 +1140,7 @@ export class EventBus {
   }
 
   // check if an event has been processed (and completed) by this bus
-  hasProcessedEvent(event: BaseEvent): boolean {
+  _hasProcessedEvent(event: BaseEvent): boolean {
     const results = Array.from(event.event_results.values()).filter((result) => result.eventbus_id === this.id)
     if (results.length === 0) {
       return false
@@ -1236,7 +1232,7 @@ export class EventBus {
     return scoped as T
   }
 
-  private resolveFindWaiters(event: BaseEvent): void {
+  private _resolveFindWaiters(event: BaseEvent): void {
     for (const waiter of Array.from(this.find_waiters)) {
       if (!this._eventMatchesKey(event, waiter.event_pattern)) {
         continue
@@ -1252,7 +1248,7 @@ export class EventBus {
     }
   }
 
-  getHandlersForEvent(event: BaseEvent): EventHandler[] {
+  _getHandlersForEvent(event: BaseEvent): EventHandler[] {
     const handlers: EventHandler[] = []
     for (const key of [event.event_type, '*']) {
       const ids = this.handlers_by_key.get(key)

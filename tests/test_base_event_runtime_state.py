@@ -68,26 +68,27 @@ async def test_event_started_at_after_processing():
 async def test_event_without_handlers():
     """Test that events without handlers still work with timestamp properties"""
     event = SampleEvent(data='no_handlers')
+    bus = EventBus(name='TestBusNoHandlers')
 
     # Should not raise AttributeError when accessing these properties
     assert event.event_started_at is None  # No handlers started
     assert event.event_completed_at is None  # Not complete yet
 
-    # Initialize the completion signal (normally done when dispatched)
-    _ = event.event_completed_signal
-
-    # Mark as completed manually (simulating what happens in _mark_completed)
-    event._mark_completed()
+    processed_event = await bus.emit(event)
+    await bus.stop()
 
     # After marking complete, it should be set
     # When no handlers but event is completed, event_started_at returns event_completed_at
-    assert event.event_started_at is not None  # Uses event_completed_at
-    assert event.event_completed_at is not None  # Now it's complete
+    assert processed_event.event_started_at is not None  # Uses event_completed_at
+    assert processed_event.event_completed_at is not None  # Now it's complete
+    assert processed_event.event_status == 'completed'
+    assert processed_event.event_started_at == processed_event.event_completed_at
 
 
-def test_event_with_manually_set_completed_at():
+async def test_event_with_manually_set_completed_at():
     """Test events where event_completed_at is manually set (like in test_eventbus_log_tree.py)"""
     event = SampleEvent(data='manual')
+    bus = EventBus(name='TestBusManualCompletedAt')
 
     # Initialize the completion signal
     _ = event.event_completed_signal
@@ -102,19 +103,25 @@ def test_event_with_manually_set_completed_at():
     assert event.event_status == 'pending'
     assert event.event_completed_at is not None
 
-    # Reconcile state through the lifecycle method.
-    event._mark_completed()
-    assert event.event_status == 'completed'
-    assert event.event_started_at is not None
+    # Reconcile state through public lifecycle processing.
+    processed_event = await bus.emit(event)
+    assert processed_event.event_status == 'completed'
+    assert processed_event.event_started_at is not None
+    assert processed_event.event_completed_at is not None
 
-    # Add a handler result to make it incomplete
-    event.event_result_update(handler=_noop_handler, status='started')
-    assert event.event_completed_at is None  # Now it's not complete
+    # Also exercise the "existing completed handler results" completion path.
+    seeded_event = SampleEvent(data='manual-seeded-result')
+    seeded_result = seeded_event.event_result_update(handler=_noop_handler, status='started')
+    assert seeded_event.event_status == 'started'
+    assert seeded_event.event_completed_at is None
+    seeded_result.update(status='completed', result='done')
+    assert seeded_event.event_completed_at is None
 
-    # Complete the handler
-    list(event.event_results.values())[0].update(status='completed', result='done')
-    event._mark_completed()
-    assert event.event_completed_at is not None
+    reconciled_seeded_event = await bus.emit(seeded_event)
+    await bus.stop()
+    assert reconciled_seeded_event.event_status == 'completed'
+    assert reconciled_seeded_event.event_started_at is not None
+    assert reconciled_seeded_event.event_completed_at is not None
 
 
 def test_event_copy_preserves_private_attrs():
@@ -156,18 +163,31 @@ def test_event_started_at_is_serialized_and_stateful():
     assert parsed != forced_started_at
 
 
-def test_event_status_is_serialized_and_stateful():
+async def test_event_status_is_serialized_and_stateful():
     """event_status should be included in JSON dumps and track lifecycle transitions via runtime updates."""
     event = SampleEvent(data='serialize-status')
 
     pending_payload = event.model_dump(mode='json')
     assert pending_payload['event_status'] == 'pending'
 
-    result = event.event_result_update(handler=_noop_handler, status='started')
+    bus = EventBus(name='TestBusSerializeStatus')
+    handler_entered = asyncio.Event()
+    release_handler = asyncio.Event()
+
+    async def slow_handler(_event: SampleEvent) -> str:
+        handler_entered.set()
+        await release_handler.wait()
+        return 'ok'
+
+    bus.on('SampleEvent', slow_handler)
+
+    processing_task = asyncio.create_task(bus.emit(event).event_completed())
+    await handler_entered.wait()
     started_payload = event.model_dump(mode='json')
     assert started_payload['event_status'] == 'started'
 
-    result.update(status='completed', result='ok')
-    event._mark_completed()
-    completed_payload = event.model_dump(mode='json')
+    release_handler.set()
+    completed_event = await processing_task
+    await bus.stop()
+    completed_payload = completed_event.model_dump(mode='json')
     assert completed_payload['event_status'] == 'completed'

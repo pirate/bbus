@@ -1351,9 +1351,9 @@ async def test_perf_debug_hot_path_breakdown() -> None:
     instrumented: list[tuple[type[Any], str]] = [
         (event_bus_module.ReentrantLock, '__aenter__'),
         (event_bus_module.ReentrantLock, '__aexit__'),
-        (event_bus_module.EventBus, 'get_handlers_for_event'),
-        (event_bus_module.EventBus, 'process_event'),
-        (event_bus_module.EventBus, 'run_handler'),
+        (event_bus_module.EventBus, '_get_handlers_for_event'),
+        (event_bus_module.EventBus, '_process_event'),
+        (event_bus_module.EventBus, '_run_handler'),
         (event_bus_module.EventHistory, 'trim_event_history'),
         (base_event_module.BaseEvent, '_create_pending_handler_results'),
     ]

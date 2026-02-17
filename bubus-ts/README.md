@@ -200,7 +200,7 @@ Normal lifecycle:
 
 1. Create event instance (`const event = MyEvent({...})`).
 2. Emit (`const queued = bus.emit(event)`).
-3. Await with `await queued.done()` (immediate/queue-jump semantics) or `await queued.waitForCompletion()` (bus queue order).
+3. Await with `await queued.done()` (immediate/queue-jump semantics) or `await queued.eventCompleted()` (bus queue order).
 4. Inspect `queued.event_results`, `queued.event_result`, `queued.event_errors`, etc. if you need to access handler return values
 
 #### `find()`
@@ -399,9 +399,7 @@ Special configuration fields you can set on each event to control processing:
 - `event_children` -> `BaseEvent[]`
 - `event_descendants` -> `BaseEvent[]`
 - `event_errors` -> `Error[]`
-- `all_results` -> `EventResultType<this>[]`
 - `event_result` -> `EventResultType<this> | undefined`
-- `last_result` -> `EventResultType<this> | undefined`
 
 #### `done()`
 
@@ -409,19 +407,17 @@ Special configuration fields you can set on each event to control processing:
 done(): Promise<this>
 ```
 
-- `immediate()` is an alias for `done()`.
 - If called from inside a running handler, it queue-jumps child processing immediately.
 - If called outside handler context, it waits for normal completion (or processes immediately if already next).
 - Rejects if event is not attached to a bus (`event has no bus attached`).
 - Queue-jump behavior is demonstrated in `bubus-ts/examples/immediate_event_processing.ts` and `bubus-ts/tests/base_event_event_bus_proxy.test.ts`.
 
-#### `waitForCompletion()`
+#### `eventCompleted()`
 
 ```ts
-waitForCompletion(): Promise<this>
+eventCompleted(): Promise<this>
 ```
 
-- `finished()` is an alias for `waitForCompletion()`
 - Waits for completion in normal runloop order.
 - Use inside handlers when you explicitly do not want queue-jump behavior.
 

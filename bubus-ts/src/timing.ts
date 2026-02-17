@@ -1,4 +1,4 @@
-export async function runWithTimeout<T>(timeout_seconds: number | null, on_timeout: () => Error, fn: () => Promise<T>): Promise<T> {
+export async function _runWithTimeout<T>(timeout_seconds: number | null, on_timeout: () => Error, fn: () => Promise<T>): Promise<T> {
   const task = Promise.resolve().then(fn)
   if (timeout_seconds === null) {
     return await task
@@ -34,7 +34,7 @@ export async function runWithTimeout<T>(timeout_seconds: number | null, on_timeo
   })
 }
 
-export async function runWithSlowMonitor<T>(slow_timer: ReturnType<typeof setTimeout> | null, fn: () => Promise<T>): Promise<T> {
+export async function _runWithSlowMonitor<T>(slow_timer: ReturnType<typeof setTimeout> | null, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
   } finally {
@@ -44,7 +44,7 @@ export async function runWithSlowMonitor<T>(slow_timer: ReturnType<typeof setTim
   }
 }
 
-export async function runWithAbortMonitor<T>(fn: () => T | Promise<T>, abort_signal: Promise<never>): Promise<T> {
+export async function _runWithAbortMonitor<T>(fn: () => T | Promise<T>, abort_signal: Promise<never>): Promise<T> {
   const task = Promise.resolve().then(fn)
   const raced = Promise.race([task, abort_signal])
   void task.catch(() => undefined)

@@ -263,7 +263,7 @@ export function retry(options: RetryOptions = {}) {
         for (let attempt = 1; attempt <= effective_max_attempts; attempt++) {
           try {
             if (timeout != null && timeout > 0) {
-              return await runWithTimeout(() => Promise.resolve(target.apply(this, args)), timeout * 1000, attempt)
+              return await _runWithTimeout(() => Promise.resolve(target.apply(this, args)), timeout * 1000, attempt)
             } else {
               return await Promise.resolve(target.apply(this, args))
             }
@@ -341,7 +341,7 @@ async function acquireWithTimeout(semaphore: RetrySemaphore, timeout_ms: number)
 }
 
 /** Run fn() with a timeout. Rejects with RetryTimeoutError if the timeout fires first. */
-async function runWithTimeout<T>(fn: () => Promise<T>, timeout_ms: number, attempt: number): Promise<T> {
+async function _runWithTimeout<T>(fn: () => Promise<T>, timeout_ms: number, attempt: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false
 

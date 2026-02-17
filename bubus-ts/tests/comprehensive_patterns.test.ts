@@ -263,6 +263,8 @@ test('done() on non-proxied event keeps bus paused during queue-jump', async () 
     await raw_child.done()
     // After done() returns, bus should still be paused because
     // we're still inside a handler doing queue-jump processing
+    // NOTE: Test-only exception to our no-private-access rule:
+    // we intentionally read internal pause state to verify this transient invariant.
     paused_after_done = bus.locks._isPaused()
   })
 
@@ -286,6 +288,8 @@ test('bus pause state clears after queue-jump completes', async () => {
   bus.on(ChildB, () => {})
 
   bus.on(Event1, async (event) => {
+    // NOTE: Test-only exception to our no-private-access rule:
+    // we intentionally read internal pause state to verify transient pause-depth behavior.
     // First queue-jump
     const child_a = event.bus?.emit(ChildA({}))!
     await child_a.done()
@@ -311,6 +315,7 @@ test('bus pause state clears after queue-jump completes', async () => {
   assert.equal(paused_after_second_done, true, 'bus should remain paused after second done()')
 
   // After handler finishes and bus is idle, pause must be released.
+  // Intentional private-access exception for this test; verifies pause release at steady state.
   assert.equal(bus.locks._isPaused(), false, 'bus should no longer be paused after handler completes')
 })
 
@@ -327,6 +332,8 @@ test('isInsideHandler() is per-bus, not global', async () => {
   let bus_b_inside_during_b_handler = false
 
   bus_a.on(EventA, () => {
+    // NOTE: Test-only exception to our no-private-access rule:
+    // we intentionally read internal handler-stack state for cross-bus invariants.
     bus_a_inside_during_a_handler = bus_a.locks._isAnyHandlerActive()
     bus_b_inside_during_a_handler = bus_b.locks._isAnyHandlerActive()
   })
@@ -353,6 +360,7 @@ test('isInsideHandler() is per-bus, not global', async () => {
   assert.equal(bus_a_inside_during_b_handler, false, 'bus_a.locks._isAnyHandlerActive() should be false during bus_b handler')
 
   // After all handlers complete, neither bus should report inside
+  // Intentional private-access exception for this test; verifies post-idle handler-stack teardown.
   assert.equal(bus_a.locks._isAnyHandlerActive(), false, 'bus_a.locks._isAnyHandlerActive() should be false after idle')
   assert.equal(bus_b.locks._isAnyHandlerActive(), false, 'bus_b.locks._isAnyHandlerActive() should be false after idle')
 })

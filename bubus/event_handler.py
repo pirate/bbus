@@ -246,13 +246,14 @@ class EventHandler(BaseModel):
     def _normalize_handler_registered_ts(cls, value: Any) -> int:
         if isinstance(value, bool):
             raise TypeError('handler_registered_ts must be an integer offset')
-        if isinstance(value, (int, float)):
-            if isinstance(value, float) and not math.isfinite(value):
+        if isinstance(value, int):
+            if value < 0 or value > JS_MAX_SAFE_INTEGER:
+                raise ValueError(f'handler_registered_ts must be in [0, {JS_MAX_SAFE_INTEGER}], got {value}')
+            return value
+        if isinstance(value, float):
+            if not math.isfinite(value):
                 raise TypeError('handler_registered_ts must be finite')
-            normalized = int(value)
-            if normalized < 0 or normalized > JS_MAX_SAFE_INTEGER:
-                raise ValueError(f'handler_registered_ts must be in [0, {JS_MAX_SAFE_INTEGER}], got {normalized}')
-            return normalized
+            raise TypeError('handler_registered_ts must be an integer offset')
         raise TypeError(f'handler_registered_ts must be numeric, got {type(value).__name__}')
 
     @property
@@ -346,23 +347,6 @@ class EventHandler(BaseModel):
             return handler_result
 
         return normalized_handler
-
-    @classmethod
-    def from_json_dict(cls, data: Any, handler: EventHandlerCallable | None = None) -> 'EventHandler':
-        entry = cls.model_validate(data)
-        if not entry.id:
-            entry.id = entry.compute_handler_id()
-        handler_name_provided = isinstance(data, dict) and bool(cast(dict[str, Any], data).get('handler_name'))
-        if handler is not None:
-            entry.handler = handler
-            entry.handler_async = cls.resolve_async_handler(handler)
-            if not handler_name_provided and entry.handler_name == 'anonymous':
-                try:
-                    derived_name = cls.get_callable_handler_name(handler)
-                    entry.handler_name = derived_name.strip() or 'function'
-                except Exception:
-                    entry.handler_name = 'function'
-        return entry
 
     @classmethod
     def from_callable(

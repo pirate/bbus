@@ -57,18 +57,19 @@ export class AsyncLock {
     await new Promise<void>((resolve) => {
       this.waiters.push(resolve)
     })
-    this.in_use += 1
   }
 
   release(): void {
     if (this.size === Infinity) {
       return
     }
-    this.in_use = Math.max(0, this.in_use - 1)
     const next = this.waiters.shift()
     if (next) {
+      // Handoff: keep permit accounted for and transfer directly to next waiter.
       next()
+      return
     }
+    this.in_use = Math.max(0, this.in_use - 1)
   }
 }
 
@@ -156,7 +157,7 @@ export class HandlerLock {
 export type EventBusInterfaceForLockManager = {
   isIdleAndQueueEmpty: () => boolean
   event_concurrency: EventConcurrencyMode
-  event_global_lock: AsyncLock
+  _lock_for_event_global_serial: AsyncLock
 }
 
 // The LockManager is responsible for managing the concurrency of events and handlers
@@ -220,7 +221,7 @@ export class LockManager {
     return this.pause_depth > 0
   }
 
-  async _runWithHandlerExecutionContext<T>(result: EventResult, fn: () => Promise<T>): Promise<T> {
+  async _runWithHandlerDispatchContext<T>(result: EventResult, fn: () => Promise<T>): Promise<T> {
     this.active_handler_results.push(result)
     try {
       return await fn()
@@ -328,7 +329,7 @@ export class LockManager {
       return null
     }
     if (resolved === 'global-serial') {
-      return this.bus.event_global_lock
+      return this.bus._lock_for_event_global_serial
     }
     return this.bus_event_lock
   }

@@ -406,7 +406,8 @@ This solves race conditions where child events fire before you start waiting for
 See the `EventBus.find(...)` API section below for full parameter details.
 
 > [!IMPORTANT]
-> `find()` resolves when the event is first *emitted* to the `EventBus`, not when it completes. Use `await event` to wait for handlers to finish.
+> `find()` resolves when the event is first *emitted* to the `EventBus`, not when it completes.
+> Use `await event` for immediate-await semantics (queue-jumps when called inside a handler), or `await event.event_completed()` to always wait in normal queue order.
 > If no match is found (or future timeout elapses), `find()` returns `None`.
 
 <br/>
@@ -826,7 +827,8 @@ Enqueue an event for processing and return the pending `Event` immediately (sync
 
 ```python
 event = bus.emit(MyEvent(data="test"))
-result = await event  # await the pending Event to get the completed Event
+result = await event  # immediate-await path (queue-jumps when called inside a handler)
+result_in_queue_order = await event.event_completed()  # always waits in normal queue order
 ```
 
 **Note:** Queueing is unbounded. History pressure is controlled by `max_history_size` + `max_history_drop`:
@@ -964,7 +966,10 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
 ##### `await event`
 
-Await the `Event` object directly to get the completed `Event` object once all handlers have finished executing.
+Immediate-await path for the `Event` object.
+
+- Outside a handler: waits for normal completion and returns the completed event.
+- Inside a handler: queue-jumps this child event so it can run immediately, then returns the completed event.
 
 ```python
 event = bus.emit(MyEvent())
@@ -972,6 +977,18 @@ completed_event = await event
 
 raw_result_values = [(await event_result) for event_result in completed_event.event_results.values()]
 # equivalent to: completed_event.event_results_list()  (see below)
+```
+
+##### `event_completed() -> Self`
+
+Queue-order await path for an event.
+
+- Never queue-jumps.
+- Waits until the event is completed by normal runloop queue order.
+
+```python
+event = bus.emit(MyEvent())
+completed_event = await event.event_completed()
 ```
 
 ##### `first(timeout: float | None=None, *, raise_if_any: bool=False, raise_if_none: bool=False) -> Any`
@@ -1127,12 +1144,12 @@ class EventHandler(BaseModel):
     eventbus_id: str                 # Owning EventBus ID
 ```
 
-The raw callable is stored on `handler`, but is excluded from JSON serialization (`model_dump_json(exclude={'handler'})`).
+The raw callable is stored on `handler`, but is excluded from JSON serialization (`model_dump(mode='json', exclude={'handler'})`).
 
 #### `EventHandler` Properties and Methods
 
 - `label` (property): Short display label like `my_handler#abcd`.
-- `model_dump_json(exclude={'handler'}) -> str`: JSON metadata dump (callable excluded).
+- `model_dump(mode='json', exclude={'handler'}) -> dict[str, Any]`: JSON-compatible metadata dict (callable excluded).
 - `from_json_dict(data, handler=None) -> EventHandler`: Rebuilds metadata; optional callable reattachment.
 - `from_callable(...) -> EventHandler`: Build a new handler entry from a callable plus bus/pattern metadata.
 

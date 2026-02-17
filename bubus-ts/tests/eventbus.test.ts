@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { BaseEvent, EventBus } from '../src/index.js'
-import { GlobalBusRegistry } from '../src/event_bus.js'
+import { GlobalEventBusRegistry } from '../src/event_bus.js'
 import { AsyncLock } from '../src/lock_manager.js'
 import { z } from 'zod'
 
@@ -128,7 +128,7 @@ test('EventBus locks methods are callable and preserve lock resolution behavior'
     event_concurrency: 'global-serial',
     event_handler_concurrency: 'serial',
   })
-  assert.equal(bus.locks.getLockForEvent(event_with_global), bus.event_global_lock)
+  assert.equal(bus.locks.getLockForEvent(event_with_global), bus._lock_for_event_global_serial)
   const handler_lock = event_with_global._getHandlerLock(bus.event_handler_concurrency)
   assert.ok(handler_lock)
 
@@ -156,11 +156,11 @@ test('BaseEvent lifecycle methods are callable and preserve lifecycle behavior',
   assert.equal(standalone.event_status, 'started')
   standalone._markCompleted(false)
   assert.equal(standalone.event_status, 'completed')
-  await standalone._waitForCompletion()
+  await standalone.eventCompleted()
 
   const bus = new EventBus('LifecycleMethodInvocationBus')
   const dispatched = bus.emit(LifecycleEvent({}))
-  await dispatched._waitForCompletion()
+  await dispatched.eventCompleted()
   assert.equal(dispatched.event_status, 'completed')
 })
 
@@ -906,8 +906,9 @@ test('unreferenced EventBus can be garbage collected (not retained by all_instan
   // If EventBus.all_instances holds a strong reference (Set<EventBus>),
   // the bus will NOT be collected — proving the memory leak.
   // After the fix (WeakRef-based storage), the bus should be collected.
+  assert.notEqual(weak_ref, null, 'WeakRef should be assigned by the test setup IIFE')
   assert.equal(
-    weak_ref?.deref(),
+    weak_ref.deref(),
     undefined,
     'bus should be garbage collected when no external references remain — ' +
       'EventBus.all_instances is holding a strong reference (memory leak)'
@@ -921,16 +922,15 @@ test('subclass registry and global lock are collectable when subclass goes out o
   }
 
   let subclass_ref!: WeakRef<typeof EventBus>
-  let registry_ref!: WeakRef<GlobalBusRegistry>
+  let registry_ref!: WeakRef<GlobalEventBusRegistry>
   let lock_ref!: WeakRef<AsyncLock>
   let bus_ref!: WeakRef<EventBus>
-
   ;(() => {
     class ScopedSubclassBus extends EventBus {}
     const bus = new ScopedSubclassBus('ScopedSubclassBus', { event_concurrency: 'global-serial' })
     subclass_ref = new WeakRef(ScopedSubclassBus)
     registry_ref = new WeakRef(ScopedSubclassBus.all_instances)
-    lock_ref = new WeakRef(bus.event_global_lock)
+    lock_ref = new WeakRef(bus._lock_for_event_global_serial)
     bus_ref = new WeakRef(bus)
   })()
 

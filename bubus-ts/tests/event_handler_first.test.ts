@@ -288,7 +288,7 @@ test('first: screenshot-service pattern — fast path wins, slow path with retry
   await delay(2)
   new SlowScreenshotService(bus)
 
-  const screenshot = await bus.emit(ScreenshotEvent({ page_id: 'page-1' })).first()
+  const screenshot = await bus.emit(ScreenshotEvent({ page_id: '2e0736d6-e947-74be-8d1c-fa8040515f2c' })).first()
 
   assert.equal(screenshot, 'fast_screenshot_data')
   assert.equal(fast_called, true)
@@ -334,7 +334,7 @@ test('first: screenshot-service pattern — fast path fails, slow path with retr
   await delay(2)
   new SlowScreenshotService(bus)
 
-  const screenshot = await bus.emit(ScreenshotEvent({ page_id: 'page-2' })).first()
+  const screenshot = await bus.emit(ScreenshotEvent({ page_id: 'd8942b12-5198-70da-8914-e0a0c00ca14a' })).first()
 
   assert.equal(screenshot, 'slow_screenshot_data')
   assert.equal(slow_attempts, 2, 'slow handler needed 2 attempts')

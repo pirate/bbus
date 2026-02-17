@@ -100,9 +100,9 @@ async def main() -> None:
                 log(f'[parent:{event.mode}] child await resolved')
             else:
                 # Queued: wait on completion signal without queue-jump processing.
-                log(f'[parent:{event.mode}] await child.event_result()')
-                await child.event_result(raise_if_any=False, raise_if_none=False)
-                log(f'[parent:{event.mode}] child.event_result() resolved')
+                log(f'[parent:{event.mode}] await child.event_completed()')
+                await child.event_completed()
+                log(f'[parent:{event.mode}] child.event_completed() resolved')
 
             log(f'[parent:{event.mode}] end')
 

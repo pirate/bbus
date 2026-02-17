@@ -294,12 +294,7 @@ class TestNameConflictGC:
 
         for _ in range(500):
             gc.collect()
-            if (
-                subclass_ref() is None
-                and registry_ref() is None
-                and lock_ref() is None
-                and bus_ref() is None
-            ):
+            if subclass_ref() is None and registry_ref() is None and lock_ref() is None and bus_ref() is None:
                 break
 
         assert bus_ref() is None, 'subclass bus instance should be collectable'

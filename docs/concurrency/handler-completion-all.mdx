@@ -83,9 +83,10 @@ bus.on(CompletionEvent, async () => {
 
 const event = bus.emit(CompletionEvent({}))
 await event.done()
+const results = await event.eventResultsList({ raise_if_any: false, raise_if_none: false })
 
 if (seen.length !== 2) throw new Error('expected all handlers to run')
-if (!event.all_results.includes('fast') || !event.all_results.includes('slow')) {
+if (!results.includes('fast') || !results.includes('slow')) {
   throw new Error('expected both handler return values')
 }
 ```

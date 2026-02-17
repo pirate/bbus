@@ -41,7 +41,7 @@ test('handler registration via string, class, and wildcard', async () => {
   bus.on(SystemEventModel, system_handler)
   bus.on('*', universal_handler)
 
-  bus.emit(UserActionEvent({ action: 'login', user_id: 'u1' }))
+  bus.emit(UserActionEvent({ action: 'login', user_id: 'e692b6cb-ae63-773b-8557-3218f7ce5ced' }))
   bus.emit(SystemEventModel({ name: 'startup' }))
   await bus.waitUntilIdle()
 
@@ -136,7 +136,7 @@ test('instance, class, and static method handlers', async () => {
   bus.on('UserActionEvent', EventProcessor.class_method_handler)
   bus.on('UserActionEvent', EventProcessor.static_method_handler)
 
-  const event = UserActionEvent({ action: 'test_methods', user_id: 'u123' })
+  const event = UserActionEvent({ action: 'test_methods', user_id: 'dab45f48-9e3a-7042-80f8-ac8f07b6cfe3' })
   const completed_event = bus.emit(event)
   await completed_event.done()
 

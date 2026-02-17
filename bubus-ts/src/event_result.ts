@@ -9,9 +9,9 @@ import { withResolvers, type HandlerLock } from './lock_manager.js'
 import type { Deferred } from './lock_manager.js'
 import type { EventHandlerCallable, EventResultType } from './types.js'
 import { isZodSchema } from './types.js'
-import { runWithAsyncContext } from './async_context.js'
+import { _runWithAsyncContext } from './async_context.js'
 import { RetryTimeoutError } from './retry.js'
-import { runWithAbortMonitor, runWithSlowMonitor, runWithTimeout } from './timing.js'
+import { _runWithAbortMonitor, _runWithSlowMonitor, _runWithTimeout } from './timing.js'
 
 // More precise than event.event_status, includes separate 'error' state for handlers that throw errors during execution
 export type EventResultStatus = 'pending' | 'started' | 'completed' | 'error'
@@ -27,14 +27,14 @@ export const EventResultJSONSchema = z
     handler_timeout: z.number().nullable().optional(),
     handler_slow_timeout: z.number().nullable().optional(),
     handler_registered_at: z.string().optional(),
-    handler_registered_ts: z.number().optional(),
+    handler_registered_ts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     handler_event_pattern: z.union([z.string(), z.literal('*')]).optional(),
     eventbus_name: z.string(),
     eventbus_id: z.string().uuid(),
     started_at: z.string().nullable().optional(),
-    started_ts: z.number().nullable().optional(),
+    started_ts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
     completed_at: z.string().nullable().optional(),
-    completed_ts: z.number().nullable().optional(),
+    completed_ts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
     result: z.unknown().optional(),
     error: z.unknown().optional(),
     event_children: z.array(z.string()),
@@ -335,17 +335,17 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     }
 
     this._lock = handler_lock
-    await this.bus.locks._runWithHandlerExecutionContext(this, async () => {
-      await runWithAsyncContext(event._getDispatchContext() ?? null, async () => {
+    await this.bus.locks._runWithHandlerDispatchContext(this, async () => {
+      await _runWithAsyncContext(event._getDispatchContext() ?? null, async () => {
         try {
           const abort_signal = this._markStarted()
           slow_handler_warning_timer = this._createSlowHandlerWarningTimer(this.handler_timeout)
-          const handler_result = await runWithTimeout(
+          const handler_result = await _runWithTimeout(
             this.handler_timeout,
             () => this._createHandlerTimeoutError(event),
             () =>
-              runWithSlowMonitor(slow_handler_warning_timer, () =>
-                runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
+              _runWithSlowMonitor(slow_handler_warning_timer, () =>
+                _runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
               )
           )
           this._finalizeHandlerResult(event, handler_result)

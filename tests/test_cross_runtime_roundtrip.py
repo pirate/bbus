@@ -158,7 +158,7 @@ def _build_python_roundtrip_cases() -> list[RoundtripCase]:
     )
 
     screenshot_event = PyTsScreenshotEvent(
-        target_id='tab-1',
+        target_id='0c1ccf21-65c0-7390-8b64-9182e985740e',
         quality='high',
         event_parent_id=parent.event_id,
         event_path=['PyBus#aaaa', 'TsBridge#bbbb'],
@@ -268,8 +268,8 @@ def _build_python_roundtrip_cases() -> list[RoundtripCase]:
                     'confidence_scores': [0.95, 0.89],
                     'metadata': {'score': 0.99, 'variance': 0.01},
                     'regions': [
-                        {'id': 'r1', 'label': 'face', 'score': 0.9, 'visible': True},
-                        {'id': 'r2', 'label': 'button', 'score': 0.7, 'visible': False},
+                        {'id': '98f51f1d-b10a-7cd9-8ee6-cb706153f717', 'label': 'face', 'score': 0.9, 'visible': True},
+                        {'id': '5f234e9d-29e9-7921-8cf2-2a65f6ba3bdd', 'label': 'button', 'score': 0.7, 'visible': False},
                     ],
                 }
             ],
@@ -282,7 +282,7 @@ def _build_python_roundtrip_cases() -> list[RoundtripCase]:
                     'is_animated': False,
                     'confidence_scores': [0.95],
                     'metadata': {'score': 0.99},
-                    'regions': [{'id': 'r1', 'label': 'face', 'score': 0.9, 'visible': True}],
+                    'regions': [{'id': '98f51f1d-b10a-7cd9-8ee6-cb706153f717', 'label': 'face', 'score': 0.9, 'visible': True}],
                 },
                 {
                     'image_url': 'https://img.local/1.png',
@@ -476,7 +476,7 @@ async def test_python_to_ts_roundtrip_schema_enforcement_after_reload(tmp_path: 
             'is_animated': 'false',  # wrong: should be bool
             'confidence_scores': [0.9, 0.8],
             'metadata': {'score': 0.99},
-            'regions': [{'id': 'r1', 'label': 'face', 'score': 0.9, 'visible': True}],
+            'regions': [{'id': '98f51f1d-b10a-7cd9-8ee6-cb706153f717', 'label': 'face', 'score': 0.9, 'visible': True}],
         }
 
     wrong_bus.on('PyTsScreenshotEvent', wrong_shape_handler)
@@ -501,8 +501,8 @@ async def test_python_to_ts_roundtrip_schema_enforcement_after_reload(tmp_path: 
             'confidence_scores': [0.95, 0.89],
             'metadata': {'score': 0.99, 'variance': 0.01},
             'regions': [
-                {'id': 'r1', 'label': 'face', 'score': 0.9, 'visible': True},
-                {'id': 'r2', 'label': 'button', 'score': 0.7, 'visible': False},
+                {'id': '98f51f1d-b10a-7cd9-8ee6-cb706153f717', 'label': 'face', 'score': 0.9, 'visible': True},
+                {'id': '5f234e9d-29e9-7921-8cf2-2a65f6ba3bdd', 'label': 'button', 'score': 0.7, 'visible': False},
             ],
         }
 
@@ -547,10 +547,8 @@ async def test_python_to_ts_to_python_bus_roundtrip_rehydrates_and_resumes(tmp_p
 
     event_one = PyTsBusResumeEvent(label='e1')
     event_two = PyTsBusResumeEvent(label='e2')
-    seeded_results = event_one._create_pending_handler_results(
-        {handler_one_id: handler_one_entry, handler_two_id: handler_two_entry}, eventbus=source_bus
-    )
-    seeded = seeded_results[handler_one_id]
+    seeded = event_one.event_result_update(handler=handler_one_entry, eventbus=source_bus, status='pending')
+    event_one.event_result_update(handler=handler_two_entry, eventbus=source_bus, status='pending')
     seeded.update(status='completed', result='seeded')
 
     source_bus.event_history[event_one.event_id] = event_one

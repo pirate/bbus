@@ -75,7 +75,7 @@ def test_log_history_tree_with_handlers(capsys: Any) -> None:
     event.event_completed_at = datetime.now(UTC)
 
     # Add handler result
-    handler_id = f'{id(bus)}.123456'
+    handler_id = '018f8e40-1234-7000-8000-000000000101'
     event.event_results[handler_id] = _result_with_handler(
         bus=bus,
         event_id=event.event_id,
@@ -103,7 +103,7 @@ def test_log_history_tree_with_errors(capsys: Any) -> None:
     event.event_completed_at = datetime.now(UTC)
 
     # Add error result
-    handler_id = f'{id(bus)}.789'
+    handler_id = '018f8e40-1234-7000-8000-000000000102'
     event.event_results[handler_id] = _result_with_handler(
         bus=bus,
         event_id=event.event_id,
@@ -131,7 +131,7 @@ def test_log_history_tree_complex_nested() -> None:
     root.event_completed_at = datetime.now(UTC)
 
     # Add root handler with child events
-    root_handler_id = f'{id(bus)}.1001'
+    root_handler_id = '018f8e40-1234-7000-8000-000000000103'
     root.event_results[root_handler_id] = _result_with_handler(
         bus=bus,
         event_id=root.event_id,
@@ -152,7 +152,7 @@ def test_log_history_tree_complex_nested() -> None:
     root.event_results[root_handler_id].event_children.append(child)
 
     # Add child handler with grandchild
-    child_handler_id = f'{id(bus)}.2001'
+    child_handler_id = '018f8e40-1234-7000-8000-000000000104'
     child.event_results[child_handler_id] = _result_with_handler(
         bus=bus,
         event_id=child.event_id,
@@ -173,7 +173,7 @@ def test_log_history_tree_complex_nested() -> None:
     child.event_results[child_handler_id].event_children.append(grandchild)
 
     # Add grandchild handler
-    grandchild_handler_id = f'{id(bus)}.3001'
+    grandchild_handler_id = '018f8e40-1234-7000-8000-000000000105'
     grandchild.event_results[grandchild_handler_id] = _result_with_handler(
         bus=bus,
         event_id=grandchild.event_id,
@@ -238,7 +238,7 @@ def test_log_history_tree_timing_info(capsys: Any) -> None:
     start_time = datetime.now(UTC)
     end_time = datetime.now(UTC)
 
-    handler_id = f'{id(bus)}.999'
+    handler_id = '018f8e40-1234-7000-8000-000000000106'
     event.event_results[handler_id] = _result_with_handler(
         bus=bus,
         event_id=event.event_id,
@@ -265,7 +265,7 @@ def test_log_history_tree_running_handler(capsys: Any) -> None:
     event = RootEvent()
 
     # Add running handler (started but not completed)
-    handler_id = f'{id(bus)}.555'
+    handler_id = '018f8e40-1234-7000-8000-000000000107'
     event.event_results[handler_id] = _result_with_handler(
         bus=bus,
         event_id=event.event_id,

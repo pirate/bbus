@@ -13,6 +13,7 @@ import {
   EVENT_HANDLER_COMPLETION_MODES,
   withResolvers,
 } from './lock_manager.js'
+import { _runWithTimeout } from './timing.js'
 import { extractZodShape, normalizeEventResultType, toJsonSchema } from './types.js'
 import type { EventResultType } from './types.js'
 
@@ -46,7 +47,7 @@ export const BaseEventSchema = z
   .object({
     event_id: z.string().uuid(),
     event_created_at: z.string().datetime(),
-    event_created_ts: z.number().optional(),
+    event_created_ts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     event_type: z.string(),
     event_version: z.string().default('0.0.1'),
     event_timeout: z.number().positive().nullable(),
@@ -60,9 +61,9 @@ export const BaseEventSchema = z
     event_pending_bus_count: z.number().nonnegative().optional(),
     event_status: z.enum(['pending', 'started', 'completed']).optional(),
     event_started_at: z.string().datetime().nullable().optional(),
-    event_started_ts: z.number().nullable().optional(),
+    event_started_ts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
     event_completed_at: z.string().datetime().nullable().optional(),
-    event_completed_ts: z.number().nullable().optional(),
+    event_completed_ts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
     event_results: z.array(z.unknown()).optional(),
     event_concurrency: z.enum(EVENT_CONCURRENCY_MODES).nullable().optional(),
     event_handler_concurrency: z.enum(EVENT_HANDLER_CONCURRENCY_MODES).nullable().optional(),
@@ -256,7 +257,8 @@ export class BaseEvent {
     this.event_started_at = parsed.event_started_at ?? null
     this.event_started_ts = parsed.event_started_ts === null || parsed.event_started_ts === undefined ? null : parsed.event_started_ts
     this.event_completed_at = parsed.event_completed_at ?? null
-    this.event_completed_ts = parsed.event_completed_ts === null || parsed.event_completed_ts === undefined ? null : parsed.event_completed_ts
+    this.event_completed_ts =
+      parsed.event_completed_ts === null || parsed.event_completed_ts === undefined ? null : parsed.event_completed_ts
     this.event_parent_id =
       typeof (parsed as { event_parent_id?: unknown }).event_parent_id === 'string'
         ? (parsed as { event_parent_id: string }).event_parent_id
@@ -279,10 +281,10 @@ export class BaseEvent {
     return `${this.event_type}#${this.event_id.slice(-4)}`
   }
 
-  // get current wall-clock timestamp plus raw monotonic performance.now() offset
+  // get current wall-clock timestamp plus monotonic performance.now() offset (stored as integer ns)
   static eventTimestampNow(): { date: Date; isostring: string; ts: number } {
     const elapsed_ms = performance.now()
-    const ts = elapsed_ms
+    const ts = Math.trunc(elapsed_ms * 1_000_000)
     const date = new Date(performance.timeOrigin + elapsed_ms)
     return { date, isostring: date.toISOString(), ts }
   }
@@ -445,7 +447,7 @@ export class BaseEvent {
   }> {
     const original_event = this._event_original ?? this
     const scoped_event = bus._getEventProxyScopedToThisBus(original_event)
-    const handlers = bus.getHandlersForEvent(original_event)
+    const handlers = bus._getHandlersForEvent(original_event)
     return handlers.map((entry) => {
       const handler_id = entry.id
       const existing = original_event.event_results.get(handler_id)
@@ -541,8 +543,7 @@ export class BaseEvent {
 
   _getHandlerLock(default_concurrency?: EventHandlerConcurrencyMode): AsyncLock | null {
     const original = this._event_original ?? this
-    const resolved =
-      original.event_handler_concurrency ?? default_concurrency ?? original.bus?.event_handler_concurrency ?? 'serial'
+    const resolved = original.event_handler_concurrency ?? default_concurrency ?? original.bus?.event_handler_concurrency ?? 'serial'
     if (resolved === 'parallel') {
       return null
     }
@@ -778,7 +779,7 @@ export class BaseEvent {
   }
 
   // awaitable that triggers immediate (queue-jump) processing of the event on all buses where it is queued
-  // use _waitForCompletion() to wait for normal queue-order completion without queue-jumping.
+  // use eventCompleted() to wait for normal queue-order completion without queue-jumping.
   done(): Promise<this> {
     if (!this.bus) {
       return Promise.reject(new Error('event has no bus attached'))
@@ -788,7 +789,7 @@ export class BaseEvent {
     }
     // Always delegate to _processEventImmediately — it walks up the parent event tree
     // to determine whether we're inside a handler (works cross-bus). If no
-    // ancestor handler is in-flight, it falls back to _waitForCompletion().
+    // ancestor handler is in-flight, it falls back to eventCompleted().
     return this.bus._processEventImmediately(this)
   }
 
@@ -860,15 +861,11 @@ export class BaseEvent {
     if (resolved_timeout_seconds === null) {
       completed_event = await this.done()
     } else {
-      completed_event = await Promise.race([
-        this.done(),
-        new Promise<never>((_, reject) => {
-          setTimeout(
-            () => reject(new Error(`Timed out waiting for ${original.event_type} results after ${resolved_timeout_seconds}s`)),
-            resolved_timeout_seconds * 1000
-          )
-        }),
-      ])
+      completed_event = await _runWithTimeout(
+        resolved_timeout_seconds,
+        () => new Error(`Timed out waiting for ${original.event_type} results after ${resolved_timeout_seconds}s`),
+        () => this.done()
+      )
     }
 
     const all_results: EventResult<this>[] = Array.from(completed_event.event_results.values())
@@ -912,7 +909,7 @@ export class BaseEvent {
   }
 
   // awaitable that waits for the event to be processed in normal queue order by the _runloop
-  _waitForCompletion(): Promise<this> {
+  eventCompleted(): Promise<this> {
     if (this.event_status === 'completed') {
       return Promise.resolve(this)
     }
@@ -1038,20 +1035,18 @@ export class BaseEvent {
   // Returns the first non-undefined completed handler result, sorted by completion time.
   // Useful after first() or done() to get the winning result value.
   get event_result(): EventResultType<this> | undefined {
-    return (
-      Array.from(this.event_results.values())
-        .filter((event_result) => event_result.completed_ts !== null && event_result.result !== undefined)
-        .sort((event_result_a, event_result_b) => {
-          const a_completed_at = event_result_a.completed_at ? Date.parse(event_result_a.completed_at) : 0
-          const b_completed_at = event_result_b.completed_at ? Date.parse(event_result_b.completed_at) : 0
-          if (a_completed_at !== b_completed_at) {
-            return a_completed_at - b_completed_at
-          }
-          return (event_result_a.completed_ts ?? 0) - (event_result_b.completed_ts ?? 0)
-        })
-        .map((event_result) => event_result.result as EventResultType<this>)
-        .at(0)
-    )
+    return Array.from(this.event_results.values())
+      .filter((event_result) => event_result.completed_ts !== null && event_result.result !== undefined)
+      .sort((event_result_a, event_result_b) => {
+        const a_completed_at = event_result_a.completed_at ? Date.parse(event_result_a.completed_at) : 0
+        const b_completed_at = event_result_b.completed_at ? Date.parse(event_result_b.completed_at) : 0
+        if (a_completed_at !== b_completed_at) {
+          return a_completed_at - b_completed_at
+        }
+        return (event_result_a.completed_ts ?? 0) - (event_result_b.completed_ts ?? 0)
+      })
+      .map((event_result) => event_result.result as EventResultType<this>)
+      .at(0)
   }
 
   _areAllChildrenComplete(): boolean {

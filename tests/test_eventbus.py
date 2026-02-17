@@ -97,7 +97,7 @@ class TestEventBusBasics:
         assert bus._runloop_task is None
 
         # Auto-start by emitting an event
-        bus.emit(UserActionEvent(action='test', user_id='user123'))
+        bus.emit(UserActionEvent(action='test', user_id='50d357df-e68c-7111-8a6c-7018569514b0'))
         await bus.wait_until_idle()
 
         # Should be running after auto-start
@@ -118,7 +118,7 @@ class TestEventBusBasics:
         bus.on(UserActionEvent, handler)
 
         try:
-            await bus.emit(UserActionEvent(action='test', user_id='u1'))
+            await bus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
             await bus.wait_until_idle()
 
             assert bus._on_idle is not None
@@ -139,14 +139,14 @@ class TestEventEnqueueing:
     async def test_emit_and_result(self, eventbus):
         """Test event emission in async and sync contexts, and result() pattern"""
         # Test async emission
-        event = UserActionEvent(action='login', user_id='user123', event_timeout=1)
+        event = UserActionEvent(action='login', user_id='50d357df-e68c-7111-8a6c-7018569514b0', event_timeout=1)
         queued = eventbus.emit(event)
 
         # Check immediate result
         assert isinstance(queued, UserActionEvent)
         assert queued.event_type == 'UserActionEvent'
         assert queued.action == 'login'
-        assert queued.user_id == 'user123'
+        assert queued.user_id == '50d357df-e68c-7111-8a6c-7018569514b0'
         assert queued.event_id is not None
         assert queued.event_created_at is not None
         assert queued.event_started_at is None  # Not started yet
@@ -185,7 +185,7 @@ class TestEventEnqueueing:
 
         eventbus.on(UserActionEvent, user_handler)
 
-        event = UserActionEvent(action='alias', user_id='user123')
+        event = UserActionEvent(action='alias', user_id='50d357df-e68c-7111-8a6c-7018569514b0')
         queued = eventbus.emit(event)
 
         assert queued is event
@@ -277,7 +277,7 @@ class TestHandlerRegistration:
         eventbus.on('*', universal_handler)
 
         # Emit events
-        eventbus.emit(UserActionEvent(action='login', user_id='u1'))
+        eventbus.emit(UserActionEvent(action='login', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
         eventbus.emit(SystemEventModel(name='startup'))
         await eventbus.wait_until_idle()
 
@@ -341,7 +341,7 @@ class TestHandlerRegistration:
 
         # Emit event and wait
         start = time.time()
-        event = await eventbus.emit(UserActionEvent(action='test', user_id='u1'))
+        event = await eventbus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
         duration = time.time() - start
 
         # Check handlers ran in parallel (should take ~0.1s, not 0.2s)
@@ -422,7 +422,7 @@ class TestHandlerRegistration:
         eventbus.on('UserActionEvent', EventProcessor.static_method_handler)
 
         # Dispatch event
-        event = UserActionEvent(action='test_methods', user_id='u123')
+        event = UserActionEvent(action='test_methods', user_id='dab45f48-9e3a-7042-80f8-ac8f07b6cfe3')
         completed_event = await eventbus.emit(event)
 
         # Verify all handlers were called
@@ -531,7 +531,9 @@ class TestFIFOOrdering:
 
         # Emit 20 events rapidly
         for i in range(20):
-            eventbus.emit(UserActionEvent(action=f'test_{i}', user_id='u1', metadata={'order': i}))
+            eventbus.emit(
+                UserActionEvent(action=f'test_{i}', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced', metadata={'order': i})
+            )
 
         await eventbus.wait_until_idle()
 
@@ -561,7 +563,7 @@ class TestErrorHandling:
         eventbus.on('UserActionEvent', working_handler)
 
         # Emit and wait for result
-        event = await eventbus.emit(UserActionEvent(action='test', user_id='u1'))
+        event = await eventbus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
 
         # Verify error capture and isolation
         failing_result = next((r for r in event.event_results.values() if r.handler_name.endswith('failing_handler')), None)
@@ -585,7 +587,7 @@ class TestErrorHandling:
         eventbus.on('UserActionEvent', failing_handler_one)
         eventbus.on('UserActionEvent', failing_handler_two)
 
-        event = await eventbus.emit(UserActionEvent(action='test', user_id='u1'))
+        event = await eventbus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
 
         with pytest.raises(ExceptionGroup) as exc_info:
             await event.event_result()
@@ -602,7 +604,7 @@ class TestErrorHandling:
 
         eventbus.on('UserActionEvent', failing_handler)
 
-        event = await eventbus.emit(UserActionEvent(action='test', user_id='u1'))
+        event = await eventbus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
 
         with pytest.raises(ValueError, match='single failure'):
             await event.event_result()
@@ -614,9 +616,9 @@ class TestBatchOperations:
     async def test_batch_emit_with_gather(self, eventbus):
         """Test batch event emission with asyncio.gather"""
         events = [
-            UserActionEvent(action='login', user_id='u1'),
+            UserActionEvent(action='login', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'),
             SystemEventModel(name='startup'),
-            UserActionEvent(action='logout', user_id='u1'),
+            UserActionEvent(action='logout', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'),
         ]
 
         # Enqueue batch
@@ -637,7 +639,7 @@ class TestWriteAheadLog:
         # Emit several events
         events = []
         for i in range(5):
-            event = UserActionEvent(action=f'action_{i}', user_id='u1')
+            event = UserActionEvent(action=f'action_{i}', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced')
             events.append(eventbus.emit(event))
 
         await eventbus.wait_until_idle()
@@ -673,7 +675,7 @@ class TestEventCompletion:
         eventbus.on('UserActionEvent', slow_handler)
 
         # Enqueue without waiting
-        event = eventbus.emit(UserActionEvent(action='test', user_id='u1'))
+        event = eventbus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
         completion_order.append('enqueue_done')
 
         # Wait for completion
@@ -701,7 +703,7 @@ class TestEdgeCases:
 
         # Enqueue events but don't wait
         for i in range(5):
-            bus.emit(UserActionEvent(action=f'action_{i}', user_id='u1'))
+            bus.emit(UserActionEvent(action=f'action_{i}', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
 
         # Stop immediately
         await bus.stop()
@@ -738,7 +740,7 @@ class TestEdgeCases:
             batch_tasks = []
 
             for i in range(batch_start, batch_end):
-                event = UserActionEvent(action=f'concurrent_{i}', user_id='u1')
+                event = UserActionEvent(action=f'concurrent_{i}', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced')
                 # Emit returns the event syncresultsonously, but we need to wait for completion
                 emitted_event = eventbus.emit(event)
                 batch_tasks.append(emitted_event)
@@ -775,7 +777,7 @@ class TestEdgeCases:
         # Emit events
         num_events = 20
         for i in range(num_events):
-            event = UserActionEvent(action=f'mixed_{i}', user_id='u1', metadata={'order': i})
+            event = UserActionEvent(action=f'mixed_{i}', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced', metadata={'order': i})
             eventbus.emit(event)
 
         # Wait for all events to process
@@ -799,7 +801,10 @@ class TestEventTypeOverride:
 
         # Create a specific event type
         event = CreateAgentTaskEvent(
-            user_id='test_user', agent_session_id='12345678-1234-5678-1234-567812345678', llm_model='test-model', task='test task'
+            user_id='371bbd3c-5231-7ff0-8aef-e63732a8d40f',
+            agent_session_id='12345678-1234-5678-1234-567812345678',
+            llm_model='test-model',
+            task='test task',
         )
 
         # Enqueue it
@@ -816,7 +821,10 @@ class TestEventTypeOverride:
         assert base_event.event_version == '0.0.1'
 
         task_event = CreateAgentTaskEvent(
-            user_id='test_user', agent_session_id='12345678-1234-5678-1234-567812345678', llm_model='test-model', task='test task'
+            user_id='371bbd3c-5231-7ff0-8aef-e63732a8d40f',
+            agent_session_id='12345678-1234-5678-1234-567812345678',
+            llm_model='test-model',
+            task='test task',
         )
         assert task_event.event_type == 'CreateAgentTaskEvent'
         assert task_event.event_version == '0.0.1'
@@ -852,7 +860,7 @@ class TestEventTypeOverride:
         """Test that event_type is automatically derived from class name when not specified"""
 
         # Test automatic derivation
-        event = UserActionEvent(action='test', user_id='u1')
+        event = UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced')
         assert event.event_type == 'UserActionEvent'
 
         event2 = SystemEventModel(name='startup')
@@ -949,7 +957,7 @@ class TestEventBusHierarchy:
 
         try:
             # Emit event from the bottom of hierarchy
-            event = UserActionEvent(action='bubble_test', user_id='test_user')
+            event = UserActionEvent(action='bubble_test', user_id='371bbd3c-5231-7ff0-8aef-e63732a8d40f')
             emitted = subchild_bus.emit(event)
 
             # Wait for event to bubble up
@@ -968,7 +976,7 @@ class TestEventBusHierarchy:
 
             # Verify it's the same event content
             assert final_event.action == 'bubble_test'
-            assert final_event.user_id == 'test_user'
+            assert final_event.user_id == '371bbd3c-5231-7ff0-8aef-e63732a8d40f'
             assert final_event.event_id == emitted.event_id
 
             # Test event emitted at middle level
@@ -1045,7 +1053,7 @@ class TestEventBusHierarchy:
 
         try:
             # Emit event from peer1
-            event = UserActionEvent(action='circular_test', user_id='test_user')
+            event = UserActionEvent(action='circular_test', user_id='371bbd3c-5231-7ff0-8aef-e63732a8d40f')
             emitted = peer1.emit(event)
 
             # Wait for all processing to complete
@@ -1116,7 +1124,7 @@ class TestFindMethod:
         await asyncio.sleep(0.01)
 
         # Dispatch the event
-        dispatched = eventbus.emit(UserActionEvent(action='login', user_id='user123'))
+        dispatched = eventbus.emit(UserActionEvent(action='login', user_id='50d357df-e68c-7111-8a6c-7018569514b0'))
 
         # Wait for find to resolve
         received = await find_task
@@ -1124,32 +1132,34 @@ class TestFindMethod:
         # Verify we got the right event
         assert received.event_type == 'UserActionEvent'
         assert received.action == 'login'
-        assert received.user_id == 'user123'
+        assert received.user_id == '50d357df-e68c-7111-8a6c-7018569514b0'
         assert received.event_id == dispatched.event_id
 
     async def test_find_future_with_predicate(self, eventbus):
         """Test future find with where predicate filtering."""
         # Dispatch some events that don't match
-        eventbus.emit(UserActionEvent(action='logout', user_id='user456'))
-        eventbus.emit(UserActionEvent(action='login', user_id='user789'))
+        eventbus.emit(UserActionEvent(action='logout', user_id='eab58ec9-90ea-7758-893f-afed99518f43'))
+        eventbus.emit(UserActionEvent(action='login', user_id='dce05df3-8e9b-7159-84f9-5ab894dddbd7'))
 
         find_task = asyncio.create_task(
-            eventbus.find('UserActionEvent', where=lambda e: e.user_id == 'user123', past=False, future=1.0)
+            eventbus.find(
+                'UserActionEvent', where=lambda e: e.user_id == '50d357df-e68c-7111-8a6c-7018569514b0', past=False, future=1.0
+            )
         )
 
         # Give find time to register
         await asyncio.sleep(0.01)
 
         # Dispatch more events
-        eventbus.emit(UserActionEvent(action='update', user_id='user456'))
-        target_event = eventbus.emit(UserActionEvent(action='login', user_id='user123'))
-        eventbus.emit(UserActionEvent(action='delete', user_id='user789'))
+        eventbus.emit(UserActionEvent(action='update', user_id='eab58ec9-90ea-7758-893f-afed99518f43'))
+        target_event = eventbus.emit(UserActionEvent(action='login', user_id='50d357df-e68c-7111-8a6c-7018569514b0'))
+        eventbus.emit(UserActionEvent(action='delete', user_id='dce05df3-8e9b-7159-84f9-5ab894dddbd7'))
 
         # Wait for the matching event
         received = await find_task
 
         # Should get the event matching the predicate
-        assert received.user_id == 'user123'
+        assert received.user_id == '50d357df-e68c-7111-8a6c-7018569514b0'
         assert received.event_id == target_event.event_id
 
     async def test_find_future_timeout(self, eventbus):
@@ -1164,7 +1174,7 @@ class TestFindMethod:
         await asyncio.sleep(0.01)
 
         # Dispatch different event types
-        eventbus.emit(UserActionEvent(action='test', user_id='u1'))
+        eventbus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
         target = eventbus.emit(SystemEventModel(name='startup', severity='info'))
 
         # Should receive the SystemEventModel
@@ -1186,9 +1196,9 @@ class TestFindMethod:
         await asyncio.sleep(0.1)  # Give more time for handlers to register
 
         # Dispatch events
-        e1 = eventbus.emit(UserActionEvent(action='normal', user_id='u1'))
+        e1 = eventbus.emit(UserActionEvent(action='normal', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
         e2 = eventbus.emit(SystemEventModel(name='test'))
-        e3 = eventbus.emit(UserActionEvent(action='special', user_id='u2'))
+        e3 = eventbus.emit(UserActionEvent(action='special', user_id='2a312e4d-3035-7883-86b9-578ce47046b2'))
 
         # Wait for all events to be processed
         await eventbus.wait_until_idle()
@@ -1258,8 +1268,8 @@ class TestFindPastMethod:
 
     async def test_find_past_returns_most_recent(self, eventbus):
         # Dispatch two events and ensure the newest is returned
-        eventbus.emit(UserActionEvent(action='first', user_id='u1'))
-        latest = eventbus.emit(UserActionEvent(action='second', user_id='u2'))
+        eventbus.emit(UserActionEvent(action='first', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
+        latest = eventbus.emit(UserActionEvent(action='second', user_id='2a312e4d-3035-7883-86b9-578ce47046b2'))
         await eventbus.wait_until_idle()
 
         match = await eventbus.find('UserActionEvent', past=10, future=False)
@@ -1267,7 +1277,7 @@ class TestFindPastMethod:
         assert match.event_id == latest.event_id
 
     async def test_find_past_respects_time_window(self, eventbus):
-        event = eventbus.emit(UserActionEvent(action='old', user_id='u1'))
+        event = eventbus.emit(UserActionEvent(action='old', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
         await eventbus.wait_until_idle()
         event.event_created_at -= timedelta(seconds=30)
 
@@ -1283,7 +1293,7 @@ class TestFindPastMethod:
 
         eventbus.on('UserActionEvent', slow_handler)
 
-        pending_event = eventbus.emit(UserActionEvent(action='slow', user_id='u1'))
+        pending_event = eventbus.emit(UserActionEvent(action='slow', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
 
         # While handler is running, past find can still match in-flight events
         in_flight = await eventbus.find('UserActionEvent', past=10, future=False)
@@ -1378,14 +1388,14 @@ class TestDebouncePatterns:
         await asyncio.sleep(0.01)
 
         # Dispatch events
-        eventbus.emit(UserActionEvent(action='first', user_id='u1'))
-        eventbus.emit(UserActionEvent(action='second', user_id='u2'))
-        eventbus.emit(UserActionEvent(action='target', user_id='u3'))  # Won't match yet
-        eventbus.emit(UserActionEvent(action='target', user_id='u4'))  # This should match
+        eventbus.emit(UserActionEvent(action='first', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
+        eventbus.emit(UserActionEvent(action='second', user_id='2a312e4d-3035-7883-86b9-578ce47046b2'))
+        eventbus.emit(UserActionEvent(action='target', user_id='6eb8a717-e19d-728b-8905-97f7e20c002e'))  # Won't match yet
+        eventbus.emit(UserActionEvent(action='target', user_id='840ea1d0-3500-7be5-8f73-5fd29bb46e89'))  # This should match
 
         received = await find_task
 
-        assert received.user_id == 'u4'
+        assert received.user_id == '840ea1d0-3500-7be5-8f73-5fd29bb46e89'
         assert len(events_seen) == 4
 
 
@@ -1401,7 +1411,7 @@ class TestEventResults:
 
         eventbus.on('UserActionEvent', test_handler)
 
-        result = eventbus.emit(UserActionEvent(action='test', user_id='u1'))
+        result = eventbus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
         assert isinstance(result, BaseEvent)
 
         # Wait for completion

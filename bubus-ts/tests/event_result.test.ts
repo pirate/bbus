@@ -7,7 +7,6 @@ import { z } from 'zod'
 import { BaseEvent, EventBus } from '../src/index.js'
 import { EventHandler } from '../src/event_handler.js'
 import { EventResult } from '../src/event_result.js'
-import type { EventHandlerConcurrencyMode, HandlerLock } from '../src/lock_manager.js'
 
 const StringResultEvent = BaseEvent.extend('StringResultEvent', {
   event_result_type: z.string(),
@@ -109,13 +108,14 @@ test('event result JSON omits result_type and derives from parent event', async 
 })
 
 test('EventHandler JSON roundtrips handler metadata', () => {
+  const handler_registered_ts = 678901
   const handler = (event: BaseEvent): string => event.event_type
   const entry = new EventHandler({
     handler,
     handler_name: 'pkg.module.handler',
     handler_file_path: '~/project/app.ts:123',
     handler_registered_at: '2025-01-02T03:04:05.678Z',
-    handler_registered_ts: 1735787045678901000,
+    handler_registered_ts,
     event_pattern: 'StandaloneEvent',
     eventbus_name: 'StandaloneBus',
     eventbus_id: '018f8e40-1234-7000-8000-000000001234',
@@ -133,10 +133,11 @@ test('EventHandler JSON roundtrips handler metadata', () => {
 })
 
 test('EventHandler.computeHandlerId matches uuidv5 seed algorithm', () => {
+  const handler_registered_ts = 678901
   const namespace = uuidv5('bubus-handler', uuidv5.DNS)
   const expected_seed =
     '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.ts:123|' +
-    '2025-01-02T03:04:05.678Z|1735787045678901000|StandaloneEvent'
+    `2025-01-02T03:04:05.678Z|${handler_registered_ts}|StandaloneEvent`
   const expected_id = uuidv5(expected_seed, namespace)
 
   const computed_id = EventHandler.computeHandlerId({
@@ -144,17 +145,37 @@ test('EventHandler.computeHandlerId matches uuidv5 seed algorithm', () => {
     handler_name: 'pkg.module.handler',
     handler_file_path: '~/project/app.ts:123',
     handler_registered_at: '2025-01-02T03:04:05.678Z',
-    handler_registered_ts: 1735787045678901000,
+    handler_registered_ts,
     event_pattern: 'StandaloneEvent',
   })
 
   assert.equal(computed_id, expected_id)
 })
 
-test('runHandler does not create a slow monitor timer for already-settled results', async () => {
+test('EventHandler rejects non-integer handler_registered_ts values', () => {
+  const handler = (event: BaseEvent): string => event.event_type
+  assert.throws(() => {
+    void new EventHandler({
+      handler,
+      handler_name: 'pkg.module.handler',
+      handler_file_path: '~/project/app.ts:123',
+      handler_registered_at: '2025-01-02T03:04:05.678Z',
+      handler_registered_ts: 1.9,
+      event_pattern: 'StandaloneEvent',
+      eventbus_name: 'StandaloneBus',
+      eventbus_id: '018f8e40-1234-7000-8000-000000001234',
+    })
+  })
+})
+
+test('runHandler is a no-op for already-settled results', async () => {
   const SettledEvent = BaseEvent.extend('RunHandlerSettledEvent', {})
   const bus = new EventBus('RunHandlerSettledBus')
-  const handler = bus.on(SettledEvent, () => 'ok')
+  let handler_calls = 0
+  const handler = bus.on(SettledEvent, () => {
+    handler_calls += 1
+    return 'ok'
+  })
 
   const event = SettledEvent({})
   event.bus = bus
@@ -162,74 +183,43 @@ test('runHandler does not create a slow monitor timer for already-settled result
   const result = new EventResult({ event, handler })
   result.status = 'completed'
 
-  let timer_created = false
-  result._createSlowHandlerWarningTimer = () => {
-    timer_created = true
-    return null
-  }
-
   await result.runHandler(null)
 
-  assert.equal(timer_created, false)
+  assert.equal(handler_calls, 0)
+  assert.equal(result.status, 'completed')
   bus.destroy()
 })
 
-test('runHandler starts slow monitor timer only after handler is marked started', async () => {
-  const TimerOrderEvent = BaseEvent.extend('RunHandlerTimerOrderEvent', {})
-  const bus = new EventBus('RunHandlerTimerOrderBus')
-  const handler = bus.on(TimerOrderEvent, async () => 'ok')
-
-  const event = TimerOrderEvent({})
-  event.bus = bus
-
-  const result = new EventResult({ event, handler })
-  let status_seen_during_timer_creation: string | null = null
-  result._createSlowHandlerWarningTimer = () => {
-    status_seen_during_timer_creation = result.status
-    return null
-  }
-
-  await result.runHandler(null)
-
-  assert.equal(status_seen_during_timer_creation, 'started')
-  bus.destroy()
-})
-
-test('handler result stays pending while waiting for _runWithHandlerLock entry', async () => {
+test('handler result stays pending while waiting for handler lock entry', async () => {
   const LockWaitEvent = BaseEvent.extend('RunHandlerLockWaitEvent', {})
   const bus = new EventBus('RunHandlerLockWaitBus', { event_handler_concurrency: 'serial' })
 
-  bus.on(LockWaitEvent, async () => 'ok')
-
-  let release_lock!: () => void
-  const release_lock_promise = new Promise<void>((resolve) => {
-    release_lock = resolve
+  bus.on(LockWaitEvent, async function first_handler() {
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    return 'first'
   })
-  const original_with_handler_lock = bus.locks._runWithHandlerLock.bind(bus.locks)
-  bus.locks._runWithHandlerLock = async <T>(
-    event: BaseEvent,
-    default_handler_concurrency: EventHandlerConcurrencyMode | undefined,
-    fn: (lock: HandlerLock | null) => Promise<T>
-  ): Promise<T> => {
-    await release_lock_promise
-    return await original_with_handler_lock(event, default_handler_concurrency, fn)
-  }
+  bus.on(LockWaitEvent, async function second_handler() {
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    return 'second'
+  })
 
   const event = bus.emit(LockWaitEvent({}))
   const start = Date.now()
-  while (event.event_results.size === 0) {
+  while (event.event_results.size < 2) {
     if (Date.now() - start > 1_000) {
       throw new Error('Timed out waiting for pending handler result')
     }
     await new Promise((resolve) => setTimeout(resolve, 0))
   }
 
-  const result = Array.from(event.event_results.values())[0]
-  assert.equal(result.status, 'pending')
+  const second_result = Array.from(event.event_results.values()).find((result) => result.handler_name === 'second_handler')
+  assert.ok(second_result)
+  assert.equal(second_result.status, 'pending')
 
-  release_lock()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(second_result.status, 'pending')
   await event.done()
-  assert.equal(result.status, 'completed')
+  assert.equal(second_result.status, 'completed')
   bus.destroy()
 })
 
@@ -248,41 +238,41 @@ test('slow handler warning is based on handler runtime after lock wait', async (
     }
   }
   try {
-    bus.on(SlowAfterLockWaitEvent, async () => {
+    bus.on(SlowAfterLockWaitEvent, async function first_handler() {
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      return 'first'
+    })
+    bus.on(SlowAfterLockWaitEvent, async function second_handler() {
       await new Promise((resolve) => setTimeout(resolve, 30))
-      return 'ok'
+      return 'second'
     })
-
-    let release_lock!: () => void
-    const release_lock_promise = new Promise<void>((resolve) => {
-      release_lock = resolve
-    })
-    const original_with_handler_lock = bus.locks._runWithHandlerLock.bind(bus.locks)
-    bus.locks._runWithHandlerLock = async <T>(
-      event: BaseEvent,
-      default_handler_concurrency: EventHandlerConcurrencyMode | undefined,
-      fn: (lock: HandlerLock | null) => Promise<T>
-    ): Promise<T> => {
-      await release_lock_promise
-      return await original_with_handler_lock(event, default_handler_concurrency, fn)
-    }
 
     const event = bus.emit(SlowAfterLockWaitEvent({}))
     const start = Date.now()
-    while (event.event_results.size === 0) {
+    while (event.event_results.size < 2) {
       if (Date.now() - start > 1_000) {
         throw new Error('Timed out waiting for pending handler result')
       }
       await new Promise((resolve) => setTimeout(resolve, 0))
     }
-    assert.equal(Array.from(event.event_results.values())[0].status, 'pending')
 
-    await new Promise((resolve) => setTimeout(resolve, 30))
-    release_lock()
+    const second_result = Array.from(event.event_results.values()).find((result) => result.handler_name === 'second_handler')
+    assert.ok(second_result)
+    assert.equal(second_result.status, 'pending')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(second_result.status, 'pending')
     await event.done()
 
     assert.equal(
       warnings.some((message) => message.toLowerCase().includes('slow event handler')),
+      true
+    )
+    assert.equal(
+      warnings.some((message) => message.includes('first_handler')),
+      true
+    )
+    assert.equal(
+      warnings.some((message) => message.includes('second_handler')),
       true
     )
   } finally {

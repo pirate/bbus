@@ -20,7 +20,82 @@ test('BaseEvent lifecycle transitions are explicit and awaitable', async () => {
   standalone._markCompleted(false)
   assert.equal(standalone.event_status, 'completed')
   assert.equal(typeof standalone.event_completed_at, 'string')
-  await standalone._waitForCompletion()
+  await standalone.eventCompleted()
+})
+
+test('await event.done() queue-jumps child processing inside handlers', async () => {
+  const ParentEvent = BaseEvent.extend('BaseEventImmediateParentEvent', {})
+  const ChildEvent = BaseEvent.extend('BaseEventImmediateChildEvent', {})
+  const SiblingEvent = BaseEvent.extend('BaseEventImmediateSiblingEvent', {})
+
+  const bus = new EventBus('BaseEventImmediateQueueJumpBus', {
+    event_concurrency: 'bus-serial',
+    event_handler_concurrency: 'serial',
+  })
+  const order: string[] = []
+
+  bus.on(ParentEvent, async (event) => {
+    order.push('parent_start')
+    event.bus?.emit(SiblingEvent({}))
+    const child = event.bus?.emit(ChildEvent({}))
+    assert.ok(child)
+    await child.done()
+    order.push('parent_end')
+  })
+
+  bus.on(ChildEvent, async () => {
+    order.push('child')
+  })
+
+  bus.on(SiblingEvent, async () => {
+    order.push('sibling')
+  })
+
+  await bus.emit(ParentEvent({})).done()
+  await bus.waitUntilIdle()
+
+  assert.deepEqual(order, ['parent_start', 'child', 'parent_end', 'sibling'])
+  bus.destroy()
+})
+
+test('await event.eventCompleted() preserves normal queue order inside handlers', async () => {
+  const ParentEvent = BaseEvent.extend('BaseEventQueuedParentEvent', {})
+  const ChildEvent = BaseEvent.extend('BaseEventQueuedChildEvent', {})
+  const SiblingEvent = BaseEvent.extend('BaseEventQueuedSiblingEvent', {})
+
+  const bus = new EventBus('BaseEventQueueOrderBus', {
+    event_concurrency: 'parallel',
+    event_handler_concurrency: 'parallel',
+  })
+  const order: string[] = []
+
+  bus.on(ParentEvent, async (event) => {
+    order.push('parent_start')
+    event.bus?.emit(SiblingEvent({}))
+    const child = event.bus?.emit(ChildEvent({}))
+    assert.ok(child)
+    await child.eventCompleted()
+    order.push('parent_end')
+  })
+
+  bus.on(ChildEvent, async () => {
+    order.push('child_start')
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    order.push('child_end')
+  })
+
+  bus.on(SiblingEvent, async () => {
+    order.push('sibling_start')
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    order.push('sibling_end')
+  })
+
+  await bus.emit(ParentEvent({})).done()
+  await bus.waitUntilIdle()
+
+  assert.ok(order.indexOf('sibling_start') < order.indexOf('child_start'))
+  assert.ok(order.indexOf('child_end') < order.indexOf('parent_end'))
+  bus.destroy()
 })
 
 test('BaseEvent.eventTimestampNow emits raw monotonic performance.now() values', () => {

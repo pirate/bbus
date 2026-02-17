@@ -30,11 +30,18 @@ const assertFieldEqual = (key: string, actual: unknown, expected: unknown, conte
     assert.equal(Date.parse(actual), Date.parse(expected), `${context}: ${key}`)
     return
   }
-  if (key.endsWith('_ts') && typeof actual === 'number') {
-    if (context.includes('python roundtrip') || context.includes('ts reload')) {
-      assert.equal(Number.isInteger(actual), true, `${context}: ${key} must be integer`)
-      assert.ok(actual >= 0 && actual <= Number.MAX_SAFE_INTEGER, `${context}: ${key} must be JS-safe integer`)
+  if (key.endsWith('_ts')) {
+    if (typeof actual === 'number' && typeof expected === 'number') {
+      if (context.includes('python roundtrip') || context.includes('ts reload')) {
+        assert.equal(Number.isInteger(actual), true, `${context}: ${key} must be integer`)
+        assert.equal(Number.isInteger(expected), true, `${context}: ${key} expected value must be integer`)
+        assert.ok(actual >= 0 && actual <= Number.MAX_SAFE_INTEGER, `${context}: ${key} must be JS-safe integer`)
+        assert.ok(expected >= 0 && expected <= Number.MAX_SAFE_INTEGER, `${context}: ${key} expected value must be JS-safe integer`)
+      }
+      assert.equal(actual, expected, `${context}: ${key}`)
+      return
     }
+    assert.deepEqual(actual, expected, `${context}: ${key}`)
     return
   }
   assert.deepEqual(actual, expected, `${context}: ${key}`)
@@ -162,7 +169,7 @@ const buildRoundtripCases = (): ResultSemanticsCase[] => {
   })
 
   const screenshot_event = ScreenshotResultEvent({
-    target_id: 'tab-1',
+    target_id: '0c1ccf21-65c0-7390-8b64-9182e985740e',
     quality: 'high',
     event_parent_id: number_event.event_id,
     event_path: ['TsBus#aaaa', 'PyBridge#bbbb'],
@@ -170,44 +177,44 @@ const buildRoundtripCases = (): ResultSemanticsCase[] => {
   })
 
   const string_event = StringResultEvent({
-    id: 's-1',
+    id: 'ecea6334-c939-7540-89b9-29b439c9a1f4',
     event_parent_id: number_event.event_id,
     event_path: ['TsBus#aaaa'],
   })
   const bool_event = BooleanResultEvent({
-    id: 'b-1',
+    id: '87dc4d01-be2d-7057-834e-5faf35705400',
     event_path: ['TsBus#aaaa'],
   })
   const null_event = NullResultEvent({
-    id: 'n-1',
+    id: '5fc19a35-064c-7ec1-8d1a-4fb33f119abc',
     event_path: ['TsBus#aaaa'],
   })
   const string_ctor_event = StringCtorResultEvent({
-    id: 'cs-1',
+    id: 'df54dc78-e988-75bc-8457-87d5bd2d7c4c',
     event_path: ['TsBus#aaaa'],
   })
   const number_ctor_event = NumberCtorResultEvent({
-    id: 'cn-1',
+    id: 'bfe9459c-c1a4-7906-8a13-c9855aac0001',
     event_path: ['TsBus#aaaa'],
   })
   const boolean_ctor_event = BooleanCtorResultEvent({
-    id: 'cb-1',
+    id: 'f472d2e0-5815-7dad-8fb1-a9ce4315cd6e',
     event_path: ['TsBus#aaaa'],
   })
   const array_event = ArrayResultEvent({
-    id: 'arr-1',
+    id: 'e35d91b5-1ca9-7833-8b3d-1516e2896f1e',
     event_path: ['TsBus#aaaa'],
   })
   const array_ctor_event = ArrayCtorResultEvent({
-    id: 'carr-1',
+    id: 'f21399dd-6162-7ac2-832d-a3870373278a',
     event_path: ['TsBus#aaaa'],
   })
   const record_event = RecordResultEvent({
-    id: 'rec-1',
+    id: 'ba1a8735-0955-737f-8b4d-7337d2169a3c',
     event_path: ['TsBus#aaaa'],
   })
   const object_ctor_event = ObjectCtorResultEvent({
-    id: 'obj-1',
+    id: '2aa37066-45e8-7f65-8ada-7c30ac8982d5',
     event_path: ['TsBus#aaaa'],
   })
 
@@ -279,8 +286,8 @@ const buildRoundtripCases = (): ResultSemanticsCase[] => {
           confidence_scores: [0.95, 0.89],
           metadata: { score: 0.99, variance: 0.01 },
           regions: [
-            { id: 'r1', label: 'face', score: 0.9, visible: true },
-            { id: 'r2', label: 'button', score: 0.7, visible: false },
+            { id: '98f51f1d-b10a-7cd9-8ee6-cb706153f717', label: 'face', score: 0.9, visible: true },
+            { id: '5f234e9d-29e9-7921-8cf2-2a65f6ba3bdd', label: 'button', score: 0.7, visible: false },
           ],
         },
       ],
@@ -293,7 +300,7 @@ const buildRoundtripCases = (): ResultSemanticsCase[] => {
           is_animated: false,
           confidence_scores: [0.95],
           metadata: { score: 0.99 },
-          regions: [{ id: 'r1', label: 'face', score: 0.9, visible: true }],
+          regions: [{ id: '98f51f1d-b10a-7cd9-8ee6-cb706153f717', label: 'face', score: 0.9, visible: true }],
         },
         {
           image_url: 'https://img.local/1.png',
@@ -572,7 +579,7 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
     is_animated: 'false',
     confidence_scores: [0.95, 0.89],
     metadata: { score: 0.99 },
-    regions: [{ id: 'r1', label: 'face', score: 0.9, visible: true }],
+    regions: [{ id: '98f51f1d-b10a-7cd9-8ee6-cb706153f717', label: 'face', score: 0.9, visible: true }],
   }))
   const wrong_event = BaseEvent.fromJSON(screenshot_payload)
   assert.equal(typeof (wrong_event.event_result_type as { safeParse?: unknown } | undefined)?.safeParse, 'function')
@@ -592,8 +599,8 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
     confidence_scores: [0.95, 0.89],
     metadata: { score: 0.99, variance: 0.01 },
     regions: [
-      { id: 'r1', label: 'face', score: 0.9, visible: true },
-      { id: 'r2', label: 'button', score: 0.7, visible: false },
+      { id: '98f51f1d-b10a-7cd9-8ee6-cb706153f717', label: 'face', score: 0.9, visible: true },
+      { id: '5f234e9d-29e9-7921-8cf2-2a65f6ba3bdd', label: 'button', score: 0.7, visible: false },
     ],
   }))
   const right_event = BaseEvent.fromJSON(screenshot_payload)
@@ -611,8 +618,8 @@ test('ts_to_python_roundtrip preserves event fields and result type semantics', 
     confidence_scores: [0.95, 0.89],
     metadata: { score: 0.99, variance: 0.01 },
     regions: [
-      { id: 'r1', label: 'face', score: 0.9, visible: true },
-      { id: 'r2', label: 'button', score: 0.7, visible: false },
+      { id: '98f51f1d-b10a-7cd9-8ee6-cb706153f717', label: 'face', score: 0.9, visible: true },
+      { id: '5f234e9d-29e9-7921-8cf2-2a65f6ba3bdd', label: 'button', score: 0.7, visible: false },
     ],
   })
   right_bus.destroy()

@@ -188,8 +188,8 @@ Timeout and slow-monitor behavior is implemented as stacked runtime scopes. The 
 
 ```python
 # EventBus.step(...)
-async with self.locks.with_event_lock(self, event):
-    await self.process_event(event, timeout=timeout)
+async with self.locks._run_with_event_lock(self, event):
+    await self._process_event(event, timeout=timeout)
 
 # EventBus.process_event(...)
 async with asyncio.timeout(resolved_event_timeout):
@@ -197,11 +197,11 @@ async with asyncio.timeout(resolved_event_timeout):
         await event._run_handlers(eventbus=self, handlers=applicable_handlers, timeout=resolved_event_timeout)
 
 # EventResult.run_handler(...)
-async with eventbus.locks.with_handler_lock(eventbus, event, event_result):
-    with eventbus.with_handler_execution_context(event, event_result.handler_id):
-        async with event_result.with_timeout(event):
+async with eventbus.locks._run_with_handler_lock(eventbus, event, event_result):
+    with eventbus._run_with_handler_dispatch_context(event, event_result.handler_id):
+        async with event_result._run_with_timeout(event):
             async with with_slow_monitor(handler_slow_monitor):
-                await event_result.call_handler(...)
+                await event_result._call_handler(...)
 ```
 
 </Tab>
@@ -209,24 +209,24 @@ async with eventbus.locks.with_handler_lock(eventbus, event, event_result):
 
 ```ts
 // EventBus.processEvent(...)
-await this.locks.withEventLock(event, () =>
+await this.locks._runWithEventLock(event, () =>
   this._runHandlersWithTimeout(event, pending_entries, resolved_event_timeout, () =>
-    runWithSlowMonitor(event._createSlowEventWarningTimer(), () =>
+    _runWithSlowMonitor(event._createSlowEventWarningTimer(), () =>
       scoped_event._runHandlers(pending_entries)
     )
   )
 )
 
 // BaseEvent._runHandlers(...) + EventResult.runHandler(...)
-await this.bus.locks.withHandlerLock(original, this.bus.event_handler_concurrency_default, async (handler_lock) => {
+await this.bus.locks._runWithHandlerLock(original, this.bus.event_handler_concurrency, async (handler_lock) => {
   await entry.runHandler(handler_lock)
 })
 
-await this.bus.locks.withHandlerExecutionContext(this, async () => {
-  await runWithAsyncContext(event._getDispatchContext() ?? null, async () => {
-    await runWithTimeout(this.handler_timeout, () => this._createHandlerTimeoutError(event), () =>
-      runWithSlowMonitor(slow_handler_warning_timer, () =>
-        runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
+await this.bus.locks._runWithHandlerDispatchContext(this, async () => {
+  await _runWithAsyncContext(event._getDispatchContext() ?? null, async () => {
+    await _runWithTimeout(this.handler_timeout, () => this._createHandlerTimeoutError(event), () =>
+      _runWithSlowMonitor(slow_handler_warning_timer, () =>
+        _runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
       )
     )
   })

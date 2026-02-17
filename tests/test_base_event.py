@@ -49,6 +49,91 @@ async def test_event_bus_aliases_bus_property():
     await bus.stop()
 
 
+async def test_await_event_queue_jumps_inside_handler():
+    class ParentEvent(BaseEvent[None]):
+        pass
+
+    class ChildEvent(BaseEvent[None]):
+        pass
+
+    class SiblingEvent(BaseEvent[None]):
+        pass
+
+    bus = EventBus(
+        name='QueueJumpAwaitEventBus',
+        event_concurrency='bus-serial',
+        event_handler_concurrency='serial',
+    )
+    order: list[str] = []
+
+    async def on_parent(event: ParentEvent) -> None:
+        order.append('parent_start')
+        event.bus.emit(SiblingEvent())
+        child = event.bus.emit(ChildEvent())
+        await child
+        order.append('parent_end')
+
+    async def on_child(_: ChildEvent) -> None:
+        order.append('child')
+
+    async def on_sibling(_: SiblingEvent) -> None:
+        order.append('sibling')
+
+    bus.on(ParentEvent, on_parent)
+    bus.on(ChildEvent, on_child)
+    bus.on(SiblingEvent, on_sibling)
+
+    await bus.emit(ParentEvent())
+    await bus.wait_until_idle()
+    assert order == ['parent_start', 'child', 'parent_end', 'sibling']
+    await bus.stop()
+
+
+async def test_event_completed_waits_in_queue_order_inside_handler():
+    class ParentEvent(BaseEvent[None]):
+        pass
+
+    class ChildEvent(BaseEvent[None]):
+        pass
+
+    class SiblingEvent(BaseEvent[None]):
+        pass
+
+    bus = EventBus(
+        name='QueueOrderEventCompletedBus',
+        event_concurrency='parallel',
+        event_handler_concurrency='parallel',
+    )
+    order: list[str] = []
+
+    async def on_parent(event: ParentEvent) -> None:
+        order.append('parent_start')
+        event.bus.emit(SiblingEvent())
+        child = event.bus.emit(ChildEvent())
+        await child.event_completed()
+        order.append('parent_end')
+
+    async def on_child(_: ChildEvent) -> None:
+        order.append('child_start')
+        await asyncio.sleep(0.001)
+        order.append('child_end')
+
+    async def on_sibling(_: SiblingEvent) -> None:
+        order.append('sibling_start')
+        await asyncio.sleep(0.001)
+        order.append('sibling_end')
+
+    bus.on(ParentEvent, on_parent)
+    bus.on(ChildEvent, on_child)
+    bus.on(SiblingEvent, on_sibling)
+
+    await bus.emit(ParentEvent())
+    await bus.wait_until_idle()
+    assert order.index('sibling_start') < order.index('child_start')
+    assert order.index('child_end') < order.index('parent_end')
+    await bus.stop()
+
+
 async def test_reserved_runtime_fields_are_rejected():
     with pytest.raises(ValidationError, match='Field "bus" is reserved'):
         MainEvent.model_validate({'bus': 'payload_bus_field'})
@@ -89,7 +174,7 @@ async def test_event_ts_fields_are_recognized():
             'event_started_ts': 456,
             'event_completed_ts': 789,
             'event_slow_timeout': 1.5,
-            'event_emitted_by_handler_id': 'handler-123',
+            'event_emitted_by_handler_id': '018f8e40-1234-7000-8000-000000000301',
             'event_pending_bus_count': 2,
         }
     )
@@ -97,7 +182,7 @@ async def test_event_ts_fields_are_recognized():
     assert event.event_started_ts == 456
     assert event.event_completed_ts == 789
     assert event.event_slow_timeout == 1.5
-    assert event.event_emitted_by_handler_id == 'handler-123'
+    assert event.event_emitted_by_handler_id == '018f8e40-1234-7000-8000-000000000301'
     assert event.event_pending_bus_count == 2
 
 

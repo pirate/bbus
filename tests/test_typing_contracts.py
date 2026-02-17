@@ -4,7 +4,7 @@ This module is never imported by runtime code. It exists so strict type checks
 (`pyright`, `ty`) fail if the end-to-end event handler pipeline is weakened.
 """
 
-from typing import Any, AsyncContextManager, ContextManager, assert_type
+from typing import Any, assert_type
 
 from pydantic import BaseModel
 
@@ -25,53 +25,34 @@ async def _contract_handler(event: TypeContractEvent) -> TypeContractResult:
     return TypeContractResult(message=event.event_type)
 
 
-def _build_contract_handler(bus: EventBus) -> EventHandler:
-    return EventHandler.from_callable(
-        handler=_contract_handler,
-        event_pattern='TypeContractEvent',
-        eventbus_name=bus.name,
-        eventbus_id=bus.id,
-    )
-
-
-def _assert_pending_result_types(event: TypeContractEvent, bus: EventBus, handler_entry: EventHandler) -> None:
-    pending_results = event._create_pending_handler_results(
-        {handler_entry.id: handler_entry},
-        eventbus=bus,
-        timeout=event.event_timeout,
-    )
-    for pending_result in pending_results.values():
-        assert_type(pending_result, EventResult[TypeContractResult])
-
-
 async def _assert_pipeline_types(bus: EventBus, event: TypeContractEvent) -> None:
-    handler_entry = _build_contract_handler(bus)
-    _assert_pending_result_types(event, bus, handler_entry)
+    handler_entry = bus.on(TypeContractEvent, _contract_handler)
+    assert_type(handler_entry, EventHandler)
 
     dispatched_event = bus.emit(event)
     assert_type(dispatched_event, TypeContractEvent)
 
-    emitted_event = bus.emit(event)
-    assert_type(emitted_event, TypeContractEvent)
-
-    handler_result = event.event_results[handler_entry.id]
-    assert_type(handler_result, EventResult[TypeContractResult])
-
-    handler_lock_scope: AsyncContextManager[None] = bus.locks._run_with_handler_lock(bus, event, handler_result)
-    async with handler_lock_scope:
-        pass
-
-    handler_context_scope: ContextManager[None] = bus._run_with_handler_execution_context(event, handler_entry.id)
-    with handler_context_scope:
-        pass
-
-    bus_run_value = await bus.run_handler(event, handler_entry, timeout=event.event_timeout)
-    assert_type(bus_run_value, TypeContractResult | BaseEvent[Any] | None)
-
-    result_run_value = await handler_result.run_handler(event, eventbus=bus, timeout=event.event_timeout)
+    typed_pending_result = dispatched_event.event_result_update(handler_entry, eventbus=bus, status='pending')
+    assert_type(typed_pending_result, EventResult[TypeContractResult])
+    result_run_value = await typed_pending_result.run_handler(dispatched_event, eventbus=bus, timeout=event.event_timeout)
     assert_type(result_run_value, TypeContractResult | BaseEvent[Any] | None)
+    assert_type(typed_pending_result.result, TypeContractResult | BaseEvent[Any] | None)
 
-    assert_type(handler_result.result, TypeContractResult | BaseEvent[Any] | None)
+    emitted_event = bus.emit(TypeContractEvent())
+    assert_type(emitted_event, TypeContractEvent)
+    completed_event = await emitted_event.event_completed()
+    assert_type(completed_event, TypeContractEvent)
+
+    first_result = await completed_event.first()
+    assert_type(first_result, TypeContractResult | None)
+
+    aggregated_result = await completed_event.event_result()
+    assert_type(aggregated_result, TypeContractResult | None)
+
+    all_values = await completed_event.event_results_list()
+    assert_type(all_values, list[TypeContractResult | None])
+    for handler_result in completed_event.event_results.values():
+        assert_type(handler_result, EventResult[TypeContractResult])
 
 
 def test_typing_contracts_module_loads() -> None:
@@ -86,13 +67,12 @@ def test_typing_contracts_module_loads() -> None:
 This file is for static type checking only (pyright/ty), not runtime pytest execution.
 """
 
-# pyright: strict, reportUnnecessaryTypeIgnoreComment=true, reportPrivateUsage=false
+# pyright: strict, reportUnnecessaryTypeIgnoreComment=true
 
 from typing import TYPE_CHECKING
 
 from bubus.base_event import BaseEvent
 from bubus.event_bus import EventBus
-from bubus.event_handler import EventHandler
 
 
 class _SomeEventClass(BaseEvent[str]):
@@ -150,13 +130,13 @@ if TYPE_CHECKING:
 
     # Expected static type errors:
     # 1) class pattern should reject a mismatched event subclass handler
-    _bus.on(_SomeEventClass, _other_handler)  # pyright: ignore[reportCallIssue, reportArgumentType]  # ty: ignore[no-matching-overload]
+    _bus.on(_SomeEventClass, _other_handler)  # ty: ignore[no-matching-overload]  # pyright: ignore[reportCallIssue, reportArgumentType]
 
     # Variance contracts for class patterns:
     # 2) unrelated class pattern should reject handler expecting a different event class
-    _bus.on(_EventTypeB, _handler_for_a)  # pyright: ignore[reportCallIssue, reportArgumentType]  # ty: ignore[no-matching-overload]
+    _bus.on(_EventTypeB, _handler_for_a)  # ty: ignore[no-matching-overload]  # pyright: ignore[reportCallIssue, reportArgumentType]
     # 3) subclass pattern accepts base-class handler (contravariant safe)
     _subclass_ok = _bus.on(_EventTypeSubclassOfA, _handler_for_a)
     assert_type(_subclass_ok, EventHandler)
     # 4) base-class pattern rejects subclass-only handler
-    _bus.on(_EventTypeA, _handler_for_specific_subclass)  # pyright: ignore[reportCallIssue, reportArgumentType]  # ty: ignore[no-matching-overload]
+    _bus.on(_EventTypeA, _handler_for_specific_subclass)  # ty: ignore[no-matching-overload]  # pyright: ignore[reportCallIssue, reportArgumentType]

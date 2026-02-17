@@ -445,6 +445,7 @@ test('_areAllChildrenComplete reflects child completion state', async () => {
 
   const parent = bus.emit(ParentEvent({ message: 'completion' }))
   assert.equal(parent._areAllChildrenComplete(), true)
+  await bus.waitUntilIdle()
   await parent.done()
 
   assert.equal(parent.event_children.length, 2)

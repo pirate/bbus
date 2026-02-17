@@ -88,7 +88,7 @@ class TestWALPersistence:
 
         try:
             # Emit an event
-            event = bus.emit(UserActionEvent(action='test', user_id='u1'))
+            event = bus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
             await event
 
             # Wait for WAL persistence to complete
@@ -116,7 +116,7 @@ class TestWALPersistence:
             bus.on('UserActionEvent', slow_handler)
 
             # Emit event without waiting
-            event = bus.emit(UserActionEvent(action='test', user_id='u1'))
+            event = bus.emit(UserActionEvent(action='test', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
 
             # Check file doesn't exist yet (event not completed)
             assert not wal_path.exists()
@@ -133,7 +133,7 @@ class TestWALPersistence:
             assert data['event_type'] == 'UserActionEvent'
             # The WAL should have been written after the event completed
             assert data['action'] == 'test'
-            assert data['user_id'] == 'u1'
+            assert data['user_id'] == 'e692b6cb-ae63-773b-8557-3218f7ce5ced'
 
         finally:
             await bus.stop()
@@ -167,7 +167,7 @@ class TestHandlerMiddleware:
         bus.on('UserActionEvent', lambda event: 'ok')
 
         try:
-            completed = await bus.emit(UserActionEvent(action='test', user_id='user1'))
+            completed = await bus.emit(UserActionEvent(action='test', user_id='d592b79f-4dd9-7d4d-88b1-0d0db7d84fcf'))
             await bus.wait_until_idle()
 
             assert isinstance(bus.middlewares[0], ClassMiddleware)
@@ -200,7 +200,7 @@ class TestHandlerMiddleware:
         bus.on('UserActionEvent', lambda event: 'ok')
 
         try:
-            completed = await bus.emit(UserActionEvent(action='test', user_id='user1'))
+            completed = await bus.emit(UserActionEvent(action='test', user_id='d592b79f-4dd9-7d4d-88b1-0d0db7d84fcf'))
             await bus.wait_until_idle()
 
             assert completed.event_results
@@ -231,7 +231,7 @@ class TestHandlerMiddleware:
         bus.on('UserActionEvent', failing_handler)
 
         try:
-            event = await bus.emit(UserActionEvent(action='fail', user_id='user2'))
+            event = await bus.emit(UserActionEvent(action='fail', user_id='16599da2-bf1d-7a5d-8e6e-ba01f216519a'))
             await bus.wait_until_idle()
 
             result = next(iter(event.event_results.values()))
@@ -261,7 +261,7 @@ class TestHandlerMiddleware:
         bus.on(UserActionEvent, failing_handler)
 
         try:
-            event = await bus.emit(UserActionEvent(action='fail', user_id='u2'))
+            event = await bus.emit(UserActionEvent(action='fail', user_id='2a312e4d-3035-7883-86b9-578ce47046b2'))
             await bus.wait_until_idle()
 
             result = next(iter(event.event_results.values()))
@@ -376,7 +376,7 @@ class TestHandlerMiddleware:
         bus.on(UserActionEventErrorEvent, fail_auto)
 
         try:
-            await bus.emit(UserActionEvent(action='fail', user_id='u1'))
+            await bus.emit(UserActionEvent(action='fail', user_id='e692b6cb-ae63-773b-8557-3218f7ce5ced'))
             await bus.wait_until_idle()
             assert seen == [('UserActionEventErrorEvent', 'ValueError')]
             assert await bus.find('UserActionEventErrorEventErrorEvent', past=True, future=False) is None
@@ -404,7 +404,7 @@ class TestHandlerMiddleware:
         bus.on(UserActionEventResultEvent, non_none_auto)
 
         try:
-            await bus.emit(UserActionEvent(action='ok', user_id='u2'))
+            await bus.emit(UserActionEvent(action='ok', user_id='2a312e4d-3035-7883-86b9-578ce47046b2'))
             await bus.wait_until_idle()
             assert seen == [('UserActionEventResultEvent', 123)]
             assert await bus.find('UserActionEventResultEventResultEvent', past=True, future=False) is None
@@ -431,7 +431,7 @@ class TestHandlerMiddleware:
         bus.on(UserActionEventResultEvent, on_auto_result_event)
 
         try:
-            parent = await bus.emit(UserActionEvent(action='ok', user_id='u3'))
+            parent = await bus.emit(UserActionEvent(action='ok', user_id='6eb8a717-e19d-728b-8905-97f7e20c002e'))
             await bus.wait_until_idle()
             assert len(parent.event_results) == 1
             only_result = next(iter(parent.event_results.values()))
@@ -564,7 +564,7 @@ class TestSQLiteHistoryMirror:
         bus.on('UserActionEvent', handler)
 
         try:
-            await bus.emit(UserActionEvent(action='ping', user_id='u-1'))
+            await bus.emit(UserActionEvent(action='ping', user_id='b57fcb67-faeb-7a56-8907-116d8cbb1472'))
             await bus.wait_until_idle()
 
             conn = sqlite3.connect(db_path)
@@ -606,7 +606,7 @@ class TestLoggerMiddleware:
         bus.on('UserActionEvent', handler)
 
         try:
-            await bus.emit(UserActionEvent(action='log', user_id='user'))
+            await bus.emit(UserActionEvent(action='log', user_id='1d4087d7-e791-702f-80b9-0fb09b726bc6'))
             await bus.wait_until_idle()
 
             assert log_path.exists()
@@ -625,7 +625,7 @@ class TestLoggerMiddleware:
         bus.on('UserActionEvent', handler)
 
         try:
-            await bus.emit(UserActionEvent(action='log', user_id='user'))
+            await bus.emit(UserActionEvent(action='log', user_id='1d4087d7-e791-702f-80b9-0fb09b726bc6'))
             await bus.wait_until_idle()
 
             captured = capsys.readouterr()
@@ -645,7 +645,7 @@ class TestLoggerMiddleware:
         bus.on('UserActionEvent', failing_handler)
 
         try:
-            await bus.emit(UserActionEvent(action='boom', user_id='u-2'))
+            await bus.emit(UserActionEvent(action='boom', user_id='28536f9b-4031-7f53-827f-98c24c1b3839'))
             await bus.wait_until_idle()
 
             conn = sqlite3.connect(db_path)

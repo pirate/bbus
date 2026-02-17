@@ -43,7 +43,7 @@ export const captureAsyncContext = (): unknown | null => {
   return async_local_storage.getStore() ?? null
 }
 
-export const runWithAsyncContext = <T>(context: unknown | null, fn: () => T): T => {
+export const _runWithAsyncContext = <T>(context: unknown | null, fn: () => T): T => {
   if (!async_local_storage) {
     return fn()
   }

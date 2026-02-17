@@ -7,7 +7,7 @@ import { BaseEvent, EventBus } from '../src/index.js'
 
 // Parent handler runs two scenarios:
 // 1) await child.done()               -> immediate queue-jump processing
-// 2) await child.waitForCompletion()  -> normal queue processing
+// 2) await child.eventCompleted()     -> normal queue processing
 const ParentEvent = BaseEvent.extend('ImmediateProcessingParentEvent', {
   mode: z.enum(['immediate', 'queued']),
 })
@@ -98,9 +98,9 @@ async function main(): Promise<void> {
       log(`[parent:${event.mode}] child.done() resolved`)
     } else {
       // Normal queue wait: child waits its turn behind already-queued sibling work.
-      log(`[parent:${event.mode}] await child._waitForCompletion()`)
-      await child._waitForCompletion()
-      log(`[parent:${event.mode}] child._waitForCompletion() resolved`)
+      log(`[parent:${event.mode}] await child.eventCompleted()`)
+      await child.eventCompleted()
+      log(`[parent:${event.mode}] child.eventCompleted() resolved`)
     }
 
     log(`[parent:${event.mode}] end`)
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
   const runScenario = async (mode: Scenario): Promise<void> => {
     log(`----- scenario=${mode} -----`)
 
-    // Parent event uses parallel concurrency so _waitForCompletion() in handler
+    // Parent event uses parallel concurrency so eventCompleted() in handler
     // can wait safely while other queued events continue to run.
     const parent = bus_a.emit(
       ParentEvent({
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
       })
     )
 
-    await parent._waitForCompletion()
+    await parent.eventCompleted()
     await Promise.all([bus_a.waitUntilIdle(), bus_b.waitUntilIdle()])
     log(`----- done scenario=${mode} -----`)
   }

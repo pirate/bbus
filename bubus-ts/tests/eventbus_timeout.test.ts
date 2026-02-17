@@ -509,7 +509,7 @@ test('queue-jump awaited child timeout aborts still fire across buses', async ()
     // Use scoped bus emit to set parent tracking (event_parent_id, event_emitted_by_handler_id),
     // then also dispatch on bus_b for cross-bus handler execution.
     // Without parent tracking, _processEventImmediately can't detect the queue-jump context
-    // and falls back to _waitForCompletion(), which deadlocks with global-serial.
+    // and falls back to eventCompleted(), which deadlocks with global-serial.
     const child = event.bus?.emit(ChildEvent({ event_timeout: 0.01 }))!
     bus_b.emit(child)
     child_ref = child

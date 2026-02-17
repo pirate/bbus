@@ -232,11 +232,12 @@ test('context propagates through forwarding and child dispatch with lineage inta
     return 'child-ok'
   })
 
-  const parent = await storage.run({ request_id: 'req-cross-feature-001' }, async () => bus_a.emit(ContextParentEvent({})).done())
+  const request_id = 'fc81f432-98cd-7a06-824c-dafed74761bb'
+  const parent = await storage.run({ request_id }, async () => bus_a.emit(ContextParentEvent({})).done())
   await bus_b.waitUntilIdle()
 
-  assert.equal(captured_parent_request_id, 'req-cross-feature-001')
-  assert.equal(captured_child_request_id, 'req-cross-feature-001')
+  assert.equal(captured_parent_request_id, request_id)
+  assert.equal(captured_child_request_id, request_id)
   assert.ok(parent_event_id)
   assert.equal(child_parent_id, parent_event_id)
   assert.equal(parent.event_path[0]?.startsWith('ParityContextForwardA#'), true)
