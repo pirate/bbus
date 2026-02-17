@@ -2228,15 +2228,6 @@ class EventBus:
         # Recursively check the parent's ancestry
         return self._handler_dispatched_ancestor(parent_event, handler_id, visited, depth)
 
-    def cleanup_excess_events(self) -> int:
-        """
-        Clean up excess events from event_history based on max_history_size.
-
-        Returns:
-            Number of events removed from history
-        """
-        return self.event_history.cleanup_excess_events()
-
     def log_tree(self) -> str:
         """Print a nice pretty formatted tree view of all events in the history including their results and child events recursively"""
         from bubus.logging import log_eventbus_tree

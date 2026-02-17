@@ -188,26 +188,6 @@ class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
 
         return await wait_for_future_match(event_key, matches, resolved_future)
 
-    def cleanup_excess_events(self, *, on_remove: Callable[[BaseEventT], None] | None = None) -> int:
-        if self.max_history_size is None:
-            return 0
-        if self.max_history_size == 0:
-            return self.trim_event_history(on_remove=on_remove)
-        remove_count = len(self) - self.max_history_size
-        if remove_count <= 0:
-            return 0
-
-        removed_count = 0
-        for event_id in list(self.keys())[:remove_count]:
-            event = self.pop(event_id, None)
-            if event is None:
-                continue
-            if on_remove:
-                on_remove(event)
-            removed_count += 1
-
-        return removed_count
-
     def trim_event_history(
         self,
         *,

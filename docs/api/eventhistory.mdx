@@ -68,7 +68,6 @@ Both runtimes expose explicit accessors in addition to mapping methods.
 - `has_event(event_id)`
 - `find(...)`
 - `trim_event_history(...)`
-- `cleanup_excess_events(...)`
 
 </Tab>
 <Tab title="TypeScript">
@@ -79,7 +78,6 @@ Both runtimes expose explicit accessors in addition to mapping methods.
 - `hasEvent(event_id)`
 - `find(...)`
 - `trimEventHistory(...)`
-- `cleanupExcessEvents(...)`
 
 </Tab>
 </Tabs>
@@ -99,7 +97,6 @@ Both runtimes expose explicit accessors in addition to mapping methods.
 ## Retention and trim methods
 
 - `trim_event_history` / `trimEventHistory` applies configured retention policy.
-- `cleanup_excess_events` / `cleanupExcessEvents` performs direct overage cleanup.
 - `on_remove` callbacks let the caller run cleanup side effects when history entries are removed.
 
 ## Constructor options

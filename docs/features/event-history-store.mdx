@@ -8,8 +8,6 @@ Both runtimes expose two related (but different) runtime stores:
 - `pending_event_queue`: events accepted by the bus but not yet started by the runloop
 - `event_history`: events the bus knows about (pending, started, and completed until trimmed)
 
-If you were looking for `pending_events_queue`, the runtime field is `pending_event_queue` in both Python and TypeScript.
-
 ## What each store is for
 
 | Store | Purpose | Typical contents |

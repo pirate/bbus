@@ -157,35 +157,6 @@ export class EventHistory<TEvent extends BaseEvent = BaseEvent> implements Itera
     return (await waitForFutureMatch(event_key, matches, future)) as TEvent | null
   }
 
-  cleanupExcessEvents(options: EventHistoryTrimOptions<TEvent> = {}): number {
-    const max_history_size = options.max_history_size ?? this.max_history_size
-    if (max_history_size === null) {
-      return 0
-    }
-    if (max_history_size === 0) {
-      return this.trimEventHistory(options)
-    }
-    const remove_count = this.size - max_history_size
-    if (remove_count <= 0) {
-      return 0
-    }
-
-    const on_remove = options.on_remove
-    let removed_count = 0
-
-    for (const event_id of Array.from(this._events.keys()).slice(0, remove_count)) {
-      const event = this._events.get(event_id)
-      if (!event) {
-        continue
-      }
-      this._events.delete(event_id)
-      on_remove?.(event)
-      removed_count += 1
-    }
-
-    return removed_count
-  }
-
   trimEventHistory(options: EventHistoryTrimOptions<TEvent> = {}): number {
     const max_history_size = options.max_history_size ?? this.max_history_size
     const max_history_drop = options.max_history_drop ?? this.max_history_drop
