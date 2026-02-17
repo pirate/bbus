@@ -32,6 +32,14 @@ It's async native, has proper automatic nested event tracking, and powerful conc
 - ability to queue events on the bus, or inline await them for immediate execution like a normal function call
 - handles ~5,000 events/sec/core in both languages, with ~2kb/event RAM consumed per event during active processing
 
+## 🔗 Links
+
+- Issue Tracker: https://github.com/pirate/bbus/issues
+- Documentation: https://bubus.sweeting.me
+- DeepWiki: https://deepwiki.com/pirate/bbus
+- PyPI: https://pypi.org/project/bubus/
+- NPM: https://www.npmjs.com/package/bubus
+
 <br/>
 
 ## 🔢 Quickstart

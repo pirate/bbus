@@ -1,6 +1,6 @@
 {
   "name": "bubus",
-  "version": "2.3.1",
+  "version": "2.3.2",
   "description": "Event bus library for browsers and ESM Node.js",
   "type": "module",
   "sideEffects": false,
@@ -48,7 +48,7 @@
   "license": "MIT",
   "packageManager": "pnpm@10.29.3",
   "dependencies": {
-    "uuid": "^11.1.0",
+    "uuid": "^13.0.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -71,13 +71,6 @@
     "url": "https://github.com/pirate/bbus/issues"
   },
   "homepage": "https://bubus.sweeting.me",
-  "links": {
-    "Issue Tracker": "https://github.com/pirate/bbus/issues",
-    "Documentation": "https://bubus.sweeting.me",
-    "DeepWiki": "https://deepwiki.com/pirate/bbus",
-    "PyPI": "https://pypi.org/project/bubus/",
-    "NPM": "https://www.npmjs.com/package/bubus"
-  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
