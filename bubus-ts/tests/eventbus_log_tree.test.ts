@@ -69,7 +69,9 @@ test('logTree: with handler errors', async () => {
 
     bus.on(RootEvent, error_handler)
     const event = bus.emit(RootEvent({ data: 'test' }))
-    await event.done()
+    await event.done({ raise_if_any: false })
+    assert.equal(event.event_errors.length, 1)
+    assert.equal((event.event_errors[0] as Error).message, 'Test error message')
     const output = bus.logTree()
     assert.ok(output.includes(`${bus.label}.error_handler#`))
     assert.ok(output.includes('ValueError: Test error message'))

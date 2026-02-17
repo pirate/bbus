@@ -247,7 +247,8 @@ test('middleware result hooks never reverse from completed to started', async ()
     return 'slow-2'
   })
 
-  await bus.emit(Event({ event_timeout: 0.01 })).done()
+  const timeout_event = bus.emit(Event({ event_timeout: 0.01 }))
+  await timeout_event.eventCompleted()
   await flushHooks()
 
   const statuses_by_handler = new Map<string, string[]>()
@@ -283,7 +284,7 @@ test('hard event timeout finalizes immediately without waiting for in-flight han
 
   const started_at = Date.now()
   const event = bus.emit(Event({ event_timeout: 0.01 }))
-  await event.done()
+  await event.eventCompleted()
   const elapsed_ms = Date.now() - started_at
 
   const initial_snapshot = Array.from(event.event_results.values()).map((result) => ({
@@ -322,7 +323,7 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
 
   serial_bus.on(SchemaEvent, async () => JSON.parse('"not-a-number"'))
   const schema_event = serial_bus.emit(SchemaEvent({ event_timeout: 0.2 }))
-  await schema_event.done()
+  await schema_event.eventCompleted()
   const schema_result = Array.from(schema_event.event_results.values())[0]
   assert.ok(schema_result.error instanceof EventHandlerResultSchemaError)
 
@@ -336,7 +337,7 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
     return 'slow-2'
   })
   const serial_timeout_event = serial_bus.emit(SerialTimeoutEvent({ event_timeout: 0.01 }))
-  await serial_timeout_event.done()
+  await serial_timeout_event.eventCompleted()
   const serial_results = Array.from(serial_timeout_event.event_results.values())
   assert.equal(
     serial_results.some((result) => result.error instanceof EventHandlerCancelledError),
@@ -357,7 +358,7 @@ test('timeout/cancel/abort/result-schema taxonomy remains explicit', async () =>
     return 'slow-2'
   })
   const parallel_timeout_event = parallel_bus.emit(ParallelTimeoutEvent({ event_timeout: 0.01 }))
-  await parallel_timeout_event.done()
+  await parallel_timeout_event.eventCompleted()
   const parallel_results = Array.from(parallel_timeout_event.event_results.values())
   assert.equal(
     parallel_results.some((result) => result.error instanceof EventHandlerAbortedError || result.error instanceof EventHandlerTimeoutError),

@@ -143,7 +143,7 @@ test('timeout enforcement preserves follow-up processing and queue state', async
 
   bus.on(TimeoutFollowupEvent, async () => 'followup-ok')
 
-  const timed_out = await bus.emit(TimeoutEnforcementEvent({})).done()
+  const timed_out = await bus.emit(TimeoutEnforcementEvent({})).done({ raise_if_any: false })
   assert.equal(timed_out.event_status, 'completed')
   assert.equal(
     Array.from(timed_out.event_results.values()).every((result) => result.status === 'error'),

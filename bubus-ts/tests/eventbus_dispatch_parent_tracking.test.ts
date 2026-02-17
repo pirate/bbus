@@ -305,12 +305,14 @@ test('parent tracking works with sync handlers and handler errors', async () => 
 
   const parent = bus.emit(ParentEvent({ message: 'mixed_test' }))
   await bus.waitUntilIdle()
-  await parent.done()
+  await parent.done({ raise_if_any: false })
 
   assert.equal(child_events.length, 3)
   for (const child of child_events) {
     assert.equal(child.event_parent_id, parent.event_id)
   }
+  assert.equal(parent.event_errors.length, 1)
+  assert.equal((parent.event_errors[0] as Error).message, 'expected parent-tracking error path')
 })
 
 test('erroring parent handlers still preserve child event_parent_id', async () => {
@@ -337,12 +339,14 @@ test('erroring parent handlers still preserve child event_parent_id', async () =
 
   const parent = bus.emit(ParentEvent({ message: 'error_only' }))
   await bus.waitUntilIdle()
-  await parent.done()
+  await parent.done({ raise_if_any: false })
 
   assert.equal(child_events.length, 2)
   for (const child of child_events) {
     assert.equal(child.event_parent_id, parent.event_id)
   }
+  assert.equal(parent.event_errors.length, 1)
+  assert.equal((parent.event_errors[0] as Error).message, 'expected parent handler failure')
 })
 
 test('event_children tracks direct and nested descendants', async () => {
