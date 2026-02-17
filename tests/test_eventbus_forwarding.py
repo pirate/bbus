@@ -23,6 +23,10 @@ class ForwardedDefaultsChildEvent(BaseEvent[str]):
     mode: str
 
 
+class ForwardedFirstDefaultsEvent(BaseEvent[str]):
+    """Forwarded event used to validate first-mode behavior against processing-bus defaults."""
+
+
 def _dump_bus_state(buses: list[EventBus]) -> str:
     lines: list[str] = []
     for bus in buses:
@@ -171,6 +175,48 @@ async def test_forwarded_event_uses_processing_bus_defaults_unless_overridden():
         assert override_b1_end < override_b2_start, (
             f'explicit event override should force serial handler concurrency; got log: {log}'
         )
+    finally:
+        await bus_a.stop(clear=True)
+        await bus_b.stop(clear=True)
+
+
+@pytest.mark.asyncio
+async def test_forwarded_first_mode_uses_processing_bus_handler_concurrency_defaults():
+    bus_a = EventBus(
+        name='ForwardedFirstDefaultsA',
+        event_handler_concurrency='serial',
+        event_handler_completion='all',
+    )
+    bus_b = EventBus(
+        name='ForwardedFirstDefaultsB',
+        event_handler_concurrency='parallel',
+        event_handler_completion='first',
+    )
+    log: list[str] = []
+
+    async def slow_handler(_event: ForwardedFirstDefaultsEvent) -> str:
+        log.append('slow_start')
+        await asyncio.sleep(0.02)
+        log.append('slow_end')
+        return 'slow'
+
+    async def fast_handler(_event: ForwardedFirstDefaultsEvent) -> str:
+        log.append('fast_start')
+        await asyncio.sleep(0.001)
+        log.append('fast_end')
+        return 'fast'
+
+    bus_a.on('*', bus_b.emit)
+    bus_b.on(ForwardedFirstDefaultsEvent, slow_handler)
+    bus_b.on(ForwardedFirstDefaultsEvent, fast_handler)
+
+    try:
+        result = await bus_a.emit(ForwardedFirstDefaultsEvent(event_timeout=None)).first()
+        await asyncio.gather(bus_a.wait_until_idle(), bus_b.wait_until_idle())
+
+        assert result == 'fast', f'first-mode on processing bus should pick fast handler; got result={result!r} log={log}'
+        assert 'slow_start' in log, f'slow handler should start under parallel first-mode; log={log}'
+        assert 'fast_start' in log, f'fast handler should start under parallel first-mode; log={log}'
     finally:
         await bus_a.stop(clear=True)
         await bus_b.stop(clear=True)

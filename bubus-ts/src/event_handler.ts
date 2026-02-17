@@ -89,8 +89,7 @@ export type EventHandlerJSON = z.infer<typeof EventHandlerJSONSchema>
 // an entry in the list of event handlers that are registered on a bus
 export class EventHandler {
   id: string // unique uuidv5 based on hash of bus name, handler name, handler file path:lineno, registered at timestamp, and event key
-  handler: EventHandlerCallable // normalized async handler callable used by runtime execution
-  handler_raw: EventHandlerCallable // original callable passed to on(), used for off() matching without global caches
+  handler: EventHandlerCallable // original callable passed to on()
   handler_name: string // name of the handler function, or 'anonymous' if the handler is an anonymous/arrow function
   handler_file_path: string | null // ~/path/to/source/file.ts:123, or null when unknown
   handler_timeout?: number | null // maximum time in seconds that the handler is allowed to run before it is aborted, resolved at runtime if not set
@@ -125,8 +124,7 @@ export class EventHandler {
         handler_registered_ts,
         event_pattern: params.event_pattern,
       })
-    this.handler_raw = params.handler
-    this.handler = EventHandler.resolveAsyncHandler(params.handler)
+    this.handler = params.handler
     this.handler_name = params.handler_name
     this.handler_file_path = params.handler_file_path ?? null
     this.handler_timeout = params.handler_timeout
@@ -138,19 +136,12 @@ export class EventHandler {
     this.eventbus_id = params.eventbus_id
   }
 
-  private static isAsyncFunction(handler: EventHandlerCallable): boolean {
-    return Object.prototype.toString.call(handler) === '[object AsyncFunction]'
-  }
-
-  static resolveAsyncHandler(handler: EventHandlerCallable): EventHandlerCallable {
-    if (this.isAsyncFunction(handler)) {
+  get _handler_async(): EventHandlerCallable {
+    const handler = this.handler
+    if (Object.prototype.toString.call(handler) === '[object AsyncFunction]') {
       return handler
     }
-    return (async (event: BaseEvent): Promise<unknown> => await handler(event as never)) as EventHandlerCallable
-  }
-
-  matchesCallable(candidate_handler: EventHandlerCallable): boolean {
-    return this.handler === candidate_handler || this.handler_raw === candidate_handler
+    return async (event: BaseEvent) => await handler(event)
   }
 
   // compute globally unique handler uuid as a hash of the bus name, handler name, handler file path, registered at timestamp, and event key

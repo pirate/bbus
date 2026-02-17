@@ -1,11 +1,27 @@
 import inspect
-from typing import Any
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any, assert_type
 
 import pytest
 
 from bubus.base_event import BaseEvent
 from bubus.event_bus import EventBus
-from bubus.event_handler import EventHandler
+from bubus.event_handler import EventHandler, _normalize_handler_callable  # pyright: ignore[reportPrivateUsage]
+
+if TYPE_CHECKING:
+
+    class _RegistryTypingEvent(BaseEvent[str]):
+        pass
+
+    def _typed_sync_handler(event: _RegistryTypingEvent) -> str:
+        return event.event_type
+
+    async def _typed_async_handler(event: _RegistryTypingEvent) -> str: ...
+
+    _wrapped_sync = _normalize_handler_callable(_typed_sync_handler)
+    _wrapped_async = _normalize_handler_callable(_typed_async_handler)
+    assert_type(_wrapped_sync, Callable[[_RegistryTypingEvent], Coroutine[Any, Any, str]])
+    assert_type(_wrapped_async, Callable[[_RegistryTypingEvent], Coroutine[Any, Any, str]])
 
 
 @pytest.mark.asyncio
@@ -89,11 +105,11 @@ async def test_on_normalizes_sync_handler_to_async_callable() -> None:
     entry = bus.on(RegistryNormalizeEvent, sync_handler)
 
     assert entry.handler is sync_handler
-    assert entry.handler_async is not None
-    assert inspect.iscoroutinefunction(entry.handler_async)
+    assert entry._handler_async is not None  # pyright: ignore[reportPrivateUsage]
+    assert inspect.iscoroutinefunction(entry._handler_async)  # pyright: ignore[reportPrivateUsage]
     assert entry.handler_name.endswith('sync_handler')
 
-    direct_result = await entry.handler_async(RegistryNormalizeEvent())
+    direct_result = await entry._handler_async(RegistryNormalizeEvent())  # pyright: ignore[reportPrivateUsage]
     assert direct_result == 'normalized'
 
     dispatched = bus.emit(RegistryNormalizeEvent())

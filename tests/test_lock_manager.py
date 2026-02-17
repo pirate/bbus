@@ -1,6 +1,8 @@
 import asyncio
 
 # pyright: reportPrivateUsage=false
+import pytest
+
 from bubus import BaseEvent, EventBus, EventConcurrencyMode, EventHandlerConcurrencyMode
 from bubus.lock_manager import ReentrantLock
 
@@ -116,6 +118,69 @@ async def test_handler_dispatch_context_marks_and_restores_lock_depth() -> None:
         async with lock:
             assert lock._depth() == 2  # pyright: ignore[reportPrivateUsage]
         assert lock._depth() == 1  # pyright: ignore[reportPrivateUsage]
+
+    assert lock._depth() == 0  # pyright: ignore[reportPrivateUsage]
+    await bus.stop()
+
+
+async def test_reentrant_lock_releases_and_reraises_on_exception() -> None:
+    lock = ReentrantLock()
+
+    with pytest.raises(RuntimeError, match='reentrant-lock-error'):
+        async with lock:
+            assert lock.locked() is True
+            raise RuntimeError('reentrant-lock-error')
+
+    assert lock.locked() is False
+
+
+async def test_run_with_event_lock_releases_and_reraises_on_exception() -> None:
+    bus = EventBus(name='LockManagerEventErrorBus', event_concurrency='bus-serial')
+    event = BaseEvent(event_type='EventLockErrorEvent')
+
+    lock = bus.locks.get_lock_for_event(bus, event)
+    assert lock is not None
+    assert lock.locked() is False
+
+    with pytest.raises(RuntimeError, match='event-lock-error'):
+        async with bus.locks._run_with_event_lock(bus, event):
+            assert lock.locked() is True
+            raise RuntimeError('event-lock-error')
+
+    assert lock.locked() is False
+    await bus.stop()
+
+
+async def test_run_with_handler_lock_releases_and_reraises_on_exception() -> None:
+    bus = EventBus(name='LockManagerHandlerErrorBus', event_handler_concurrency='serial')
+    event = BaseEvent(event_type='HandlerLockErrorEvent')
+    event_result = event.event_result_update(handler=lambda _event: None)
+
+    with pytest.raises(RuntimeError, match='handler-lock-error'):
+        async with bus.locks._run_with_handler_lock(bus, event, event_result):
+            lock = event._get_handler_lock()  # pyright: ignore[reportPrivateUsage]
+            assert lock is not None
+            assert lock.locked() is True
+            raise RuntimeError('handler-lock-error')
+
+    lock = event._get_handler_lock()  # pyright: ignore[reportPrivateUsage]
+    assert lock is not None
+    assert lock.locked() is False
+    await bus.stop()
+
+
+async def test_handler_dispatch_context_restores_depth_and_reraises_on_exception() -> None:
+    bus = EventBus(name='LockDispatchContextErrorBus', event_concurrency='bus-serial')
+    event = BaseEvent(event_type='DispatchContextErrorEvent')
+
+    lock = bus.locks.get_lock_for_event(bus, event)
+    assert lock is not None
+    assert lock._depth() == 0  # pyright: ignore[reportPrivateUsage]
+
+    with pytest.raises(RuntimeError, match='dispatch-context-error'):
+        with bus.locks._run_with_handler_dispatch_context(bus, event):
+            assert lock._depth() == 1  # pyright: ignore[reportPrivateUsage]
+            raise RuntimeError('dispatch-context-error')
 
     assert lock._depth() == 0  # pyright: ignore[reportPrivateUsage]
     await bus.stop()

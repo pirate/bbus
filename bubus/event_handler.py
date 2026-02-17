@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, cast, overload, runtime_checkable
 from uuid import NAMESPACE_DNS, UUID, uuid5
 from weakref import ref as weakref
 
@@ -26,6 +26,8 @@ T_Event = TypeVar('T_Event', bound='BaseEvent[Any]', contravariant=True, default
 # For protocols with __func__ attributes, we need an invariant TypeVar
 T_EventInvariant = TypeVar('T_EventInvariant', bound='BaseEvent[Any]', default='BaseEvent[Any]')
 T_EventResult = TypeVar('T_EventResult', default=Any)
+T_HandlerEvent = TypeVar('T_HandlerEvent', bound='BaseEvent[Any]', default='BaseEvent[Any]')
+T_HandlerReturn = TypeVar('T_HandlerReturn', default=Any)
 
 
 class EventHandlerCancelledError(asyncio.CancelledError):
@@ -191,6 +193,50 @@ def _get_callable_handler_file_path(handler_key: _HandlerCacheKey) -> str | None
     return None
 
 
+@overload
+def _normalize_handler_callable(
+    handler: Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]],
+) -> Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]]: ...
+
+
+@overload
+def _normalize_handler_callable(
+    handler: Callable[[T_HandlerEvent], Awaitable[T_HandlerReturn]],
+) -> Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]]: ...
+
+
+@overload
+def _normalize_handler_callable(
+    handler: Callable[[T_HandlerEvent], T_HandlerReturn],
+) -> Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]]: ...
+
+
+def _normalize_handler_callable(
+    handler: Callable[[T_HandlerEvent], object],
+) -> Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]]:
+    """Normalize one handler callable to a single async call signature."""
+    if not callable(handler):
+        raise ValueError(f'Handler {handler!r} must be callable, got: {type(handler)}')
+
+    if inspect.iscoroutinefunction(handler):
+        return cast(Callable[[T_HandlerEvent], Coroutine[Any, Any, T_HandlerReturn]], handler)
+
+    async def normalized_handler(event: T_HandlerEvent) -> T_HandlerReturn:
+        handler_result = handler(event)
+        # BaseEvent implements __await__ for ergonomic `await event`, but handler
+        # return values of BaseEvent must be treated as plain results (forwarded
+        # child event refs), not awaited here.
+        if inspect.isawaitable(handler_result):
+            from bubus.base_event import BaseEvent
+
+            if isinstance(handler_result, BaseEvent):
+                return cast(T_HandlerReturn, handler_result)
+            return cast(T_HandlerReturn, await handler_result)
+        return cast(T_HandlerReturn, handler_result)
+
+    return normalized_handler
+
+
 class EventHandler(BaseModel):
     """Serializable metadata wrapper around a registered event handler callable."""
 
@@ -204,7 +250,6 @@ class EventHandler(BaseModel):
 
     id: str = ''
     handler: EventHandlerCallable | None = Field(default=None, exclude=True, repr=False)
-    handler_async: NormalizedEventHandlerCallable[Any] | None = Field(default=None, exclude=True, repr=False)
     handler_name: str = 'anonymous'
     handler_file_path: str | None = None
     handler_timeout: float | None = None
@@ -214,16 +259,6 @@ class EventHandler(BaseModel):
     event_pattern: str = '*'
     eventbus_name: str = 'EventBus'
     eventbus_id: str = '00000000-0000-0000-0000-000000000000'
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        """Keep normalized async callable in sync when `handler` is reassigned."""
-        super().__setattr__(name, value)
-        if name != 'handler':
-            return
-        if value is None:
-            super().__setattr__('handler_async', None)
-            return
-        super().__setattr__('handler_async', self.resolve_async_handler(cast(EventHandlerCallable, value)))
 
     @field_validator('handler_name', mode='before')
     @classmethod
@@ -291,10 +326,16 @@ class EventHandler(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         if not self.id:
             self.id = self.compute_handler_id()
+
+    @property
+    def _handler_async(self) -> NormalizedEventHandlerCallable[Any] | None:
+        """Return the normalized async callable view of `handler`."""
         if self.handler is None:
-            self.handler_async = None
-        elif self.handler_async is None:
-            self.handler_async = self.resolve_async_handler(self.handler)
+            return None
+        return cast(
+            NormalizedEventHandlerCallable[Any],
+            _normalize_handler_callable(cast(Callable[[Any], object], self.handler)),
+        )
 
     def compute_handler_id(self) -> str:
         """Match TS handler-id algorithm: uuidv5(seed, HANDLER_ID_NAMESPACE)."""
@@ -326,28 +367,6 @@ class EventHandler(BaseModel):
         handler_callable = cast(Callable[[Any], Any], self.handler)
         return handler_callable(event)
 
-    @staticmethod
-    def resolve_async_handler(handler: ContravariantEventHandlerCallable[Any]) -> NormalizedEventHandlerCallable[Any]:
-        """Normalize one handler callable to a single async call signature."""
-        if not callable(handler):
-            raise ValueError(f'Handler {handler!r} must be callable, got: {type(handler)}')
-
-        if inspect.iscoroutinefunction(handler):
-            return cast(NormalizedEventHandlerCallable[Any], handler)
-
-        async def normalized_handler(event: 'BaseEvent[Any]') -> Any:
-            handler_callable = cast(_InvokableEventHandlerCallable, handler)
-            handler_result = handler_callable(event)
-            from bubus.base_event import BaseEvent
-
-            if isinstance(handler_result, BaseEvent):
-                return cast(Any, handler_result)
-            if inspect.isawaitable(handler_result):
-                return await handler_result
-            return handler_result
-
-        return normalized_handler
-
     @classmethod
     def from_callable(
         cls,
@@ -367,11 +386,9 @@ class EventHandler(BaseModel):
         resolved_file_path = handler_file_path
         if resolved_file_path is None and detect_handler_file_path:
             resolved_file_path = _get_callable_handler_file_path(_HandlerCacheKey(handler))
-        async_handler = cls.resolve_async_handler(handler)
 
         handler_params: dict[str, Any] = {
             'handler': handler,
-            'handler_async': async_handler,
             'handler_file_path': resolved_file_path,
             'handler_registered_at': handler_registered_at or datetime.now(UTC),
             'handler_registered_ts': handler_registered_ts

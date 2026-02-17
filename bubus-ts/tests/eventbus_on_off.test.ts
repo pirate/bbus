@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
+import { z } from 'zod'
+
 import { BaseEvent, EventBus } from '../src/index.js'
 
 test('on stores EventHandler entry and indexes it by event key', async () => {
@@ -22,6 +24,15 @@ test('on stores EventHandler entry and indexes it by event key', async () => {
   assert.ok(result)
   assert.equal(result!.handler.id, entry.id)
 })
+
+const RegistryTypingEvent = BaseEvent.extend('RegistryTypingEvent', {
+  required_token: z.string(),
+  event_result_type: z.string(),
+})
+type RegistryTypingEventInstance = InstanceType<typeof RegistryTypingEvent>
+
+const typed_sync_handler = (event: RegistryTypingEventInstance): string => event.required_token
+const typed_async_handler = async (event: RegistryTypingEventInstance): Promise<string> => event.required_token
 
 test('off removes handlers by callable, handler id, entry object, or all', async () => {
   const bus = new EventBus('RegistryOffBus')
@@ -74,7 +85,8 @@ test('on accepts sync handlers and dispatch captures their return values', async
   }
 
   const entry = bus.on(NormalizeEvent, sync_handler)
-  const normalized_result = await entry.handler(new NormalizeEvent({}))
+  assert.equal(entry.handler, sync_handler)
+  const normalized_result = await entry._handler_async(new NormalizeEvent({}))
   assert.equal(normalized_result, 'normalized')
 
   const dispatched = bus.emit(NormalizeEvent({}))
@@ -87,7 +99,7 @@ test('on accepts sync handlers and dispatch captures their return values', async
   assert.equal(calls.length, 2)
 })
 
-test('on keeps async handlers normalized through handler', async () => {
+test('on keeps async handlers normalized through _handler_async', async () => {
   const bus = new EventBus('RegistryAsyncNormalizeBus')
   const NormalizeEvent = BaseEvent.extend('RegistryAsyncNormalizeEvent', {})
   const calls: string[] = []
@@ -97,8 +109,10 @@ test('on keeps async handlers normalized through handler', async () => {
     return 'async_normalized'
   }
   const entry = bus.on(NormalizeEvent, async_handler)
+  assert.equal(entry.handler, async_handler)
+  assert.equal(entry._handler_async, async_handler)
 
-  const normalized_result = await entry.handler(new NormalizeEvent({}))
+  const normalized_result = await entry._handler_async(new NormalizeEvent({}))
   assert.equal(normalized_result, 'async_normalized')
 
   const dispatched = bus.emit(NormalizeEvent({}))
@@ -109,4 +123,18 @@ test('on keeps async handlers normalized through handler', async () => {
   assert.equal(result!.status, 'completed')
   assert.equal(result!.result, 'async_normalized')
   assert.equal(calls.length, 2)
+})
+
+test('_handler_async preserves typed arg/return contracts for sync handlers', async () => {
+  const bus = new EventBus('RegistryTypingSyncBus')
+  const entry = bus.on(RegistryTypingEvent, typed_sync_handler)
+  const result = await entry._handler_async(RegistryTypingEvent({ required_token: 'sync' }))
+  assert.equal(result, 'sync')
+})
+
+test('_handler_async preserves typed arg/return contracts for async handlers', async () => {
+  const bus = new EventBus('RegistryTypingAsyncBus')
+  const entry = bus.on(RegistryTypingEvent, typed_async_handler)
+  const result = await entry._handler_async(RegistryTypingEvent({ required_token: 'async' }))
+  assert.equal(result, 'async')
 })

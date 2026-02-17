@@ -178,24 +178,35 @@ test('LockManager waitForIdle uses two-check stability and supports timeout', as
     event_concurrency: 'bus-serial' as const,
     _lock_for_event_global_serial: new AsyncLock(1),
   }
-  const locks = new LockManager(bus)
+  const timeout_locks = new LockManager(bus)
 
   // Busy bus should timeout.
-  const timeout_false = await locks.waitForIdle(0.01)
+  const timeout_false = await timeout_locks.waitForIdle(0.01)
   assert.equal(timeout_false, false)
 
-  let resolved: boolean | null = null
-  const idle_promise = locks.waitForIdle(0.2).then((value) => {
-    resolved = value
-  })
+  const locks = new LockManager(bus)
 
-  idle = true
-  locks._notifyIdleListeners() // first stable-idle tick; should not resolve synchronously
-  assert.equal(resolved, null)
-  await delay(0)
-  if (resolved === null) {
-    locks._notifyIdleListeners() // second stable-idle tick when needed
+  // Disable auto-scheduled checks so this test can deterministically assert
+  // that exactly two explicit stable-idle notifications are required.
+  const internal = locks as unknown as { scheduleIdleCheck: () => void }
+  const original_schedule_idle_check = internal.scheduleIdleCheck
+  internal.scheduleIdleCheck = () => {}
+
+  try {
+    let resolved: boolean | null = null
+    const idle_promise = locks.waitForIdle(0.2).then((value) => {
+      resolved = value
+    })
+
+    idle = true
+    locks._notifyIdleListeners() // first stable-idle tick; should not resolve synchronously
+    assert.equal(resolved, null)
+    await delay(0)
+    assert.equal(resolved, null)
+    locks._notifyIdleListeners() // second stable-idle tick; now resolve
+    await idle_promise
+    assert.equal(resolved, true)
+  } finally {
+    internal.scheduleIdleCheck = original_schedule_idle_check
   }
-  await idle_promise
-  assert.equal(resolved, true)
 })

@@ -345,7 +345,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
             () => this._createHandlerTimeoutError(event),
             () =>
               _runWithSlowMonitor(slow_handler_warning_timer, () =>
-                _runWithAbortMonitor(() => this.handler.handler(handler_event), abort_signal)
+                _runWithAbortMonitor(() => this.handler._handler_async(handler_event), abort_signal)
               )
           )
           this._finalizeHandlerResult(event, handler_result)

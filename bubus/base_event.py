@@ -605,7 +605,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         """
         _format_exception_for_log_callable = format_exception_for_log or _default_format_exception_for_log
 
-        handler: NormalizedEventHandlerCallable[T_EventResultType] | None = self.handler.handler_async
+        handler: NormalizedEventHandlerCallable[T_EventResultType] | None = self.handler._handler_async  # pyright: ignore[reportPrivateUsage]
         if handler is None:
             raise RuntimeError(f'EventResult {self.id} has no callable attached to handler {self.handler.id}')
 

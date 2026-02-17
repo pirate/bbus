@@ -689,16 +689,18 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   const restored_handler_two = restored.handlers.get(handler_two.id)
   assert.ok(restored_handler_one)
   assert.ok(restored_handler_two)
-  restored_handler_one.handler = (event) => {
+  const restored_handler_one_fn = (event: BaseEvent): string => {
     const label = Reflect.get(event, 'label')
     run_order.push(`h1:${String(label)}`)
     return `h1:${String(label)}`
   }
-  restored_handler_two.handler = (event) => {
+  const restored_handler_two_fn = (event: BaseEvent): string => {
     const label = Reflect.get(event, 'label')
     run_order.push(`h2:${String(label)}`)
     return `h2:${String(label)}`
   }
+  restored_handler_one.handler = restored_handler_one_fn
+  restored_handler_two.handler = restored_handler_two_fn
 
   const trigger = restored.emit(ResumeEvent({ label: 'e3' }))
   await runWithTimeout(trigger.done(), EVENT_WAIT_TIMEOUT_MS, 'bus resume completion')

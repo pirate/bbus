@@ -697,7 +697,7 @@ export class EventBus {
         continue
       }
       const handler_id = entry.id
-      if (handler === undefined || (match_by_id ? handler_id === handler : entry.matchesCallable(handler as EventHandlerCallable))) {
+      if (handler === undefined || (match_by_id ? handler_id === handler : entry.handler === (handler as EventHandlerCallable))) {
         this.handlers.delete(handler_id)
         this._removeIndexedHandler(entry.event_pattern, handler_id)
         this.scheduleMicrotask(() => {

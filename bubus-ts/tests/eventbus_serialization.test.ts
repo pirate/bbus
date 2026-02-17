@@ -88,8 +88,8 @@ test('EventBus.fromJSON recreates missing handler entries from event_result meta
   const restored_result = restored_event!.event_results.get(handler_id)
   assert.ok(restored_result)
   assert.equal(restored_result!.handler, restored.handlers.get(handler_id))
-  assert.equal(typeof restored_result!.handler.handler, 'function')
-  assert.equal(await restored_result!.handler.handler(restored_event as BaseEvent), undefined)
+  assert.equal(typeof restored_result!.handler._handler_async, 'function')
+  assert.equal(await restored_result!.handler._handler_async(restored_event as BaseEvent), undefined)
 })
 
 test('EventBus toJSON promotes pending events into event_history snapshot', async () => {
