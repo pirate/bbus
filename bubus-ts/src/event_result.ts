@@ -259,13 +259,9 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   }
 
   update(params: { status?: EventResultStatus; result?: EventResultType<TEvent> | BaseEvent | undefined; error?: unknown }): this {
-    const has_status = params.status !== undefined
+    const has_status = 'status' in params
     const has_result = 'result' in params
-    const has_error = params.error !== undefined
-
-    if (has_status && params.status !== undefined) {
-      this.status = params.status
-    }
+    const has_error = 'error' in params
 
     if (has_result) {
       const raw_result = params.result
@@ -279,7 +275,6 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
         const parsed = this.event.event_result_type.safeParse(raw_result)
         if (parsed.success) {
           this.result = parsed.data as EventResultType<TEvent>
-          this.error = undefined
         } else {
           const error = new EventHandlerResultSchemaError(
             `Event handler return value ${JSON.stringify(raw_result).slice(0, 20)}... did not match event_result_type: ${parsed.error.message}`,
@@ -291,13 +286,16 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
         }
       } else {
         this.result = raw_result as EventResultType<TEvent> | undefined
-        this.error = undefined
       }
     }
 
     if (has_error) {
       this.error = params.error
       this.status = 'error'
+    }
+
+    if (has_status && params.status !== undefined) {
+      this.status = params.status
     }
 
     if (this.status !== 'pending' && this.started_at === null) {
@@ -417,7 +415,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
 
   _markCompleted(result: EventResultType<TEvent> | BaseEvent | undefined, notify_hook: boolean = true): void {
     if (this.status === 'completed' || this.status === 'error') return
-    this.update({ status: 'completed', result })
+    this.update({ result })
     if (notify_hook) {
       void this._notifyStatusHook('completed')
     }
@@ -425,7 +423,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
 
   _markError(error: unknown, notify_hook: boolean = true): void {
     if (this.status === 'completed' || this.status === 'error') return
-    this.update({ status: 'error', error })
+    this.update({ error })
     if (notify_hook) {
       void this._notifyStatusHook('completed')
     }

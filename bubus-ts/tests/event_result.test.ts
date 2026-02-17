@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { v5 as uuidv5 } from 'uuid'
 import { z } from 'zod'
 
 import { BaseEvent, EventBus } from '../src/index.js'
@@ -130,20 +129,66 @@ test('EventHandler JSON roundtrips handler metadata', () => {
 })
 
 test('EventHandler.computeHandlerId matches uuidv5 seed algorithm', () => {
-  const namespace = uuidv5('bubus-handler', uuidv5.DNS)
   const expected_seed =
-    '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.ts:123|2025-01-02T03:04:05.678Z|StandaloneEvent'
-  const expected_id = uuidv5(expected_seed, namespace)
+    '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.py:123|2025-01-02T03:04:05.678901000Z|StandaloneEvent'
+  const expected_id = '0acdaf2c-a5b1-5785-8499-7c48b3c2c5d8'
 
-  const computed_id = EventHandler.computeHandlerId({
+  const params = {
     eventbus_id: '018f8e40-1234-7000-8000-000000001234',
     handler_name: 'pkg.module.handler',
-    handler_file_path: '~/project/app.ts:123',
-    handler_registered_at: '2025-01-02T03:04:05.678Z',
+    handler_file_path: '~/project/app.py:123',
+    handler_registered_at: '2025-01-02T03:04:05.678901000Z',
     event_pattern: 'StandaloneEvent',
-  })
+  } as const
+  const computed_id = EventHandler.computeHandlerId(params)
 
+  const actual_seed = `${params.eventbus_id}|${params.handler_name}|${params.handler_file_path}|${params.handler_registered_at}|${params.event_pattern}`
+  assert.equal(actual_seed, expected_seed)
   assert.equal(computed_id, expected_id)
+})
+
+test('EventHandler.fromCallable supports id override and detect_handler_file_path toggle', () => {
+  const handler = (_event: BaseEvent): string => 'ok'
+  const explicit_id = '018f8e40-1234-7000-8000-000000009999'
+
+  const explicit = EventHandler.fromCallable({
+    handler,
+    id: explicit_id,
+    event_pattern: 'StandaloneEvent',
+    eventbus_name: 'StandaloneBus',
+    eventbus_id: '018f8e40-1234-7000-8000-000000001234',
+    detect_handler_file_path: false,
+  })
+  assert.equal(explicit.id, explicit_id)
+
+  const no_detect = EventHandler.fromCallable({
+    handler,
+    event_pattern: 'StandaloneEvent',
+    eventbus_name: 'StandaloneBus',
+    eventbus_id: '018f8e40-1234-7000-8000-000000001234',
+    detect_handler_file_path: false,
+  })
+  assert.equal(no_detect.handler_file_path, null)
+})
+
+test('EventResult.update keeps python ordering semantics for status/result/error', () => {
+  const bus = new EventBus('EventResultUpdateOrderingBus')
+  const handler = bus.on(StringResultEvent, () => 'ok')
+  const event = StringResultEvent({})
+  event.bus = bus
+  const result = new EventResult({ event, handler })
+
+  const existing_error = new Error('existing')
+  result.error = existing_error
+  result.update({ status: 'completed' })
+  assert.equal(result.status, 'completed')
+  assert.equal(result.error, existing_error)
+
+  result.update({ status: 'error', result: 'seeded' })
+  assert.equal(result.result, 'seeded')
+  assert.equal(result.status, 'error')
+
+  bus.destroy()
 })
 
 test('runHandler is a no-op for already-settled results', async () => {

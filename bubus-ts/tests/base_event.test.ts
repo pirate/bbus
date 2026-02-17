@@ -224,12 +224,17 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
   assert.equal(typeof json.event_created_at, 'string')
   assert.equal(typeof json.event_started_at, 'string')
   assert.equal(typeof json.event_completed_at, 'string')
+  assert.match(String(json.event_created_at), /Z$/)
+  assert.match(String(json.event_started_at), /Z$/)
+  assert.match(String(json.event_completed_at), /Z$/)
   assert.equal(json.event_pending_bus_count, 0)
 
   const json_results = json.event_results as Array<Record<string, unknown>>
   assert.equal(json_results.length, 1)
   assert.equal(json_results[0].status, 'completed')
   assert.equal(json_results[0].result, 'ok')
+  assert.equal(typeof json_results[0].handler_registered_at, 'string')
+  assert.match(String(json_results[0].handler_registered_at), /Z$/)
 
   const restored = RuntimeEvent.fromJSON?.(json) ?? RuntimeEvent(json as never)
   assert.equal(restored.event_status, 'completed')
@@ -238,6 +243,25 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
   assert.equal(Array.from(restored.event_results.values())[0].result, 'ok')
 
   bus.destroy()
+})
+
+test('BaseEvent event_*_at fields are recognized and normalized', () => {
+  const AtFieldEvent = BaseEvent.extend('BaseEventAtFieldRecognitionEvent', {})
+  const event = AtFieldEvent({
+    event_created_at: '2025-01-02T03:04:05.678901234Z',
+    event_started_at: '2025-01-02T03:04:06.100000000Z',
+    event_completed_at: '2025-01-02T03:04:07.200000000Z',
+    event_slow_timeout: 1.5,
+    event_emitted_by_handler_id: '018f8e40-1234-7000-8000-000000000301',
+    event_pending_bus_count: 2,
+  } as never)
+
+  assert.equal(event.event_created_at, '2025-01-02T03:04:05.678901234Z')
+  assert.equal(event.event_started_at, '2025-01-02T03:04:06.100000000Z')
+  assert.equal(event.event_completed_at, '2025-01-02T03:04:07.200000000Z')
+  assert.equal(event.event_slow_timeout, 1.5)
+  assert.equal(event.event_emitted_by_handler_id, '018f8e40-1234-7000-8000-000000000301')
+  assert.equal(event.event_pending_bus_count, 2)
 })
 
 test('BaseEvent reset returns a fresh pending event that can be redispatched', async () => {

@@ -43,6 +43,15 @@ function assertNoModelPrefixedFields(data: Record<string, unknown>, context: str
   }
 }
 
+function compareIsoDatetime(left: string | null | undefined, right: string | null | undefined): number {
+  const left_value = left ?? ''
+  const right_value = right ?? ''
+  if (left_value === right_value) {
+    return 0
+  }
+  return left_value < right_value ? -1 : 1
+}
+
 export const BaseEventSchema = z
   .object({
     event_id: z.string().uuid(),
@@ -843,7 +852,7 @@ export class BaseEvent {
           (result) =>
             result.status === 'completed' && result.result !== undefined && result.result !== null && !(result.result instanceof BaseEvent)
         )
-        .sort((a, b) => (a.completed_at ?? '').localeCompare(b.completed_at ?? ''))
+        .sort((a, b) => compareIsoDatetime(a.completed_at, b.completed_at))
         .map((result) => result.result as EventResultType<this>)
         .at(0)
     })
@@ -1028,7 +1037,7 @@ export class BaseEvent {
         // filter for events that have completed + have non-undefined error values
         .filter((event_result) => event_result.error !== undefined && event_result.completed_at !== null)
         // sort by completion time
-        .sort((event_result_a, event_result_b) => (event_result_a.completed_at ?? '').localeCompare(event_result_b.completed_at ?? ''))
+        .sort((event_result_a, event_result_b) => compareIsoDatetime(event_result_a.completed_at, event_result_b.completed_at))
         // assemble array of flat error values
         .map((event_result) => event_result.error)
     )
@@ -1039,7 +1048,7 @@ export class BaseEvent {
   get event_result(): EventResultType<this> | undefined {
     return Array.from(this.event_results.values())
       .filter((event_result) => event_result.completed_at !== null && event_result.result !== undefined)
-      .sort((event_result_a, event_result_b) => (event_result_a.completed_at ?? '').localeCompare(event_result_b.completed_at ?? ''))
+      .sort((event_result_a, event_result_b) => compareIsoDatetime(event_result_a.completed_at, event_result_b.completed_at))
       .map((event_result) => event_result.result as EventResultType<this>)
       .at(0)
   }

@@ -1,5 +1,5 @@
 from typing import cast
-from uuid import NAMESPACE_DNS, uuid4, uuid5
+from uuid import uuid4
 
 import pytest
 
@@ -107,6 +107,9 @@ def test_event_handler_model_is_serializable() -> None:
 
 
 def test_event_handler_id_matches_typescript_uuidv5_algorithm() -> None:
+    expected_seed = '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.py:123|2025-01-02T03:04:05.678901000Z|StandaloneEvent'
+    expected_id = '0acdaf2c-a5b1-5785-8499-7c48b3c2c5d8'
+
     entry = EventHandler(
         handler_name='pkg.module.handler',
         handler_file_path='~/project/app.py:123',
@@ -116,10 +119,10 @@ def test_event_handler_id_matches_typescript_uuidv5_algorithm() -> None:
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
     )
 
-    namespace = uuid5(NAMESPACE_DNS, 'bubus-handler')
-    expected_seed = '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.py:123|2025-01-02T03:04:05.678901000Z|StandaloneEvent'
-    expected_id = str(uuid5(namespace, expected_seed))
-
+    assert (
+        f'{entry.eventbus_id}|{entry.handler_name}|{entry.handler_file_path}|{entry.handler_registered_at}|{entry.event_pattern}'
+        == expected_seed
+    )
     assert entry.compute_handler_id() == expected_id
     assert entry.id == expected_id
 

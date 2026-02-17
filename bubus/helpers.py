@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import threading
 import time
 import traceback
 from collections import deque
@@ -25,6 +26,7 @@ _MONOTONIC_DATETIME_LENGTH = 30  # YYYY-MM-DDTHH:MM:SS.fffffffffZ
 _MONOTONIC_EPOCH_ANCHOR_NS = time.time_ns()
 _MONOTONIC_CLOCK_ANCHOR_NS = time.monotonic_ns()
 _last_monotonic_datetime_ns = _MONOTONIC_EPOCH_ANCHOR_NS
+_last_monotonic_datetime_lock = threading.Lock()
 
 
 def _format_epoch_ns_to_iso(epoch_ns: int) -> str:
@@ -47,8 +49,6 @@ def monotonic_datetime(isostring: str | None = None) -> str:
             raise ValueError(f'Invalid ISO datetime: {isostring!r}')
 
         parsed = datetime.fromisoformat(isostring.replace('Z', '+00:00'))
-        if parsed.tzinfo is None:
-            raise ValueError(f'ISO datetime must include timezone: {isostring!r}')
         parsed_utc = parsed.astimezone(UTC)
         if parsed_utc.year <= 1990 or parsed_utc.year >= 2500:
             raise ValueError(f'Datetime year must be >1990 and <2500: {isostring!r}')
@@ -63,9 +63,10 @@ def monotonic_datetime(isostring: str | None = None) -> str:
     global _last_monotonic_datetime_ns
     elapsed_ns = time.monotonic_ns() - _MONOTONIC_CLOCK_ANCHOR_NS
     epoch_ns = _MONOTONIC_EPOCH_ANCHOR_NS + elapsed_ns
-    if epoch_ns <= _last_monotonic_datetime_ns:
-        epoch_ns = _last_monotonic_datetime_ns + 1
-    _last_monotonic_datetime_ns = epoch_ns
+    with _last_monotonic_datetime_lock:
+        if epoch_ns <= _last_monotonic_datetime_ns:
+            epoch_ns = _last_monotonic_datetime_ns + 1
+        _last_monotonic_datetime_ns = epoch_ns
     return _format_epoch_ns_to_iso(epoch_ns)
 
 

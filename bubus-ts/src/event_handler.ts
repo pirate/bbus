@@ -157,15 +157,17 @@ export class EventHandler {
     event_pattern: EventPattern | '*'
     eventbus_name: string
     eventbus_id: string
-    handler_name?: string
+    detect_handler_file_path?: boolean
+    id?: string
     handler_file_path?: string | null
     handler_timeout?: number | null
     handler_slow_timeout?: number | null
     handler_registered_at?: string
   }): EventHandler {
-    return new EventHandler({
+    const entry = new EventHandler({
+      id: params.id,
       handler: params.handler as EventHandlerCallable,
-      handler_name: params.handler_name || params.handler.name || 'anonymous',
+      handler_name: params.handler.name || 'anonymous',
       handler_file_path: params.handler_file_path ?? null,
       handler_timeout: params.handler_timeout,
       handler_slow_timeout: params.handler_slow_timeout,
@@ -174,6 +176,20 @@ export class EventHandler {
       eventbus_name: params.eventbus_name,
       eventbus_id: params.eventbus_id,
     })
+    const should_detect_handler_file_path = params.detect_handler_file_path ?? true
+    if (should_detect_handler_file_path && entry.handler_file_path === null) {
+      entry._detectHandlerFilePath()
+      if (params.id === undefined) {
+        entry.id = EventHandler.computeHandlerId({
+          eventbus_id: entry.eventbus_id,
+          handler_name: entry.handler_name,
+          handler_file_path: entry.handler_file_path,
+          handler_registered_at: entry.handler_registered_at,
+          event_pattern: entry.event_pattern,
+        })
+      }
+    }
+    return entry
   }
 
   // "someHandlerName() @ ~/path/to/source/file.ts:123"  <- best case when file path is available and its a named function

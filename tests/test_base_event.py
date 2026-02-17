@@ -184,6 +184,18 @@ async def test_event_at_fields_are_recognized():
     assert event.event_pending_bus_count == 2
 
 
+async def test_legacy_event_ts_fields_are_ignored():
+    event = MainEvent.model_validate(
+        {
+            'event_created_at': '2025-01-02T03:04:05.678901234Z',
+            'event_created_ts': 1735787045.6789012,
+            'event_started_ts': 1735787046.1,
+            'event_completed_ts': 1735787047.2,
+        }
+    )
+    assert event.event_created_at == '2025-01-02T03:04:05.678901234Z'
+
+
 async def test_python_serialized_at_fields_are_strings():
     bus = EventBus(name='TsIntBus')
 

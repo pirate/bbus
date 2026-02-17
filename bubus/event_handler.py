@@ -375,17 +375,7 @@ class EventHandler(BaseModel):
         handler_params: dict[str, Any] = {
             'handler': handler,
             'handler_file_path': resolved_file_path,
-            'handler_registered_at': monotonic_datetime(
-                (
-                    handler_registered_at.replace(tzinfo=UTC)
-                    if handler_registered_at.tzinfo is None
-                    else handler_registered_at.astimezone(UTC)
-                )
-                .isoformat()
-                .replace('+00:00', 'Z')
-                if isinstance(handler_registered_at, datetime)
-                else handler_registered_at
-            ),
+            'handler_registered_at': handler_registered_at,
             'event_pattern': event_pattern,
             'eventbus_name': eventbus_name,
             'eventbus_id': eventbus_id,
