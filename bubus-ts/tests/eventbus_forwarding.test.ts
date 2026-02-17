@@ -8,6 +8,7 @@ import { BaseEvent, EventBus } from '../src/index.js'
 const PingEvent = BaseEvent.extend('PingEvent', { value: z.number() })
 const ProxyDispatchRootEvent = BaseEvent.extend('ProxyDispatchRootEvent', {})
 const ProxyDispatchChildEvent = BaseEvent.extend('ProxyDispatchChildEvent', {})
+const ForwardedFirstDefaultsEvent = BaseEvent.extend('ForwardedFirstDefaultsEvent', {})
 
 test('events forward between buses without duplication', async () => {
   const bus_a = new EventBus('BusA')
@@ -214,6 +215,43 @@ test('await event.done waits when forwarding handler is async-delayed', async ()
   assert.equal(bus_b_done, true)
   assert.equal(event.event_pending_bus_count, 0)
   assert.deepEqual(event.event_path, [bus_a.label, bus_b.label])
+})
+
+test('forwarded first-mode uses processing-bus handler defaults', async () => {
+  const bus_a = new EventBus('ForwardedFirstDefaultsA', {
+    event_handler_concurrency: 'serial',
+    event_handler_completion: 'all',
+  })
+  const bus_b = new EventBus('ForwardedFirstDefaultsB', {
+    event_handler_concurrency: 'parallel',
+    event_handler_completion: 'first',
+  })
+  const log: string[] = []
+
+  const slow_handler = async (_event: InstanceType<typeof ForwardedFirstDefaultsEvent>): Promise<string> => {
+    log.push('slow_start')
+    await delay(20)
+    log.push('slow_end')
+    return 'slow'
+  }
+
+  const fast_handler = async (_event: InstanceType<typeof ForwardedFirstDefaultsEvent>): Promise<string> => {
+    log.push('fast_start')
+    await delay(1)
+    log.push('fast_end')
+    return 'fast'
+  }
+
+  bus_a.on('*', bus_b.emit)
+  bus_b.on(ForwardedFirstDefaultsEvent, slow_handler)
+  bus_b.on(ForwardedFirstDefaultsEvent, fast_handler)
+
+  const result = await bus_a.emit(ForwardedFirstDefaultsEvent({ event_timeout: null })).first()
+  await Promise.all([bus_a.waitUntilIdle(), bus_b.waitUntilIdle()])
+
+  assert.equal(result, 'fast', `expected first-mode on processing bus to pick fast handler, got ${String(result)} log=${log}`)
+  assert.equal(log.includes('slow_start'), true, `slow handler should start under parallel first-mode, log=${log}`)
+  assert.equal(log.includes('fast_start'), true, `fast handler should start under parallel first-mode, log=${log}`)
 })
 
 test('proxy dispatch auto-links child events like emit', async () => {

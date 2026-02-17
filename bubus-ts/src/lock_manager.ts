@@ -160,9 +160,14 @@ export type EventBusInterfaceForLockManager = {
   _lock_for_event_global_serial: AsyncLock
 }
 
+export type LockManagerOptions = {
+  auto_schedule_idle_checks?: boolean
+}
+
 // The LockManager is responsible for managing the concurrency of events and handlers
 export class LockManager {
   private bus: EventBusInterfaceForLockManager // Live bus reference; used to read defaults and idle state.
+  private auto_schedule_idle_checks: boolean
 
   readonly bus_event_lock: AsyncLock // Per-bus event lock; created with LockManager and never swapped.
   private pause_depth: number // Re-entrant pause counter; increments on _requestRunloopPause, decrements on release.
@@ -173,8 +178,9 @@ export class LockManager {
   private idle_check_pending: boolean // Debounce flag to avoid scheduling redundant idle checks.
   private idle_check_streak: number // Counts consecutive idle checks; used to require two ticks of idle.
 
-  constructor(bus: EventBusInterfaceForLockManager) {
+  constructor(bus: EventBusInterfaceForLockManager, options: LockManagerOptions = {}) {
     this.bus = bus
+    this.auto_schedule_idle_checks = options.auto_schedule_idle_checks ?? true
     this.bus_event_lock = new AsyncLock(1) // used for the bus-serial concurrency mode
 
     this.pause_depth = 0
@@ -366,6 +372,9 @@ export class LockManager {
   // Schedules a debounced idle check to run after a short delay. Used to gate
   // waitUntilIdle() calls during handler execution and after event completion.
   private scheduleIdleCheck(): void {
+    if (!this.auto_schedule_idle_checks) {
+      return
+    }
     if (this.idle_check_pending) {
       return
     }

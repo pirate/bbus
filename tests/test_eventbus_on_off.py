@@ -121,3 +121,76 @@ async def test_on_normalizes_sync_handler_to_async_callable() -> None:
     assert len(calls) == 2
 
     await bus.stop(clear=True)
+
+
+@pytest.mark.asyncio
+async def test_on_keeps_async_handlers_normalized_through_handler_async() -> None:
+    bus = EventBus(name='RegistryAsyncNormalizeBus')
+
+    class RegistryAsyncNormalizeEvent(BaseEvent[str]):
+        event_timeout: float | None = 0.2
+
+    calls: list[str] = []
+
+    async def async_handler(event: RegistryAsyncNormalizeEvent) -> str:
+        calls.append(event.event_id)
+        return 'async_normalized'
+
+    entry = bus.on(RegistryAsyncNormalizeEvent, async_handler)
+
+    assert entry.handler is async_handler
+    assert entry._handler_async is async_handler  # pyright: ignore[reportPrivateUsage]
+    assert inspect.iscoroutinefunction(entry._handler_async)  # pyright: ignore[reportPrivateUsage]
+
+    direct_result = await entry._handler_async(RegistryAsyncNormalizeEvent())  # pyright: ignore[reportPrivateUsage]
+    assert direct_result == 'async_normalized'
+
+    dispatched = bus.emit(RegistryAsyncNormalizeEvent())
+    completed = await dispatched
+    result = completed.event_results[entry.id]
+
+    assert result.status == 'completed'
+    assert result.result == 'async_normalized'
+    assert len(calls) == 2
+
+    await bus.stop(clear=True)
+
+
+@pytest.mark.asyncio
+async def test_handler_async_preserves_typed_arg_return_contracts_for_sync_handlers() -> None:
+    bus = EventBus(name='RegistryTypingSyncBus')
+
+    class RegistryTypingEvent(BaseEvent[str]):
+        required_token: str
+
+    def typed_sync_handler(event: RegistryTypingEvent) -> str:
+        return event.required_token
+
+    entry = bus.on(RegistryTypingEvent, typed_sync_handler)
+    handler_async = entry._handler_async  # pyright: ignore[reportPrivateUsage]
+    assert handler_async is not None
+    result = await handler_async(RegistryTypingEvent(required_token='sync'))
+    assert isinstance(result, str)
+    assert result == 'sync'
+
+    await bus.stop(clear=True)
+
+
+@pytest.mark.asyncio
+async def test_handler_async_preserves_typed_arg_return_contracts_for_async_handlers() -> None:
+    bus = EventBus(name='RegistryTypingAsyncBus')
+
+    class RegistryTypingEvent(BaseEvent[str]):
+        required_token: str
+
+    async def typed_async_handler(event: RegistryTypingEvent) -> str:
+        return event.required_token
+
+    entry = bus.on(RegistryTypingEvent, typed_async_handler)
+    handler_async = entry._handler_async  # pyright: ignore[reportPrivateUsage]
+    assert handler_async is not None
+    result = await handler_async(RegistryTypingEvent(required_token='async'))
+    assert isinstance(result, str)
+    assert result == 'async'
+
+    await bus.stop(clear=True)

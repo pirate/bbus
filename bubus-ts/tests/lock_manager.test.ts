@@ -184,29 +184,19 @@ test('LockManager waitForIdle uses two-check stability and supports timeout', as
   const timeout_false = await timeout_locks.waitForIdle(0.01)
   assert.equal(timeout_false, false)
 
-  const locks = new LockManager(bus)
+  const locks = new LockManager(bus, { auto_schedule_idle_checks: false })
 
-  // Disable auto-scheduled checks so this test can deterministically assert
-  // that exactly two explicit stable-idle notifications are required.
-  const internal = locks as unknown as { scheduleIdleCheck: () => void }
-  const original_schedule_idle_check = internal.scheduleIdleCheck
-  internal.scheduleIdleCheck = () => {}
+  let resolved: boolean | null = null
+  const idle_promise = locks.waitForIdle(0.2).then((value) => {
+    resolved = value
+  })
 
-  try {
-    let resolved: boolean | null = null
-    const idle_promise = locks.waitForIdle(0.2).then((value) => {
-      resolved = value
-    })
-
-    idle = true
-    locks._notifyIdleListeners() // first stable-idle tick; should not resolve synchronously
-    assert.equal(resolved, null)
-    await delay(0)
-    assert.equal(resolved, null)
-    locks._notifyIdleListeners() // second stable-idle tick; now resolve
-    await idle_promise
-    assert.equal(resolved, true)
-  } finally {
-    internal.scheduleIdleCheck = original_schedule_idle_check
-  }
+  idle = true
+  locks._notifyIdleListeners() // first stable-idle tick; should not resolve synchronously
+  assert.equal(resolved, null)
+  await delay(0)
+  assert.equal(resolved, null)
+  locks._notifyIdleListeners() // second stable-idle tick; now resolve
+  await idle_promise
+  assert.equal(resolved, true)
 })
