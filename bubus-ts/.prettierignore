@@ -1,1 +1,4 @@
 dist/
+*.md
+*.yaml
+*.json

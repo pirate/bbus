@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uv run ruff format
-uv run ruff check --fix
-uv run ty check bubus examples
+uv run ruff format bubus examples tests
+uv run ruff check --fix bubus examples tests
+uv run ty check bubus examples tests
 uv run pyright
 
 (

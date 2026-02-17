@@ -130,13 +130,13 @@ if TYPE_CHECKING:
 
     # Expected static type errors:
     # 1) class pattern should reject a mismatched event subclass handler
-    _bus.on(_SomeEventClass, _other_handler)  # ty: ignore[no-matching-overload]  # pyright: ignore[reportCallIssue, reportArgumentType]
+    _bus.on(_SomeEventClass, _other_handler)  # type: ignore
 
     # Variance contracts for class patterns:
     # 2) unrelated class pattern should reject handler expecting a different event class
-    _bus.on(_EventTypeB, _handler_for_a)  # ty: ignore[no-matching-overload]  # pyright: ignore[reportCallIssue, reportArgumentType]
+    _bus.on(_EventTypeB, _handler_for_a)  # type: ignore
     # 3) subclass pattern accepts base-class handler (contravariant safe)
     _subclass_ok = _bus.on(_EventTypeSubclassOfA, _handler_for_a)
     assert_type(_subclass_ok, EventHandler)
     # 4) base-class pattern rejects subclass-only handler
-    _bus.on(_EventTypeA, _handler_for_specific_subclass)  # ty: ignore[no-matching-overload]  # pyright: ignore[reportCallIssue, reportArgumentType]
+    _bus.on(_EventTypeA, _handler_for_specific_subclass)  # type: ignore
