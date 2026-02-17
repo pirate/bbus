@@ -91,12 +91,14 @@ def test_events_suck_wrap_builds_typed_method_signature():
     signature = inspect.signature(TestClient.create)
     params = signature.parameters
 
-    assert list(params) == ['self', 'id', 'name', 'age', 'extra']
+    assert list(params) == ['self', 'id', 'name', 'age', 'nickname', 'extra']
     assert params['id'].annotation == str | None
     assert params['id'].default is None
     assert params['name'].annotation is str
     assert params['name'].default is inspect.Parameter.empty
     assert params['age'].annotation is int
+    assert params['nickname'].annotation == str | None
+    assert params['nickname'].default is None
     assert params['extra'].kind == inspect.Parameter.VAR_KEYWORD
     assert signature.return_annotation is str
 
