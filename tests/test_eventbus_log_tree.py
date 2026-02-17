@@ -1,9 +1,9 @@
 """Test the EventBus.log_tree() method"""
 
-from datetime import UTC, datetime
 from typing import Any, Literal
 
 from bubus import BaseEvent, EventBus, EventHandler, EventResult
+from bubus.helpers import monotonic_datetime
 
 
 class RootEvent(BaseEvent[str]):
@@ -25,8 +25,8 @@ def _result_with_handler(
     handler_id: str,
     handler_name: str,
     status: Literal['pending', 'started', 'completed', 'error'],
-    started_at: datetime | None = None,
-    completed_at: datetime | None = None,
+    started_at: str | None = None,
+    completed_at: str | None = None,
     result: Any = None,
     error: BaseException | None = None,
 ) -> EventResult[Any]:
@@ -54,7 +54,7 @@ def test_log_history_tree_single_event(capsys: Any) -> None:
 
     # Create and add event to history
     event = RootEvent(data='test')
-    event.event_completed_at = datetime.now(UTC)
+    event.event_completed_at = monotonic_datetime()
     bus.event_history[event.event_id] = event
 
     captured_str = bus.log_tree()
@@ -72,7 +72,7 @@ def test_log_history_tree_with_handlers(capsys: Any) -> None:
 
     # Create event with handler results
     event = RootEvent(data='test')
-    event.event_completed_at = datetime.now(UTC)
+    event.event_completed_at = monotonic_datetime()
 
     # Add handler result
     handler_id = '018f8e40-1234-7000-8000-000000000101'
@@ -82,8 +82,8 @@ def test_log_history_tree_with_handlers(capsys: Any) -> None:
         handler_id=handler_id,
         handler_name='test_handler',
         status='completed',
-        started_at=datetime.now(UTC),
-        completed_at=datetime.now(UTC),
+        started_at=monotonic_datetime(),
+        completed_at=monotonic_datetime(),
         result='status: success',
     )
 
@@ -100,7 +100,7 @@ def test_log_history_tree_with_errors(capsys: Any) -> None:
     bus = EventBus(name='ErrorBus')
 
     event = RootEvent()
-    event.event_completed_at = datetime.now(UTC)
+    event.event_completed_at = monotonic_datetime()
 
     # Add error result
     handler_id = '018f8e40-1234-7000-8000-000000000102'
@@ -110,8 +110,8 @@ def test_log_history_tree_with_errors(capsys: Any) -> None:
         handler_id=handler_id,
         handler_name='error_handler',
         status='error',
-        started_at=datetime.now(UTC),
-        completed_at=datetime.now(UTC),
+        started_at=monotonic_datetime(),
+        completed_at=monotonic_datetime(),
         error=ValueError('Test error message'),
     )
 
@@ -128,7 +128,7 @@ def test_log_history_tree_complex_nested() -> None:
 
     # Create root event
     root = RootEvent(data='root_data')
-    root.event_completed_at = datetime.now(UTC)
+    root.event_completed_at = monotonic_datetime()
 
     # Add root handler with child events
     root_handler_id = '018f8e40-1234-7000-8000-000000000103'
@@ -138,15 +138,15 @@ def test_log_history_tree_complex_nested() -> None:
         handler_id=root_handler_id,
         handler_name='root_handler',
         status='completed',
-        started_at=datetime.now(UTC),
-        completed_at=datetime.now(UTC),
+        started_at=monotonic_datetime(),
+        completed_at=monotonic_datetime(),
         result='Root processed',
     )
 
     # Create child event
     child = ChildEvent(value=100)
     child.event_parent_id = root.event_id
-    child.event_completed_at = datetime.now(UTC)
+    child.event_completed_at = monotonic_datetime()
 
     # Add child to root handler's event_children
     root.event_results[root_handler_id].event_children.append(child)
@@ -159,15 +159,15 @@ def test_log_history_tree_complex_nested() -> None:
         handler_id=child_handler_id,
         handler_name='child_handler',
         status='completed',
-        started_at=datetime.now(UTC),
-        completed_at=datetime.now(UTC),
+        started_at=monotonic_datetime(),
+        completed_at=monotonic_datetime(),
         result=[1, 2, 3],
     )
 
     # Create grandchild
     grandchild = GrandchildEvent()
     grandchild.event_parent_id = child.event_id
-    grandchild.event_completed_at = datetime.now(UTC)
+    grandchild.event_completed_at = monotonic_datetime()
 
     # Add grandchild to child handler's event_children
     child.event_results[child_handler_id].event_children.append(grandchild)
@@ -180,8 +180,8 @@ def test_log_history_tree_complex_nested() -> None:
         handler_id=grandchild_handler_id,
         handler_name='grandchild_handler',
         status='completed',
-        started_at=datetime.now(UTC),
-        completed_at=datetime.now(UTC),
+        started_at=monotonic_datetime(),
+        completed_at=monotonic_datetime(),
         result=None,
     )
 
@@ -212,10 +212,10 @@ def test_log_history_tree_multiple_roots(capsys: Any) -> None:
 
     # Create multiple root events
     root1 = RootEvent(data='first')
-    root1.event_completed_at = datetime.now(UTC)
+    root1.event_completed_at = monotonic_datetime()
 
     root2 = RootEvent(data='second')
-    root2.event_completed_at = datetime.now(UTC)
+    root2.event_completed_at = monotonic_datetime()
 
     bus.event_history[root1.event_id] = root1
     bus.event_history[root2.event_id] = root2
@@ -232,11 +232,11 @@ def test_log_history_tree_timing_info(capsys: Any) -> None:
     bus = EventBus(name='TimingBus')
 
     event = RootEvent()
-    event.event_completed_at = datetime.now(UTC)
+    event.event_completed_at = monotonic_datetime()
 
     # Add handler with timing
-    start_time = datetime.now(UTC)
-    end_time = datetime.now(UTC)
+    start_time = monotonic_datetime()
+    end_time = monotonic_datetime()
 
     handler_id = '018f8e40-1234-7000-8000-000000000106'
     event.event_results[handler_id] = _result_with_handler(
@@ -272,7 +272,7 @@ def test_log_history_tree_running_handler(capsys: Any) -> None:
         handler_id=handler_id,
         handler_name='running_handler',
         status='started',
-        started_at=datetime.now(UTC),
+        started_at=monotonic_datetime(),
         completed_at=None,
     )
 

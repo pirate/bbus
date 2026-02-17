@@ -97,7 +97,7 @@ async function main(): Promise<void> {
 
   // Step 8: Print IDs + relationship checks from event history.
   console.log('\n=== Event History Relationships ===')
-  const history = Array.from(bus.event_history.values()).sort((a, b) => (a.event_created_ts ?? 0) - (b.event_created_ts ?? 0))
+  const history = Array.from(bus.event_history.values()).sort((a, b) => a.event_created_at.localeCompare(b.event_created_at))
 
   for (const item of history) {
     const parentEvent = item.event_parent

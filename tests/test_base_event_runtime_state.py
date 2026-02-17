@@ -2,9 +2,9 @@
 
 import asyncio
 from contextlib import suppress
-from datetime import UTC, datetime
 
 from bubus import BaseEvent, EventBus
+from bubus.helpers import monotonic_datetime
 
 
 class SampleEvent(BaseEvent[str]):
@@ -60,8 +60,8 @@ async def test_event_started_at_after_processing():
     # Check timestamps - should not raise AttributeError
     assert event.event_started_at is not None
     assert event.event_completed_at is not None
-    assert isinstance(event.event_started_at, datetime)
-    assert isinstance(event.event_completed_at, datetime)
+    assert isinstance(event.event_started_at, str)
+    assert isinstance(event.event_completed_at, str)
 
     await bus.stop()
 
@@ -96,7 +96,7 @@ async def test_event_with_manually_set_completed_at():
 
     # Manually set the completed timestamp (as done in tests)
     if hasattr(event, 'event_completed_at'):
-        event.event_completed_at = datetime.now(UTC)
+        event.event_completed_at = monotonic_datetime()
 
     # Stateful runtime fields are no longer derived from event_results/event_completed_at on read.
     # Manually assigning event_completed_at alone does not mutate status/started_at.
@@ -153,15 +153,14 @@ def test_event_started_at_is_serialized_and_stateful():
     first_started_at = event.model_dump(mode='json')['event_started_at']
     assert isinstance(first_started_at, str)
 
-    forced_started_at = datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC)
+    forced_started_at = '2020-01-01T00:00:00.000000000Z'
     result = next(iter(event.event_results.values()))
     result.started_at = forced_started_at
 
     second_started_at = event.model_dump(mode='json')['event_started_at']
     assert isinstance(second_started_at, str)
     assert second_started_at == first_started_at
-    parsed = datetime.fromisoformat(second_started_at.replace('Z', '+00:00'))
-    assert parsed != forced_started_at
+    assert second_started_at != forced_started_at
 
 
 async def test_event_status_is_serialized_and_stateful():

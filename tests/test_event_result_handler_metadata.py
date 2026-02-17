@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from typing import cast
 from uuid import NAMESPACE_DNS, uuid4, uuid5
 
@@ -107,38 +106,22 @@ def test_event_handler_model_is_serializable() -> None:
     assert loaded.handler is None
 
 
-def test_event_handler_id_matches_ts_uuidv5_algorithm() -> None:
-    registered_at = datetime(2025, 1, 2, 3, 4, 5, 678901, tzinfo=UTC)
-    handler_registered_ts = 678901
+def test_event_handler_id_matches_typescript_uuidv5_algorithm() -> None:
     entry = EventHandler(
         handler_name='pkg.module.handler',
         handler_file_path='~/project/app.py:123',
-        handler_registered_at=registered_at,
-        handler_registered_ts=handler_registered_ts,
+        handler_registered_at='2025-01-02T03:04:05.678901000Z',
         event_pattern='StandaloneEvent',
         eventbus_name='StandaloneBus',
         eventbus_id='018f8e40-1234-7000-8000-000000001234',
     )
 
     namespace = uuid5(NAMESPACE_DNS, 'bubus-handler')
-    expected_seed = (
-        '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.py:123|'
-        f'2025-01-02T03:04:05.678Z|{handler_registered_ts}|StandaloneEvent'
-    )
+    expected_seed = '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.py:123|2025-01-02T03:04:05.678901000Z|StandaloneEvent'
     expected_id = str(uuid5(namespace, expected_seed))
 
     assert entry.compute_handler_id() == expected_id
     assert entry.id == expected_id
-
-
-def test_handler_registered_ts_rejects_negative_fractional_float() -> None:
-    with pytest.raises(TypeError, match='handler_registered_ts must be an integer offset'):
-        EventHandler.model_validate({'handler_registered_ts': -0.5})
-
-
-def test_handler_registered_ts_rejects_positive_fractional_float() -> None:
-    with pytest.raises(TypeError, match='handler_registered_ts must be an integer offset'):
-        EventHandler.model_validate({'handler_registered_ts': 1.9})
 
 
 def test_event_handler_model_detects_handler_file_path() -> None:

@@ -12,11 +12,15 @@ if TYPE_CHECKING:
     from bubus.event_bus import EventBus
 
 
-def format_timestamp(dt: datetime | None) -> str:
-    """Format a datetime for display"""
+def format_timestamp(dt: str | datetime | None) -> str:
+    """Format an ISO datetime string (or datetime) for display."""
     if dt is None:
         return 'N/A'
-    return dt.strftime('%H:%M:%S.%f')[:-3]  # Show time with milliseconds
+    if isinstance(dt, str):
+        parsed = datetime.fromisoformat(dt)
+    else:
+        parsed = dt
+    return parsed.strftime('%H:%M:%S.%f')[:-3]
 
 
 def format_result_value(value: Any) -> str:
@@ -52,7 +56,9 @@ def log_event_tree(
     # Format timing info
     timing_str = f'[{format_timestamp(event.event_created_at)}'
     if event.event_completed_at and event.event_created_at:
-        duration = (event.event_completed_at - event.event_created_at).total_seconds()
+        completed_dt = datetime.fromisoformat(event.event_completed_at)
+        created_dt = datetime.fromisoformat(event.event_created_at)
+        duration = (completed_dt - created_dt).total_seconds()
         timing_str += f' ({duration:.3f}s)'
     timing_str += ']'
 
@@ -71,7 +77,7 @@ def log_event_tree(
 
     # Print each result
     if event.event_results:
-        results_sorted = sorted(event.event_results.items(), key=lambda x: x[1].started_at or datetime.min.replace(tzinfo=UTC))
+        results_sorted = sorted(event.event_results.items(), key=lambda x: x[1].started_at or '')
 
         # Calculate which is the last item considering both results and unmapped children
         unmapped_children: list[BaseEvent[Any]] = []
@@ -136,7 +142,9 @@ def log_event_result_tree(
     if result.started_at:
         result_line += f' [{format_timestamp(result.started_at)}'
         if result.completed_at:
-            duration = (result.completed_at - result.started_at).total_seconds()
+            completed_dt = datetime.fromisoformat(result.completed_at)
+            started_dt = datetime.fromisoformat(result.started_at)
+            duration = (completed_dt - started_dt).total_seconds()
             result_line += f' ({duration:.3f}s)'
         result_line += ']'
 
@@ -252,8 +260,8 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
         handler_name: str,
         event_id_suffix: str,
         status: str = 'pending',
-        started_at: datetime | None = None,
-        completed_at: datetime | None = None,
+        started_at: str | None = None,
+        completed_at: str | None = None,
         timeout: float | None = None,
         is_expired: bool = False,
         is_interrupted: bool = False,
@@ -286,7 +294,9 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
         # Col 5-10: timing info
         max_time = timeout or 0
         if started_at:
-            elapsed_time = ((completed_at or now) - started_at).total_seconds()
+            started_at_dt = datetime.fromisoformat(started_at)
+            completed_at_dt = datetime.fromisoformat(completed_at) if completed_at else now
+            elapsed_time = (completed_at_dt - started_at_dt).total_seconds()
 
             if is_expired or (elapsed_time >= max_time):
                 col5_timing_icon = '⌛️'
@@ -346,7 +356,8 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
             or evt.event_created_at
         )
         now = datetime.now(UTC)
-        elapsed = round((now - event_start_time).total_seconds())
+        event_start_time_dt = datetime.fromisoformat(event_start_time)
+        elapsed = round((now - event_start_time_dt).total_seconds())
 
         # Event line formatted with proper columns
         # Col 1: indent, Col 2: icon (📣), Col 3: description
@@ -429,7 +440,7 @@ def log_timeout_tree(event: 'BaseEvent[Any]', timed_out_result: 'EventResult[Any
                 break
 
         # Get all registered handlers that could match this event_type.
-        if event_bus and hasattr(event_bus, 'handlers') and hasattr(event_bus, 'handlers_by_key'):
+        if event_bus is not None:
             indexed_ids = list(event_bus.handlers_by_key.get(evt.event_type, [])) + list(event_bus.handlers_by_key.get('*', []))
 
             for handler_id in indexed_ids:

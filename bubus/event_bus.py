@@ -390,15 +390,6 @@ class EventBus:
     def _event_json_payload(cls, event: BaseEvent[Any]) -> dict[str, Any]:
         payload = event.model_dump(mode='json')
         payload['event_results'] = [result.model_dump(mode='json') for result in event.event_results.values()]
-        for key in ('event_created_ts', 'event_started_ts', 'event_completed_ts'):
-            value = payload.get(key)
-            if isinstance(value, (int, float)):
-                payload[key] = int(value)
-        for result_payload in payload['event_results']:
-            for key in ('handler_registered_ts', 'started_ts', 'completed_ts'):
-                value = result_payload.get(key)
-                if isinstance(value, (int, float)):
-                    result_payload[key] = int(value)
         return payload
 
     @staticmethod
@@ -460,8 +451,6 @@ class EventBus:
             handler_payload.setdefault('handler_slow_timeout', result_payload.get('handler_slow_timeout'))
         if result_payload.get('handler_registered_at') is not None:
             handler_payload.setdefault('handler_registered_at', result_payload.get('handler_registered_at'))
-        if result_payload.get('handler_registered_ts') is not None:
-            handler_payload.setdefault('handler_registered_ts', result_payload.get('handler_registered_ts'))
         handler_payload.setdefault('event_pattern', result_payload.get('handler_event_pattern') or event.event_type)
         handler_payload.setdefault('eventbus_name', result_payload.get('eventbus_name') or bus.name)
         handler_payload.setdefault('eventbus_id', result_payload.get('eventbus_id') or bus.id)
@@ -492,12 +481,9 @@ class EventBus:
             'handler_timeout',
             'handler_slow_timeout',
             'handler_registered_at',
-            'handler_registered_ts',
             'handler_event_pattern',
             'eventbus_name',
             'eventbus_id',
-            'started_ts',
-            'completed_ts',
         ):
             model_payload.pop(flat_key, None)
         model_payload['event_id'] = event.event_id
@@ -747,9 +733,7 @@ class EventBus:
         if not self.find_waiters:
             return
         for waiter in tuple(self.find_waiters):
-            if waiter.event_key != '*' and event.event_type != waiter.event_key:
-                continue
-            if not waiter.matches(event):
+            if (waiter.event_key != '*' and event.event_type != waiter.event_key) or not waiter.matches(event):
                 continue
             if waiter.timeout_handle is not None:
                 waiter.timeout_handle.cancel()
@@ -884,11 +868,12 @@ class EventBus:
 
     async def _slow_event_warning_monitor(self, event: BaseEvent[Any], event_slow_timeout: float) -> None:
         await asyncio.sleep(event_slow_timeout)
-        if self._is_event_complete_fast(event):
+        if event.event_status == EventStatus.COMPLETED:
             return
         running_handler_count = sum(1 for result in event.event_results.values() if result.status == 'started')
         started_at = event.event_started_at or event.event_created_at
-        elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+        started_at_dt = datetime.fromisoformat(started_at)
+        elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at_dt).total_seconds())
         logger.warning(
             '⚠️ Slow event processing: %s.on(%s#%s, %d handlers) still running after %.2fs',
             self.label,
@@ -897,10 +882,6 @@ class EventBus:
             running_handler_count,
             elapsed_seconds,
         )
-
-    @staticmethod
-    def _is_event_complete_fast(event: BaseEvent[Any]) -> bool:
-        return EventHistory.is_event_complete_fast(event)
 
     def _has_inflight_events_fast(self) -> bool:
         return bool(
@@ -923,7 +904,7 @@ class EventBus:
         return [
             event
             for event in self.event_history.values()
-            if not self._is_event_complete_fast(event) and event.event_status != EventStatus.STARTED
+            if event.event_status != EventStatus.COMPLETED and event.event_status != EventStatus.STARTED
         ]
 
     @property
@@ -932,13 +913,13 @@ class EventBus:
         return [
             event
             for event in self.event_history.values()
-            if not self._is_event_complete_fast(event) and event.event_status == EventStatus.STARTED
+            if event.event_status != EventStatus.COMPLETED and event.event_status == EventStatus.STARTED
         ]
 
     @property
     def events_completed(self) -> list[BaseEvent[Any]]:
         """Get events that have completed processing"""
-        return [event for event in self.event_history.values() if self._is_event_complete_fast(event)]
+        return [event for event in self.event_history.values() if event.event_status == EventStatus.COMPLETED]
 
     # Overloads for typed event patterns with specific handler signatures
     # Order matters - more specific types must come before general ones
@@ -987,7 +968,7 @@ class EventBus:
         )
 
         # Normalize event key to string event_type or wildcard.
-        event_key = self._normalize_event_pattern(event_pattern)
+        event_key = EventHistory.normalize_event_pattern(event_pattern)
 
         # Ensure event_key is definitely a string at this point
         assert isinstance(event_key, str)
@@ -1050,7 +1031,7 @@ class EventBus:
         handler: EventHandlerCallable | PythonIdStr | EventHandler | None = None,
     ) -> None:
         """Deregister handlers for an event pattern by id, callable, EventHandler, or all."""
-        event_key = self._normalize_event_pattern(event_pattern)
+        event_key = EventHistory.normalize_event_pattern(event_pattern)
         indexed_ids = list(self.handlers_by_key.get(event_key, []))
         if not indexed_ids:
             return
@@ -1108,7 +1089,7 @@ class EventBus:
             raise RuntimeError(f'{self}.emit() called but no event loop is running! Event not queued: {event.event_type}')
 
         assert event.event_id, 'Missing event.event_id: UUIDStr = uuid7str()'
-        assert event.event_created_at, 'Missing event.event_created_at: datetime = datetime.now(UTC)'
+        assert event.event_created_at, 'Missing event.event_created_at: str = monotonic_datetime()'
         assert event.event_type and event.event_type.isidentifier(), 'Missing event.event_type: str'
 
         # Automatically set event_parent_id from context when emitting a NEW child event.
@@ -1239,29 +1220,12 @@ class EventBus:
         """Convenience synonym for :meth:`emit`."""
         return self.emit(event)
 
-    @staticmethod
-    def _normalize_event_pattern(event_pattern: object) -> str:
-        if event_pattern == '*':
-            return '*'
-        if isinstance(event_pattern, str):
-            return event_pattern
-        if isinstance(event_pattern, type) and issubclass(event_pattern, BaseEvent):
-            # Respect explicit event_type defaults on model classes first.
-            event_type_field = event_pattern.model_fields.get('event_type')
-            event_type_default = event_type_field.default if event_type_field is not None else None
-            if isinstance(event_type_default, str) and event_type_default not in ('', 'UndefinedEvent'):
-                return event_type_default
-            return event_pattern.__name__
-        raise ValueError(f'Invalid event pattern: {event_pattern}, must be a string event type, "*", or subclass of BaseEvent')
-
     def _remove_indexed_handler(self, event_pattern: str, handler_id: PythonIdStr) -> None:
         ids = self.handlers_by_key.get(event_pattern)
         if not ids:
             return
-        try:
+        if handler_id in ids:
             ids.remove(handler_id)
-        except ValueError:
-            return
         if not ids:
             self.handlers_by_key.pop(event_pattern, None)
 
@@ -1800,13 +1764,13 @@ class EventBus:
             for child_event in event.event_children:
                 visit(child_event)
 
-            was_complete = self._is_event_complete_fast(event)
+            was_complete = event.event_status == EventStatus.COMPLETED
             # Only the root event may still appear "in-flight" on this bus during finalization.
             # Descendants are not currently being processed in this frame, so they must consider
             # queues on this bus too (otherwise queued children can be marked complete too early).
             current_bus = self if event.event_id == root_event.event_id else None
             event._mark_completed(current_bus=current_bus)  # pyright: ignore[reportPrivateUsage]
-            just_completed = (not was_complete) and self._is_event_complete_fast(event)
+            just_completed = (not was_complete) and event.event_status == EventStatus.COMPLETED
             if just_completed:
                 self._mark_event_complete_on_all_buses(event)
                 newly_completed.append(event)
@@ -1879,7 +1843,7 @@ class EventBus:
         try:
             async with self.locks._run_with_event_lock(self, event):  # pyright: ignore[reportPrivateUsage]
                 # Process the event
-                if not self._is_event_complete_fast(event):
+                if event.event_status != EventStatus.COMPLETED:
                     await self._process_event(event, timeout=timeout)
 
                 # Queue lifecycle:
@@ -1916,9 +1880,9 @@ class EventBus:
         return partial(self._slow_event_warning_monitor, event, event_slow_timeout)
 
     async def _mark_event_complete_if_ready(self, event: BaseEvent[Any]) -> None:
-        was_complete = self._is_event_complete_fast(event)
+        was_complete = event.event_status == EventStatus.COMPLETED
         event._mark_completed(current_bus=self)  # pyright: ignore[reportPrivateUsage]
-        just_completed = (not was_complete) and self._is_event_complete_fast(event)
+        just_completed = (not was_complete) and event.event_status == EventStatus.COMPLETED
         if just_completed:
             self._mark_event_complete_on_all_buses(event)
             await self.on_event_change(event, EventStatus.COMPLETED)
@@ -1941,10 +1905,10 @@ class EventBus:
             if not parent_event:
                 break
 
-            was_complete = self._is_event_complete_fast(parent_event)
+            was_complete = parent_event.event_status == EventStatus.COMPLETED
             if not was_complete:
                 parent_event._mark_completed(current_bus=parent_bus)  # pyright: ignore[reportPrivateUsage]
-            just_completed = (not was_complete) and self._is_event_complete_fast(parent_event)
+            just_completed = (not was_complete) and parent_event.event_status == EventStatus.COMPLETED
             if parent_bus and just_completed:
                 self._mark_event_complete_on_all_buses(parent_event)
                 await parent_bus.on_event_change(parent_event, EventStatus.COMPLETED)

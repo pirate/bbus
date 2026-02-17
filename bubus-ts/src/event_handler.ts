@@ -4,14 +4,14 @@ import { v5 as uuidv5 } from 'uuid'
 import { normalizeEventPattern, type EventHandlerCallable, type EventPattern } from './types.js'
 import { BaseEvent } from './base_event.js'
 import type { EventResult } from './event_result.js'
+import { monotonicDatetime } from './helpers.js'
 
 const HANDLER_ID_NAMESPACE = uuidv5('bubus-handler', uuidv5.DNS)
-const HandlerRegisteredTsSchema = z.number().int().finite().nonnegative().max(Number.MAX_SAFE_INTEGER)
 
 export type EphemeralFindEventHandler = {
   // Similar to a handler, except it's for .find() calls.
   // Resolved on dispatch, ephemeral, and never shows up in the processing tree.
-  event_pattern: EventPattern
+  event_pattern: string | '*'
   matches: (event: BaseEvent) => boolean
   resolve: (event: BaseEvent) => void
   timeout_id?: ReturnType<typeof setTimeout>
@@ -29,7 +29,7 @@ export type FindWaiterJSON = z.infer<typeof FindWaiterJSONSchema>
 export class FindWaiter {
   static toJSON(waiter: EphemeralFindEventHandler): FindWaiterJSON {
     return {
-      event_pattern: normalizeEventPattern(waiter.event_pattern),
+      event_pattern: waiter.event_pattern,
       has_timeout: waiter.timeout_id !== undefined,
     }
   }
@@ -79,8 +79,7 @@ export const EventHandlerJSONSchema = z
     handler_file_path: z.string().nullable().optional(),
     handler_timeout: z.number().nullable().optional(),
     handler_slow_timeout: z.number().nullable().optional(),
-    handler_registered_at: z.string(),
-    handler_registered_ts: HandlerRegisteredTsSchema,
+    handler_registered_at: z.string().datetime(),
   })
   .strict()
 
@@ -95,7 +94,6 @@ export class EventHandler {
   handler_timeout?: number | null // maximum time in seconds that the handler is allowed to run before it is aborted, resolved at runtime if not set
   handler_slow_timeout?: number | null // warning threshold in seconds for slow handler execution
   handler_registered_at: string // ISO datetime used in the deterministic handler-id seed
-  handler_registered_ts: number // integer offset component paired with handler_registered_at in the handler-id seed
   event_pattern: string | '*' // event_type string to match against, or '*' to match all events
   eventbus_name: string // name of the event bus that the handler is registered on
   eventbus_id: string // uuidv7 identifier of the event bus that the handler is registered on
@@ -108,20 +106,18 @@ export class EventHandler {
     handler_timeout?: number | null
     handler_slow_timeout?: number | null
     handler_registered_at: string
-    handler_registered_ts: number
     event_pattern: string | '*'
     eventbus_name: string
     eventbus_id: string
   }) {
-    const handler_registered_ts = HandlerRegisteredTsSchema.parse(params.handler_registered_ts)
+    const handler_registered_at = monotonicDatetime(params.handler_registered_at)
     this.id =
       params.id ??
       EventHandler.computeHandlerId({
         eventbus_id: params.eventbus_id,
         handler_name: params.handler_name,
         handler_file_path: params.handler_file_path,
-        handler_registered_at: params.handler_registered_at,
-        handler_registered_ts,
+        handler_registered_at,
         event_pattern: params.event_pattern,
       })
     this.handler = params.handler
@@ -129,8 +125,7 @@ export class EventHandler {
     this.handler_file_path = params.handler_file_path ?? null
     this.handler_timeout = params.handler_timeout
     this.handler_slow_timeout = params.handler_slow_timeout
-    this.handler_registered_at = params.handler_registered_at
-    this.handler_registered_ts = handler_registered_ts
+    this.handler_registered_at = handler_registered_at
     this.event_pattern = params.event_pattern
     this.eventbus_name = params.eventbus_name
     this.eventbus_id = params.eventbus_id
@@ -150,13 +145,35 @@ export class EventHandler {
     handler_name: string
     handler_file_path?: string | null
     handler_registered_at: string
-    handler_registered_ts: number
     event_pattern: string | '*'
   }): string {
-    const handler_registered_ts = HandlerRegisteredTsSchema.parse(params.handler_registered_ts)
     const file_path = params.handler_file_path ?? 'unknown'
-    const seed = `${params.eventbus_id}|${params.handler_name}|${file_path}|${params.handler_registered_at}|${handler_registered_ts}|${params.event_pattern}`
+    const seed = `${params.eventbus_id}|${params.handler_name}|${file_path}|${params.handler_registered_at}|${params.event_pattern}`
     return uuidv5(seed, HANDLER_ID_NAMESPACE)
+  }
+
+  static fromCallable<TEvent extends BaseEvent = BaseEvent>(params: {
+    handler: EventHandlerCallable<TEvent>
+    event_pattern: EventPattern | '*'
+    eventbus_name: string
+    eventbus_id: string
+    handler_name?: string
+    handler_file_path?: string | null
+    handler_timeout?: number | null
+    handler_slow_timeout?: number | null
+    handler_registered_at?: string
+  }): EventHandler {
+    return new EventHandler({
+      handler: params.handler as EventHandlerCallable,
+      handler_name: params.handler_name || params.handler.name || 'anonymous',
+      handler_file_path: params.handler_file_path ?? null,
+      handler_timeout: params.handler_timeout,
+      handler_slow_timeout: params.handler_slow_timeout,
+      handler_registered_at: monotonicDatetime(params.handler_registered_at),
+      event_pattern: normalizeEventPattern(params.event_pattern),
+      eventbus_name: params.eventbus_name,
+      eventbus_id: params.eventbus_id,
+    })
   }
 
   // "someHandlerName() @ ~/path/to/source/file.ts:123"  <- best case when file path is available and its a named function
@@ -207,7 +224,6 @@ export class EventHandler {
       handler_timeout: this.handler_timeout,
       handler_slow_timeout: this.handler_slow_timeout,
       handler_registered_at: this.handler_registered_at,
-      handler_registered_ts: this.handler_registered_ts,
     }
   }
 
@@ -223,7 +239,6 @@ export class EventHandler {
       handler_timeout: record.handler_timeout,
       handler_slow_timeout: record.handler_slow_timeout,
       handler_registered_at: record.handler_registered_at,
-      handler_registered_ts: record.handler_registered_ts,
       event_pattern: record.event_pattern,
       eventbus_name: record.eventbus_name,
       eventbus_id: record.eventbus_id,

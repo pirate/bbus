@@ -945,9 +945,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     # runtime state fields
     event_status: Literal['pending', 'started', 'completed']  # event processing status (auto-set)
-    event_created_at: datetime   # When event was created, auto-generated (auto-set)
-    event_started_at: datetime | None   # When first handler started executing during event processing (auto-set)
-    event_completed_at: datetime | None # When all event handlers finished processing (auto-set)
+    event_created_at: str        # Canonical ISO timestamp with 9 fractional digits (auto-set)
+    event_started_at: str | None # Set when first handler starts
+    event_completed_at: str | None # Set when event processing completes
     event_parent_id: str | None  # Parent event ID that led to this event during handling (auto-set)
     event_path: list[str]        # List of bus labels traversed, e.g. BusName#ab12 (auto-set)
     event_results: dict[str, EventResult]   # Handler results {<handler uuid>: EventResult} (auto-set)
@@ -1098,8 +1098,8 @@ class EventResult(BaseModel):
     result: Any               # Handler return value
     error: BaseException | None  # Captured exception if the handler failed
     
-    started_at: datetime | None      # When handler started
-    completed_at: datetime | None    # When handler completed
+    started_at: str | None      # Canonical ISO timestamp when handler started
+    completed_at: str | None    # Canonical ISO timestamp when handler completed
     timeout: float | None            # Handler timeout in seconds
     event_children: list[BaseEvent] # child events emitted during handler execution
 ```
@@ -1137,8 +1137,7 @@ class EventHandler(BaseModel):
     handler_file_path: str | None    # Source file path (if known)
     handler_timeout: float | None    # Optional per-handler timeout override
     handler_slow_timeout: float | None  # Optional "slow handler" threshold
-    handler_registered_at: datetime  # Registration timestamp (datetime)
-    handler_registered_ts: int       # Registration timestamp (ns epoch)
+    handler_registered_at: str       # Registration timestamp (ISO string, 9 fractional digits)
     event_pattern: str               # Registered event pattern (type name or '*')
     eventbus_name: str               # Owning EventBus name
     eventbus_id: str                 # Owning EventBus ID

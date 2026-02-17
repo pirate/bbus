@@ -50,7 +50,7 @@ def _canonical(payload: dict[str, Any]) -> dict[str, Any]:
     for key, value in payload.items():
         if key.endswith('_at') and isinstance(value, str):
             try:
-                normalized[key] = datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+                normalized[key] = datetime.fromisoformat(value).timestamp()
                 continue
             except ValueError:
                 pass
@@ -75,9 +75,7 @@ def _normalize_roundtrip_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if normalized.get('event_status') in ('pending', 'started'):
         normalized['event_status'] = 'pending'
         normalized['event_started_at'] = None
-        normalized['event_started_ts'] = None
         normalized['event_completed_at'] = None
-        normalized['event_completed_ts'] = None
     return normalized
 
 

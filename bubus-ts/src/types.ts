@@ -65,9 +65,14 @@ export const normalizeEventPattern = (event_pattern: EventPattern | '*'): string
   if (typeof class_name === 'string' && class_name.length > 0 && class_name !== 'BaseEvent') {
     return class_name
   }
-  throw new Error(
-    `Invalid event key: expected event type string, "*", or BaseEvent class, got: ${JSON.stringify(event_pattern).slice(0, 80)}`
-  )
+  let preview: string
+  try {
+    const encoded = JSON.stringify(event_pattern)
+    preview = typeof encoded === 'string' ? encoded.slice(0, 30) : String(event_pattern).slice(0, 30)
+  } catch {
+    preview = String(event_pattern).slice(0, 30)
+  }
+  throw new Error('bus.on(match_pattern, ...) must be a string event type, "*", or a BaseEvent class, got: ' + preview)
 }
 
 export const isZodSchema = (value: unknown): value is z.ZodTypeAny => !!value && typeof (value as z.ZodTypeAny).safeParse === 'function'

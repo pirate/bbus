@@ -3,7 +3,6 @@ import contextvars
 import inspect
 import logging
 import os
-import time
 from collections.abc import AsyncIterator, Callable, Coroutine, Generator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -40,6 +39,7 @@ from bubus.helpers import (  # pyright: ignore[reportPrivateUsage]
     _run_with_slow_monitor,  # pyright: ignore[reportPrivateUsage]
     cancel_and_await,
     extract_basemodel_generic_arg,
+    monotonic_datetime,
 )
 from bubus.jsonschema import (
     pydantic_model_from_json_schema,
@@ -57,7 +57,6 @@ logger = logging.getLogger('bubus')
 
 BUBUS_LOGGING_LEVEL = os.getenv('BUBUS_LOGGING_LEVEL', 'WARNING').upper()  # WARNING normally, otherwise DEBUG when testing
 LIBRARY_VERSION = os.getenv('LIBRARY_VERSION', '0.0.1')
-JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 logger.setLevel(BUBUS_LOGGING_LEVEL)
 
@@ -141,13 +140,6 @@ def _as_any(value: Any) -> Any:
     return value
 
 
-def _next_monotonic_fraction_ns() -> int:
-    # Keep only the fractional ns component so this value can be safely
-    # transported through JS Number while preserving tie-break ordering
-    # relative to the corresponding event_*_at wall clock timestamp.
-    return time.monotonic_ns() % 1_000_000
-
-
 def _normalize_any_dict(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -198,12 +190,12 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
     handler: EventHandler = Field(default_factory=EventHandler)
     result_type: Any = Field(default=None, exclude=True, repr=False)
     timeout: float | None = None
-    started_at: datetime | None = None
+    started_at: str | None = None
 
     # Result fields, updated by EventBus._run_handler()
     result: T_EventResultType | 'BaseEvent[Any]' | None = None
     error: BaseException | None = None
-    completed_at: datetime | None = None
+    completed_at: str | None = None
 
     # Completion signal
     _handler_completed_signal: asyncio.Event | None = PrivateAttr(default=None)
@@ -212,12 +204,12 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
     event_children: list['BaseEvent[Any]'] = Field(default_factory=lambda: [])
 
     @staticmethod
-    def _serialize_datetime_json(value: datetime | None) -> str | None:
+    def _serialize_datetime_json(value: str | datetime | None) -> str | None:
         if value is None:
             return None
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        return value.astimezone(UTC).isoformat().replace('+00:00', 'Z')
+        if isinstance(value, datetime):
+            value = value.astimezone(UTC).isoformat().replace('+00:00', 'Z')
+        return monotonic_datetime(value)
 
     @staticmethod
     def _serialize_error_json(value: BaseException | None) -> dict[str, Any] | None:
@@ -264,7 +256,6 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             raw_handler_timeout = payload.pop('handler_timeout', None)
             raw_handler_slow_timeout = payload.pop('handler_slow_timeout', None)
             raw_handler_registered_at = payload.pop('handler_registered_at', None)
-            raw_handler_registered_ts = payload.pop('handler_registered_ts', None)
             raw_handler_event_pattern = payload.pop('handler_event_pattern', None)
             raw_eventbus_name = payload.pop('eventbus_name', None)
             raw_eventbus_id = payload.pop('eventbus_id', None)
@@ -278,7 +269,6 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                     raw_handler_timeout,
                     raw_handler_slow_timeout,
                     raw_handler_registered_at,
-                    raw_handler_registered_ts,
                     raw_handler_event_pattern,
                     raw_eventbus_name,
                     raw_eventbus_id,
@@ -301,8 +291,6 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
                     handler_payload['handler_slow_timeout'] = raw_handler_slow_timeout
                 if raw_handler_registered_at is not None:
                     handler_payload['handler_registered_at'] = raw_handler_registered_at
-                if raw_handler_registered_ts is not None:
-                    handler_payload['handler_registered_ts'] = raw_handler_registered_ts
                 payload['handler'] = handler_payload
 
         raw_children = payload.get('event_children')
@@ -321,6 +309,20 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             else:
                 payload['error'] = Exception(str(raw_error))
 
+        for at_key in ('started_at', 'completed_at'):
+            if at_key not in payload:
+                continue
+            raw_at_value = payload.get(at_key)
+            if raw_at_value is None:
+                continue
+            if isinstance(raw_at_value, datetime):
+                normalized_value = (
+                    raw_at_value.replace(tzinfo=UTC) if raw_at_value.tzinfo is None else raw_at_value.astimezone(UTC)
+                )
+                payload[at_key] = monotonic_datetime(normalized_value.isoformat().replace('+00:00', 'Z'))
+            else:
+                payload[at_key] = monotonic_datetime(str(raw_at_value))
+
         return payload
 
     @model_serializer(mode='plain', when_used='json')
@@ -335,8 +337,7 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             'handler_file_path': handler.handler_file_path,
             'handler_timeout': handler.handler_timeout,
             'handler_slow_timeout': handler.handler_slow_timeout,
-            'handler_registered_at': self._serialize_datetime_json(handler.handler_registered_at),
-            'handler_registered_ts': int(handler.handler_registered_ts),
+            'handler_registered_at': monotonic_datetime(handler.handler_registered_at),
             'handler_event_pattern': handler.event_pattern,
             'eventbus_id': self.eventbus_id,
             'eventbus_name': self.eventbus_name,
@@ -469,9 +470,9 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
             self.status = kwargs['status']
 
         if self.status != 'pending' and not self.started_at:
-            self.started_at = datetime.now(UTC)
+            self.started_at = monotonic_datetime()
         if self.status in ('completed', 'error') and not self.completed_at:
-            self.completed_at = datetime.now(UTC)
+            self.completed_at = monotonic_datetime()
             if self.handler_completed_signal:
                 self.handler_completed_signal.set()
         return self
@@ -501,7 +502,8 @@ class EventResult(BaseModel, Generic[T_EventResultType]):
         if self.status != 'started':
             return
         started_at = self.started_at or event.event_started_at or event.event_created_at
-        elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+        started_at_dt = datetime.fromisoformat(started_at)
+        elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at_dt).total_seconds())
         logger.warning(
             '⚠️ Slow event handler: %s.on(%s#%s, %s) still running after %.1fs',
             eventbus.label,
@@ -757,33 +759,21 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
     )
 
     # Completion tracking fields
-    event_created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
+    event_created_at: str = Field(
+        default_factory=monotonic_datetime,
         description='Timestamp when event was first dispatched to an EventBus aka marked pending',
-    )
-    event_created_ts: int = Field(
-        default_factory=_next_monotonic_fraction_ns,
-        description='Monotonic nanosecond timestamp when event was first dispatched',
     )
     event_status: EventStatus = Field(
         default=EventStatus.PENDING,
         description='Current event lifecycle status: pending, started, or completed',
     )
-    event_started_at: datetime | None = Field(
+    event_started_at: str | None = Field(
         default=None,
         description='Timestamp when event processing first started',
     )
-    event_started_ts: int | None = Field(
-        default=None,
-        description='Monotonic nanosecond timestamp when event processing first started',
-    )
-    event_completed_at: datetime | None = Field(
+    event_completed_at: str | None = Field(
         default=None,
         description='Timestamp when event was completed by all handlers and child events',
-    )
-    event_completed_ts: int | None = Field(
-        default=None,
-        description='Monotonic nanosecond timestamp when event processing completed',
     )
 
     event_results: dict[PythonIdStr, EventResult[T_EventResultType]] = Field(
@@ -990,17 +980,17 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             if key.startswith('model_'):
                 raise ValueError(f'Field "{key}" starts with "model_" and is reserved for Pydantic model internals')
 
-        for ts_key in ('event_created_ts', 'event_started_ts', 'event_completed_ts'):
-            if ts_key not in params:
+        for at_key in ('event_created_at', 'event_started_at', 'event_completed_at'):
+            if at_key not in params:
                 continue
-            raw_value = params[ts_key]
+            raw_value = params[at_key]
             if raw_value is None:
                 continue
-            if isinstance(raw_value, (int, float)):
-                normalized = int(raw_value)
-                if normalized < 0 or normalized > JS_MAX_SAFE_INTEGER:
-                    raise ValueError(f'Field "{ts_key}" must be in [0, {JS_MAX_SAFE_INTEGER}], got {normalized}')
-                params[ts_key] = normalized
+            if isinstance(raw_value, datetime):
+                normalized_value = raw_value.replace(tzinfo=UTC) if raw_value.tzinfo is None else raw_value.astimezone(UTC)
+                params[at_key] = monotonic_datetime(normalized_value.isoformat().replace('+00:00', 'Z'))
+            else:
+                params[at_key] = monotonic_datetime(str(raw_value))
 
         is_class_default_unchanged = cls.model_fields['event_type'].default == 'UndefinedEvent'
         is_event_type_not_provided = 'event_type' not in params or params['event_type'] == 'UndefinedEvent'
@@ -1054,21 +1044,23 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             children.extend(event_result.event_children)
         return children
 
-    def _mark_started(self, started_at: datetime | None = None) -> None:
+    def _mark_started(self, started_at: str | datetime | None = None) -> None:
         """Mark event runtime state as started, preserving the earliest start timestamp."""
         if self.event_status == EventStatus.COMPLETED:
             return
 
-        resolved_started_at = started_at or datetime.now(UTC)
-        resolved_started_ts = _next_monotonic_fraction_ns()
+        if isinstance(started_at, datetime):
+            normalized_value = started_at.replace(tzinfo=UTC) if started_at.tzinfo is None else started_at.astimezone(UTC)
+            resolved_started_at = monotonic_datetime(normalized_value.isoformat().replace('+00:00', 'Z'))
+        elif started_at is None:
+            resolved_started_at = monotonic_datetime()
+        else:
+            resolved_started_at = monotonic_datetime(started_at)
         if self.event_started_at is None or resolved_started_at < self.event_started_at:
             self.event_started_at = resolved_started_at
-        if self.event_started_ts is None or resolved_started_ts < self.event_started_ts:
-            self.event_started_ts = resolved_started_ts
         if self.event_status == EventStatus.PENDING:
             self.event_status = EventStatus.STARTED
         self.event_completed_at = None
-        self.event_completed_ts = None
         self._event_is_complete_flag = False
 
     def _create_pending_handler_results(
@@ -1085,11 +1077,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         pending_results: dict[PythonIdStr, EventResult[T_EventResultType]] = {}
         self._event_is_complete_flag = False
         self.event_completed_at = None
-        self.event_completed_ts = None
         if self.event_status == EventStatus.COMPLETED:
             self.event_status = EventStatus.PENDING
             self.event_started_at = None
-            self.event_started_ts = None
         for handler_id, handler in handlers.items():
             event_result = self.event_result_update(
                 handler=handler,
@@ -1109,15 +1099,12 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     @staticmethod
     def _is_first_mode_winning_result(event_result: 'EventResult[Any]') -> bool:
-        if event_result.status != 'completed':
-            return False
-        if event_result.error is not None:
-            return False
-        if event_result.result is None:
-            return False
-        if isinstance(event_result.result, BaseEvent):
-            return False
-        return True
+        return (
+            event_result.status == 'completed'
+            and event_result.error is None
+            and event_result.result is not None
+            and not isinstance(event_result.result, BaseEvent)
+        )
 
     async def _mark_remaining_first_mode_result_cancelled(
         self,
@@ -1254,17 +1241,14 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
 
     @staticmethod
     def _event_result_is_truthy(event_result: 'EventResult[T_EventResultType]') -> bool:
-        if event_result.status != 'completed':
-            return False
-        if event_result.result is None:
-            return False
-        if isinstance(event_result.result, BaseException) or event_result.error:
-            return False
-        if isinstance(
-            event_result.result, BaseEvent
-        ):  # omit if result is a BaseEvent, it's a forwarded event not an actual return value
-            return False
-        return True
+        # omit BaseEvent results, they are forwarded event refs not actual return values
+        return (
+            event_result.status == 'completed'
+            and event_result.result is not None
+            and not isinstance(event_result.result, BaseException)
+            and not event_result.error
+            and not isinstance(event_result.result, BaseEvent)
+        )
 
     def _collect_handler_errors(self, include_cancelled: bool) -> list[Exception]:
         """Collect handler errors as Exception instances for aggregation."""
@@ -1475,7 +1459,6 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             existing_result.timeout = kwargs['timeout']
         if kwargs.get('status') in ('pending', 'started'):
             self.event_completed_at = None
-            self.event_completed_ts = None
         # logger.debug(
         #     f'Updated EventResult for handler {handler_id}: status={self.event_results[handler_id].status}, total_results={len(self.event_results)}'
         # )
@@ -1499,13 +1482,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         if completed_signal is not None and completed_signal.is_set():
             self._event_is_complete_flag = True
             if self.event_completed_at is None:
-                self.event_completed_at = datetime.now(UTC)
-            if self.event_completed_ts is None:
-                self.event_completed_ts = _next_monotonic_fraction_ns()
+                self.event_completed_at = monotonic_datetime()
             if self.event_started_at is None:
                 self.event_started_at = self.event_completed_at
-            if self.event_started_ts is None:
-                self.event_started_ts = self.event_completed_ts
             self.event_status = EventStatus.COMPLETED
             return
 
@@ -1516,12 +1495,9 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
                 return
             if not self._are_all_children_complete():
                 return
-            self.event_completed_at = self.event_completed_at or datetime.now(UTC)
-            self.event_completed_ts = self.event_completed_ts or _next_monotonic_fraction_ns()
+            self.event_completed_at = self.event_completed_at or monotonic_datetime()
             if self.event_started_at is None:
                 self.event_started_at = self.event_completed_at
-            if self.event_started_ts is None:
-                self.event_started_ts = self.event_completed_ts
             self._event_is_complete_flag = True
             self.event_status = EventStatus.COMPLETED
             if completed_signal is not None:
@@ -1544,19 +1520,16 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             return
 
         # All handlers and all child events are done.
-        latest_completed: datetime | None = None
+        latest_completed: str | None = None
         for result in self.event_results.values():
             completed_at = result.completed_at
             if completed_at is None:
                 continue
             if latest_completed is None or completed_at > latest_completed:
                 latest_completed = completed_at
-        self.event_completed_at = latest_completed or self.event_completed_at or datetime.now(UTC)
-        self.event_completed_ts = self.event_completed_ts or _next_monotonic_fraction_ns()
+        self.event_completed_at = latest_completed or self.event_completed_at or monotonic_datetime()
         if self.event_started_at is None:
             self.event_started_at = self.event_completed_at
-        if self.event_started_ts is None:
-            self.event_started_ts = self.event_completed_ts
         self._event_is_complete_flag = True
         self.event_status = EventStatus.COMPLETED
         if completed_signal is not None:
@@ -1568,10 +1541,8 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
         """Reset mutable runtime state so this event can be dispatched again as pending."""
         self.event_status = EventStatus.PENDING
         self.event_started_at = None
-        self.event_started_ts = None
         self._event_is_complete_flag = False
         self.event_completed_at = None
-        self.event_completed_ts = None
         self.event_results.clear()
         self._lock_for_event_handler = None
         self._event_dispatch_context = None

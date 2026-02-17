@@ -21,7 +21,9 @@ import {
 import type { EventBusMiddleware, EventBusMiddlewareCtor, EventBusMiddlewareInput } from './middlewares.js'
 import { logTree } from './logging.js'
 import { v7 as uuidv7 } from 'uuid'
+import { monotonicDatetime } from './helpers.js'
 
+import { normalizeEventPattern } from './types.js'
 import type { EventClass, EventHandlerCallable, EventPattern, FindOptions, UntypedEventHandlerFunction } from './types.js'
 
 export type EventBusOptions = {
@@ -657,14 +659,12 @@ export class EventBus {
     handler: EventHandlerCallable | UntypedEventHandlerFunction,
     options: Partial<EventHandler> = {}
   ): EventHandler {
-    const normalized_key = this._normalizeEventPattern(event_pattern) // get string event_type or '*'
+    const normalized_key = normalizeEventPattern(event_pattern) // get string event_type or '*'
     const handler_name = handler.name || 'anonymous' // get handler function name or 'anonymous' if the handler is an anonymous/arrow function
-    const { isostring: handler_registered_at, ts: handler_registered_ts } = BaseEvent.eventTimestampNow()
     const handler_entry = new EventHandler({
       handler: handler as EventHandlerCallable,
       handler_name,
-      handler_registered_at,
-      handler_registered_ts,
+      handler_registered_at: monotonicDatetime(),
       event_pattern: normalized_key,
       eventbus_name: this.name,
       eventbus_id: this.id,
@@ -687,7 +687,7 @@ export class EventBus {
   }
 
   off<T extends BaseEvent>(event_pattern: EventPattern<T> | '*', handler?: EventHandlerCallable<T> | string | EventHandler): void {
-    const normalized_key = this._normalizeEventPattern(event_pattern)
+    const normalized_key = normalizeEventPattern(event_pattern)
     if (typeof handler === 'object' && handler instanceof EventHandler && handler.id !== undefined) {
       handler = handler.id
     }
@@ -764,9 +764,6 @@ export class EventBus {
 
     original_event.event_pending_bus_count += 1
     this.pending_event_queue.push(original_event)
-    this.scheduleMicrotask(() => {
-      void this._onEventChange(this._getEventProxyScopedToThisBus(original_event), 'pending')
-    })
     this._startRunloop()
 
     return this._getEventProxyScopedToThisBus(original_event) as T
@@ -929,10 +926,11 @@ export class EventBus {
       if (this._hasProcessedEvent(event)) {
         return
       }
+      const scoped_event = this._getEventProxyScopedToThisBus(event)
+      await this._onEventChange(scoped_event, 'pending')
       event._markStarted()
       pending_entries = event._createPendingHandlerResults(this)
       const resolved_event_timeout = event.event_timeout ?? this.event_timeout
-      const scoped_event = this._getEventProxyScopedToThisBus(event)
       if (this.middlewares.length > 0) {
         for (const entry of pending_entries) {
           await this._onEventResultChange(scoped_event, entry.result, 'pending')
@@ -975,6 +973,8 @@ export class EventBus {
     if (!currently_active_event_result) {
       // Not inside any handler scope — avoid queue-jump, but if this event is
       // next in line we can process it immediately without waiting on the _runloop.
+      // We must acquire/revalidate the event lock first to avoid racing the runloop
+      // and accidentally reordering/removing the wrong queue head.
       const queue_index = this.pending_event_queue.indexOf(original_event)
       const can_process_now =
         queue_index === 0 &&
@@ -982,13 +982,34 @@ export class EventBus {
         !this.in_flight_event_ids.has(original_event.event_id) &&
         !this._hasProcessedEvent(original_event)
       if (can_process_now) {
-        this.pending_event_queue.shift()
-        this.in_flight_event_ids.add(original_event.event_id)
-        await this._processEvent(original_event)
-        if (original_event.event_status !== 'completed') {
-          await original_event.eventCompleted()
+        const event_lock = this.locks.getLockForEvent(original_event)
+        let pre_acquired_lock: AsyncLock | null = null
+        if (event_lock) {
+          await event_lock.acquire()
+          pre_acquired_lock = event_lock
         }
-        return event
+        const queue_head = this.pending_event_queue[0]
+        const queue_head_original = queue_head?._event_original ?? queue_head
+        const still_can_process_now =
+          queue_head_original === original_event &&
+          !this.locks._isPaused() &&
+          !this.in_flight_event_ids.has(original_event.event_id) &&
+          !this._hasProcessedEvent(original_event)
+        if (still_can_process_now) {
+          this.pending_event_queue.shift()
+          this.in_flight_event_ids.add(original_event.event_id)
+          await this._processEvent(original_event, {
+            bypass_event_locks: true,
+            pre_acquired_lock,
+          })
+          if (original_event.event_status !== 'completed') {
+            await original_event.eventCompleted()
+          }
+          return event
+        }
+        if (pre_acquired_lock) {
+          pre_acquired_lock.release()
+        }
       }
       await original_event.eventCompleted()
       return event
@@ -1112,6 +1133,17 @@ export class EventBus {
           await event_lock.acquire()
           pre_acquired_lock = event_lock
         }
+        // Queue head may have changed while waiting for the lock
+        // (e.g. done() processing the head immediately). Revalidate
+        // before mutating the queue to avoid removing the wrong event.
+        const current_head = this.pending_event_queue[0]
+        const current_head_original = current_head?._event_original ?? current_head
+        if (current_head_original !== original_event) {
+          if (pre_acquired_lock) {
+            pre_acquired_lock.release()
+          }
+          continue
+        }
         this.pending_event_queue.shift()
         if (this.in_flight_event_ids.has(original_event.event_id)) {
           if (pre_acquired_lock) {
@@ -1231,10 +1263,7 @@ export class EventBus {
 
   private _resolveFindWaiters(event: BaseEvent): void {
     for (const waiter of Array.from(this.find_waiters)) {
-      if (!this._eventMatchesKey(event, waiter.event_pattern)) {
-        continue
-      }
-      if (!waiter.matches(event)) {
+      if ((waiter.event_pattern !== '*' && event.event_type !== waiter.event_pattern) || !waiter.matches(event)) {
         continue
       }
       if (waiter.timeout_id) {
@@ -1262,43 +1291,8 @@ export class EventBus {
     const ids = this.handlers_by_key.get(event_pattern)
     if (!ids) return
     const idx = ids.indexOf(handler_id)
-    if (idx >= 0) ids.splice(idx, 1)
+    if (idx < 0) return
+    ids.splice(idx, 1)
     if (ids.length === 0) this.handlers_by_key.delete(event_pattern)
-  }
-
-  private _eventMatchesKey(event: BaseEvent, event_pattern: EventPattern): boolean {
-    if (event_pattern === '*') {
-      return true
-    }
-    const normalized = this._normalizeEventPattern(event_pattern)
-    if (normalized === '*') {
-      return true
-    }
-    return event.event_type === normalized
-  }
-
-  private _normalizeEventPattern(event_pattern: EventPattern | '*'): string | '*' {
-    if (event_pattern === '*') {
-      return '*'
-    }
-    if (typeof event_pattern === 'string') {
-      return event_pattern
-    }
-    const event_type = (event_pattern as { event_type?: unknown }).event_type
-    if (typeof event_type === 'string' && event_type.length > 0 && event_type !== 'BaseEvent') {
-      return event_type
-    }
-    const class_name = (event_pattern as { name?: unknown }).name
-    if (typeof class_name === 'string' && class_name.length > 0 && class_name !== 'BaseEvent') {
-      return class_name
-    }
-    let preview: string
-    try {
-      const encoded = JSON.stringify(event_pattern)
-      preview = typeof encoded === 'string' ? encoded.slice(0, 30) : String(event_pattern).slice(0, 30)
-    } catch {
-      preview = String(event_pattern).slice(0, 30)
-    }
-    throw new Error('bus.on(match_pattern, ...) must be a string event type, "*", or a BaseEvent class, got: ' + preview)
   }
 }

@@ -631,7 +631,7 @@ class TestRegularSemaphoreScopes:
 
 
 class TestRetryApiParity:
-    async def test_defaults_match_ts(self):
+    async def test_defaults_match_typescript(self):
         params = inspect.signature(retry).parameters
         assert params['max_attempts'].default == 1
         assert params['timeout'].default is None

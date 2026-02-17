@@ -8,7 +8,6 @@ import { test } from 'node:test'
 import { z } from 'zod'
 
 import { BaseEvent, EventBus } from '../src/index.js'
-import { EventResult } from '../src/event_result.js'
 import { fromJsonSchema } from '../src/types.js'
 
 const tests_dir = dirname(fileURLToPath(import.meta.url))
@@ -27,21 +26,7 @@ type ResultSemanticsCase = {
 
 const assertFieldEqual = (key: string, actual: unknown, expected: unknown, context: string): void => {
   if (key.endsWith('_at') && typeof actual === 'string' && typeof expected === 'string') {
-    assert.equal(Date.parse(actual), Date.parse(expected), `${context}: ${key}`)
-    return
-  }
-  if (key.endsWith('_ts')) {
-    if (typeof actual === 'number' && typeof expected === 'number') {
-      if (context.includes('python roundtrip') || context.includes('ts reload')) {
-        assert.equal(Number.isInteger(actual), true, `${context}: ${key} must be integer`)
-        assert.equal(Number.isInteger(expected), true, `${context}: ${key} expected value must be integer`)
-        assert.ok(actual >= 0 && actual <= Number.MAX_SAFE_INTEGER, `${context}: ${key} must be JS-safe integer`)
-        assert.ok(expected >= 0 && expected <= Number.MAX_SAFE_INTEGER, `${context}: ${key} expected value must be JS-safe integer`)
-      }
-      assert.equal(actual, expected, `${context}: ${key}`)
-      return
-    }
-    assert.deepEqual(actual, expected, `${context}: ${key}`)
+    assert.equal(actual, expected, `${context}: ${key}`)
     return
   }
   assert.deepEqual(actual, expected, `${context}: ${key}`)
@@ -648,12 +633,9 @@ test('ts -> python -> ts bus roundtrip rehydrates and resumes pending queue', as
   const event_one = ResumeEvent({ label: 'e1' })
   const event_two = ResumeEvent({ label: 'e2' })
 
-  const seeded = new EventResult({ event: event_one, handler: handler_one })
-  seeded._markStarted()
-  seeded._markCompleted('seeded')
-  event_one.event_results.set(handler_one.id, seeded)
-  const pending = new EventResult({ event: event_one, handler: handler_two })
-  event_one.event_results.set(handler_two.id, pending)
+  const seeded = event_one.eventResultUpdate(handler_one, { eventbus: source_bus, status: 'pending' })
+  event_one.eventResultUpdate(handler_two, { eventbus: source_bus, status: 'pending' })
+  seeded.update({ status: 'completed', result: 'seeded' })
 
   source_bus.event_history.set(event_one.event_id, event_one)
   source_bus.event_history.set(event_two.event_id, event_two)

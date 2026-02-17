@@ -389,9 +389,9 @@ Special configuration fields you can set on each event to control processing:
 - `event_status: 'pending' | 'started' | 'completed'`
 - `event_results: Map<string, EventResult>`
 - `event_pending_bus_count: number`
-- `event_created_at: string`, `event_created_ts: number`
-- `event_started_at: string | null`, `event_started_ts: number | null`
-- `event_completed_at: string | null`, `event_completed_ts: number | null`
+- `event_created_at: string`
+- `event_started_at: string | null`
+- `event_completed_at: string | null`
 
 #### Read-only attributes
 
@@ -456,6 +456,26 @@ eventResultsList(
   - `await event.eventResultsList({ raise_if_any: false, raise_if_none: false })`
   - `await event.eventResultsList((result) => typeof result === 'object', { raise_if_any: false })`
 
+#### `eventResultUpdate(handler, options?)`
+
+```ts
+eventResultUpdate(
+  handler: EventHandler | EventHandlerCallable<this>,
+  options?: {
+    eventbus?: EventBus
+    status?: 'pending' | 'started' | 'completed' | 'error'
+    result?: EventResultType<this> | BaseEvent | undefined
+    error?: unknown
+  }
+): EventResult<this>
+```
+
+- Creates (if missing) or updates one `event_results` entry for the given handler id.
+- Useful for deterministic seeding/rehydration paths before resuming normal dispatch.
+- Example:
+  - `const seeded = event.eventResultUpdate(handler_entry, { eventbus: bus, status: 'pending' })`
+  - `seeded.update({ status: 'completed', result: 'seeded' })`
+
 #### `reset()`
 
 ```ts
@@ -497,9 +517,7 @@ Each handler execution creates one `EventResult` stored in `event.event_results`
 - `result: EventResultType<this> | undefined`
 - `error: unknown | undefined`
 - `started_at: string | null` (ISO datetime string)
-- `started_ts: number | null` (monotonic timestamp)
 - `completed_at: string | null` (ISO datetime string)
-- `completed_ts: number | null` (monotonic timestamp)
 - `event_children: BaseEvent[]`
 
 #### Read-only getters
@@ -541,7 +559,6 @@ Represents one registered handler entry on a bus. You usually get these from `bu
 - `handler_timeout` optional timeout override in seconds (`null` disables timeout limit)
 - `handler_slow_timeout` optional slow-warning threshold in seconds (`null` disables slow warning)
 - `handler_registered_at` ISO timestamp
-- `handler_registered_ts` monotonic timestamp
 - `event_pattern` subscribed key (`'SomeEvent'` or `'*'`)
 - `eventbus_name` bus name where this handler was registered
 - `eventbus_id` bus UUID where this handler was registered

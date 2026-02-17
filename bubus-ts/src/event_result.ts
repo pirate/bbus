@@ -12,6 +12,7 @@ import { isZodSchema } from './types.js'
 import { _runWithAsyncContext } from './async_context.js'
 import { RetryTimeoutError } from './retry.js'
 import { _runWithAbortMonitor, _runWithSlowMonitor, _runWithTimeout } from './timing.js'
+import { monotonicDatetime } from './helpers.js'
 
 // More precise than event.event_status, includes separate 'error' state for handlers that throw errors during execution
 export type EventResultStatus = 'pending' | 'started' | 'completed' | 'error'
@@ -26,15 +27,12 @@ export const EventResultJSONSchema = z
     handler_file_path: z.string().nullable().optional(),
     handler_timeout: z.number().nullable().optional(),
     handler_slow_timeout: z.number().nullable().optional(),
-    handler_registered_at: z.string().optional(),
-    handler_registered_ts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    handler_registered_at: z.string().datetime().optional(),
     handler_event_pattern: z.union([z.string(), z.literal('*')]).optional(),
     eventbus_name: z.string(),
     eventbus_id: z.string().uuid(),
-    started_at: z.string().nullable().optional(),
-    started_ts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
-    completed_at: z.string().nullable().optional(),
-    completed_ts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
+    started_at: z.string().datetime().nullable().optional(),
+    completed_at: z.string().datetime().nullable().optional(),
     result: z.unknown().optional(),
     error: z.unknown().optional(),
     event_children: z.array(z.string()),
@@ -49,10 +47,8 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   status: EventResultStatus // 'pending', 'started', 'completed', or 'error'
   event: TEvent // the Event that the handler is processing
   handler: EventHandler // the EventHandler object that going to process the event
-  started_at: string | null // ISO datetime string version of started_ts
-  started_ts: number | null // nanosecond monotonic version of started_at
-  completed_at: string | null // ISO datetime string version of completed_ts
-  completed_ts: number | null // nanosecond monotonic version of completed_at
+  started_at: string | null
+  completed_at: string | null
   result?: EventResultType<TEvent> // parsed return value from the event handler
   error?: unknown // error object thrown by the event handler, or null if the handler completed successfully
   event_children: BaseEvent[] // list of emitted child events
@@ -73,9 +69,7 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     this.event = params.event
     this.handler = params.handler
     this.started_at = null
-    this.started_ts = null
     this.completed_at = null
-    this.completed_ts = null
     this.result = undefined
     this.error = undefined
     this.event_children = []
@@ -128,15 +122,13 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     return root_bus.all_instances.findBusById(this.eventbus_id) ?? root_bus
   }
 
-  private scheduleStatusHook(status: 'started' | 'completed'): void {
-    const bus = this.getHookBus()
-    if (!bus) {
+  private async _notifyStatusHook(status: 'started' | 'completed'): Promise<void> {
+    const hook_bus = this.getHookBus()
+    if (!hook_bus) {
       return
     }
-    const event_for_bus = bus._getEventProxyScopedToThisBus(this.event._event_original ?? this.event, this)
-    bus.scheduleMicrotask(() => {
-      void bus.onEventResultChange(event_for_bus, this, status)
-    })
+    const event_for_hook = hook_bus._getEventProxyScopedToThisBus(this.event._event_original ?? this.event, this)
+    await hook_bus.onEventResultChange(event_for_hook, this, status)
   }
 
   // shortcut for the result value so users can do event_result.value instead of event_result.result
@@ -266,6 +258,58 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     this._queue_jump_pause_releases.clear()
   }
 
+  update(params: { status?: EventResultStatus; result?: EventResultType<TEvent> | BaseEvent | undefined; error?: unknown }): this {
+    const has_status = params.status !== undefined
+    const has_result = params.result !== undefined || params.status === 'completed'
+    const has_error = params.error !== undefined
+
+    if (has_status && params.status !== undefined) {
+      this.status = params.status
+    }
+
+    if (has_result) {
+      const raw_result = params.result
+      this.status = 'completed'
+      if (
+        this.event.event_result_type &&
+        raw_result !== undefined &&
+        !(raw_result instanceof BaseEvent) &&
+        isZodSchema(this.event.event_result_type)
+      ) {
+        const parsed = this.event.event_result_type.safeParse(raw_result)
+        if (parsed.success) {
+          this.result = parsed.data as EventResultType<TEvent>
+          this.error = undefined
+        } else {
+          const error = new EventHandlerResultSchemaError(
+            `Event handler return value ${JSON.stringify(raw_result).slice(0, 20)}... did not match event_result_type: ${parsed.error.message}`,
+            { event_result: this, cause: parsed.error, raw_value: raw_result }
+          )
+          this.error = error
+          this.result = undefined
+          this.status = 'error'
+        }
+      } else {
+        this.result = raw_result as EventResultType<TEvent> | undefined
+        this.error = undefined
+      }
+    }
+
+    if (has_error) {
+      this.error = params.error
+      this.status = 'error'
+    }
+
+    if (this.status !== 'pending' && this.started_at === null) {
+      this.started_at = monotonicDatetime()
+    }
+    if ((this.status === 'completed' || this.status === 'error') && this.completed_at === null) {
+      this.completed_at = monotonicDatetime()
+    }
+
+    return this
+  }
+
   private _createHandlerTimeoutError(event: BaseEvent): EventHandlerTimeoutError {
     return new EventHandlerTimeoutError(
       `${this.bus.toString()}.on(${event.toString()}, ${this.handler.toString()}) timed out after ${this.handler_timeout}s`,
@@ -282,10 +326,10 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
         ? new EventHandlerTimeoutError(error.message, { event_result: this, timeout_seconds: error.timeout_seconds, cause: error })
         : error
     if (normalized_error instanceof EventHandlerTimeoutError) {
-      this._markError(normalized_error)
+      this._markError(normalized_error, false)
       event._cancelPendingChildProcessing(normalized_error)
     } else {
-      this._markError(normalized_error)
+      this._markError(normalized_error, false)
     }
   }
 
@@ -295,23 +339,6 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     this._releaseQueueJumpPauses()
     if (slow_handler_warning_timer) {
       clearTimeout(slow_handler_warning_timer)
-    }
-  }
-
-  private _finalizeHandlerResult(event: BaseEvent, handler_result: unknown): void {
-    if (event.event_result_type && handler_result !== undefined && isZodSchema(event.event_result_type)) {
-      const parsed = event.event_result_type.safeParse(handler_result)
-      if (parsed.success) {
-        this._markCompleted(parsed.data as EventResultType<TEvent>)
-      } else {
-        const error = new EventHandlerResultSchemaError(
-          `${this.bus.toString()}.on(${event.toString()}, ${this.handler.toString()}) return value ${JSON.stringify(handler_result).slice(0, 20)}... did not match event_result_type: ${parsed.error.message}`,
-          { event_result: this, cause: parsed.error, raw_value: handler_result }
-        )
-        this._markError(error)
-      }
-    } else {
-      this._markCompleted(handler_result as EventResultType<TEvent> | undefined)
     }
   }
 
@@ -338,7 +365,11 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
     await this.bus.locks._runWithHandlerDispatchContext(this, async () => {
       await _runWithAsyncContext(event._getDispatchContext() ?? null, async () => {
         try {
-          const abort_signal = this._markStarted()
+          const should_notify_started = this.status === 'pending'
+          const abort_signal = this._markStarted(false)
+          if (should_notify_started) {
+            await this._notifyStatusHook('started')
+          }
           slow_handler_warning_timer = this._createSlowHandlerWarningTimer(this.handler_timeout)
           const handler_result = await _runWithTimeout(
             this.handler_timeout,
@@ -348,10 +379,13 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
                 _runWithAbortMonitor(() => this.handler._handler_async(handler_event), abort_signal)
               )
           )
-          this._finalizeHandlerResult(event, handler_result)
+          this._markCompleted(handler_result as EventResultType<TEvent> | BaseEvent | undefined, false)
         } catch (error) {
           this._handleHandlerError(event, error)
         } finally {
+          if (this.status === 'completed' || this.status === 'error') {
+            await this._notifyStatusHook('completed')
+          }
           this._onHandlerExit(slow_handler_warning_timer)
         }
       })
@@ -368,38 +402,33 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
   }
 
   // Mark started and return the abort promise for Promise.race.
-  _markStarted(): Promise<never> {
+  _markStarted(notify_hook: boolean = true): Promise<never> {
     if (!this._abort) {
       this._abort = withResolvers<never>()
     }
     if (this.status === 'pending') {
-      this.status = 'started'
-      const { isostring: started_at, ts: started_ts } = BaseEvent.eventTimestampNow()
-      this.started_at = started_at
-      this.started_ts = started_ts
-      this.scheduleStatusHook('started')
+      this.update({ status: 'started' })
+      if (notify_hook) {
+        void this._notifyStatusHook('started')
+      }
     }
     return this._abort.promise
   }
 
-  _markCompleted(result: EventResultType<TEvent> | undefined): void {
+  _markCompleted(result: EventResultType<TEvent> | BaseEvent | undefined, notify_hook: boolean = true): void {
     if (this.status === 'completed' || this.status === 'error') return
-    this.status = 'completed'
-    this.result = result
-    const { isostring: completed_at, ts: completed_ts } = BaseEvent.eventTimestampNow()
-    this.completed_at = completed_at
-    this.completed_ts = completed_ts
-    this.scheduleStatusHook('completed')
+    this.update({ status: 'completed', result })
+    if (notify_hook) {
+      void this._notifyStatusHook('completed')
+    }
   }
 
-  _markError(error: unknown): void {
+  _markError(error: unknown, notify_hook: boolean = true): void {
     if (this.status === 'completed' || this.status === 'error') return
-    this.status = 'error'
-    this.error = error
-    const { isostring: completed_at, ts: completed_ts } = BaseEvent.eventTimestampNow()
-    this.completed_at = completed_at
-    this.completed_ts = completed_ts
-    this.scheduleStatusHook('completed')
+    this.update({ status: 'error', error })
+    if (notify_hook) {
+      void this._notifyStatusHook('completed')
+    }
   }
 
   toJSON(): EventResultJSON {
@@ -413,14 +442,11 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       handler_timeout: this.handler.handler_timeout,
       handler_slow_timeout: this.handler.handler_slow_timeout,
       handler_registered_at: this.handler.handler_registered_at,
-      handler_registered_ts: this.handler.handler_registered_ts,
       handler_event_pattern: this.handler.event_pattern,
       eventbus_name: this.eventbus_name,
       eventbus_id: this.eventbus_id,
       started_at: this.started_at,
-      started_ts: this.started_ts,
       completed_at: this.completed_at,
-      completed_ts: this.completed_ts,
       result: this.result,
       error: this.error,
       event_children: this.event_children.map((child) => child.event_id),
@@ -439,17 +465,14 @@ export class EventResult<TEvent extends BaseEvent = BaseEvent> {
       handler_timeout: record.handler_timeout,
       handler_slow_timeout: record.handler_slow_timeout,
       handler_registered_at: record.handler_registered_at ?? event.event_created_at,
-      handler_registered_ts: record.handler_registered_ts === undefined ? event.event_created_ts : record.handler_registered_ts,
     } as const
     const handler_stub = EventHandler.fromJSON(handler_record, (() => undefined) as EventHandlerCallable)
 
     const result = new EventResult<TEvent>({ event, handler: handler_stub })
     result.id = record.id
     result.status = record.status
-    result.started_at = record.started_at ?? null
-    result.started_ts = record.started_ts === null || record.started_ts === undefined ? null : record.started_ts
-    result.completed_at = record.completed_at ?? null
-    result.completed_ts = record.completed_ts === null || record.completed_ts === undefined ? null : record.completed_ts
+    result.started_at = record.started_at === null || record.started_at === undefined ? null : monotonicDatetime(record.started_at)
+    result.completed_at = record.completed_at === null || record.completed_at === undefined ? null : monotonicDatetime(record.completed_at)
     if ('result' in record) {
       result.result = record.result as EventResultType<TEvent>
     }

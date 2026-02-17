@@ -237,12 +237,12 @@ test('awaited child jumps queue without overshoot', async () => {
   const event2_from_history = history_list.find((event) => event.event_type === 'Event2')
   const event3_from_history = history_list.find((event) => event.event_type === 'Event3')
 
-  assert.ok(child_event?.event_started_ts !== undefined)
-  assert.ok(event2_from_history?.event_started_ts !== undefined)
-  assert.ok(event3_from_history?.event_started_ts !== undefined)
+  assert.ok(child_event?.event_started_at)
+  assert.ok(event2_from_history?.event_started_at)
+  assert.ok(event3_from_history?.event_started_at)
 
-  assert.ok(child_event!.event_started_ts! <= event2_from_history!.event_started_ts!)
-  assert.ok(child_event!.event_started_ts! <= event3_from_history!.event_started_ts!)
+  assert.ok(child_event!.event_started_at! <= event2_from_history!.event_started_at!)
+  assert.ok(child_event!.event_started_at! <= event3_from_history!.event_started_at!)
 })
 
 test('done() on non-proxied event keeps bus paused during queue-jump', async () => {

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Generic, Literal, TypeVar, overload
 
 from .base_event import BaseEvent, UUIDStr
+from .helpers import monotonic_datetime
 
 BaseEventT = TypeVar('BaseEventT', bound=BaseEvent[Any])
 TExpectedEvent = TypeVar('TExpectedEvent', bound=BaseEvent[Any])
@@ -51,15 +52,6 @@ class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
         if isinstance(event_type_default, str) and event_type_default not in ('', 'UndefinedEvent'):
             return event_type_default
         return event_pattern.__name__
-
-    @staticmethod
-    def is_event_complete_fast(event: BaseEvent[Any]) -> bool:
-        signal = event._event_completed_signal  # pyright: ignore[reportPrivateUsage]
-        if signal is not None:
-            return signal.is_set()
-        if event._event_is_complete_flag:  # pyright: ignore[reportPrivateUsage]
-            return True
-        return event.event_completed_at is not None
 
     def event_is_child_of(self, event: BaseEvent[Any], ancestor: BaseEvent[Any]) -> bool:
         current_id = event.event_parent_id
@@ -167,24 +159,21 @@ class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
             where_predicate = where
 
         child_check = event_is_child_of or self.event_is_child_of
-        cutoff: datetime | None = None
+        cutoff: str | None = None
         if resolved_past is not True:
-            cutoff = datetime.now(UTC) - timedelta(seconds=float(resolved_past))
+            cutoff_dt = datetime.now(UTC) - timedelta(seconds=float(resolved_past))
+            cutoff = monotonic_datetime(cutoff_dt.isoformat().replace('+00:00', 'Z'))
         missing = object()
 
         def matches(event: BaseEvent[Any]) -> bool:
-            if event_key != '*' and event.event_type != event_key:
-                return False
-            if child_of is not None and not child_check(event, child_of):
-                return False
-            field_mismatch = any(
-                getattr(event, field_name, missing) != expected_value for field_name, expected_value in event_fields.items()
+            return (
+                (event_key == '*' or event.event_type == event_key)
+                and (child_of is None or child_check(event, child_of))
+                and all(
+                    getattr(event, field_name, missing) == expected_value for field_name, expected_value in event_fields.items()
+                )
+                and where_predicate(event)
             )
-            if field_mismatch:
-                return False
-            if not where_predicate(event):
-                return False
-            return True
 
         if resolved_past is not False:
             events = list(self.values())
@@ -204,20 +193,16 @@ class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
             return 0
         if self.max_history_size == 0:
             return self.trim_event_history(on_remove=on_remove)
-        if len(self) <= self.max_history_size:
+        remove_count = len(self) - self.max_history_size
+        if remove_count <= 0:
             return 0
 
-        total_events = len(self)
-        remove_count = total_events - self.max_history_size
-        event_ids_to_remove = list(self.keys())[:remove_count]
-
         removed_count = 0
-        for event_id in event_ids_to_remove:
-            event = self.get(event_id)
+        for event_id in list(self.keys())[:remove_count]:
+            event = self.pop(event_id, None)
             if event is None:
                 continue
-            del self[event_id]
-            if on_remove is not None:
+            if on_remove:
                 on_remove(event)
             removed_count += 1
 
@@ -233,50 +218,47 @@ class EventHistory(dict[UUIDStr, BaseEventT], Generic[BaseEventT]):
             return 0
 
         if self.max_history_size == 0:
-            completed_event_ids = [event_id for event_id, event in self.items() if self.is_event_complete_fast(event)]
+            completed_event_ids = [event_id for event_id, event in self.items() if event.event_status == 'completed']
             removed_count = 0
             for event_id in completed_event_ids:
                 event = self.get(event_id)
                 if event is None:
                     continue
                 del self[event_id]
-                if on_remove is not None:
+                if on_remove:
                     on_remove(event)
                 removed_count += 1
             return removed_count
 
-        if not self.max_history_drop:
-            return 0
-
-        if len(self) <= self.max_history_size:
+        if not self.max_history_drop or len(self) <= self.max_history_size:
             return 0
 
         remaining_overage = len(self) - self.max_history_size
         removed_count = 0
 
+        def remove_event(event_id: str, event: BaseEventT) -> None:
+            nonlocal removed_count
+            del self[event_id]
+            if on_remove:
+                on_remove(event)
+            removed_count += 1
+
         for event_id, event in list(self.items()):
             if remaining_overage <= 0:
                 break
-            if not self.is_event_complete_fast(event):
+            if event.event_status != 'completed':
                 continue
-            del self[event_id]
-            if on_remove is not None:
-                on_remove(event)
-            removed_count += 1
+            remove_event(event_id, event)
             remaining_overage -= 1
 
         dropped_uncompleted = 0
-        if remaining_overage > 0:
-            for event_id, event in list(self.items()):
-                if remaining_overage <= 0:
-                    break
-                if not self.is_event_complete_fast(event):
-                    dropped_uncompleted += 1
-                del self[event_id]
-                if on_remove is not None:
-                    on_remove(event)
-                removed_count += 1
-                remaining_overage -= 1
+        for event_id, event in list(self.items()):
+            if remaining_overage <= 0:
+                break
+            if event.event_status != 'completed':
+                dropped_uncompleted += 1
+            remove_event(event_id, event)
+            remaining_overage -= 1
 
         if dropped_uncompleted > 0 and not self._warned_about_dropping_uncompleted_events:
             self._warned_about_dropping_uncompleted_events = True

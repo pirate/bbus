@@ -3,7 +3,7 @@ import { test } from 'node:test'
 
 import { z } from 'zod'
 
-import { BaseEvent, EventBus } from '../src/index.js'
+import { BaseEvent, EventBus, monotonicDatetime } from '../src/index.js'
 
 test('BaseEvent lifecycle transitions are explicit and awaitable', async () => {
   const LifecycleEvent = BaseEvent.extend('BaseEventLifecycleTestEvent', {})
@@ -21,6 +21,24 @@ test('BaseEvent lifecycle transitions are explicit and awaitable', async () => {
   assert.equal(standalone.event_status, 'completed')
   assert.equal(typeof standalone.event_completed_at, 'string')
   await standalone.eventCompleted()
+})
+
+test('BaseEvent.eventResultUpdate creates and updates typed handler results', async () => {
+  const TypedEvent = BaseEvent.extend('BaseEventEventResultUpdateEvent', { event_result_type: z.string() })
+  const bus = new EventBus('BaseEventEventResultUpdateBus')
+  const event = TypedEvent({})
+  const handler_entry = bus.on(TypedEvent, async () => 'ok')
+
+  const pending = event.eventResultUpdate(handler_entry, { eventbus: bus, status: 'pending' })
+  assert.equal(event.event_results.get(handler_entry.id), pending)
+  assert.equal(pending.status, 'pending')
+
+  const completed = event.eventResultUpdate(handler_entry, { eventbus: bus, status: 'completed', result: 'seeded' })
+  assert.equal(completed, pending)
+  assert.equal(completed.status, 'completed')
+  assert.equal(completed.result, 'seeded')
+
+  bus.destroy()
 })
 
 test('await event.done() queue-jumps child processing inside handlers', async () => {
@@ -98,18 +116,15 @@ test('await event.eventCompleted() preserves normal queue order inside handlers'
   bus.destroy()
 })
 
-test('BaseEvent.eventTimestampNow emits raw monotonic performance.now() values', () => {
-  const first = BaseEvent.eventTimestampNow()
-  const second = BaseEvent.eventTimestampNow()
+test('monotonicDatetime emits parseable, monotonic ISO timestamps', () => {
+  const first = monotonicDatetime()
+  const second = monotonicDatetime()
 
-  assert.equal(typeof first.ts, 'number')
-  assert.equal(typeof second.ts, 'number')
-  assert.ok(Number.isFinite(first.ts))
-  assert.ok(Number.isFinite(second.ts))
-  assert.ok(first.ts >= 0)
-  assert.ok(second.ts >= first.ts)
-  assert.equal(Number.isInteger(Date.parse(first.isostring)), true)
-  assert.equal(Number.isInteger(Date.parse(second.isostring)), true)
+  assert.equal(typeof first, 'string')
+  assert.equal(typeof second, 'string')
+  assert.equal(Number.isInteger(Date.parse(first)), true)
+  assert.equal(Number.isInteger(Date.parse(second)), true)
+  assert.ok(second > first)
 })
 
 test('BaseEvent rejects reserved runtime fields in payload and event shape', () => {
@@ -206,9 +221,9 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
 
   const json = event.toJSON() as Record<string, unknown>
   assert.equal(json.event_status, 'completed')
-  assert.equal(typeof json.event_created_ts, 'number')
-  assert.equal(typeof json.event_started_ts, 'number')
-  assert.equal(typeof json.event_completed_ts, 'number')
+  assert.equal(typeof json.event_created_at, 'string')
+  assert.equal(typeof json.event_started_at, 'string')
+  assert.equal(typeof json.event_completed_at, 'string')
   assert.equal(json.event_pending_bus_count, 0)
 
   const json_results = json.event_results as Array<Record<string, unknown>>
@@ -218,7 +233,7 @@ test('BaseEvent toJSON/fromJSON roundtrips runtime fields and event_results', as
 
   const restored = RuntimeEvent.fromJSON?.(json) ?? RuntimeEvent(json as never)
   assert.equal(restored.event_status, 'completed')
-  assert.equal(restored.event_created_ts, event.event_created_ts)
+  assert.equal(restored.event_created_at, event.event_created_at)
   assert.equal(restored.event_results.size, 1)
   assert.equal(Array.from(restored.event_results.values())[0].result, 'ok')
 
@@ -278,12 +293,7 @@ test('BaseEvent status hooks capture bus reference before event gc', async () =>
   const HookEvent = BaseEvent.extend('BaseEventHookCaptureEvent', {})
 
   class HookCaptureBus extends EventBus {
-    scheduled: Array<() => void> = []
     seen_statuses: string[] = []
-
-    scheduleMicrotask(fn: () => void): void {
-      this.scheduled.push(fn)
-    }
 
     async onEventChange(_event: BaseEvent, status: 'pending' | 'started' | 'completed'): Promise<void> {
       this.seen_statuses.push(status)
@@ -298,13 +308,6 @@ test('BaseEvent status hooks capture bus reference before event gc', async () =>
   event._markCompleted()
   event._gc()
 
-  assert.equal(bus.scheduled.length, 2)
-  assert.doesNotThrow(() => {
-    for (const callback of bus.scheduled) {
-      callback()
-    }
-  })
-  await Promise.resolve()
   assert.deepEqual(bus.seen_statuses, ['started', 'completed'])
 
   bus.destroy()

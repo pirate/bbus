@@ -4,6 +4,7 @@ export type { EventHistoryFindOptions, EventHistoryTrimOptions } from './event_h
 export { EventResult } from './event_result.js'
 export { EventBus } from './event_bus.js'
 export type { EventBusJSON, EventBusOptions } from './event_bus.js'
+export { monotonicDatetime } from './helpers.js'
 export type { EventBusMiddleware, EventBusMiddlewareCtor, EventBusMiddlewareInput } from './middlewares.js'
 export {
   EventHandlerTimeoutError,

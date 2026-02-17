@@ -103,19 +103,16 @@ test('event result JSON omits result_type and derives from parent event', async 
   assert.equal(typeof json.eventbus_name, 'string')
   assert.equal(typeof json.eventbus_id, 'string')
   assert.equal(typeof json.handler_registered_at, 'string')
-  assert.equal(typeof json.handler_registered_ts, 'number')
   assert.equal(result.result_type, event.event_result_type)
 })
 
 test('EventHandler JSON roundtrips handler metadata', () => {
-  const handler_registered_ts = 678901
   const handler = (event: BaseEvent): string => event.event_type
   const entry = new EventHandler({
     handler,
     handler_name: 'pkg.module.handler',
     handler_file_path: '~/project/app.ts:123',
     handler_registered_at: '2025-01-02T03:04:05.678Z',
-    handler_registered_ts,
     event_pattern: 'StandaloneEvent',
     eventbus_name: 'StandaloneBus',
     eventbus_id: '018f8e40-1234-7000-8000-000000001234',
@@ -133,11 +130,9 @@ test('EventHandler JSON roundtrips handler metadata', () => {
 })
 
 test('EventHandler.computeHandlerId matches uuidv5 seed algorithm', () => {
-  const handler_registered_ts = 678901
   const namespace = uuidv5('bubus-handler', uuidv5.DNS)
   const expected_seed =
-    '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.ts:123|' +
-    `2025-01-02T03:04:05.678Z|${handler_registered_ts}|StandaloneEvent`
+    '018f8e40-1234-7000-8000-000000001234|pkg.module.handler|~/project/app.ts:123|2025-01-02T03:04:05.678Z|StandaloneEvent'
   const expected_id = uuidv5(expected_seed, namespace)
 
   const computed_id = EventHandler.computeHandlerId({
@@ -145,27 +140,10 @@ test('EventHandler.computeHandlerId matches uuidv5 seed algorithm', () => {
     handler_name: 'pkg.module.handler',
     handler_file_path: '~/project/app.ts:123',
     handler_registered_at: '2025-01-02T03:04:05.678Z',
-    handler_registered_ts,
     event_pattern: 'StandaloneEvent',
   })
 
   assert.equal(computed_id, expected_id)
-})
-
-test('EventHandler rejects non-integer handler_registered_ts values', () => {
-  const handler = (event: BaseEvent): string => event.event_type
-  assert.throws(() => {
-    void new EventHandler({
-      handler,
-      handler_name: 'pkg.module.handler',
-      handler_file_path: '~/project/app.ts:123',
-      handler_registered_at: '2025-01-02T03:04:05.678Z',
-      handler_registered_ts: 1.9,
-      event_pattern: 'StandaloneEvent',
-      eventbus_name: 'StandaloneBus',
-      eventbus_id: '018f8e40-1234-7000-8000-000000001234',
-    })
-  })
 })
 
 test('runHandler is a no-op for already-settled results', async () => {
