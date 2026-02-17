@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node --import tsx
 // Run: node --import tsx examples/concurrency_options.ts
 
+import assert from 'node:assert/strict'
 import { z } from 'zod'
 import { BaseEvent, EventBus, EventHandlerTimeoutError } from '../src/index.js'
 const sleep = (ms: number): Promise<void> =>
@@ -193,7 +194,7 @@ async function handlerTimeoutDemo(): Promise<void> {
     },
     { handler_timeout: 0.03 }
   )
-  bus.on(
+  const fast_entry = bus.on(
     TimeoutEvent,
     async () => {
       log('fast handler start')
@@ -204,8 +205,13 @@ async function handlerTimeoutDemo(): Promise<void> {
     { handler_timeout: 0.1 }
   )
   const event = bus.emit(TimeoutEvent({ ms: 60, event_handler_timeout: 0.5 }))
-  await event.done()
+  await event.done({ raise_if_any: false })
   const slow_result = event.event_results.get(slow_entry.id)
+  const fast_result = event.event_results.get(fast_entry.id)
+  assert.ok(slow_result, 'expected slow handler result entry')
+  assert.ok(slow_result.error instanceof EventHandlerTimeoutError, 'expected slow handler to time out')
+  assert.equal(fast_result?.status, 'completed')
+  assert.equal(fast_result?.result, 'fast')
   const handler_timed_out = slow_result?.error instanceof EventHandlerTimeoutError
   log(`slow handler status=${slow_result?.status}, timeout_error=${handler_timed_out ? 'yes' : 'no'}`)
   await bus.waitUntilIdle()

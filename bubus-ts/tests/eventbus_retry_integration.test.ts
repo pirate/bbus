@@ -58,11 +58,12 @@ test('retry: bus handler with retry_on_errors only retries matching errors (inli
   )
 
   const event = bus.emit(TestEvent({}))
-  await event.done()
+  await assert.rejects(event.done(), ValidationError)
 
   assert.equal(calls, 1)
   const result = Array.from(event.event_results.values())[0]
   assert.equal(result.status, 'error')
+  assert.ok(result.error instanceof ValidationError)
 })
 
 test('retry: @retry() decorated method works with bus.on via bind', async () => {
