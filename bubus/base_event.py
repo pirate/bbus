@@ -970,9 +970,6 @@ class BaseEvent(BaseModel, Generic[T_EventResultType]):
             return data
         params = _normalize_any_dict(data)
 
-        for legacy_ts_key in ('event_created_ts', 'event_started_ts', 'event_completed_ts'):
-            params.pop(legacy_ts_key, None)
-
         for key in RESERVED_USER_EVENT_FIELDS:
             if key in params:
                 raise ValueError(f'Field "{key}" is reserved for BaseEvent runtime APIs and cannot be set in event payload')

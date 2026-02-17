@@ -184,16 +184,28 @@ async def test_event_at_fields_are_recognized():
     assert event.event_pending_bus_count == 2
 
 
-async def test_legacy_event_ts_fields_are_ignored():
-    event = MainEvent.model_validate(
-        {
-            'event_created_at': '2025-01-02T03:04:05.678901234Z',
-            'event_created_ts': 1735787045.6789012,
-            'event_started_ts': 1735787046.1,
-            'event_completed_ts': 1735787047.2,
-        }
-    )
-    assert event.event_created_at == '2025-01-02T03:04:05.678901234Z'
+async def test_event_result_update_status_only_preserves_existing_error_and_result():
+    class EventResultUpdateStatusOnlyEvent(BaseEvent[str]):
+        pass
+
+    bus = EventBus(name='BaseEventEventResultUpdateStatusOnlyBus')
+
+    def handler(_: EventResultUpdateStatusOnlyEvent) -> str:
+        return 'ok'
+
+    handler_entry = bus.on(EventResultUpdateStatusOnlyEvent, handler)
+    event = EventResultUpdateStatusOnlyEvent()
+
+    errored = event.event_result_update(handler_entry, eventbus=bus, error=RuntimeError('seeded error'))
+    assert errored.status == 'error'
+    assert isinstance(errored.error, RuntimeError)
+
+    status_only = event.event_result_update(handler_entry, eventbus=bus, status='pending')
+    assert status_only.status == 'pending'
+    assert isinstance(status_only.error, RuntimeError)
+    assert status_only.result is None
+
+    await bus.stop()
 
 
 async def test_python_serialized_at_fields_are_strings():

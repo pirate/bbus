@@ -143,6 +143,59 @@ def test_event_handler_model_detects_handler_file_path() -> None:
     assert entry.handler_file_path.endswith(expected_suffix)
 
 
+def test_event_handler_from_callable_supports_id_override_and_detect_file_path_toggle() -> None:
+    def handler(event: StandaloneEvent) -> str:
+        return event.data
+
+    explicit_id = '018f8e40-1234-7000-8000-000000009999'
+    explicit = EventHandler.from_callable(
+        handler=cast(EventHandlerCallable, handler),
+        id=explicit_id,
+        event_pattern='StandaloneEvent',
+        eventbus_name='StandaloneBus',
+        eventbus_id='018f8e40-1234-7000-8000-000000001234',
+        detect_handler_file_path=False,
+    )
+    assert explicit.id == explicit_id
+
+    no_detect = EventHandler.from_callable(
+        handler=cast(EventHandlerCallable, handler),
+        event_pattern='StandaloneEvent',
+        eventbus_name='StandaloneBus',
+        eventbus_id='018f8e40-1234-7000-8000-000000001234',
+        detect_handler_file_path=False,
+    )
+    assert no_detect.handler_file_path is None
+
+
+def test_event_result_update_keeps_typescript_ordering_semantics_for_status_result_error() -> None:
+    def handler(event: StandaloneEvent) -> str:
+        return event.data
+
+    handler_entry = EventHandler.from_callable(
+        handler=cast(EventHandlerCallable, handler),
+        event_pattern='StandaloneEvent',
+        eventbus_name='StandaloneBus',
+        eventbus_id='018f8e40-1234-7000-8000-000000001234',
+    )
+    event_result: EventResult[str] = EventResult(
+        event_id=str(uuid4()),
+        handler=handler_entry,
+        timeout=None,
+        result_type=str,
+    )
+
+    existing_error = RuntimeError('existing')
+    event_result.error = existing_error
+    event_result.update(status='completed')
+    assert event_result.status == 'completed'
+    assert event_result.error is existing_error
+
+    event_result.update(status='error', result='seeded')
+    assert event_result.result == 'seeded'
+    assert event_result.status == 'error'
+
+
 def test_event_result_serializes_handler_metadata_and_derived_fields() -> None:
     """EventResult stores handler metadata and derives convenience fields from it."""
 
