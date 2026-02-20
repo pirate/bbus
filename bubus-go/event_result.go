@@ -16,17 +16,18 @@ const (
 )
 
 type EventResult struct {
-	ID           string            `json:"id"`
-	Status       EventResultStatus `json:"status"`
-	EventID      string            `json:"event_id"`
-	HandlerID    string            `json:"handler_id"`
-	HandlerName  string            `json:"handler_name"`
-	EventBusName string            `json:"eventbus_name"`
-	EventBusID   string            `json:"eventbus_id"`
-	StartedAt    *string           `json:"started_at,omitempty"`
-	CompletedAt  *string           `json:"completed_at,omitempty"`
-	Result       any               `json:"result,omitempty"`
-	Error        any               `json:"error,omitempty"`
+	ID            string            `json:"id"`
+	Status        EventResultStatus `json:"status"`
+	EventID       string            `json:"event_id"`
+	HandlerID     string            `json:"handler_id"`
+	HandlerName   string            `json:"handler_name"`
+	EventBusName  string            `json:"eventbus_name"`
+	EventBusID    string            `json:"eventbus_id"`
+	StartedAt     *string           `json:"started_at,omitempty"`
+	CompletedAt   *string           `json:"completed_at,omitempty"`
+	Result        any               `json:"result,omitempty"`
+	Error         any               `json:"error,omitempty"`
+	EventChildren []*BaseEvent      `json:"event_children,omitempty"`
 
 	Event   *BaseEvent    `json:"-"`
 	Handler *EventHandler `json:"-"`

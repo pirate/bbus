@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -189,6 +190,12 @@ func (b *EventBus) Emit(event *BaseEvent) *BaseEvent {
 	if event.Bus == nil {
 		original_event.Bus = b
 	}
+	if original_event.dispatchCtx == nil {
+		original_event.dispatchCtx = b.locks.getActiveDispatchContext()
+		if original_event.dispatchCtx == nil {
+			original_event.dispatchCtx = context.Background()
+		}
+	}
 	for _, label := range original_event.EventPath {
 		if label == b.Label() {
 			return original_event
@@ -197,10 +204,13 @@ func (b *EventBus) Emit(event *BaseEvent) *BaseEvent {
 	original_event.EventPath = append(original_event.EventPath, b.Label())
 	if original_event.EventParentID == nil && original_event.EventEmittedByHandlerID == nil {
 		if active := b.locks.getActiveHandlerResult(); active != nil {
-			parent_id := active.EventID
-			handler_id := active.HandlerID
-			original_event.EventParentID = &parent_id
-			original_event.EventEmittedByHandlerID = &handler_id
+			if active.EventID != original_event.EventID {
+				parent_id := active.EventID
+				handler_id := active.HandlerID
+				original_event.EventParentID = &parent_id
+				original_event.EventEmittedByHandlerID = &handler_id
+				active.EventChildren = append(active.EventChildren, original_event)
+			}
 		}
 	}
 	b.EventHistory.AddEvent(original_event)
@@ -753,17 +763,23 @@ func (b *EventBus) eventMatchesEquals(event *BaseEvent, equals map[string]any) b
 }
 
 func (b *EventBus) Find(event_pattern string, where func(event *BaseEvent) bool, options *FindOptions) (*BaseEvent, error) {
+	if options == nil {
+		options = &FindOptions{}
+	}
+	future_enabled, future_timeout := normalizeFuture(options.Future)
+	historyMatch := b.EventHistory.Find(event_pattern, where, &EventHistoryFindOptions{Past: options.Past, ChildOf: options.ChildOf, Equals: options.Equals})
+	if historyMatch != nil {
+		return historyMatch, nil
+	}
+	if !future_enabled {
+		return nil, nil
+	}
 	if event_pattern == "" {
 		event_pattern = "*"
 	}
 	if where == nil {
 		where = func(event *BaseEvent) bool { return true }
 	}
-	if options == nil {
-		options = &FindOptions{}
-	}
-	past_enabled, past_window := normalizePast(options.Past)
-	future_enabled, future_timeout := normalizeFuture(options.Future)
 	matches := func(event *BaseEvent) bool {
 		if event_pattern != "*" && event.EventType != event_pattern {
 			return false
@@ -774,53 +790,88 @@ func (b *EventBus) Find(event_pattern string, where func(event *BaseEvent) bool,
 		if !b.eventMatchesEquals(event, options.Equals) {
 			return false
 		}
-		if !where(event) {
-			return false
-		}
-		if past_window != nil {
-			created_at, err := time.Parse(time.RFC3339Nano, event.EventCreatedAt)
-			if err != nil {
-				return false
-			}
-			if time.Since(created_at) > time.Duration(*past_window*float64(time.Second)) {
-				return false
-			}
-		}
-		return true
-	}
-	if past_enabled {
-		for _, event := range b.EventHistory.Values() {
-			if matches(event) {
-				return event, nil
-			}
-		}
-	}
-	if !future_enabled {
-		return nil, nil
+		return where(event)
 	}
 	resolved := make(chan *BaseEvent, 1)
 	waiter := &findWaiter{EventPattern: event_pattern, Matches: matches, Resolve: func(event *BaseEvent) { resolved <- event }}
 	b.mu.Lock()
 	b.findWaiters = append(b.findWaiters, waiter)
 	b.mu.Unlock()
+	cleanup := func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		for i := len(b.findWaiters) - 1; i >= 0; i-- {
+			if b.findWaiters[i] == waiter {
+				b.findWaiters = append(b.findWaiters[:i], b.findWaiters[i+1:]...)
+				break
+			}
+		}
+	}
 	if future_timeout == nil {
-		return <-resolved, nil
+		event := <-resolved
+		cleanup()
+		return event, nil
 	}
 	select {
 	case event := <-resolved:
+		cleanup()
 		return event, nil
 	case <-time.After(time.Duration(*future_timeout * float64(time.Second))):
-		b.mu.Lock()
-		remaining := make([]*findWaiter, 0, len(b.findWaiters))
-		for _, w := range b.findWaiters {
-			if w != waiter {
-				remaining = append(remaining, w)
-			}
-		}
-		b.findWaiters = remaining
-		b.mu.Unlock()
+		cleanup()
 		return nil, nil
 	}
+}
+
+func (b *EventBus) LogTree() string {
+	b.mu.Lock()
+	history := b.EventHistory.Values()
+	b.mu.Unlock()
+	lines := []string{}
+	for _, event := range history {
+		if event.EventParentID != nil {
+			continue
+		}
+		lines = append(lines, b.logEventTree(event, "", true)...)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (b *EventBus) logEventTree(event *BaseEvent, prefix string, isLast bool) []string {
+	connector := "├──"
+	nextPrefix := prefix + "│   "
+	if isLast {
+		connector = "└──"
+		nextPrefix = prefix + "    "
+	}
+	dur := ""
+	if event.EventStartedAt != nil && event.EventCompletedAt != nil {
+		ts, _ := time.Parse(time.RFC3339Nano, *event.EventStartedAt)
+		te, _ := time.Parse(time.RFC3339Nano, *event.EventCompletedAt)
+		dur = fmt.Sprintf(" [%.3fs]", te.Sub(ts).Seconds())
+	}
+	line := fmt.Sprintf("%s%s %s#%s%s", prefix, connector, event.EventType, event.EventID[len(event.EventID)-4:], dur)
+	out := []string{line}
+	for _, r := range event.EventResults {
+		sym := "✅"
+		if r.Status == EventResultError {
+			sym = "❌"
+		}
+		rline := fmt.Sprintf("%s%s %s %s.%s#%s", nextPrefix, connector, sym, b.Label(), r.HandlerName, r.HandlerID[len(r.HandlerID)-4:])
+		if r.Result != nil {
+			rline += fmt.Sprintf(" => %v", r.Result)
+		}
+		if r.Error != nil {
+			rline += fmt.Sprintf(" err=%v", r.Error)
+		}
+		out = append(out, rline)
+		for i, c := range r.EventChildren {
+			out = append(out, b.logEventTree(c, nextPrefix, i == len(r.EventChildren)-1)...)
+		}
+	}
+	return out
 }
 
 func (b *EventBus) Destroy() {

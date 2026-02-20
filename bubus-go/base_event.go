@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 )
 
 type BaseEvent struct {
@@ -31,9 +32,16 @@ type BaseEvent struct {
 	Payload      map[string]any
 	Bus          *EventBus               `json:"-"`
 	EventResults map[string]*EventResult `json:"-"`
+	dispatchCtx  context.Context         `json:"-"`
 	mu           sync.Mutex
 	done_ch      chan struct{}
 	done_once    sync.Once
+}
+
+type EventResultsListOptions struct {
+	Timeout     *float64
+	RaiseIfAny  bool
+	RaiseIfNone bool
 }
 
 func NewBaseEvent(event_type string, payload map[string]any) *BaseEvent {
@@ -245,6 +253,45 @@ func (e *BaseEvent) First(ctx context.Context) (any, error) {
 		}
 	}
 	return nil, nil
+}
+
+func (e *BaseEvent) EventResultsList(ctx context.Context, include func(result any, event_result *EventResult) bool, options *EventResultsListOptions) ([]any, error) {
+	if options == nil {
+		options = &EventResultsListOptions{RaiseIfAny: true, RaiseIfNone: true}
+	}
+	if !options.RaiseIfAny && !options.RaiseIfNone && options.Timeout == nil {
+		// keep defaults explicit for common non-raising mode
+	}
+	if options.Timeout != nil {
+		ctx2, cancel := context.WithTimeout(ctx, time.Duration(*options.Timeout*float64(time.Second)))
+		defer cancel()
+		ctx = ctx2
+	}
+	if _, err := e.Done(ctx); err != nil {
+		return nil, err
+	}
+	if include == nil {
+		include = func(result any, event_result *EventResult) bool {
+			if event_result.Status != EventResultCompleted || result == nil {
+				return false
+			}
+			_, is_event := result.(*BaseEvent)
+			return !is_event
+		}
+	}
+	out := make([]any, 0, len(e.EventResults))
+	for _, event_result := range e.EventResults {
+		if options.RaiseIfAny && event_result.Status == EventResultError {
+			return nil, errors.New(toErrorString(event_result.Error))
+		}
+		if include(event_result.Result, event_result) {
+			out = append(out, event_result.Result)
+		}
+	}
+	if options.RaiseIfNone && len(out) == 0 {
+		return nil, errors.New("no valid handler results")
+	}
+	return out, nil
 }
 
 func toErrorString(v any) string {

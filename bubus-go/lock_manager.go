@@ -62,8 +62,9 @@ type LockManager struct {
 	pause_depth   int
 	pause_waiters []chan struct{}
 
-	active_mu             sync.Mutex
-	active_handler_result []*EventResult
+	active_mu               sync.Mutex
+	active_handler_result   []*EventResult
+	active_dispatch_context []context.Context
 }
 
 func NewLockManager(bus *EventBus) *LockManager {
@@ -135,6 +136,11 @@ func (l *LockManager) waitUntilRunloopResumed(ctx context.Context) error {
 func (l *LockManager) runWithHandlerDispatchContext(result *EventResult, fn func() error) error {
 	l.active_mu.Lock()
 	l.active_handler_result = append(l.active_handler_result, result)
+	if result != nil && result.Event != nil && result.Event.dispatchCtx != nil {
+		l.active_dispatch_context = append(l.active_dispatch_context, result.Event.dispatchCtx)
+	} else {
+		l.active_dispatch_context = append(l.active_dispatch_context, nil)
+	}
 	l.active_mu.Unlock()
 	defer func() {
 		l.active_mu.Lock()
@@ -142,6 +148,7 @@ func (l *LockManager) runWithHandlerDispatchContext(result *EventResult, fn func
 		for i := len(l.active_handler_result) - 1; i >= 0; i-- {
 			if l.active_handler_result[i] == result {
 				l.active_handler_result = append(l.active_handler_result[:i], l.active_handler_result[i+1:]...)
+				l.active_dispatch_context = append(l.active_dispatch_context[:i], l.active_dispatch_context[i+1:]...)
 				break
 			}
 		}
@@ -172,4 +179,13 @@ func (l *LockManager) waitForIdle(timeout *float64) bool {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+func (l *LockManager) getActiveDispatchContext() context.Context {
+	l.active_mu.Lock()
+	defer l.active_mu.Unlock()
+	if len(l.active_dispatch_context) == 0 {
+		return nil
+	}
+	return l.active_dispatch_context[len(l.active_dispatch_context)-1]
 }

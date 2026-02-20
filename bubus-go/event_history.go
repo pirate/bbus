@@ -1,23 +1,35 @@
 package bubus
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 type EventHistory struct {
-	mu             sync.RWMutex
-	events         map[string]*BaseEvent
-	order          []string
 	MaxHistorySize *int
 	MaxHistoryDrop bool
+	events         map[string]*BaseEvent
+	order          []string
+	mu             sync.RWMutex
+}
+
+type EventHistoryFindOptions struct {
+	Past    any
+	ChildOf *BaseEvent
+	Equals  map[string]any
 }
 
 func NewEventHistory(max_history_size *int, max_history_drop bool) *EventHistory {
-	return &EventHistory{events: map[string]*BaseEvent{}, MaxHistorySize: max_history_size, MaxHistoryDrop: max_history_drop}
+	if max_history_size == nil {
+		max_history_size = ptr(100)
+	}
+	return &EventHistory{MaxHistorySize: max_history_size, MaxHistoryDrop: max_history_drop, events: map[string]*BaseEvent{}, order: []string{}}
 }
 
 func (h *EventHistory) AddEvent(event *BaseEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if _, ok := h.events[event.EventID]; !ok {
+	if _, exists := h.events[event.EventID]; !exists {
 		h.order = append(h.order, event.EventID)
 	}
 	h.events[event.EventID] = event
@@ -52,6 +64,86 @@ func (h *EventHistory) Values() []*BaseEvent {
 		}
 	}
 	return out
+}
+
+func (h *EventHistory) Find(event_pattern string, where func(event *BaseEvent) bool, options *EventHistoryFindOptions) *BaseEvent {
+	if event_pattern == "" {
+		event_pattern = "*"
+	}
+	if where == nil {
+		where = func(event *BaseEvent) bool { return true }
+	}
+	if options == nil {
+		options = &EventHistoryFindOptions{}
+	}
+	past_enabled, past_window := normalizePast(options.Past)
+	if !past_enabled {
+		return nil
+	}
+	matches := func(event *BaseEvent) bool {
+		if event_pattern != "*" && event.EventType != event_pattern {
+			return false
+		}
+		if options.ChildOf != nil && !EventIsChildOfStatic(h, event, options.ChildOf) {
+			return false
+		}
+		if len(options.Equals) > 0 {
+			for key, value := range options.Equals {
+				switch key {
+				case "event_status":
+					if event.EventStatus != value {
+						return false
+					}
+				case "event_type":
+					if event.EventType != value {
+						return false
+					}
+				default:
+					payload_v, ok := event.Payload[key]
+					if !ok || payload_v != value {
+						return false
+					}
+				}
+			}
+		}
+		if !where(event) {
+			return false
+		}
+		if past_window != nil {
+			created_at, err := time.Parse(time.RFC3339Nano, event.EventCreatedAt)
+			if err != nil {
+				return false
+			}
+			if time.Since(created_at) > time.Duration(*past_window*float64(time.Second)) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, event := range h.Values() {
+		if matches(event) {
+			return event
+		}
+	}
+	return nil
+}
+
+func EventIsChildOfStatic(h *EventHistory, event *BaseEvent, ancestor *BaseEvent) bool {
+	if event == nil || ancestor == nil {
+		return false
+	}
+	parentID := event.EventParentID
+	for parentID != nil {
+		if *parentID == ancestor.EventID {
+			return true
+		}
+		parent := h.GetEvent(*parentID)
+		if parent == nil {
+			return false
+		}
+		parentID = parent.EventParentID
+	}
+	return false
 }
 
 func (h *EventHistory) RemoveEvent(event_id string) bool {
